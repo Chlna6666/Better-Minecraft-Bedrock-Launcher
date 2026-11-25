@@ -209,9 +209,43 @@ impl Retirement {
     }
 }
 
+// Only used for generations whose present-fence support is proven and
+// whose native host present-wait worker has already exited.
+pub(super) fn generation_ready(device: &ash::Device, chain: &mut VulkanSwapchain) -> Result<bool> {
+    if chain.presentation.idle_required() {
+        return Ok(false);
+    }
+    for slot in &chain.acquire_slots {
+        if slot.pending && !unsafe { device.get_fence_status(slot.fence) }.map_err(VulkanError::from)? {
+            return Ok(false);
+        }
+    }
+    for &fence in &chain.in_flight_fences {
+        if !unsafe { device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            return Ok(false);
+        }
+    }
+    chain.presentation.poll(device)
+}
+
+pub(super) fn wait_generation(device: &ash::Device, chain: &mut VulkanSwapchain) -> Result<()> {
+    for slot in &chain.acquire_slots {
+        if slot.pending {
+            unsafe { device.wait_for_fences(&[slot.fence], true, u64::MAX) }.map_err(VulkanError::from)?;
+        }
+    }
+    if !chain.in_flight_fences.is_empty() {
+        unsafe { device.wait_for_fences(&chain.in_flight_fences, true, u64::MAX) }.map_err(VulkanError::from)?;
+    }
+    chain.presentation.wait(device)
+}
+
 impl VulkanDevice {
     pub(super) fn retire_swapchain(&mut self, id: gfx_core::SwapchainId) -> Result<()> {
         let chain = self.swapchains.get_mut(id)?;
+        if chain.swapchain == vk::SwapchainKHR::null() {
+            return Ok(());
+        }
         // vkWaitForPresentKHR requires a non-retired swapchain. Stop the
         // worker before any replacement can pass this handle as oldSwapchain.
         drop(chain.present_wake.take());

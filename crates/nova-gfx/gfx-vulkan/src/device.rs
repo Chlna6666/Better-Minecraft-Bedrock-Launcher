@@ -211,6 +211,7 @@ pub struct VulkanDevice {
     native_queue_waits: Vec<VulkanQueueWait>,
     surfaces: ResourceRegistry<VulkanSurface>,
     swapchains: ResourceRegistry<VulkanSwapchain>,
+    retired_swapchains: Vec<VulkanSwapchain>,
     descriptor_pools: descriptors::Pools,
     pipeline_cache: vk::PipelineCache,
     pipeline_cache_path: Option<PathBuf>,
@@ -596,6 +597,7 @@ impl VulkanDevice {
             native_queue_waits: Vec::new(),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
+            retired_swapchains: Vec::new(),
             descriptor_pools: descriptors::Pools::default(),
             pipeline_cache,
             pipeline_cache_path,
@@ -761,6 +763,7 @@ impl VulkanDevice {
         config: SurfaceConfig,
     ) -> Result<gfx_core::SwapchainId> {
         let surface = self.surfaces.get(surface_id)?.surface;
+        self.wait_retired_swapchains(surface)?;
         let swapchain = self.build_swapchain(surface, config)?;
 
         Ok(self.swapchains.insert(swapchain))
@@ -822,22 +825,14 @@ impl VulkanDevice {
         } else {
             choose_extent(&support.capabilities, width, height)
         };
-        if desired == previous.extent {
+        if desired == previous.extent && !previous.rebuild_pending {
             self.swapchains.get_mut(swapchain_id)?.config.size =
                 gfx_core::Extent2d::new(width, height)?;
             return Ok(());
         }
-        self.retire_swapchain(swapchain_id)?;
-        let old_swapchain = self.swapchains.get(swapchain_id)?;
-        let mut config = old_swapchain.config;
+        let mut config = previous.config;
         config.size = gfx_core::Extent2d::new(width, height)?;
-        let surface = old_swapchain.surface;
-        let old_native_swapchain = old_swapchain.swapchain;
-        let new_swapchain =
-            self.build_swapchain_replacing(surface, config, old_native_swapchain)?;
-        let old_swapchain = self.swapchains.replace_live(swapchain_id, new_swapchain)?;
-        self.destroy_swapchain_now(old_swapchain);
-        Ok(())
+        self.reconfigure_swapchain(swapchain_id, config)
     }
 
     /// Recreates an existing swapchain with a full surface configuration.
@@ -853,11 +848,23 @@ impl VulkanDevice {
         self.retire_swapchain(swapchain_id)?;
         // Retire queued encoders while their old swapchain fences are still live.
         self.poll_cleanup();
-        let old_swapchain = self.swapchains.get(swapchain_id)?;
-        let surface = old_swapchain.surface;
-        let old_native_swapchain = old_swapchain.swapchain;
-        let new_swapchain =
-            self.build_swapchain_replacing(surface, config, old_native_swapchain)?;
+        let surface = self.swapchains.get(swapchain_id)?.surface;
+        if self.swapchains.get(swapchain_id)?.native_retired {
+            // A failed replacement can leave no active generation. Destroy
+            // all old generations before attempting creation with a null handle.
+            self.wait_retired_swapchains(surface)?;
+            let chain = self.swapchains.get_mut(swapchain_id)?;
+            destroy_swapchain_resources(&self.device, &self.swapchain_loader, chain);
+        }
+        let old_native = self.swapchains.get(swapchain_id)?.swapchain;
+        {
+            let chain = self.swapchains.get_mut(swapchain_id)?;
+            chain.rebuild_pending = true;
+            // Conservative even when creation fails before the native call.
+            chain.native_retired = old_native != vk::SwapchainKHR::null();
+            chain.config = config;
+        }
+        let new_swapchain = self.build_swapchain_replacing(surface, config, old_native)?;
         let old_swapchain = self.swapchains.replace_live(swapchain_id, new_swapchain)?;
         self.destroy_swapchain_now(old_swapchain);
         Ok(())
@@ -3310,12 +3317,10 @@ impl VulkanDevice {
     /// Returns an error if WSI or the device rejects the acquisition.
     pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         if self.swapchains.get(id)?.rebuild_pending {
-            // Poll old acquisition and rendering references before recreation
-            // on every WSI. Maintenance-capable devices also poll present fences.
-            if !SurfaceDevice::prepare_swapchain_resize(self, id)? {
+            if !self.prepare_outdated_rebuild(id)? {
                 return Ok(false);
             }
-            self.reconfigure_outdated_swapchain(id)?;
+            self.replace_outdated_generation(id)?;
         }
         if let Some(frame) = self.swapchains.get(id)?.reserved_frame {
             return self.reserved_frame_ready(frame);
@@ -3609,6 +3614,53 @@ impl VulkanDevice {
         }
     }
 
+    // Bound retained WSI memory globally. A saturated retirement queue
+    // backpressures only rebuilds, not normal frames or unrelated GPU work.
+    fn prepare_outdated_rebuild(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
+        self.poll_cleanup();
+        let chain = self.swapchains.get_mut(id)?;
+        if chain.native_retired
+            && self.retired_swapchains.iter().any(|old| old.surface == chain.surface)
+        {
+            return Ok(false);
+        }
+        if !self.swapchain_maintenance || chain.presentation.idle_required()
+            || chain.native_retired || chain.swapchain == vk::SwapchainKHR::null()
+        {
+            return SurfaceDevice::prepare_swapchain_resize(self, id);
+        }
+        if self.retired_swapchains.len() >= 4 {
+            return Ok(false);
+        }
+        // The oldSwapchain argument requires that no host present wait
+        // is still using that generation. GPU/present fences can remain live.
+        if let Some(wake) = chain.present_wake.as_mut() {
+            if !wake.poll_shutdown() {
+                return Ok(false);
+            }
+            drop(chain.present_wake.take());
+        }
+        Ok(true)
+    }
+
+    fn replace_outdated_generation(&mut self, id: gfx_core::SwapchainId) -> Result<()> {
+        let chain = self.swapchains.get(id)?;
+        if !self.swapchain_maintenance || chain.presentation.idle_required()
+            || chain.native_retired || chain.swapchain == vk::SwapchainKHR::null()
+        {
+            return self.reconfigure_outdated_swapchain(id);
+        }
+        debug_assert!(chain.present_wake.is_none());
+        debug_assert!(self.retired_swapchains.len() < 4);
+        let (surface, config, native) = (chain.surface, chain.config, chain.swapchain);
+        // vkCreateSwapchainKHR retires oldSwapchain even if it fails.
+        self.swapchains.get_mut(id)?.native_retired = true;
+        let new = self.build_swapchain_replacing(surface, config, native)?;
+        let old = self.swapchains.replace_live(id, new)?;
+        self.retired_swapchains.push(old);
+        Ok(())
+    }
+
     fn reconfigure_outdated_swapchain(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
@@ -3830,6 +3882,8 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_surface(&mut self, surface_id: SurfaceId) -> Result<()> {
+        let native = self.surfaces.get(surface_id)?.surface;
+        self.wait_retired_swapchains(native)?;
         let surface = self.surfaces.take(surface_id)?;
         self.destroy_surface_now(surface);
         Ok(())
@@ -3856,6 +3910,18 @@ impl VulkanDevice {
                 true
             }
         });
+        // Snapshot ready old swapchains BEFORE collecting encoders. This
+        // ordering prevents a fence that signals between the two polls from
+        // being destroyed while a deferred encoder still borrows it.
+        let mut ready_generations = Vec::new();
+        let mut index = 0;
+        while index < self.retired_swapchains.len() {
+            if matches!(presentation::generation_ready(&device, &mut self.retired_swapchains[index]), Ok(true)) {
+                ready_generations.push(self.retired_swapchains.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
         // One counter snapshot per retirement pass, not one driver query
         // per outstanding encoder. Failed queries never prove retirement.
         let primary = self.primary_timeline.as_ref();
@@ -3874,6 +3940,27 @@ impl VulkanDevice {
         {
             let _destroy_result = self.destroy_deferred_now(resource);
         }
+        for generation in ready_generations {
+            self.submissions.for_each_live_mut(|submission| {
+                if generation.in_flight_fences.contains(&submission.fence) {
+                    submission.fence = vk::Fence::null();
+                }
+            });
+            self.destroy_swapchain_now(generation);
+        }
+    }
+
+    // Explicit surface destruction/recovery is allowed to block, but the
+    // ordinary frame preflight never calls this for an outstanding generation.
+    fn wait_retired_swapchains(&mut self, surface: vk::SurfaceKHR) -> Result<()> {
+        for generation in self.retired_swapchains.iter_mut().filter(|old| old.surface == surface) {
+            presentation::wait_generation(&self.device, generation)?;
+        }
+        self.poll_cleanup();
+        if self.retired_swapchains.iter().any(|old| old.surface == surface) {
+            return Err(Error::Backend("Vulkan swapchain generation retirement incomplete".into()));
+        }
+        Ok(())
     }
 
     /// Returns live resource and allocator statistics.
@@ -4076,6 +4163,7 @@ impl VulkanDevice {
             frame_index: 0,
             reserved_frame: None,
             rebuild_pending: false,
+            native_retired: false,
             config,
         })
     }
@@ -4914,44 +5002,51 @@ impl VulkanDevice {
     }
 
     fn destroy_swapchain_now(&self, mut swapchain: VulkanSwapchain) {
-        // Join the host present wait before destroying its native swapchain.
-        drop(swapchain.present_wake.take());
-        let _ = (swapchain.format, swapchain.images.len());
-        // SAFETY: Swapchain resources were created by this device and are destroyed once here.
-        unsafe {
-            // Acquisition can outlive a CPU-side failed/abandoned frame.
-            // The ordinary resize path already waits this fence; device drop
-            // also needs the explicit proof before destroying the semaphore.
-            for slot in swapchain.acquire_slots {
-                if slot.pending {
-                    let _ = self.device.wait_for_fences(&[slot.fence], true, u64::MAX);
-                }
-                if slot.fence != vk::Fence::null() {
-                    self.device.destroy_fence(slot.fence, None);
-                }
-            }
-            swapchain.presentation.destroy(&self.device);
-            for image_view in swapchain.image_views {
-                self.device.destroy_image_view(image_view, None);
-            }
-            for semaphore in swapchain.image_available_semaphores {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            for semaphore in swapchain.render_finished_semaphores {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            for fence in swapchain.in_flight_fences {
-                self.device.destroy_fence(fence, None);
-            }
-            self.swapchain_loader
-                .destroy_swapchain(swapchain.swapchain, None);
-        }
+        destroy_swapchain_resources(&self.device, &self.swapchain_loader, &mut swapchain);
     }
 
     fn destroy_surface_now(&self, surface: VulkanSurface) {
         // SAFETY: Surface was created for this instance and is destroyed once here.
         unsafe { self.surface_loader.destroy_surface(surface.surface, None) };
     }
+}
+
+// A failed replacement leaves the public registry entry intact but can
+// discard its retired native generation. Draining in place is idempotent.
+fn destroy_swapchain_resources(
+    device: &ash::Device,
+    loader: &khr::swapchain::Device,
+    swapchain: &mut VulkanSwapchain,
+) {
+    drop(swapchain.present_wake.take());
+    // SAFETY: the caller has retired graphics and presentation references.
+    unsafe {
+        for slot in swapchain.acquire_slots.drain(..) {
+            if slot.pending {
+                let _ = device.wait_for_fences(&[slot.fence], true, u64::MAX);
+            }
+            if slot.fence != vk::Fence::null() {
+                device.destroy_fence(slot.fence, None);
+            }
+        }
+        std::mem::take(&mut swapchain.presentation).destroy(device);
+        for view in swapchain.image_views.drain(..) {
+            device.destroy_image_view(view, None);
+        }
+        for semaphore in swapchain.image_available_semaphores.drain(..).chain(swapchain.render_finished_semaphores.drain(..)) {
+            device.destroy_semaphore(semaphore, None);
+        }
+        for fence in swapchain.in_flight_fences.drain(..) {
+            device.destroy_fence(fence, None);
+        }
+        if swapchain.swapchain != vk::SwapchainKHR::null() {
+            loader.destroy_swapchain(swapchain.swapchain, None);
+            swapchain.swapchain = vk::SwapchainKHR::null();
+        }
+    }
+    swapchain.images.clear();
+    swapchain.frame_submissions.clear();
+    swapchain.reserved_frame = None;
 }
 
 impl Backend for VulkanDevice {
@@ -5784,7 +5879,7 @@ impl PresentationDevice for VulkanDevice {
     fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(id)?;
         if chain.rebuild_pending {
-            return SurfaceDevice::prepare_swapchain_resize(self, id);
+            return self.prepare_outdated_rebuild(id);
         }
         if let Some(frame) = chain.reserved_frame {
             // This frame already owns an acquired WSI image and its credit.
@@ -6152,6 +6247,10 @@ impl Drop for VulkanDevice {
         }
         for (_, swapchain) in self.swapchains.drain_live() {
             self.destroy_swapchain_now(swapchain);
+        }
+        for mut generation in std::mem::take(&mut self.retired_swapchains) {
+            let _ = presentation::wait_generation(&self.device, &mut generation);
+            self.destroy_swapchain_now(generation);
         }
         for (_, surface) in self.surfaces.drain_live() {
             self.destroy_surface_now(surface);
@@ -6936,6 +7035,8 @@ struct VulkanSwapchain {
     frame_index: usize,
     reserved_frame: Option<VulkanPresentFrame>,
     rebuild_pending: bool,
+    // Passing this native handle as oldSwapchain retires it even on failure.
+    native_retired: bool,
     acquire_slots: Vec<presentation::AcquireSlot>,
     config: SurfaceConfig,
 }
