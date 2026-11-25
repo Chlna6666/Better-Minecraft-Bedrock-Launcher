@@ -29,6 +29,7 @@ struct Params {
     uint index_kind;
     uint index_first;
     uint index_length;
+    uint fixed_count;
 };
 kernel void encode_counted(
     constant IcbTarget& target [[buffer(0)]],
@@ -38,7 +39,7 @@ kernel void encode_counted(
     device const uint* indices [[buffer(4)]],
     constant Params& p [[buffer(5)]],
     uint tid [[thread_position_in_grid]]) {
-    uint count = min(counter[p.count_word], p.capacity);
+    uint count = p.fixed_count != 0 ? p.capacity : min(counter[p.count_word], p.capacity);
     if (tid == 0) { range[0] = 0; range[1] = count; }
     if (tid >= count) return;
     uint words = p.index_kind == 0 ? 4 : 5;
@@ -177,11 +178,22 @@ pub(super) struct CountedRun {
     arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
     counter: Retained<ProtocolObject<dyn MTLBuffer>>,
     indices: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    params: [u32; 7],
+    params: [u32; 8],
 }
 
 impl MetalDevice {
     pub(super) fn prepare_counted_run(&self, command: &RenderCommand, count: IndirectCountBinding, pipeline: &MetalRenderPipeline) -> Result<CountedRun> {
+        self.prepare_indirect_run(command, count.max_draw_count, Some(count), pipeline)
+    }
+
+    /// Fixed-size portable contiguous run. The GPU writes the ICB and its
+    /// execution range, but no GPU count buffer is needed.
+    pub(super) fn prepare_fixed_run(&self, command: &RenderCommand, length: u32, pipeline: &MetalRenderPipeline) -> Result<CountedRun> {
+        self.prepare_indirect_run(command, length, None, pipeline)
+    }
+
+    fn prepare_indirect_run(&self, command: &RenderCommand, length: u32,
+        count: Option<IndirectCountBinding>, pipeline: &MetalRenderPipeline) -> Result<CountedRun> {
         let program = self.icb.as_ref().ok_or_else(|| Error::Unavailable("Metal GPU ICB is disabled or unsupported".into()))?;
         let (argument_id, offset, stride, index) = match command {
             RenderCommand::DrawIndirect(draw) => (draw.arguments, draw.offset, 16, None),
@@ -189,15 +201,24 @@ impl MetalDevice {
             _ => return Err(Error::InvalidInput("Metal counted draw requires an indirect command".into())),
         };
         let arguments = self.buffers.get(argument_id)?;
-        let counter = self.buffers.get(count.count_buffer)?;
+        let counter = match count {
+            Some(count) => self.buffers.get(count.count_buffer)?,
+            None => arguments,
+        };
         if !arguments.desc.usage.contains(BufferUsage::INDIRECT) || !counter.desc.usage.contains(BufferUsage::INDIRECT) {
-            return Err(Error::InvalidInput("Metal counted buffers require INDIRECT usage".into()));
+            return Err(Error::InvalidInput("Metal indirect buffers require INDIRECT usage".into()));
         }
-        count.validate_ranges(offset, arguments.desc.size, counter.desc.size, stride, MAX_COUNT)?;
+        if let Some(count) = count {
+            count.validate_ranges(offset, arguments.desc.size, counter.desc.size, stride, MAX_COUNT)?;
+        } else if length == 0 || length > MAX_COUNT || offset % 4 != 0
+            || offset.checked_add(u64::from(length) * stride).is_none_or(|end| end > arguments.desc.size)
+        {
+            return Err(Error::InvalidInput("Metal fixed indirect run range invalid".into()));
+        }
         let word = |offset: u64| u32::try_from(offset / 4).map_err(|_| Error::InvalidInput("Metal counted word offset overflow".into()));
         let argument_word = word(offset)?;
-        let count_word = word(count.count_offset)?;
-        if argument_word.checked_add(count.max_draw_count * (stride as u32 / 4)).is_none() {
+        let count_word = word(count.map_or(0, |count| count.count_offset))?;
+        if argument_word.checked_add(length * (stride as u32 / 4)).is_none() {
             return Err(Error::InvalidInput("Metal counted argument span overflows shader addressing".into()));
         }
         let (indices, index_kind, index_first, index_length) = if let Some(binding) = index {
@@ -209,14 +230,14 @@ impl MetalDevice {
             (Some(buffer.resource.clone().ok_or_else(|| Error::Backend("missing Metal index buffer".into()))?),
                 if size == 2 { 1 } else { 2 }, first, length)
         } else { (None, 0, 0, 0) };
-        let storage = program.acquire(&self.device, index.is_some(), count.max_draw_count)?;
+        let storage = program.acquire(&self.device, index.is_some(), length)?;
         Ok(CountedRun {
             pipeline: program.pipeline.clone(), storage, indices,
             arguments: arguments.resource.clone().ok_or_else(|| Error::Backend("missing Metal argument buffer".into()))?,
             counter: counter.resource.clone().ok_or_else(|| Error::Backend("missing Metal count buffer".into()))?,
-            params: [count.max_draw_count, argument_word, count_word,
+            params: [length, argument_word, count_word,
                 u32::from(pipeline.primitive_topology == PrimitiveTopology::TriangleStrip),
-                index_kind, index_first, index_length],
+                index_kind, index_first, index_length, u32::from(count.is_none())],
         })
     }
 }
