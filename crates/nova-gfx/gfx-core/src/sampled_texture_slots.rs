@@ -242,9 +242,219 @@ impl SampledTextureSlots {
     }
 }
 
+/// A complete material binding to one descriptor bank. All four indices
+/// address that bank; shaders never have to index across descriptor sets.
+/// The lease is intentionally not Clone. Release it through its allocator.
+pub struct SampledMaterialLease {
+    owner: std::sync::Arc<()>,
+    bank: usize,
+    views: [Option<TextureViewId>; 4],
+    indices: [u32; 4],
+}
+
+impl SampledMaterialLease {
+    /// Bank whose descriptor snapshot must be bound for this material.
+    pub fn bank(&self) -> usize { self.bank }
+
+    /// Albedo, normal, occlusion and metallic/roughness shader indices.
+    pub fn indices(&self) -> [u32; 4] { self.indices }
+}
+
+struct BankImage {
+    slot: SampledTextureSlot,
+    references: usize,
+}
+
+struct TextureBank {
+    slots: SampledTextureSlots,
+    images: HashMap<TextureViewId, BankImage>,
+}
+
+/// Material-aware bank allocator. A texture can appear in multiple banks
+/// when necessary, but its native image remains caller-owned. Each bank
+/// uses the same shader capacity and retains independent snapshot/slot state.
+/// Bank identities stay stable for the allocator's lifetime.
+pub struct SampledTextureBanks {
+    owner: std::sync::Arc<()>,
+    capacity: u32,
+    fallback: TextureViewId,
+    max_banks: usize,
+    banks: Vec<TextureBank>,
+}
+
+impl SampledTextureBanks {
+    /// The per-bank capacity includes fallback slot zero. A finite bank
+    /// budget bounds descriptor memory; callers can fall back on exhaustion.
+    pub fn new(capacity: u32, fallback: TextureViewId, max_banks: usize) -> Result<Self> {
+        if capacity == 0 || max_banks == 0 {
+            return Err(Error::InvalidInput("sampled bank capacity and budget must be nonzero".into()));
+        }
+        Ok(Self { owner: std::sync::Arc::new(()), capacity, fallback, max_banks, banks: Vec::new() })
+    }
+
+    /// Number of allocated bank identities.
+    pub fn bank_count(&self) -> usize { self.banks.len() }
+
+    /// Read-only access to one bank's current immutable snapshot and journal.
+    pub fn slots(&self, bank: usize) -> Option<&SampledTextureSlots> {
+        self.banks.get(bank).map(|bank| &bank.slots)
+    }
+
+    /// Place all material images together, preferring the bank requiring
+    /// the fewest new descriptors. Existing material bindings never move.
+    /// Duplicate roles in one material count as a single image reference.
+    pub fn acquire_material(&mut self, views: [Option<TextureViewId>; 4]) -> Result<SampledMaterialLease> {
+        let views = views.map(|view| view.filter(|&view| view != self.fallback));
+        let unique = unique_material_views(&views);
+        if unique.len() > (self.capacity - 1) as usize {
+            return Err(Error::Unavailable("material exceeds sampled bank capacity".into()));
+        }
+        let selected = self.banks.iter().enumerate().filter_map(|(index, bank)| {
+            let missing = unique.iter().filter(|view| !bank.images.contains_key(*view)).count();
+            (missing <= bank.slots.available_slots()).then_some((missing, index))
+        }).min().map(|(_, index)| index);
+        let index = if let Some(index) = selected {
+            index
+        } else {
+            if self.banks.len() == self.max_banks {
+                return Err(Error::Unavailable("sampled descriptor bank budget exhausted".into()));
+            }
+            let slots = SampledTextureSlots::new(self.capacity, self.fallback)?;
+            let index = self.banks.len();
+            self.banks.push(TextureBank { slots, images: HashMap::new() });
+            index
+        };
+        let bank = &mut self.banks[index];
+        if unique.iter().any(|view| bank.images.get(view).is_some_and(|entry| entry.references == usize::MAX)) {
+            return Err(Error::Unavailable("sampled material reference count exhausted".into()));
+        }
+        for view in unique {
+            if let Some(entry) = bank.images.get_mut(&view) {
+                entry.references += 1;
+            } else {
+                // Placement checked the exact number of free slots first.
+                let slot = bank.slots.allocate(view).expect("preflighted sampled bank capacity");
+                bank.images.insert(view, BankImage { slot, references: 1 });
+            }
+        }
+        let indices = views.map(|view| view.map_or(0, |view| bank.images[&view].slot.index()));
+        Ok(SampledMaterialLease { owner: self.owner.clone(), bank: index, views, indices })
+    }
+
+    /// Release one material. The supplied readers must include ALL still
+    /// outstanding native readers of this bank's slot generations, including
+    /// earlier released materials. Unaccepted/untracked readers must be
+    /// sealed by the caller before release. This is not a GPU wait.
+    pub fn release_material(&mut self, lease: SampledMaterialLease, readers: &[SubmissionId]) -> Result<()> {
+        if !std::sync::Arc::ptr_eq(&self.owner, &lease.owner) {
+            return Err(Error::InvalidInput("sampled material lease belongs to another bank allocator".into()));
+        }
+        let bank = &mut self.banks[lease.bank];
+        let unique = unique_material_views(&lease.views);
+        for view in &unique {
+            let entry = bank.images.get(view).ok_or_else(|| Error::InvalidInput("missing sampled material image".into()))?;
+            if entry.references == 0 || !bank.slots.contains(entry.slot) {
+                return Err(Error::InvalidInput("stale sampled material image".into()));
+            }
+        }
+        for view in unique {
+            let entry = bank.images.get_mut(&view).expect("validated material image");
+            entry.references -= 1;
+            if entry.references == 0 {
+                let slot = entry.slot;
+                bank.slots.retire(slot, readers)?;
+                bank.images.remove(&view);
+            }
+        }
+        Ok(())
+    }
+
+    /// Create/fork one bank snapshot transactionally. Old native snapshots
+    /// remain caller-owned until their actual GPU readers have completed.
+    /// Returns the replaced snapshot (if any) and the current snapshot.
+    pub fn publish_bank_with(
+        &mut self, index: usize,
+        create: impl FnOnce(&[TextureViewId]) -> Result<BindGroupId>,
+        fork: impl FnOnce(BindGroupId, &[(u32, TextureViewId)]) -> Result<BindGroupId>,
+    ) -> Result<(Option<BindGroupId>, BindGroupId)> {
+        let bank = self.banks.get_mut(index).ok_or_else(|| Error::InvalidInput("unknown sampled bank".into()))?;
+        if let Some(old) = bank.slots.current_snapshot() {
+            match bank.slots.publish_with(old, fork)? {
+                Some(next) => Ok((Some(old), next)),
+                None => Ok((None, old)),
+            }
+        } else {
+            bank.slots.create_snapshot_with(create).map(|next| (None, next))
+        }
+    }
+
+    /// Recycle only slots protected by the completed native submission.
+    pub fn complete(&mut self, submission: SubmissionId) {
+        for bank in &mut self.banks { bank.slots.complete(submission); }
+    }
+}
+
+fn unique_material_views(views: &[Option<TextureViewId>; 4]) -> Vec<TextureViewId> {
+    let mut unique = Vec::with_capacity(4);
+    for view in views.iter().flatten() {
+        if !unique.contains(view) { unique.push(*view); }
+    }
+    unique
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_banks_keep_roles_together_and_reuse_only_completed_slots() {
+        let fallback = TextureViewId::from_parts(1, 1);
+        let a = TextureViewId::from_parts(2, 1);
+        let b = TextureViewId::from_parts(3, 1);
+        let c = TextureViewId::from_parts(4, 1);
+        let d = TextureViewId::from_parts(5, 1);
+        let reader = SubmissionId::from_parts(9, 1);
+        let mut banks = SampledTextureBanks::new(3, fallback, 2).unwrap();
+        let first = banks.acquire_material([Some(a), Some(a), Some(b), None]).unwrap();
+        assert_eq!(first.bank(), 0);
+        assert_eq!(first.indices(), [1, 1, 2, 0]);
+        let shared = banks.acquire_material([Some(a), Some(fallback), None, None]).unwrap();
+        assert_eq!(shared.bank(), 0);
+        let overflow = banks.acquire_material([Some(a), Some(c), None, None]).unwrap();
+        assert_eq!(overflow.bank(), 1);
+        assert_eq!(banks.bank_count(), 2);
+        assert!(banks.acquire_material([Some(d), None, None, None]).is_err());
+        banks.release_material(first, &[reader]).unwrap();
+        assert_eq!(banks.slots(0).unwrap().available_slots(), 0);
+        banks.complete(reader);
+        let next = banks.acquire_material([Some(a), Some(d), None, None]).unwrap();
+        assert_eq!(next.bank(), 0);
+        assert_eq!(next.indices(), [1, 2, 0, 0]);
+        banks.release_material(shared, &[]).unwrap();
+        assert_eq!(banks.slots(0).unwrap().available_slots(), 0);
+        banks.release_material(next, &[]).unwrap();
+        assert_eq!(banks.slots(0).unwrap().available_slots(), 2);
+        assert_eq!(banks.slots(1).unwrap().available_slots(), 0);
+        banks.release_material(overflow, &[]).unwrap();
+    }
+
+    #[test]
+    fn bank_snapshot_failure_preserves_journal_and_other_bank_identity() {
+        let fallback = TextureViewId::from_parts(1, 1);
+        let a = TextureViewId::from_parts(2, 1);
+        let b = TextureViewId::from_parts(3, 1);
+        let first = BindGroupId::from_parts(1, 1);
+        let second = BindGroupId::from_parts(2, 1);
+        let mut banks = SampledTextureBanks::new(2, fallback, 2).unwrap();
+        let _a = banks.acquire_material([Some(a), None, None, None]).unwrap();
+        let _b = banks.acquire_material([Some(b), None, None, None]).unwrap();
+        assert!(banks.publish_bank_with(0, |_| Err(Error::Unavailable("test".into())), |_, _| unreachable!()).is_err());
+        assert_eq!(banks.slots(0).unwrap().dirty_changes().collect::<Vec<_>>(), [(1, a)]);
+        assert_eq!(banks.publish_bank_with(0, |_| Ok(first), |_, _| unreachable!()).unwrap(), (None, first));
+        assert_eq!(banks.publish_bank_with(1, |_| Ok(second), |_, _| unreachable!()).unwrap(), (None, second));
+        assert_eq!(banks.slots(0).unwrap().current_snapshot(), Some(first));
+        assert_eq!(banks.slots(1).unwrap().current_snapshot(), Some(second));
+    }
 
     #[test]
     fn slot_reuse_requires_every_distinct_native_reader() {
