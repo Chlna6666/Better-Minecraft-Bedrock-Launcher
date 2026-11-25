@@ -281,6 +281,8 @@ impl EffectsRenderer {
             )?;
             self.target_extent = extent;
         }
+        self.sampled_tiers.release_completed(device, |layout| self.scenes.values()
+            .any(|state| state.scene.references_sampled_layout(layout)))?;
         // All material passes switch as one family. The cache retains old
         // PSOs/layouts for already queued captures and migrated scene tables.
         if let Some(current) = self.hdr.sampled_table_capacity()
@@ -619,6 +621,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
     }
 
     fn render_passes_submitted_with_submission(&mut self, submission: Option<gfx_core::SubmissionId>) {
+        self.sampled_tiers.submitted(submission);
         for state in self.scenes.values_mut() {
             state.submitted_retirements = state.retired.len();
             if state.queued_capture || state.queued_shadow.iter().any(|&queued| queued) {
@@ -646,6 +649,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
         }
     }
     fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.sampled_tiers.abandon(may_have_submitted);
         self.passes.clear();
         self.compute_passes.clear();
         for state in self.scenes.values_mut() {
@@ -675,8 +679,17 @@ impl RendererExtensionRenderer for EffectsRenderer {
             .downcast_ref::<SceneView>()
             .ok_or_else(|| anyhow::anyhow!("invalid effects input"))?;
         let view = view.sample_camera(context.frame_time());
+        let first_pass = self.passes.len();
         let result = self.render_scene(device, &view, &context, steps);
+        if result.is_ok() && self.hdr.sampled_table_layout().is_some()
+            && self.passes.get(first_pass..).is_some_and(|passes| passes.iter().any(|pass|
+                [self.pass, self.attributes_pass, self.shadow_pass].contains(&pass.render_pass)
+                    && !pass.commands.is_empty()))
+        {
+            self.sampled_tiers.queue_use();
+        }
         if result.is_err() {
+            self.sampled_tiers.abandon(false);
             self.passes.clear();
             self.compute_passes.clear();
             for state in self.scenes.values_mut() {
@@ -699,21 +712,24 @@ impl RendererExtensionRenderer for EffectsRenderer {
         compute.append(&mut self.compute_passes);
     }
     fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.sampled_tiers.accepted(submission);
         for state in self.scenes.values_mut() {
             state.scene.draw_submission_accepted(submission);
         }
     }
     fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.sampled_tiers.completed(submission);
         for state in self.scenes.values_mut() {
             state.scene.draw_submission_completed(submission);
         }
     }
     fn needs_gpu_completion(&self) -> bool {
-        self.scenes
+        self.sampled_tiers.needs_completion() || self.scenes
             .values()
             .any(|scene| scene.scene.has_retired_arena_ranges())
     }
     fn gpu_work_completed(&mut self) {
+        self.sampled_tiers.idle();
         self.completed = true;
     }
     fn trim_memory(
