@@ -19,8 +19,17 @@ pub(super) fn verify_indirect_updates<D: Device + TextureTransferDevice>(
         )
         .unwrap(),
     );
+    // The production quad batcher groups by actual texture bindings, not
+    // MaterialId. Distinct material constants alone no longer guarantee a
+    // singleton native draw. Give this fixture distinct albedo bindings so
+    // it continues testing singleton pruning; the instancing fixture below
+    // independently covers a shared binding with a visible later instance.
+    let mut textures = Vec::with_capacity(300);
     for index in 0..300 {
+        let texture = Arc::new(crate::TextureAsset::rgba8(1, 1, vec![255u8; 4]).unwrap());
         let mut material = Material::new();
+        material.albedo_texture = Some(texture.id());
+        textures.push(texture);
         material.shading_model = crate::ShadingModel::Unlit;
         material.base_color = [0.4, 0.2, 0.1, 1.];
         material.roughness = 1.;
@@ -43,6 +52,8 @@ pub(super) fn verify_indirect_updates<D: Device + TextureTransferDevice>(
     }
     let camera = Camera::perspective(Vec3::new(0., 8., 22.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
     let view = SceneView::new(Arc::new(scene), camera)
+        .with_textures(textures)
+        .unwrap()
         .with_voxel_shader()
         .with_voxel_shading(VoxelShading {
             illumination: VoxelIllumination::Sunlight,
