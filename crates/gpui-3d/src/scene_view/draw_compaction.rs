@@ -91,6 +91,35 @@ fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
 struct Scratch {
     buffers: [BufferId; 3],
     sizes: [u64; 3],
+    // Exact bytes committed to this allocation, never to a prior generation.
+    metadata: Vec<u8>,
+}
+
+fn metadata_ranges(previous: &[u8], next: &[u8]) -> Vec<std::ops::Range<usize>> {
+    super::uploads::changed_ranges(previous, next, 4, 16, 4)
+}
+
+impl Scratch {
+    fn upload_metadata(&mut self, device: &mut dyn ExtensionDevice, next: Vec<u8>) -> Result<()> {
+        let ranges = metadata_ranges(&self.metadata, &next);
+        if !ranges.is_empty() {
+            let writes: Vec<_> = ranges.into_iter().map(|range| BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: self.buffers[0],
+                    offset: range.start as u64,
+                },
+                data: &next[range],
+            }).collect();
+            if let Err(error) = device.write_buffer_batch(&writes) {
+                // A backend may have accepted a prefix of the batch. Forget
+                // the proof rather than comparing against stale CPU bytes.
+                self.metadata.clear();
+                return Err(error);
+            }
+        }
+        self.metadata = next;
+        Ok(())
+    }
 }
 
 struct Prepared {
@@ -446,7 +475,7 @@ impl ViewCompactor {
             }
         }
         let buffers: [BufferId; 3] = allocated.try_into().expect("three compaction buffers");
-        let old = self.scratch.replace(Scratch { buffers, sizes });
+        let old = self.scratch.replace(Scratch { buffers, sizes, metadata: Vec::new() });
         if let Some(old) = old {
             for buffer in old.buffers { device.destroy_buffer(buffer)?; }
         }
@@ -487,7 +516,7 @@ impl ViewCompactor {
         for slot in plan.gather {
             bytes.extend_from_slice(&slot.to_le_bytes());
         }
-        device.write_buffer(metadata, 0, &bytes)?;
+        self.scratch.as_mut().expect("reserved compaction scratch").upload_metadata(device, bytes)?;
         let binding = |binding, buffer, size, access| ComputeBufferBinding {
             binding, buffer: BufferBinding { buffer, offset: 0, size, stride: None }, access,
         };
@@ -606,6 +635,26 @@ mod tests {
         let RenderCommand::DrawIndirect(draw) = &mut next[1] else { unreachable!() };
         draw.bind_groups[0] = BindGroupId::from_parts(9, 1);
         assert!(sampled_snapshot_replacement(&previous, &next).is_none());
+    }
+
+    #[test]
+    fn metadata_uploads_only_changed_words_and_handles_resize() {
+        let original = vec![0u8; 512];
+        let mut next = original.clone();
+        next[16..20].copy_from_slice(&1u32.to_le_bytes());
+        next[400..404].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(metadata_ranges(&original, &next), [16..20, 400..404]);
+        assert!(metadata_ranges(&next, &next).is_empty());
+        assert!(metadata_ranges(&next, &next[..128]).is_empty());
+        assert_eq!(metadata_ranges(&next[..128], &next), [128..512]);
+        assert_eq!(metadata_ranges(&[], &next), [0..512]);
+        // Metadata headers may shift the entire gather tail. Simulate a
+        // sparse patch and prove the GPU-visible prefix matches the full build.
+        let mut resident = original;
+        for range in metadata_ranges(&resident, &next) {
+            resident[range.clone()].copy_from_slice(&next[range]);
+        }
+        assert_eq!(resident, next);
     }
 
     #[test]

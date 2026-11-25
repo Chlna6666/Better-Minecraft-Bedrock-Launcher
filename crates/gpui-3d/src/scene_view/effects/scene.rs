@@ -318,6 +318,17 @@ impl EffectScene {
                 self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
                 let mut attributes = Vec::new();
                 self.scene.append_offscreen_steps(resources[1], true, &mut attributes)?;
+                // Group once per immutable topology, never on a camera-only
+                // capture. Keep the existing indirect blend suffix contract.
+                if local.backend_kind() == BackendKind::Vulkan {
+                    let first_blend = self.scene.first_blended_batch_index();
+                    if let Some(grouped) = super::super::renderer::group_indirect_commands(&opaque, first_blend) {
+                        opaque = grouped;
+                    }
+                    if let Some(grouped) = super::super::renderer::group_indirect_commands(&attributes, first_blend) {
+                        attributes = grouped;
+                    }
+                }
                 Ok([opaque.into(), attributes.into()])
             })?;
             let sampled_table = self.scene.sampled_snapshot(resources[0]);
