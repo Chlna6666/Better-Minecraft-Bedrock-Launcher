@@ -909,6 +909,7 @@ mod platform {
                 RenderCommand::DrawIndirect(draw) => PreparedMetalDraw::Indirect {
                     arguments: self.indirect_arguments(draw.arguments, draw.offset, 16)?,
                     offset: usize::try_from(draw.offset).map_err(|_| Error::InvalidInput("Metal indirect offset overflow".into()))?,
+                    count: 1,
                 },
                 RenderCommand::DrawIndexedIndirect(draw) => {
                     let index = self.buffers.get(draw.index_buffer.buffer)?;
@@ -916,6 +917,7 @@ mod platform {
                     PreparedMetalDraw::IndexedIndirect {
                         arguments: self.indirect_arguments(draw.arguments, draw.offset, 20)?,
                         offset: usize::try_from(draw.offset).map_err(|_| Error::InvalidInput("Metal indirect offset overflow".into()))?,
+                        count: 1,
                         index_buffer: index.resource.clone().ok_or_else(|| Error::Backend("Metal index buffer has no native resource".into()))?,
                         index_buffer_offset: usize::try_from(draw.index_buffer.offset).map_err(|_| Error::InvalidInput("Metal index offset overflow".into()))?,
                         index_type: index_format_to_metal(draw.index_buffer.format),
@@ -2022,10 +2024,12 @@ mod platform {
         Indirect {
             arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
             offset: usize,
+            count: u32,
         },
         IndexedIndirect {
             arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
             offset: usize,
+            count: u32,
             index_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
             index_buffer_offset: usize,
             index_type: MTLIndexType,
@@ -2094,19 +2098,23 @@ mod platform {
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
                 PreparedMetalDraw::Counted(run) => run.execute(encoder),
-                PreparedMetalDraw::Indirect { arguments, offset } => {
-                    // SAFETY: the portable 16-byte argument record is validated and retained.
-                    unsafe { encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
-                        primitive_type, arguments.as_ref(), *offset,
-                    ); }
+                PreparedMetalDraw::Indirect { arguments, offset, count } => {
+                    // SAFETY: the full portable argument span is validated and retained.
+                    for i in 0..*count as usize {
+                        unsafe { encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
+                            primitive_type, arguments.as_ref(), *offset + i * 16,
+                        ); }
+                    }
                 }
-                PreparedMetalDraw::IndexedIndirect { arguments, offset, index_buffer, index_buffer_offset, index_type } => {
-                    // SAFETY: the argument and index buffers are validated and retained.
-                    // The GPU producer owns the index range encoded by the argument record.
-                    unsafe { encoder.drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
-                        primitive_type, *index_type, index_buffer.as_ref(), *index_buffer_offset,
-                        arguments.as_ref(), *offset,
-                    ); }
+                PreparedMetalDraw::IndexedIndirect { arguments, offset, count, index_buffer, index_buffer_offset, index_type } => {
+                    // SAFETY: the full argument span and index binding were validated.
+                    // The GPU producer owns the index range encoded by each argument.
+                    for i in 0..*count as usize {
+                        unsafe { encoder.drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
+                            primitive_type, *index_type, index_buffer.as_ref(), *index_buffer_offset,
+                            arguments.as_ref(), *offset + i * 20,
+                        ); }
+                    }
                 }
                 PreparedMetalDraw::NonIndexed {
                     vertex_start,
