@@ -300,7 +300,7 @@ impl EffectScene {
         // or descriptors currently bound by the capture.
         self.scene.release_completed_sampled_snapshots(device)?;
         let capture_changed = !self.targets_valid
-            || self.scene.sampled_maintenance_pending()
+            || self.scene.sampled_maintenance_pending(resources[0])
             || self
                 .capture
                 .as_ref()
