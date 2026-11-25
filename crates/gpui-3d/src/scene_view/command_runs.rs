@@ -248,6 +248,44 @@ impl GeneratedRunCache {
     }
 }
 
+/// Adapter for immutable producer streams that do not yet expose logical
+/// StructuralDrawDelta (e.g. a CSM light-pass permutation).
+#[derive(Default)]
+pub(super) struct FlatRunCache {
+    source: Option<std::sync::Weak<[RenderCommand]>>,
+    limit: u32,
+    published: Option<PublishedRuns>,
+}
+
+impl FlatRunCache {
+    pub(super) fn refresh(&mut self, source: &Arc<[RenderCommand]>, limit: u32)
+        -> gfx_core::Result<Option<PublishedRuns>>
+    {
+        if limit < 2 { return Ok(None); }
+        let identity = Arc::downgrade(source);
+        if self.limit == limit && self.source.as_ref().is_some_and(|old| old.ptr_eq(&identity)) {
+            return Ok(self.published.clone());
+        }
+        let plan = DrawRunPlan::new(source, limit);
+        let published = if plan.runs().len() == source.len() {
+            None
+        } else {
+            let mut cursor = 0;
+            let commands: Arc<[RenderCommand]> = plan.runs().iter().map(|&count| {
+                let command = source[cursor].clone();
+                cursor += count as usize;
+                command
+            }).collect();
+            let compact = DrawRunPlan::from_representatives(&commands, plan.runs().to_vec(), limit)?;
+            Some(PublishedRuns { commands, plan: Arc::new(compact) })
+        };
+        self.limit = limit;
+        self.source = Some(identity);
+        self.published = published.clone();
+        Ok(published)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
