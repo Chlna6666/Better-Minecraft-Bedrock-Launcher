@@ -61,9 +61,59 @@ kernel void encode_counted(
 }
 "#;
 
+const MAX_FREE_RUNS: usize = 128;
+const MAX_FREE_COMMANDS: u32 = 16_384;
+
+#[derive(Clone)]
+pub(super) struct IcbStorage {
+    indexed: bool,
+    capacity: u32,
+    icb: Retained<ProtocolObject<dyn MTLIndirectCommandBuffer>>,
+    container: Retained<ProtocolObject<dyn MTLBuffer>>,
+    range: Retained<ProtocolObject<dyn MTLBuffer>>,
+}
+
+#[derive(Default)]
+struct IcbPool {
+    free: Vec<IcbStorage>,
+    pending: Vec<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, Vec<IcbStorage>)>,
+    free_commands: u32,
+}
+
+impl IcbPool {
+    fn reclaim(&mut self) {
+        let mut i = 0;
+        while i < self.pending.len() {
+            let status = self.pending[i].0.status();
+            if !matches!(status, MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error) {
+                i += 1;
+                continue;
+            }
+            let (_, storage) = self.pending.swap_remove(i);
+            if status != MTLCommandBufferStatus::Completed { continue; }
+            for item in storage {
+                if self.free.len() < MAX_FREE_RUNS
+                    && self.free_commands.saturating_add(item.capacity) <= MAX_FREE_COMMANDS
+                {
+                    self.free_commands += item.capacity;
+                    self.free.push(item);
+                }
+            }
+        }
+    }
+
+    fn take(&mut self, indexed: bool, capacity: u32) -> Option<IcbStorage> {
+        let index = self.free.iter().position(|item| item.indexed == indexed && item.capacity == capacity)?;
+        let item = self.free.swap_remove(index);
+        self.free_commands -= item.capacity;
+        Some(item)
+    }
+}
+
 pub(super) struct IcbProgram {
     pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     encoder: Retained<ProtocolObject<dyn MTLArgumentEncoder>>,
+    pool: std::cell::RefCell<IcbPool>,
 }
 
 impl IcbProgram {
@@ -78,17 +128,54 @@ impl IcbProgram {
             .map_err(|error| Error::Shader(nserror_message(&error)))?;
         // SAFETY: buffer 0 is the argument-buffer struct declared above.
         let encoder = unsafe { function.newArgumentEncoderWithBufferIndex(0) };
-        Ok(Self { pipeline, encoder })
+        Ok(Self { pipeline, encoder, pool: Default::default() })
+    }
+
+    pub(super) fn reclaim(&self) { self.pool.borrow_mut().reclaim(); }
+
+    pub(super) fn trim(&self) {
+        let mut pool = self.pool.borrow_mut();
+        pool.reclaim();
+        pool.free.clear();
+        pool.free_commands = 0;
+    }
+
+    pub(super) fn submitted(&self, commands: Retained<ProtocolObject<dyn MTLCommandBuffer>>, storage: Vec<IcbStorage>) {
+        if !storage.is_empty() { self.pool.borrow_mut().pending.push((commands, storage)); }
+    }
+
+    fn acquire(&self, device: &ProtocolObject<dyn MTLDevice>, indexed: bool, count: u32) -> Result<IcbStorage> {
+        let capacity = count.next_power_of_two();
+        if let Some(storage) = self.pool.borrow_mut().take(indexed, capacity) {
+            return Ok(storage);
+        }
+        let descriptor = MTLIndirectCommandBufferDescriptor::new();
+        descriptor.setCommandTypes(if indexed { MTLIndirectCommandType::DrawIndexed } else { MTLIndirectCommandType::Draw });
+        descriptor.setInheritPipelineState(true);
+        descriptor.setInheritBuffers(true);
+        // SAFETY: validated nonzero command capacity and native command type.
+        let icb = unsafe { device.newIndirectCommandBufferWithDescriptor_maxCommandCount_options(
+            &descriptor, capacity as usize, MTLResourceOptions::StorageModePrivate,
+        ) }.ok_or_else(|| Error::Backend("Metal ICB allocation failed".into()))?;
+        let container = device.newBufferWithLength_options(self.encoder.encodedLength(), MTLResourceOptions::StorageModeShared)
+            .ok_or_else(|| Error::Backend("Metal ICB argument buffer allocation failed".into()))?;
+        let range = device.newBufferWithLength_options(8, MTLResourceOptions::StorageModePrivate)
+            .ok_or_else(|| Error::Backend("Metal ICB range allocation failed".into()))?;
+        // SAFETY: the argument buffer owns a stable native ICB reference
+        // throughout its pooled lifetime. No per-frame rewriting is needed.
+        unsafe {
+            self.encoder.setArgumentBuffer_offset(Some(&container), 0);
+            self.encoder.setIndirectCommandBuffer_atIndex(Some(&icb), 0);
+        }
+        Ok(IcbStorage { indexed, capacity, icb, container, range })
     }
 }
 
 pub(super) struct CountedRun {
     pipeline: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    icb: Retained<ProtocolObject<dyn MTLIndirectCommandBuffer>>,
-    container: Retained<ProtocolObject<dyn MTLBuffer>>,
+    storage: IcbStorage,
     arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
     counter: Retained<ProtocolObject<dyn MTLBuffer>>,
-    range: Retained<ProtocolObject<dyn MTLBuffer>>,
     indices: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     params: [u32; 7],
 }
@@ -122,26 +209,9 @@ impl MetalDevice {
             (Some(buffer.resource.clone().ok_or_else(|| Error::Backend("missing Metal index buffer".into()))?),
                 if size == 2 { 1 } else { 2 }, first, length)
         } else { (None, 0, 0, 0) };
-        let descriptor = MTLIndirectCommandBufferDescriptor::new();
-        descriptor.setCommandTypes(if index.is_some() { MTLIndirectCommandType::DrawIndexed } else { MTLIndirectCommandType::Draw });
-        descriptor.setInheritPipelineState(true);
-        descriptor.setInheritBuffers(true);
-        // SAFETY: validated nonzero command capacity and native command type.
-        let icb = unsafe { self.device.newIndirectCommandBufferWithDescriptor_maxCommandCount_options(
-            &descriptor, count.max_draw_count as usize, MTLResourceOptions::StorageModePrivate,
-        ) }.ok_or_else(|| Error::Backend("Metal ICB allocation failed".into()))?;
-        let container = self.device.newBufferWithLength_options(program.encoder.encodedLength(), MTLResourceOptions::StorageModeShared)
-            .ok_or_else(|| Error::Backend("Metal ICB argument buffer allocation failed".into()))?;
-        let range = self.device.newBufferWithLength_options(8, MTLResourceOptions::StorageModePrivate)
-            .ok_or_else(|| Error::Backend("Metal ICB range allocation failed".into()))?;
-        // SAFETY: container has the reflected encoded length. ICB is
-        // explicitly retained and declared as an indirect GPU resource.
-        unsafe {
-            program.encoder.setArgumentBuffer_offset(Some(&container), 0);
-            program.encoder.setIndirectCommandBuffer_atIndex(Some(&icb), 0);
-        }
+        let storage = program.acquire(&self.device, index.is_some(), count.max_draw_count)?;
         Ok(CountedRun {
-            pipeline: program.pipeline.clone(), icb, container, range, indices,
+            pipeline: program.pipeline.clone(), storage, indices,
             arguments: arguments.resource.clone().ok_or_else(|| Error::Backend("missing Metal argument buffer".into()))?,
             counter: counter.resource.clone().ok_or_else(|| Error::Backend("missing Metal count buffer".into()))?,
             params: [count.max_draw_count, argument_word, count_word,
@@ -152,31 +222,32 @@ impl MetalDevice {
 }
 
 impl CountedRun {
-    pub(super) fn encode(&self, commands: &ProtocolObject<dyn MTLCommandBuffer>) -> Result<()> {
-        let blit = commands.blitCommandEncoder().ok_or_else(|| Error::Backend("Metal ICB reset encoder unavailable".into()))?;
-        // Reset all slots so skipped zero-count/invalid records are empty.
-        unsafe { blit.resetCommandsInBuffer_withRange(&self.icb, NSRange::new(0, self.params[0] as usize)); }
-        blit.endEncoding();
-        let compute = commands.computeCommandEncoder().ok_or_else(|| Error::Backend("Metal ICB compute encoder unavailable".into()))?;
+    pub(super) fn storage(&self) -> IcbStorage { self.storage.clone() }
+
+    pub(super) fn reset(&self, blit: &ProtocolObject<dyn MTLBlitCommandEncoder>) {
+        // Reset the complete executable prefix, including invalid/zero
+        // records that would otherwise retain an earlier frame's commands.
+        unsafe { blit.resetCommandsInBuffer_withRange(&self.storage.icb, NSRange { location: 0, length: self.params[0] as usize }); }
+    }
+
+    pub(super) fn encode(&self, compute: &ProtocolObject<dyn MTLComputeCommandEncoder>) {
         compute.setComputePipelineState(&self.pipeline);
         let local = self.pipeline.threadExecutionWidth().max(1).min(self.pipeline.maxTotalThreadsPerThreadgroup());
         // SAFETY: all native buffers and parameter spans were validated and
         // the ICB is marked writable through its indirect argument reference.
         unsafe {
-            compute.setBuffer_offset_atIndex(Some(&self.container), 0, 0);
+            compute.setBuffer_offset_atIndex(Some(&self.storage.container), 0, 0);
             compute.setBuffer_offset_atIndex(Some(&self.arguments), 0, 1);
             compute.setBuffer_offset_atIndex(Some(&self.counter), 0, 2);
-            compute.setBuffer_offset_atIndex(Some(&self.range), 0, 3);
+            compute.setBuffer_offset_atIndex(Some(&self.storage.range), 0, 3);
             compute.setBuffer_offset_atIndex(Some(self.indices.as_ref().unwrap_or(&self.arguments)), 0, 4);
             compute.setBytes_length_atIndex(NonNull::from(&self.params).cast::<c_void>(), std::mem::size_of_val(&self.params), 5);
-            compute.useResource_usage(ProtocolObject::<dyn MTLResource>::from_ref(&*self.icb), MTLResourceUsage::Write);
+            compute.useResource_usage(ProtocolObject::<dyn MTLResource>::from_ref(&*self.storage.icb), MTLResourceUsage::Write);
         }
         compute.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize { width: (self.params[0] as usize).div_ceil(local), height: 1, depth: 1 },
             MTLSize { width: local, height: 1, depth: 1 },
         );
-        compute.endEncoding();
-        Ok(())
     }
 
     pub(super) fn execute(&self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
@@ -187,7 +258,7 @@ impl CountedRun {
                 encoder.useResource_usage_stages(ProtocolObject::<dyn MTLResource>::from_ref(&**indices),
                     MTLResourceUsage::Read, MTLRenderStages::Vertex);
             }
-            encoder.executeCommandsInBuffer_indirectBuffer_indirectBufferOffset(&self.icb, &self.range, 0);
+            encoder.executeCommandsInBuffer_indirectBuffer_indirectBufferOffset(&self.storage.icb, &self.storage.range, 0);
         }
     }
 }

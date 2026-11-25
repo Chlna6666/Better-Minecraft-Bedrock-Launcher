@@ -1030,11 +1030,13 @@ mod platform {
         pub fn poll_cleanup(&mut self) {
             self.texture_uploads.release_completed();
             self.texture_transfers.poll();
+            if let Some(icb) = &self.icb { icb.reclaim(); }
         }
 
         /// Reclaims only staging pages which are no longer referenced by GPU work.
         pub fn trim_memory(&mut self, level: gfx_core::MemoryTrimLevel) -> Result<()> {
             self.texture_uploads.trim(level);
+            if let Some(icb) = &self.icb { icb.trim(); }
             Ok(())
         }
 

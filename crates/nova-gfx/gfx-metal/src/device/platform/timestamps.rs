@@ -89,8 +89,11 @@ impl WorkTimestamps {
         self.acquire(device, ranges)
     }
 
-    pub(super) fn acquire_render(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange]) -> Option<Probe> {
-        if !self.stage_boundary && !self.draw_boundary { return None; }
+    pub(super) fn acquire_render_with_compute(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange], compute: bool) -> Option<Probe> {
+        // Counted draws must include the ICB conversion cost, not merely
+        // the consumer render. Unsupported counter combinations yield no
+        // sample rather than an artificially favorable compaction cost.
+        if !self.stage_boundary && (!self.draw_boundary || (compute && !self.dispatch_boundary)) { return None; }
         self.acquire(device, ranges)
     }
 
@@ -203,7 +206,17 @@ impl Probe {
 
     pub(super) fn compute_encoder(&self, commands: &ProtocolObject<dyn MTLCommandBuffer>, index: usize)
         -> Option<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>> {
-        let (start, end) = (self.index(index, true), self.index(index, false));
+        self.compute_encoder_range(commands, index, true)
+    }
+
+    pub(super) fn compute_begin_encoder(&self, commands: &ProtocolObject<dyn MTLCommandBuffer>, index: usize)
+        -> Option<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>> {
+        self.compute_encoder_range(commands, index, false)
+    }
+
+    fn compute_encoder_range(&self, commands: &ProtocolObject<dyn MTLCommandBuffer>, index: usize, sample_end: bool)
+        -> Option<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>> {
+        let (start, end) = (self.index(index, true), sample_end.then(|| self.index(index, false)).flatten());
         if !self.stage_boundary || (start.is_none() && end.is_none()) { return commands.computeCommandEncoder(); }
         let desc = MTLComputePassDescriptor::new();
         // SAFETY: attachment zero exists; indices are bounded by capacity
@@ -225,9 +238,9 @@ impl Probe {
         }
     }
 
-    pub(super) fn configure_render(&self, descriptor: &MTLRenderPassDescriptor, pass: usize) {
+    pub(super) fn configure_render_from(&self, descriptor: &MTLRenderPassDescriptor, pass: usize, sample_begin: bool) {
         if !self.stage_boundary { return; }
-        let (start, end) = (self.index(pass, true), self.index(pass, false));
+        let (start, end) = (sample_begin.then(|| self.index(pass, true)).flatten(), self.index(pass, false));
         if start.is_none() && end.is_none() { return; }
         // SAFETY: attachment zero exists; all sample indices are within the
         // retained allocation or use the native don't-sample sentinel.
