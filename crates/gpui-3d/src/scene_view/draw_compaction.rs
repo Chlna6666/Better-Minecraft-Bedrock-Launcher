@@ -128,6 +128,7 @@ struct Prepared {
     counts: Vec<IndirectCountBinding>,
     compute: [ComputeBufferBinding; 4],
     groups: u32,
+    runs: Vec<Run>,
 }
 
 // Strong Arc identity prevents address reuse and avoids hashing/scanning
@@ -168,7 +169,65 @@ fn sampled_snapshot_replacement(
     Some((*old, *new))
 }
 
+/// Preserve the existing run boundaries when only logical argument offsets
+/// move inside compacted runs. Uncompacted draws must remain byte-equivalent
+/// in native identity. A changed source buffer or out-of-range offset needs
+/// a full plan, never a guessed binding range.
+fn gather_patches(
+    previous: &[RenderCommand], next: &[RenderCommand], runs: &[Run],
+    indexed: bool, source_bytes: u64,
+) -> Option<Vec<(usize, u32)>> {
+    if previous.len() != next.len() { return None; }
+    let stride = if indexed { 20 } else { 16 };
+    let mut patches = Vec::new();
+    let mut run_index = 0;
+    for (index, (a, b)) in previous.iter().zip(next).enumerate() {
+        if a.pipeline() != b.pipeline() || a.bind_groups() != b.bind_groups()
+            || a.scissor() != b.scissor() { return None; }
+        let (buffer_a, offset_a, index_a) = indirect_record(a, indexed)?;
+        let (buffer_b, offset_b, index_b) = indirect_record(b, indexed)?;
+        if buffer_a != buffer_b || index_a != index_b { return None; }
+        while runs.get(run_index).is_some_and(|run| index >= run.command + run.count as usize) {
+            run_index += 1;
+        }
+        if offset_a == offset_b { continue; }
+        let run = runs.get(run_index).filter(|run| index >= run.command)?;
+        if offset_b % stride != 0 || offset_b.checked_add(stride)? > source_bytes {
+            return None;
+        }
+        let slot = u32::try_from(offset_b / stride).ok()?;
+        if (u64::from(slot) + 1) * (stride / 4) > u64::from(u32::MAX) { return None; }
+        let word = runs.len().checked_mul(4)?
+            .checked_add(run.source as usize)?.checked_add(index - run.command)?;
+        patches.push((word, slot));
+    }
+    Some(patches)
+}
+
 impl Cached {
+    fn try_patch_gather(
+        &mut self, device: &mut dyn ExtensionDevice, scratch: &mut Scratch,
+        next: &Arc<[RenderCommand]>,
+    ) -> Result<bool> {
+        let Some(prepared) = &self.prepared else { return Ok(false); };
+        let Some(patches) = gather_patches(
+            &self.source, next, &prepared.runs, prepared.indexed, prepared.compute[0].buffer.size,
+        ) else { return Ok(false); };
+        if !patches.is_empty() {
+            let mut bytes = scratch.metadata.clone();
+            for (word, slot) in patches {
+                let Some(dst) = bytes.get_mut(word * 4..word * 4 + 4) else { return Ok(false); };
+                dst.copy_from_slice(&slot.to_le_bytes());
+            }
+            scratch.upload_metadata(device, bytes)?;
+            // The gather population changed, so do not compare timings
+            // measured for the old set of indirect arguments.
+            self.cost = CostModel::default();
+        }
+        self.source = Arc::clone(next);
+        Ok(true)
+    }
+
     fn try_rebind_sampled_snapshot(&mut self, next: &Arc<[RenderCommand]>) -> bool {
         let Some((old, new)) = sampled_snapshot_replacement(&self.source, next) else { return false; };
         if let Some(prepared) = self.prepared.as_mut() {
@@ -546,12 +605,25 @@ impl ViewCompactor {
             cursor = run.command + run.count as usize;
         }
         commands.extend_from_slice(&pass.commands[cursor..]);
-        Ok(Some(Prepared { indexed: plan.indexed, commands, counts: bindings, compute, groups: group_count }))
+        Ok(Some(Prepared { indexed: plan.indexed, commands, counts: bindings, compute, groups: group_count, runs: plan.runs }))
     }
 
     fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         let unchanged = self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands));
-        if !unchanged && !self.cached.as_mut().is_some_and(|cached| cached.try_rebind_sampled_snapshot(&pass.commands)) {
+        let rebound = !unchanged && self.cached.as_mut().is_some_and(|cached| cached.try_rebind_sampled_snapshot(&pass.commands));
+        let patched = if !unchanged && !rebound {
+            match (&mut self.cached, &mut self.scratch) {
+                (Some(cached), Some(scratch)) => match cached.try_patch_gather(device, scratch, &pass.commands) {
+                    Ok(patched) => patched,
+                    Err(error) => {
+                        self.cached = None;
+                        return Err(error);
+                    }
+                },
+                _ => false,
+            }
+        } else { false };
+        if !unchanged && !rebound && !patched {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
@@ -635,6 +707,23 @@ mod tests {
         let RenderCommand::DrawIndirect(draw) = &mut next[1] else { unreachable!() };
         draw.bind_groups[0] = BindGroupId::from_parts(9, 1);
         assert!(sampled_snapshot_replacement(&previous, &next).is_none());
+    }
+
+    #[test]
+    fn gather_offsets_patch_without_rebuilding_run_boundaries() {
+        let old: Vec<_> = (0..256).rev().map(|i| draw(i * 16)).collect();
+        let planned = plan(&old, 256).unwrap();
+        let mut next = old.clone();
+        next[17] = draw(32);
+        next[200] = draw(64);
+        assert_eq!(gather_patches(&old, &next, &planned.runs, false, planned.source_bytes),
+            Some(vec![(4 + 17, 2), (4 + 200, 4)]));
+        next[200] = draw(planned.source_bytes);
+        assert!(gather_patches(&old, &next, &planned.runs, false, planned.source_bytes).is_none());
+        next[200] = old[200].clone();
+        next[17].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
+        assert!(gather_patches(&old, &next, &planned.runs, false, planned.source_bytes).is_none());
+        assert!(gather_patches(&old, &old[..255], &planned.runs, false, planned.source_bytes).is_none());
     }
 
     #[test]
