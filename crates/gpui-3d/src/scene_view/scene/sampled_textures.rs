@@ -29,6 +29,7 @@ impl Readers {
 }
 
 struct RetiredSnapshot {
+    layout: BindGroupLayoutId,
     snapshot: BindGroupId,
     generation: u64,
     readers: Readers,
@@ -207,6 +208,14 @@ impl SceneSampledTextures {
         } else { None }
     }
 
+    /// Keep the family owner alive until every current/retired native table
+    /// and bank belonging to its layout has been logically released.
+    pub(super) fn references_layout(&self, layout: BindGroupLayoutId) -> bool {
+        self.layout == layout
+            || self.retired.iter().any(|old| old.layout == layout)
+            || self.banked.iter().chain(self.retired_banks.iter()).any(|bank| bank.layout == layout)
+    }
+
     pub(super) fn matches_layout(&self, layout: Option<BindGroupLayoutId>) -> bool {
         layout == Some(self.layout)
     }
@@ -225,6 +234,7 @@ impl SceneSampledTextures {
             Ok((previous, _)) => {
                 if let Some(snapshot) = previous {
                     self.retired.push(RetiredSnapshot {
+                        layout: self.layout,
                         snapshot, generation: self.generation,
                         readers: std::mem::take(&mut self.snapshot_readers),
                     });
@@ -565,6 +575,7 @@ impl SceneSampledTextures {
                 self.published = true;
                 if let Some(old) = previous {
                     self.retired.push(RetiredSnapshot {
+                        layout: self.layout,
                         snapshot: old,
                         generation: self.generation,
                         readers: std::mem::take(&mut self.snapshot_readers),
@@ -668,7 +679,7 @@ mod tests {
         let next = BindGroupId::from_parts(2, 1);
         let fence = SubmissionId::from_parts(3, 1);
         table.slots.create_snapshot_with(|_| Ok(next)).unwrap();
-        table.retired.push(RetiredSnapshot { snapshot: old, generation: 2, readers: Readers::default() });
+        table.retired.push(RetiredSnapshot { layout: table.layout, snapshot: old, generation: 2, readers: Readers::default() });
         for (first_generation, last_generation) in [(1, 2), (3, 4)] {
             table.retired_textures.push(RetiredTextures {
                 textures: Vec::new(), readers: Readers::default(), first_generation, last_generation,
@@ -692,8 +703,7 @@ mod tests {
         table.slots.create_snapshot_with(|_| Ok(first)).unwrap();
         table.commit_snapshot(Some(first));
         table.slots.resize_snapshot_with(8, |_| Ok(second)).unwrap();
-        table.retired.push(RetiredSnapshot {
-            snapshot: first, generation: 1, readers: Readers::default(),
+        table.retired.push(RetiredSnapshot { layout: table.layout, snapshot: first, generation: 1, readers: Readers::default(),
         });
         assert!(table.committed_previous_snapshot());
         assert!(!table.has_completed_retirement());
@@ -715,8 +725,7 @@ mod tests {
         table.first_generation.insert(image, 2);
         let mut old = Readers::default();
         old.submitted(Some(a));
-        table.retired.push(RetiredSnapshot {
-            snapshot: BindGroupId::from_parts(1, 1), generation: 1, readers: old,
+        table.retired.push(RetiredSnapshot { layout: table.layout, snapshot: BindGroupId::from_parts(1, 1), generation: 1, readers: old,
         });
         table.snapshot_readers.submitted(Some(b));
         table.submitted(Some(legacy), None);
@@ -763,8 +772,7 @@ mod tests {
         table.queue_capture(Some(first));
         table.slots.allocate(gfx_core::TextureViewId::from_parts(2, 1)).unwrap();
         table.slots.publish_with(first, |_, _| Ok(second)).unwrap();
-        table.retired.push(RetiredSnapshot {
-            snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
+        table.retired.push(RetiredSnapshot { layout: table.layout, snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
         });
         assert!(!table.has_completed_retirement());
         table.capture_submitted(Some(reader), Some(second));
@@ -791,8 +799,7 @@ mod tests {
         table.submitted(Some(legacy), None);
         table.slots.allocate(gfx_core::TextureViewId::from_parts(2, 1)).unwrap();
         table.slots.publish_with(first, |_, _| Ok(second)).unwrap();
-        table.retired.push(RetiredSnapshot {
-            snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
+        table.retired.push(RetiredSnapshot { layout: table.layout, snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
         });
         table.submitted(Some(b), Some(second));
         assert!(!table.retired[0].readers.ready());
