@@ -48,6 +48,25 @@ fn producer_fence_survives_without_a_main_submission() {
     assert_eq!(pending[0].predecessors.as_slice(), &[producer]);
 }
 
+#[test]
+fn producer_handoff_keeps_transitive_fences_and_distinct_slots() {
+    let a = SubmissionId::from_parts(1, 1);
+    let b = SubmissionId::from_parts(2, 1);
+    let c = SubmissionId::from_parts(3, 1);
+    let entry = |submission, frame_resource_index| PendingSubmission {
+        submission, predecessors: SmallVec::new(), frame_resource_index, publication: None,
+    };
+    let mut pending = vec![entry(a, 0), entry(b, 0)];
+    attach_extension_submission(&mut pending, Some(a));
+    pending.push(entry(c, 1));
+    attach_extension_submission(&mut pending, Some(b));
+    assert_eq!(pending.len(), 2, "different frame resource slots cannot be folded");
+    pending[1].frame_resource_index = 0;
+    attach_extension_submission(&mut pending, Some(b));
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].predecessors.as_slice(), &[a, b]);
+}
+
 #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
 mod native {
     use super::*;
