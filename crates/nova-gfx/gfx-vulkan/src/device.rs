@@ -169,6 +169,7 @@ pub struct VulkanDevice {
     stencil_supported: bool,
     multi_draw_indirect: bool,
     max_draw_indirect_count: u32,
+    draw_run_plans: Vec<Arc<gfx_core::DrawRunPlan>>,
     binding_limits: gfx_core::BufferBindingLimits,
     texture_array_limits: gfx_core::TextureArrayCapabilities,
     copy_row_pitch_alignment: u64,
@@ -556,6 +557,7 @@ impl VulkanDevice {
             stencil_supported,
             multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
             max_draw_indirect_count: native_limits.max_draw_indirect_count.max(1),
+            draw_run_plans: Vec::new(),
             binding_limits,
             texture_array_limits,
             copy_row_pitch_alignment,
@@ -2315,6 +2317,7 @@ impl VulkanDevice {
         counts: &[gfx_core::IndirectCountBinding],
         sampled_table: Option<BindGroupId>,
         mut depth_accesses: Vec<depth::DepthAccess>,
+        run_plan: Option<&gfx_core::DrawRunPlan>,
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
@@ -2489,6 +2492,7 @@ impl VulkanDevice {
         }).transpose()?;
         let mut previous_geometry_layout = None;
         let mut counts = counts.iter().peekable();
+        let mut planned_runs = run_plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
         let mut command_index = 0;
         while command_index < steps.len() {
             let step = &steps[command_index];
@@ -2498,7 +2502,9 @@ impl VulkanDevice {
             // Count Draw is a separate ABI. Never fold across its logical
             // command index, even when the adjacent portable state matches.
             let end = counts.peek().map_or(steps.len(), |next| next.command_index);
-            let draw_count = if count.is_some() || !self.multi_draw_indirect { 1 } else {
+            let draw_count = if run_plan.is_some() {
+                planned_runs.next().expect("validated immutable run plan")
+            } else if count.is_some() || !self.multi_draw_indirect { 1 } else {
                 portable_indirect_run(&steps[command_index..end], self.max_draw_indirect_count)
             };
             command_index += draw_count as usize;
@@ -2965,7 +2971,7 @@ impl VulkanDevice {
                 count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
             }
         }
-        self.record_texture_passes(passes, Some(tags), false, counts, tables, tracked)
+        self.record_texture_passes(passes, Some(tags), false, counts, tables, tracked, &[])
     }
 
     fn record_texture_passes(
@@ -2976,7 +2982,11 @@ impl VulkanDevice {
         counts: &[&[gfx_core::IndirectCountBinding]],
         tables: &[Option<BindGroupId>],
         tracked: bool,
+        plans: &[Arc<gfx_core::DrawRunPlan>],
     ) -> Result<Option<SubmissionId>> {
+        if !plans.is_empty() && (plans.len() != passes.len() || !counts.is_empty()) {
+            return Err(Error::InvalidInput("draw run plan metadata mismatch".into()));
+        }
         if !tables.is_empty() && tables.len() != passes.len() {
             return Err(Error::InvalidInput("offscreen sampled table length mismatch".into()));
         }
@@ -3044,18 +3054,16 @@ impl VulkanDevice {
                 graph_write_hazard,
                 tags.and_then(|tags| tags[index]).filter(|tag| {
                     tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
-                        && !pass.commands.is_empty()
-                        && pass.commands.iter().all(|command| {
-                            matches!(
-                                command,
-                                RenderCommand::DrawIndirect(_)
-                                    | RenderCommand::DrawIndexedIndirect(_)
-                            )
-                        })
+                        && plans.get(index).map_or_else(|| {
+                            !pass.commands.is_empty() && pass.commands.iter().all(|command| {
+                                matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))
+                            })
+                        }, |plan| plan.indirect_only())
                 }),
                 counts.get(index).copied().unwrap_or(&[]),
                 tables.get(index).copied().flatten(),
                 depths,
+                plans.get(index).map(Arc::as_ref),
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -6170,7 +6178,7 @@ impl PresentationDevice for VulkanDevice {
     ) -> Result<()> {
         if counts.is_empty() {
             return self.record_texture_passes(std::slice::from_ref(pass),
-                Some(std::slice::from_ref(&tag)), false, &[], &[], false).map(|_| ());
+                Some(std::slice::from_ref(&tag)), false, &[], &[], false, &[]).map(|_| ());
         }
         self.submit_counted_texture_passes(
             std::slice::from_ref(pass), &[], std::slice::from_ref(&counts), std::slice::from_ref(&tag), false,
@@ -6194,8 +6202,44 @@ impl PresentationDevice for VulkanDevice {
         self.submit_counted_texture_passes(passes, tables, counts, tags, true)
     }
 
+    fn render_to_textures_owned_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[Arc<[RenderCommand]>],
+        tables: &[Option<BindGroupId>], tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != owners.len() || passes.iter().zip(owners)
+            .any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        {
+            return Err(Error::InvalidInput("owned draw stream identity mismatch".into()));
+        }
+        if !self.multi_draw_indirect {
+            return self.submit_counted_texture_passes(passes, tables, &[], tags, true);
+        }
+        // Keep only a bounded set of live producer snapshots. Native handles
+        // and layouts are deliberately not cached: resource validation and
+        // fence retirement remain authoritative on every submission.
+        self.draw_run_plans.retain(|plan| plan.is_live());
+        let limit = self.max_draw_indirect_count;
+        let mut plans = Vec::with_capacity(owners.len());
+        for owner in owners {
+            if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches(owner, limit)) {
+                let plan = self.draw_run_plans.remove(index);
+                plans.push(Arc::clone(&plan));
+                self.draw_run_plans.push(plan);
+            } else {
+                let plan = Arc::new(gfx_core::DrawRunPlan::new(owner, limit));
+                plans.push(Arc::clone(&plan));
+                if self.draw_run_plans.len() >= 32 {
+                    self.draw_run_plans.remove(0);
+                }
+                self.draw_run_plans.push(plan);
+            }
+        }
+        self.record_texture_passes(passes, Some(tags), false, &[], tables, true, &plans)
+    }
+
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[], false)
+        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[], false, &[])
             .map(|_| ())
     }
 
@@ -6203,7 +6247,7 @@ impl PresentationDevice for VulkanDevice {
         &mut self,
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, None, false, &[], &[], false)?;
+        self.record_texture_passes(passes, None, false, &[], &[], false, &[])?;
         Ok(None)
     }
 
@@ -6213,7 +6257,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), false, &[], &[], true)
+        self.record_texture_passes(passes, Some(tags), false, &[], &[], true, &[])
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -6226,7 +6270,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[], &[], false)
+        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[], &[], false, &[])
     }
 }
 
