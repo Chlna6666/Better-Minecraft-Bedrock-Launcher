@@ -47,6 +47,15 @@ impl EffectsRenderer {
         context: RendererExtensionContext,
         settings: ScreenEffects,
     ) -> gpui::Result<Self> {
+        Self::new_with_sampled_limit(device, context, settings, u32::MAX)
+    }
+
+    fn new_with_sampled_limit(
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+        settings: ScreenEffects,
+        max_sampled_capacity: u32,
+    ) -> gpui::Result<Self> {
         let caps = device.compute_capabilities();
         if !caps.indirect_draw || caps.max_workgroups.contains(&0) {
             anyhow::bail!("screen effects require ordered compute and indirect drawing");
@@ -158,8 +167,16 @@ impl EffectsRenderer {
                     _ => local.clone(),
                 };
                 let resource =
-                    RendererResources::new_pass(device, &context, renderers.first(), kind)?;
+                    RendererResources::new_pass_inner(device, &context, renderers.first(), kind, max_sampled_capacity)?;
                 renderers.push(resource);
+            }
+            // The same batches and DrawParams are read by all three passes.
+            // If any sampled variant fails, disable the entire family before
+            // the first SceneResources is created. Child layouts are borrowed.
+            if renderers.iter().any(|renderer| renderer.sampled_table_layout().is_none()) {
+                for renderer in renderers.iter_mut().rev() {
+                    renderer.disable_sampled(device)?;
+                }
             }
             let textures = super::textures::Textures::new(device)?;
             let [hdr, attributes, shadow_resources]: [RendererResources; 3] =
@@ -563,6 +580,9 @@ impl RendererExtensionRenderer for EffectsRenderer {
     fn render_passes_submitted(&mut self) {
         for state in self.scenes.values_mut() {
             state.submitted_retirements = state.retired.len();
+            if state.queued_capture || state.queued_shadow.iter().any(|&queued| queued) {
+                state.scene.draw_producer_submitted(None);
+            }
             if std::mem::take(&mut state.queued_capture) {
                 state.targets_valid = true;
             }
@@ -614,6 +634,16 @@ impl RendererExtensionRenderer for EffectsRenderer {
     }
     fn drain_compute_passes(&mut self, compute: &mut Vec<RendererExtensionComputePass>) {
         compute.append(&mut self.compute_passes);
+    }
+    fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        for state in self.scenes.values_mut() {
+            state.scene.draw_submission_accepted(submission);
+        }
+    }
+    fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        for state in self.scenes.values_mut() {
+            state.scene.draw_submission_completed(submission);
+        }
     }
     fn needs_gpu_completion(&self) -> bool {
         self.scenes

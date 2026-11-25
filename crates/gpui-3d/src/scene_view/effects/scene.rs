@@ -264,6 +264,7 @@ impl EffectScene {
         shading.shadow_strength = 0.;
         let capture = view.with_voxel_shader().with_voxel_shading(shading)?;
         let capture_changed = !self.targets_valid
+            || self.scene.sampled_maintenance_pending()
             || self
                 .capture
                 .as_ref()

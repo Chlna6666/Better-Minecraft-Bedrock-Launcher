@@ -3948,8 +3948,15 @@ impl SceneResources {
         })
     }
 
+    pub(in crate::scene_view) fn sampled_maintenance_pending(&self) -> bool {
+        self.sampled_textures.as_ref().is_some_and(|table| {
+            table.needs_remap() || table.needs_publication() || table.has_completed_retirement()
+        })
+    }
+
     fn sampled_snapshot(&self, renderer: &RendererResources) -> Option<BindGroupId> {
-        if renderer.sampled_table_layout().is_some() { self.committed_sampled_snapshot } else { None }
+        self.sampled_textures.as_ref().filter(|table| table.matches_layout(renderer.sampled_table_layout()))
+            .and(self.committed_sampled_snapshot)
     }
 
     pub(super) fn append_steps(

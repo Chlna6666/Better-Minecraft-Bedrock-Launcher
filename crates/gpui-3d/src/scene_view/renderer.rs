@@ -1646,9 +1646,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             // stamps any remaining untracked cohorts (older backend paths
             // returning None). Independent queues need their own GPU-side
             // dependency before this fallback could be enabled.
-            for scene in self.scenes.values_mut() {
-                scene.draw_submission_accepted(submission);
-            }
+        }
+        // Direct GUI draws also have unfenced reads. Their ordered GUI
+        // submission seals these even when no sidecar surface exists.
+        for scene in self.scenes.values_mut() {
+            scene.draw_submission_accepted(submission);
         }
     }
 

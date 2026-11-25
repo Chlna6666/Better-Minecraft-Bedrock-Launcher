@@ -45,6 +45,7 @@ pub(super) struct RendererResources {
 
 struct SampledPipelines {
     capacity: u32,
+    owns_layout: bool,
     geometry_layout: Option<BindGroupLayoutId>,
     layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
@@ -60,9 +61,11 @@ impl SampledPipelines {
         }
         if let Some(id) = self.fragment.take() { device.destroy_shader_module(id)?; }
         if let Some(id) = self.voxel_fragment.take() { device.destroy_shader_module(id)?; }
-        if let Some(id) = self.pipeline_layout.take() { device.destroy_pipeline_layout(id)?; }
-        if let Some(id) = self.layout.take() { device.destroy_bind_group_layout(id)?; }
-        if let Some(id) = self.geometry_layout.take() { device.destroy_bind_group_layout(id)?; }
+        if self.owns_layout {
+            if let Some(id) = self.pipeline_layout.take() { device.destroy_pipeline_layout(id)?; }
+            if let Some(id) = self.layout.take() { device.destroy_bind_group_layout(id)?; }
+            if let Some(id) = self.geometry_layout.take() { device.destroy_bind_group_layout(id)?; }
+        }
         Ok(())
     }
 }
@@ -83,44 +86,63 @@ impl RendererResources {
         } else { self.bind_group_layout() }
     }
 
-    /// Experimental production Color pass. The other passes keep their legacy
-    /// PSOs until their own image/alpha/depth comparisons are covered.
+    pub(in crate::scene_view) fn disable_sampled(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if let Some(mut sampled) = self.sampled.take() { sampled.destroy(device)?; }
+        Ok(())
+    }
+
+    /// Every related render pass shares one immutable geometry/table layout.
+    /// A prototype without a sampled pipeline forces its children to Legacy.
     fn try_enable_sampled(
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
-        max_capacity: u32,
+        max_capacity: u32, prototype: Option<&Self>,
     ) -> gpui::Result<()> {
-        if self.pass != PassKind::Color || context.backend_kind() != BackendKind::Vulkan
+        if context.backend_kind() != BackendKind::Vulkan
             || std::env::var_os("GPUI_3D_BINDLESS").is_none_or(|value| value != "1")
         {
             return Ok(());
         }
-        let Some(capacity) = sampled_table_capacity::sampled_table_capacity(
-            device.sampled_texture_table_capacity(), max_capacity,
-        ) else { return Ok(()); };
+        let inherited = prototype.and_then(|prototype| prototype.sampled.as_ref());
+        if prototype.is_some() && inherited.is_none() { return Ok(()); }
+        let capacity = if let Some(inherited) = inherited {
+            inherited.capacity
+        } else {
+            let Some(capacity) = sampled_table_capacity::sampled_table_capacity(
+                device.sampled_texture_table_capacity(), max_capacity,
+            ) else { return Ok(()); };
+            capacity
+        };
         let mut sampled = SampledPipelines {
-            capacity,
+            capacity, owns_layout: inherited.is_none(),
             geometry_layout: None, layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
             pipelines: [None; 18],
         };
         let result: gpui::Result<()> = (|| {
-            let layout = device.create_sampled_texture_table_layout(capacity)?;
-            sampled.layout = Some(layout);
-            let geometry = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label: Some("gpui-3d sampled geometry layout".into()),
-                entries: factory::scene_layout_entries(true),
-            })?;
-            sampled.geometry_layout = Some(geometry);
-            sampled.pipeline_layout = Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                label: Some("gpui-3d sampled scene pipeline layout".into()),
-                bind_group_layouts: vec![geometry, layout],
-            })?);
+            if let Some(inherited) = inherited {
+                sampled.layout = inherited.layout;
+                sampled.geometry_layout = inherited.geometry_layout;
+                sampled.pipeline_layout = inherited.pipeline_layout;
+            } else {
+                let layout = device.create_sampled_texture_table_layout(capacity)?;
+                sampled.layout = Some(layout);
+                let geometry = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some("gpui-3d sampled geometry layout".into()),
+                    entries: factory::scene_layout_entries(true),
+                })?;
+                sampled.geometry_layout = Some(geometry);
+                sampled.pipeline_layout = Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                    label: Some("gpui-3d sampled scene pipeline layout".into()),
+                    bind_group_layouts: vec![geometry, layout],
+                })?);
+            }
+            let [fragment, voxel_fragment] = self.pass.entries();
             sampled.fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d sampled material fragment".into()),
-                binary: embedded_shader(context, ShaderStage::Fragment, &format!("fs_main_bindless_{capacity}"))?,
+                binary: embedded_shader(context, ShaderStage::Fragment, &format!("{fragment}_bindless_{capacity}"))?,
             })?);
             sampled.voxel_fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d sampled voxel fragment".into()),
-                binary: embedded_shader(context, ShaderStage::Fragment, &format!("fs_voxel_bindless_{capacity}"))?,
+                binary: embedded_shader(context, ShaderStage::Fragment, &format!("{voxel_fragment}_bindless_{capacity}"))?,
             })?);
             // Every slot in the fixed array, including unused slots, must
             // reference a valid initialized sampled image.
@@ -142,7 +164,7 @@ impl RendererResources {
             Ok(()) => self.sampled = Some(sampled),
             Err(error) => {
                 sampled.destroy(device)?;
-                eprintln!("gpui-3d bindless Color pipeline unavailable: {error:#}; using legacy");
+                eprintln!("gpui-3d bindless pass pipeline unavailable: {error:#}; using legacy");
             }
         }
         Ok(())

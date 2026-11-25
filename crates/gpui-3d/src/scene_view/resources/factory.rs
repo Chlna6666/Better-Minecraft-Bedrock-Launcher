@@ -31,7 +31,7 @@ impl RendererResources {
         Self::new_pass_inner(device, context, prototype, pass, u32::MAX)
     }
 
-    fn new_pass_inner(
+    pub(in crate::scene_view) fn new_pass_inner(
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
         prototype: Option<&Self>,
@@ -159,7 +159,7 @@ impl RendererResources {
                     format: Format::Rgba8UnormSrgb,
                 })?);
             resources.replace_pipelines(device, context)?;
-            if max_sampled_capacity != 0 { resources.try_enable_sampled(device, context, max_sampled_capacity)?; }
+            if max_sampled_capacity != 0 { resources.try_enable_sampled(device, context, max_sampled_capacity, prototype)?; }
             Ok(())
         })();
         if let Err(error) = result {

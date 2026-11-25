@@ -6,7 +6,7 @@ use gpui::RendererExtensionContext;
 pub(super) struct LightPass {
     frame: BufferId,
     culling: CullResources,
-    groups: HashMap<(DrawResourceKey, BufferId, BufferId, BufferId), BindGroupId>,
+    groups: HashMap<(DrawResourceKey, BufferId, BufferId, BufferId, BindGroupLayoutId), BindGroupId>,
 }
 impl LightPass {
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -128,6 +128,8 @@ impl SceneResources {
         let mut groups = Vec::<Option<BindGroupId>>::with_capacity(self.batches.len());
         let mut active = HashSet::new();
         let fallback = renderer.fallback_texture_view()?;
+        let sampled = self.sampled_snapshot(renderer).is_some();
+        let layout = renderer.draw_bind_group_layout(sampled)?;
         for (index, batch) in self.batches.iter().enumerate() {
             let draw = &self.prepared.draws[batch.first_instance];
             if draw.material.alpha_mode == AlphaMode::Blend {
@@ -138,17 +140,17 @@ impl SceneResources {
             let mut key = self.draw_resource_keys[index];
             key.visible_instances = Some(pass.culling.visible_instances);
             key.shadow = None;
-            // The shadow renderer is still legacy. Its own bindings must
-            // retain texture identity even when the Color path is sampled.
-            key.albedo_id = draw.material.albedo_texture;
-            key.normal_id = draw.material.normal_texture;
-            key.occlusion_id = draw.material.occlusion_texture;
-            key.metallic_roughness_id = draw.material.metallic_roughness_texture;
+            key.albedo_id = if sampled { None } else { draw.material.albedo_texture };
+            key.normal_id = if sampled { None } else { draw.material.normal_texture };
+            key.occlusion_id = if sampled { None } else { draw.material.occlusion_texture };
+            key.metallic_roughness_id = if sampled { None } else { draw.material.metallic_roughness_texture };
+            let texture_ids = [key.albedo_id, key.normal_id, key.occlusion_id, key.metallic_roughness_id];
             let key = (
                 key,
                 self.draw_buffer,
                 self.instance_buffer,
                 self.draw_slot_buffer,
+                layout,
             );
             active.insert(key);
             let group = if let Some(group) = pass.groups.get(&key) {
@@ -161,9 +163,9 @@ impl SceneResources {
                 let group = create_draw_resource_set(
                     device,
                     DrawBindingResources {
-                        sampled: false,
+                        sampled,
                         shadow: None,
-                        bind_group_layout: renderer.bind_group_layout()?,
+                        bind_group_layout: layout,
                         mesh,
                         draw_buffer: self.draw_buffer,
                         draw_capacity: self.draw_capacity,
@@ -171,10 +173,10 @@ impl SceneResources {
                         instance_count: self.instance_capacity,
                         light_buffer: self.light_buffer,
                         light_capacity: self.light_capacity,
-                        albedo_view: view(draw.material.albedo_texture),
-                        normal_texture_view: view(draw.material.normal_texture),
-                        occlusion_view: view(draw.material.occlusion_texture),
-                        metallic_roughness_view: view(draw.material.metallic_roughness_texture),
+                        albedo_view: view(texture_ids[0]),
+                        normal_texture_view: view(texture_ids[1]),
+                        occlusion_view: view(texture_ids[2]),
+                        metallic_roughness_view: view(texture_ids[3]),
                         material_sampler: self
                             .sampler
                             .ok_or_else(|| anyhow!("scene sampler missing"))?,

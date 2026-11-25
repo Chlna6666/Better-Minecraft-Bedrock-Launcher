@@ -79,6 +79,14 @@ impl SceneSampledTextures {
         } else { None }
     }
 
+    pub(super) fn matches_layout(&self, layout: Option<BindGroupLayoutId>) -> bool {
+        layout == Some(self.layout)
+    }
+
+    pub(super) fn has_completed_retirement(&self) -> bool {
+        self.retired.iter().any(|old| !old.untracked && old.readers.is_empty())
+    }
+
     pub(super) fn has_retired(&self) -> bool {
         !self.pending.is_empty() || !self.cleared.is_empty() || !self.retired.is_empty()
     }

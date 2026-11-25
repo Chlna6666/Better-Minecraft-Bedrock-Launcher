@@ -443,6 +443,7 @@ fn draw<D: Device + TextureTransferDevice>(
 ) -> Vec<u8> {
     if let Some(submission) = queue_draw(device, renderer, context, view, target, depth) {
         SubmissionDevice::wait_submission(device, submission).unwrap();
+        renderer.gpu_submission_completed(submission);
     }
     TextureTransferDevice::read_texture(device, target.texture)
         .unwrap()
@@ -494,6 +495,9 @@ fn submit_draw<D: Device>(
     });
     let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
     renderer.render_passes_submitted();
+    if let Some(submission) = submission {
+        renderer.gpu_submission_accepted(submission);
+    }
     submission
 }
 
@@ -633,6 +637,87 @@ fn bindless_production_color_vulkan() {
     depth.destroy(&mut device).unwrap();
     PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
     eprintln!("GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass");
+}
+
+#[test]
+#[ignore = "requires Vulkan descriptor indexing and GPUI_3D_BINDLESS=1"]
+fn bindless_production_effects_vulkan() {
+    let mut device = gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap();
+    let extent = Extent2d::new(64, 64).unwrap();
+    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(&mut device, extent, Format::Depth32Float, true, 1).unwrap();
+    let pass_id = test_render_pass(&mut device);
+    let context = RendererExtensionContext::for_target(
+        gfx_core::BackendKind::Vulkan, pass_id, Format::Rgba8Unorm, extent,
+    );
+    let settings = ScreenEffects {
+        resolution_scale: 1., reflections: false, water: false,
+        volumetric_fog: false, clouds: false, ..ScreenEffects::default()
+    };
+    let mut legacy = EffectsRenderer::new_with_sampled_limit(&mut device, context.clone(), settings, 0).unwrap();
+    let mut sampled = EffectsRenderer::new_with_sampled_limit(&mut device, context.clone(), settings, 64).unwrap();
+    let layout = sampled.hdr.sampled_table_layout().expect("sampled HDR PSO required");
+    assert_eq!(sampled.attributes.sampled_table_layout(), Some(layout));
+    assert_eq!(sampled.shadow_resources.sampled_table_layout(), Some(layout));
+    let mesh = Arc::new(Mesh::cube());
+    let mut scene = Scene::new();
+    let mut textures = Vec::new();
+    for (i, color) in [[255, 20, 20, 255], [20, 20, 255, 255]].into_iter().enumerate() {
+        let texture = Arc::new(crate::TextureAsset::rgba8(1, 1, color.to_vec()).unwrap());
+        let mut material = Material::new();
+        material.shading_model = crate::ShadingModel::Unlit;
+        material.albedo_texture = Some(texture.id());
+        scene.insert(None, Node::new().with_mesh(mesh.clone()).with_materials([Arc::new(material)])
+            .with_transform(crate::Transform {
+                translation: Vec3::new(if i == 0 { -0.6 } else { 0.6 }, 0., 0.),
+                ..crate::Transform::IDENTITY
+            })).unwrap();
+        textures.push(texture);
+    }
+    let view = SceneView::new(Arc::new(scene),
+        Camera::perspective(Vec3::new(0., 0., 3.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.))
+        .with_textures(textures).unwrap().with_voxel_shader()
+        .with_voxel_shading(VoxelShading {
+            illumination: VoxelIllumination::Sunlight,
+            sun_direction: Vec3::new(1., 2., 1.).normalized().unwrap(),
+            shadow_strength: 1., ..VoxelShading::default()
+        }).unwrap().with_screen_effects(Some(settings)).unwrap();
+    let expected = draw(&mut device, &mut legacy, &context, &view, &target, &depth);
+    let mut steps = Vec::new();
+    sampled.render(&view, &mut device, context.clone(), &mut steps).unwrap();
+    let mut owned = Vec::new();
+    sampled.drain_render_passes(&mut owned);
+    for pass in [sampled.pass, sampled.attributes_pass, sampled.shadow_pass] {
+        let commands: Vec<_> = owned.iter().filter(|plan| plan.commands().render_pass == pass)
+            .flat_map(|plan| plan.commands().commands.iter()).collect();
+        assert!(!commands.is_empty(), "missing sampled production geometry/shadow commands");
+        assert!(commands.iter().all(|command| command.bind_groups().len() == 2));
+    }
+    sampled.passes = owned;
+    if let Some(submission) = submit_draw(&mut device, &mut sampled, &context, &target, &depth, &steps) {
+        SubmissionDevice::wait_submission(&mut device, submission).unwrap();
+        sampled.gpu_submission_completed(submission);
+    }
+    let actual = TextureTransferDevice::read_texture(&mut device, target.texture).unwrap().bytes;
+    assert_eq!(actual, expected, "sampled effects composite differs from Legacy");
+    assert!(actual.chunks_exact(4).any(|pixel| i16::from(pixel[0]) > i16::from(pixel[2]) + 10));
+    let a = &sampled.scenes[&view.id];
+    let b = &legacy.scenes[&view.id];
+    for (actual, expected) in [(a.targets.color.texture, b.targets.color.texture),
+        (a.targets.surface.texture, b.targets.surface.texture)] {
+        assert_eq!(TextureTransferDevice::read_texture(&mut device, actual).unwrap().bytes,
+            TextureTransferDevice::read_texture(&mut device, expected).unwrap().bytes);
+    }
+    for (actual, expected) in a.shadow.iter().zip(&b.shadow) {
+        assert_eq!(TextureTransferDevice::read_texture(&mut device, actual.texture).unwrap().bytes,
+            TextureTransferDevice::read_texture(&mut device, expected.texture).unwrap().bytes);
+    }
+    sampled.destroy(&mut device).unwrap();
+    legacy.destroy(&mut device).unwrap();
+    target.destroy(&mut device).unwrap();
+    depth.destroy(&mut device).unwrap();
+    PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
+    eprintln!("GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass");
 }
 
 #[test]
