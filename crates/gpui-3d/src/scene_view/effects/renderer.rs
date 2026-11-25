@@ -173,9 +173,24 @@ impl EffectsRenderer {
             // The same batches and DrawParams are read by all three passes.
             // If any sampled variant fails, disable the entire family before
             // the first SceneResources is created. Child layouts are borrowed.
-            if renderers.iter().any(|renderer| renderer.sampled_table_layout().is_none()) {
+            while renderers.iter().any(|renderer| renderer.sampled_table_layout().is_none()) {
+                let failed_capacity = renderers[0].sampled_table_capacity();
+                // Retire children before the layout owner. This happens
+                // during construction, before any submitted scene exists.
                 for renderer in renderers.iter_mut().rev() {
                     renderer.disable_sampled(device)?;
+                }
+                let Some(capacity) = failed_capacity else { break; };
+                let (hdr, children) = renderers.split_first_mut().expect("HDR pipeline");
+                hdr.try_enable_sampled(device, &local, capacity - 1, None)?;
+                if hdr.sampled_table_layout().is_none() { break; }
+                let attributes_context = local.offscreen(attributes_pass, Format::Rgba16Float, target_extent);
+                let shadow_context = local.offscreen(
+                    shadow_pass, Format::R8Unorm,
+                    Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                );
+                for (child, context) in children.iter_mut().zip([attributes_context, shadow_context]) {
+                    child.try_enable_sampled(device, &context, capacity - 1, Some(hdr))?;
                 }
             }
             let textures = super::textures::Textures::new(device)?;

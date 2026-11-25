@@ -95,7 +95,7 @@ impl RendererResources {
 
     /// Every related render pass shares one immutable geometry/table layout.
     /// A prototype without a sampled pipeline forces its children to Legacy.
-    fn try_enable_sampled(
+    pub(in crate::scene_view) fn try_enable_sampled(
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
         max_capacity: u32, prototype: Option<&Self>,
     ) -> gpui::Result<()> {
@@ -106,14 +106,27 @@ impl RendererResources {
         }
         let inherited = prototype.and_then(|prototype| prototype.sampled.as_ref());
         if prototype.is_some() && inherited.is_none() { return Ok(()); }
-        let capacity = if let Some(inherited) = inherited {
-            inherited.capacity
+        debug_assert!(self.sampled.is_none());
+        if let Some(inherited) = inherited {
+            // A child cannot choose a different shader ABI or layout.
+            self.try_sampled_tier(device, context, inherited.capacity, Some(inherited))?;
         } else {
-            let Some(capacity) = sampled_table_capacity::sampled_table_capacity(
-                device.sampled_texture_table_capacity(), max_capacity,
-            ) else { return Ok(()); };
-            capacity
-        };
+            let mut maximum = max_capacity;
+            let device_limit = device.sampled_texture_table_capacity();
+            while let Some(capacity) = sampled_table_capacity::sampled_table_capacity(device_limit, maximum) {
+                if self.try_sampled_tier(device, context, capacity, None)? {
+                    break;
+                }
+                maximum = capacity - 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn try_sampled_tier(
+        &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+        capacity: u32, inherited: Option<&SampledPipelines>,
+    ) -> gpui::Result<bool> {
         let mut sampled = SampledPipelines {
             capacity, owns_layout: inherited.is_none(),
             geometry_layout: None, layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
@@ -163,13 +176,16 @@ impl RendererResources {
             Ok(())
         })();
         match result {
-            Ok(()) => self.sampled = Some(sampled),
+            Ok(()) => {
+                self.sampled = Some(sampled);
+                Ok(true)
+            }
             Err(error) => {
                 sampled.destroy(device)?;
-                eprintln!("gpui-3d bindless pass pipeline unavailable: {error:#}; using legacy");
+                eprintln!("gpui-3d bindless pass tier {capacity} unavailable: {error:#}");
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     pub(super) fn rejects_material(&self, material: &crate::Material) -> bool {
