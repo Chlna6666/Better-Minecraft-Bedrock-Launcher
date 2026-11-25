@@ -2,7 +2,7 @@
 //! resident TextureAssetId map; only removed textures are held here until the
 //! immutable descriptor snapshots and their readers have retired.
 use super::*;
-use gfx_core::{SampledTextureSlots, SubmissionId};
+use gfx_core::{SampledTextureBanks, SampledTextureSlots, SubmissionId, TextureViewId};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct Readers {
@@ -46,8 +46,74 @@ struct RetiredTextures {
     last_generation: u64,
 }
 
+type MaterialTextures = [Option<TextureAssetId>; 4];
+
+fn material_textures(draw: &PreparedDraw) -> MaterialTextures {
+    [draw.material.albedo_texture, draw.material.normal_texture,
+        draw.material.occlusion_texture, draw.material.metallic_roughness_texture]
+}
+
+// The overflow path publishes one immutable generation at a time. The
+// ordinary single-table streaming path remains unchanged. A generation is
+// rebuilt only when a material tuple or its layout changes.
+struct BankGeneration {
+    layout: BindGroupLayoutId,
+    materials: HashMap<MaterialTextures, (usize, [u32; 4])>,
+    views: HashSet<TextureViewId>,
+    snapshots: Vec<BindGroupId>,
+}
+
+impl BankGeneration {
+    fn build(
+        device: &mut dyn ExtensionDevice, layout: BindGroupLayoutId, capacity: u32,
+        fallback: TextureViewId, draws: &[PreparedDraw],
+        textures: &HashMap<TextureAssetId, TextureResources>,
+    ) -> gfx_core::Result<Self> {
+        let mut allocator = SampledTextureBanks::new(capacity, fallback, 32)?;
+        let mut materials = HashMap::new();
+        let mut views = HashSet::new();
+        for draw in draws {
+            let key = material_textures(draw);
+            if materials.contains_key(&key) { continue; }
+            let mut images = [None; 4];
+            for (index, asset) in key.iter().enumerate() {
+                if let Some(asset) = asset {
+                    let view = textures.get(asset).ok_or_else(||
+                        gfx_core::Error::InvalidInput("bank material texture not uploaded".into()))?.view;
+                    views.insert(view);
+                    images[index] = Some(view);
+                }
+            }
+            let lease = allocator.acquire_material(images)?;
+            materials.insert(key, (lease.bank(), lease.indices()));
+            // This allocator is generation-local: all leases remain live
+            // until its immutable snapshots are created.
+        }
+        let mut snapshots = Vec::with_capacity(allocator.bank_count());
+        for bank in 0..allocator.bank_count() {
+            match allocator.publish_bank_with(bank,
+                |views| device.create_sampled_texture_table(layout, views),
+                |_, _| unreachable!("new bank has no previous snapshot"))
+            {
+                Ok((_, snapshot)) => snapshots.push(snapshot),
+                Err(error) => {
+                    for snapshot in snapshots { device.destroy_bind_group(snapshot)?; }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(Self { layout, materials, views, snapshots })
+    }
+}
+
 pub(super) struct SceneSampledTextures {
     layout: BindGroupLayoutId,
+    fallback: TextureViewId,
+    banked: Option<BankGeneration>,
+    retired_banks: Vec<BankGeneration>,
+    retired_unmapped: Vec<TextureResources>,
+    bank_transition_pending: bool,
+    committed_banked: bool,
     slots: SampledTextureSlots,
     unmapped: usize,
     readers: Readers,
@@ -73,7 +139,9 @@ pub(super) struct SceneSampledTextures {
 impl SceneSampledTextures {
     pub(super) fn new(layout: BindGroupLayoutId, capacity: u32, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
         Ok(Self {
-            layout, slots: SampledTextureSlots::new(capacity, fallback)?,
+            layout, fallback, banked: None, retired_banks: Vec::new(),
+            retired_unmapped: Vec::new(), bank_transition_pending: false,
+            committed_banked: false, slots: SampledTextureSlots::new(capacity, fallback)?,
             unmapped: 0, readers: Readers::default(), legacy_readers: Readers::default(),
             snapshot_readers: Readers::default(), generation: 0, first_generation: HashMap::new(),
             queued: HashSet::new(),
@@ -94,7 +162,9 @@ impl SceneSampledTextures {
             self.pending.push(texture);
         } else {
             self.unmapped -= 1;
-            destroy_texture(device, texture)?;
+            // Unmapped images may belong to a banked or legacy draw.
+            self.retired_unmapped.push(texture);
+            self.release_completed(device)?;
         }
         Ok(())
     }
@@ -162,11 +232,89 @@ impl SceneSampledTextures {
         }
     }
 
-    pub(super) fn layout_transition_pending(&self) -> bool { self.layout_transition_pending }
+    pub(super) fn layout_transition_pending(&self) -> bool {
+        self.layout_transition_pending || self.bank_transition_pending
+    }
+
+    pub(super) fn committed_banked(&self) -> bool { self.committed_banked }
+    pub(super) fn banked(&self) -> bool { self.banked.is_some() }
+
+    pub(super) fn bank_index(&self, draw: &PreparedDraw) -> Option<usize> {
+        self.banked.as_ref()?.materials.get(&material_textures(draw)).map(|entry| entry.0)
+    }
+
+    pub(super) fn bank_snapshot(&self, draw: &PreparedDraw) -> Option<BindGroupId> {
+        let bank = self.banked.as_ref()?;
+        let (index, _) = bank.materials.get(&material_textures(draw))?;
+        bank.snapshots.get(*index).copied()
+    }
+
+    pub(super) fn draw_indices(&self, textures: &HashMap<TextureAssetId, TextureResources>, draw: &PreparedDraw) -> [u32; 4] {
+        if let Some(bank) = &self.banked {
+            return bank.materials[&material_textures(draw)].1;
+        }
+        indices(textures, draw)
+    }
+
+    /// Overflow-only material banking. The ordinary single-table fast path
+    /// does not walk materials or allocate banks. Existing generations are
+    /// kept until the scene commits and their native readers complete.
+    pub(super) fn prepare_banks(
+        &mut self, device: &mut dyn ExtensionDevice, layout: Option<BindGroupLayoutId>,
+        single: Option<BindGroupId>, draws: &[PreparedDraw],
+        textures: &HashMap<TextureAssetId, TextureResources>, refresh: bool,
+    ) {
+        let eligible = single.is_none() && self.unmapped != 0 && layout == Some(self.layout);
+        if !eligible {
+            if let Some(old) = self.banked.take() {
+                self.retired_banks.push(old);
+                self.bank_transition_pending = true;
+            }
+            return;
+        }
+        if self.banked.as_ref().is_some_and(|bank| bank.layout == self.layout && !refresh) {
+            return;
+        }
+        // If the material tuples and image identities are unchanged, retain
+        // the native bank generation across ordinary geometry changes.
+        if let Some(bank) = &self.banked {
+            if bank.layout == self.layout {
+                let mut keys = HashSet::new();
+                let mut views = HashSet::new();
+                for draw in draws {
+                    let key = material_textures(draw);
+                    if keys.insert(key) {
+                        views.extend(key.iter().flatten().filter_map(|id| textures.get(id).map(|texture| texture.view)));
+                    }
+                }
+                if keys.len() == bank.materials.len() && keys.iter().all(|key| bank.materials.contains_key(key))
+                    && views == bank.views { return; }
+            }
+        }
+        let next = match BankGeneration::build(device, self.layout, self.slots.capacity(), self.fallback, draws, textures) {
+            Ok(next) => Some(next),
+            Err(error) => {
+                eprintln!("gpui-3d sampled bank publication failed: {error:#}; using legacy");
+                None
+            }
+        };
+        if let Some(old) = self.banked.take() {
+            self.retired_banks.push(old);
+            self.bank_transition_pending = true;
+        }
+        if next.is_some() { self.bank_transition_pending = true; }
+        self.banked = next;
+    }
+
+    fn bank_references(&self, view: TextureViewId) -> bool {
+        self.banked.iter().chain(self.retired_banks.iter()).any(|bank| bank.views.contains(&view))
+    }
 
     pub(super) fn commit_snapshot(&mut self, snapshot: Option<BindGroupId>) {
         self.committed = snapshot;
         self.layout_transition_pending = false;
+        self.committed_banked = self.banked.is_some();
+        self.bank_transition_pending = false;
     }
 
     fn committed_previous_snapshot(&self) -> bool {
@@ -177,12 +325,17 @@ impl SceneSampledTextures {
         self.retired.iter().any(|old| old.readers.ready()
             && self.committed != Some(old.snapshot) && !self.queued.contains(&Some(old.snapshot)))
             || (!self.committed_previous_snapshot() && self.queued.is_empty()
-                && self.retired_textures.iter().any(|old| old.readers.ready()))
+                && self.retired_textures.iter().any(|old| old.readers.ready()
+                    && old.textures.iter().all(|texture| !self.bank_references(texture.view))))
+            || (self.readers.ready() && self.queued.is_empty() && !self.bank_transition_pending
+                && (!self.retired_banks.is_empty() || self.retired_unmapped.iter()
+                    .any(|texture| !self.bank_references(texture.view))))
     }
 
     pub(super) fn has_retired(&self) -> bool {
         !self.pending.is_empty() || !self.cleared.is_empty() || !self.retired.is_empty()
-            || !self.retired_textures.is_empty()
+            || !self.retired_textures.is_empty() || !self.retired_banks.is_empty()
+            || !self.retired_unmapped.is_empty()
     }
 
     pub(super) fn queue_capture(&mut self, snapshot: Option<BindGroupId>) {
@@ -276,6 +429,26 @@ impl SceneSampledTextures {
     }
 
     pub(super) fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if self.readers.ready() && self.queued.is_empty() && !self.bank_transition_pending {
+            // All banked draws are conservatively tracked as draw-local
+            // (legacy) readers by the existing scene submission contract.
+            for bank in &mut self.retired_banks {
+                while let Some(&snapshot) = bank.snapshots.last() {
+                    device.destroy_bind_group(snapshot)?;
+                    bank.snapshots.pop();
+                }
+            }
+            self.retired_banks.clear();
+            let mut index = 0;
+            while index < self.retired_unmapped.len() {
+                if self.bank_references(self.retired_unmapped[index].view) {
+                    index += 1;
+                    continue;
+                }
+                let texture = self.retired_unmapped.swap_remove(index);
+                destroy_texture(device, texture)?;
+            }
+        }
         let mut i = 0;
         while i < self.retired.len() {
             if !self.retired[i].readers.ready() || self.committed == Some(self.retired[i].snapshot)
@@ -292,7 +465,9 @@ impl SceneSampledTextures {
         // Destroy all ready descriptor sets before their retired images.
         let mut i = 0;
         while i < self.retired_textures.len() {
-            if !self.retired_textures[i].readers.ready() { i += 1; continue; }
+            if !self.retired_textures[i].readers.ready() || self.retired_textures[i].textures.iter()
+                .any(|texture| self.bank_references(texture.view))
+            { i += 1; continue; }
             let old = self.retired_textures.swap_remove(i);
             for texture in old.textures { destroy_texture(device, texture)?; }
         }
@@ -368,6 +543,10 @@ impl SceneSampledTextures {
     }
 
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        for bank in self.banked.take().into_iter().chain(self.retired_banks.drain(..)) {
+            for snapshot in bank.snapshots { device.destroy_bind_group(snapshot)?; }
+        }
+        for texture in self.retired_unmapped.drain(..) { destroy_texture(device, texture)?; }
         if let Some(snapshot) = self.slots.current_snapshot() { device.destroy_bind_group(snapshot)?; }
         for old in self.retired.drain(..) {
             device.destroy_bind_group(old.snapshot)?;
