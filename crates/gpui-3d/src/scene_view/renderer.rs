@@ -6,7 +6,7 @@ use super::{
 use crate::prepare::StructuralDrawDelta;
 use crate::{NativeOffscreenPass, submit_native_offscreen_passes};
 use anyhow::{anyhow, bail};
-use gfx_core::{BackendKind, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
+use gfx_core::{BackendKind, BindGroupId, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
 use gpui::diagnostics::gpu_owner;
 use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
@@ -88,6 +88,7 @@ struct OffscreenCommandTraits {
 #[derive(Default)]
 struct CachedCommands {
     revision: Option<u64>,
+    sampled_snapshot: Option<BindGroupId>,
     commands: Vec<RenderCommand>,
     /// Only this canonical layout may be remapped through logical Section deltas.
     generated_draw_count: Option<usize>,
@@ -103,7 +104,80 @@ struct CachedCommands {
     visible_offscreen: Option<((u64, u64), Arc<[RenderCommand]>)>,
 }
 
+/// Replace the immutable sampled table, never the geometry binding, PSO,
+/// index buffer, indirect address, scissor or draw order.
+fn rebind_sampled_commands(commands: &mut [RenderCommand], old: BindGroupId, new: BindGroupId) {
+    for command in commands {
+        let groups = match command {
+            RenderCommand::Draw(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndexed(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndirect(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndexedIndirect(draw) => &mut draw.bind_groups,
+        };
+        debug_assert_eq!(groups.as_slice().get(1), Some(&old));
+        if groups.as_slice().get(1) == Some(&old) {
+            groups[1] = new;
+        }
+    }
+}
+
 impl CachedCommands {
+    /// Descriptor publication alone does not invalidate the native command
+    /// topology. Rebind the cached canonical/grouped/filtered streams once;
+    /// Arc copy-on-write keeps older submitted command snapshots immutable.
+    /// Mode transitions instead force a full structural revision in SceneResources.
+    fn refresh_sampled_snapshot(&mut self, next: Option<BindGroupId>) {
+        if self.sampled_snapshot == next { return; }
+        if let (Some(old), Some(new)) = (self.sampled_snapshot, next) {
+            rebind_sampled_commands(&mut self.commands, old, new);
+            // Take the secondary aliases first so an unshared grouped
+            // allocation can be edited without cloning it twice.
+            let shared = self.shared_offscreen.take();
+            let visible = self.visible_offscreen.take();
+            let shared_is_grouped = shared.as_ref().zip(self.grouped.as_ref())
+                .is_some_and(|((_, commands, _), grouped)| Arc::ptr_eq(commands, grouped));
+            let visible_is_shared = visible.as_ref().zip(shared.as_ref())
+                .is_some_and(|((_, filtered), (_, commands, _))| Arc::ptr_eq(filtered, commands));
+            let shared = shared.map(|(revision, commands, traits)| {
+                let commands = (!shared_is_grouped).then_some(commands);
+                (revision, commands, traits)
+            });
+            let visible = visible.map(|(key, commands)| {
+                let commands = (!visible_is_shared).then_some(commands);
+                (key, commands)
+            });
+            if let Some(grouped) = self.grouped.as_mut() {
+                rebind_sampled_commands(Arc::make_mut(grouped), old, new);
+            }
+            self.shared_offscreen = shared.map(|(revision, commands, traits)| {
+                let commands = if let Some(mut commands) = commands {
+                    rebind_sampled_commands(Arc::make_mut(&mut commands), old, new);
+                    commands
+                } else {
+                    Arc::clone(self.grouped.as_ref().expect("grouped alias"))
+                };
+                (revision, commands, traits)
+            });
+            self.visible_offscreen = visible.map(|(key, commands)| {
+                let commands = if let Some(mut commands) = commands {
+                    rebind_sampled_commands(Arc::make_mut(&mut commands), old, new);
+                    commands
+                } else {
+                    Arc::clone(&self.shared_offscreen.as_ref().expect("visible alias").1)
+                };
+                (key, commands)
+            });
+        } else {
+            // A different pipeline layout cannot use the previous commands.
+            // Preserve the last committed topology for diagnostics only;
+            // invalidating the revision prohibits structural splice reuse.
+            self.revision = None;
+            self.shared_offscreen = None;
+            self.visible_offscreen = None;
+        }
+        self.sampled_snapshot = next;
+    }
+
     fn shared_offscreen(
         &mut self,
         revision: u64,
@@ -1047,6 +1121,48 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn sampled_snapshot_rebind_preserves_grouped_command_topology() {
+        use gfx_core::{BindGroupId, BufferId, DrawIndirectCommand};
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let first = BindGroupId::from_parts(10, 1);
+        let second = BindGroupId::from_parts(11, 1);
+        let geometry_a = BindGroupId::from_parts(20, 1);
+        let geometry_b = BindGroupId::from_parts(21, 1);
+        cache.refresh_sampled_snapshot(Some(first));
+        let (before, traits) = cache.shared_offscreen(1, Some(4), None, None, |commands| {
+            for (index, geometry) in [geometry_a, geometry_b, geometry_a, geometry_b].into_iter().enumerate() {
+                commands.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                    pipeline: RenderPipelineId::from_parts(1, 1),
+                    bind_groups: bind_group_list([geometry, first]),
+                    arguments: BufferId::from_parts(1, 1),
+                    offset: index as u64 * 16,
+                    scissor: None,
+                }));
+            }
+            Ok(())
+        }, |_, _| unreachable!()).unwrap();
+        assert!(cache.grouped.is_some());
+        let (filtered_before, _) = cache.filter_offscreen(1, (Arc::clone(&before), traits), Some((1, &[true, false, true, true])));
+        cache.refresh_sampled_snapshot(Some(second));
+        let (after, traits) = cache.shared_offscreen(1, Some(4), None, None,
+            |_| panic!("descriptor replacement must not rebuild commands"), |_, _| unreachable!()).unwrap();
+        let (filtered_after, _) = cache.filter_offscreen(1, (Arc::clone(&after), traits), Some((1, &[true, false, true, true])));
+        for (old, new) in before.iter().zip(after.iter()).chain(filtered_before.iter().zip(filtered_after.iter())) {
+            assert_eq!(old.bind_groups()[0], new.bind_groups()[0]);
+            assert_eq!(old.bind_groups()[1], first);
+            assert_eq!(new.bind_groups()[1], second);
+            assert_eq!(old.pipeline(), new.pipeline());
+            let (RenderCommand::DrawIndirect(old), RenderCommand::DrawIndirect(new)) = (old, new) else { unreachable!() };
+            assert_eq!(old.offset, new.offset);
+            assert_eq!(old.arguments, new.arguments);
+        }
+        assert_eq!(cache.revision, Some(1));
+        cache.refresh_sampled_snapshot(None);
+        assert!(cache.revision.is_none(), "layout transition must invalidate topology");
+    }
+
+    #[test]
     fn stable_scene_reuses_commands_and_changed_scene_rebuilds() {
         let mut cache = CachedCommands::default();
         let mut builds = 0;
@@ -1891,6 +2007,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let _phase =
                 gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CommandEncode);
             let cache = self.command_cache.entry(scene_view.id).or_default();
+            cache.refresh_sampled_snapshot(scene.sampled_snapshot(&self.resources));
             let build = |output: &mut Vec<RenderCommand>| {
                 scene.append_steps(&self.resources, scene_view.voxel_shader, output)
             };

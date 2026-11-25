@@ -1628,10 +1628,12 @@ impl SceneResources {
         }
         // Removed textures remain pinned by the current immutable snapshot.
         // Their edits are published before the next frame's batch plan.
-        let sampled_changed = old_sampled != next_sampled;
         self.committed_sampled_snapshot = next_sampled;
-        if sampled_changed { self.command_delta = None; }
-        let command_inputs_changed = sampled_changed || (draw_list_changed && !resident_commands_stable)
+        if sampled_mode_changed { self.command_delta = None; }
+        // A replacement table with the same layout does not change draw
+        // topology. CachedCommands patches set one independently of this
+        // revision, preserving native grouping and sparse Section splices.
+        let command_inputs_changed = sampled_mode_changed || (draw_list_changed && !resident_commands_stable)
             || sampler_changed
             || shadow_created
             || voxel_shader_changed
@@ -3954,7 +3956,7 @@ impl SceneResources {
         })
     }
 
-    fn sampled_snapshot(&self, renderer: &RendererResources) -> Option<BindGroupId> {
+    pub(super) fn sampled_snapshot(&self, renderer: &RendererResources) -> Option<BindGroupId> {
         self.sampled_textures.as_ref().filter(|table| table.matches_layout(renderer.sampled_table_layout()))
             .and(self.committed_sampled_snapshot)
     }

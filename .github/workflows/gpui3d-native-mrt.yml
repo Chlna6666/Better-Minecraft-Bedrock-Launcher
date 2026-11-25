@@ -101,6 +101,7 @@ jobs:
           set -euo pipefail
           cargo test -p gpui-3d --lib --features gpui/x11 draw_cache_
           cargo test -p gpui-3d --lib --features gpui/x11 full_material_cache_preserves_unchanged_resident_gpu_records
+          cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_rebind_preserves_grouped_command_topology
       - name: Verify production Vulkan bindless Color PSOs against legacy
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
