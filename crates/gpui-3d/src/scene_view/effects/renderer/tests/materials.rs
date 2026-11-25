@@ -304,9 +304,37 @@ pub(super) fn verify_shadows<D: Device + TextureTransferDevice>(
                 let pixels = draw(device, renderer, context, &cloudy, target, depth);
                 luminance.push(pixels[(32 * 64 + 32) * 4]);
             }
+            // The output target contains the ACES-fit + sRGB display value,
+            // not linear radiance. Undo both transforms before measuring
+            // extinction; a fixed byte delta depends on exposure and tone
+            // mapping compression and overstates the required cloud shadow.
+            let decode_radiance = |byte: u8| {
+                assert!(byte < 255, "cloud shadow fixture must not saturate");
+                let srgb = f32::from(byte) / 255.0;
+                let mapped = if srgb <= 0.04045 {
+                    srgb / 12.92
+                } else {
+                    ((srgb + 0.055) / 1.055).powf(2.4)
+                };
+                let a = 2.51 - 2.43 * mapped;
+                let b = 0.03 - 0.59 * mapped;
+                let c = -0.14 * mapped;
+                (-b + (b * b - 4.0 * a * c).sqrt()) / (2.0 * a)
+            };
+            let clear = decode_radiance(luminance[0]);
+            let solid = decode_radiance(luminance[1]);
+            assert!(clear > 0.0, "cloud shadow fixture must receive sunlight");
+            // A fully covered 4-block slab at vertical incidence attenuates
+            // direct radiance by exp(-4 * 0.09). Ambient radiance is not
+            // attenuated, so total contrast is smaller. Require at least
+            // half the predicted direct contrast and reject over-extinction
+            // beyond a small readback/quantization tolerance.
+            let expected = 1.0 - (-4.0_f32 * 0.09).exp();
+            let contrast = (clear - solid) / clear;
+            eprintln!("NOVA_CLOUD_SHADOW display={luminance:?} linear=[{clear}, {solid}] contrast={contrast}");
             assert!(
-                luminance[0] > luminance[1] + 25,
-                "cloud alpha must cast a material-dependent ground shadow: {luminance:?}"
+                contrast >= expected * 0.5 && contrast <= expected + 0.04,
+                "cloud alpha must cast a physically bounded ground shadow: {luminance:?}, linear contrast={contrast}"
             );
         }
     }
