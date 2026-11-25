@@ -57,6 +57,8 @@ fn material_textures(draw: &PreparedDraw) -> MaterialTextures {
 // ordinary single-table streaming path remains unchanged. A generation is
 // rebuilt only when a material tuple or its layout changes.
 struct BankGeneration {
+    generation: u64,
+    readers: Readers,
     layout: BindGroupLayoutId,
     materials: HashMap<MaterialTextures, (usize, [u32; 4])>,
     views: HashSet<TextureViewId>,
@@ -102,7 +104,7 @@ impl BankGeneration {
                 }
             }
         }
-        Ok(Self { layout, materials, views, snapshots })
+        Ok(Self { generation: 0, readers: Readers::default(), layout, materials, views, snapshots })
     }
 }
 
@@ -113,7 +115,9 @@ pub(super) struct SceneSampledTextures {
     retired_banks: Vec<BankGeneration>,
     retired_unmapped: Vec<TextureResources>,
     bank_transition_pending: bool,
-    committed_banked: bool,
+    next_bank_generation: u64,
+    committed_bank: Option<u64>,
+    queued_banks: HashSet<u64>,
     slots: SampledTextureSlots,
     unmapped: usize,
     readers: Readers,
@@ -141,7 +145,8 @@ impl SceneSampledTextures {
         Ok(Self {
             layout, fallback, banked: None, retired_banks: Vec::new(),
             retired_unmapped: Vec::new(), bank_transition_pending: false,
-            committed_banked: false, slots: SampledTextureSlots::new(capacity, fallback)?,
+            next_bank_generation: 1, committed_bank: None, queued_banks: HashSet::new(),
+            slots: SampledTextureSlots::new(capacity, fallback)?,
             unmapped: 0, readers: Readers::default(), legacy_readers: Readers::default(),
             snapshot_readers: Readers::default(), generation: 0, first_generation: HashMap::new(),
             queued: HashSet::new(),
@@ -236,7 +241,7 @@ impl SceneSampledTextures {
         self.layout_transition_pending || self.bank_transition_pending
     }
 
-    pub(super) fn committed_banked(&self) -> bool { self.committed_banked }
+    pub(super) fn committed_banked(&self) -> bool { self.committed_bank.is_some() }
     pub(super) fn banked(&self) -> bool { self.banked.is_some() }
 
     pub(super) fn bank_index(&self, draw: &PreparedDraw) -> Option<usize> {
@@ -292,7 +297,12 @@ impl SceneSampledTextures {
             }
         }
         let next = match BankGeneration::build(device, self.layout, self.slots.capacity(), self.fallback, draws, textures) {
-            Ok(next) => Some(next),
+            Ok(mut next) => {
+                next.generation = self.next_bank_generation;
+                self.next_bank_generation = self.next_bank_generation.checked_add(1)
+                    .expect("sampled bank generation exhausted");
+                Some(next)
+            }
             Err(error) => {
                 eprintln!("gpui-3d sampled bank publication failed: {error:#}; using legacy");
                 None
@@ -313,7 +323,7 @@ impl SceneSampledTextures {
     pub(super) fn commit_snapshot(&mut self, snapshot: Option<BindGroupId>) {
         self.committed = snapshot;
         self.layout_transition_pending = false;
-        self.committed_banked = self.banked.is_some();
+        self.committed_bank = self.banked.as_ref().map(|bank| bank.generation);
         self.bank_transition_pending = false;
     }
 
@@ -327,9 +337,9 @@ impl SceneSampledTextures {
             || (!self.committed_previous_snapshot() && self.queued.is_empty()
                 && self.retired_textures.iter().any(|old| old.readers.ready()
                     && old.textures.iter().all(|texture| !self.bank_references(texture.view))))
+            || self.retired_banks.iter().any(|bank| self.bank_ready(bank))
             || (self.readers.ready() && self.queued.is_empty() && !self.bank_transition_pending
-                && (!self.retired_banks.is_empty() || self.retired_unmapped.iter()
-                    .any(|texture| !self.bank_references(texture.view))))
+                && self.retired_unmapped.iter().any(|texture| !self.bank_references(texture.view)))
     }
 
     pub(super) fn has_retired(&self) -> bool {
@@ -338,7 +348,25 @@ impl SceneSampledTextures {
             || !self.retired_unmapped.is_empty()
     }
 
+    fn bank_ready(&self, bank: &BankGeneration) -> bool {
+        bank.readers.ready() && self.committed_bank != Some(bank.generation)
+            && !self.queued_banks.contains(&bank.generation)
+    }
+
+    fn bank_submitted(&mut self, generation: u64, submission: Option<SubmissionId>) {
+        if let Some(bank) = self.banked.iter_mut().chain(self.retired_banks.iter_mut())
+            .find(|bank| bank.generation == generation)
+        {
+            bank.readers.submitted(submission);
+        } else {
+            debug_assert!(false, "submitted unknown sampled bank generation");
+        }
+    }
+
     pub(super) fn queue_capture(&mut self, snapshot: Option<BindGroupId>) {
+        if snapshot.is_none() && let Some(generation) = self.committed_bank {
+            self.queued_banks.insert(generation);
+        }
         self.queued.insert(snapshot);
     }
 
@@ -347,7 +375,9 @@ impl SceneSampledTextures {
     /// to conservative readers instead of freeing them.
     pub(super) fn abandon_capture(&mut self, may_have_submitted: bool) {
         let queued = std::mem::take(&mut self.queued);
+        let queued_banks = std::mem::take(&mut self.queued_banks);
         if may_have_submitted {
+            for generation in queued_banks { self.bank_submitted(generation, None); }
             for snapshot in queued { self.submitted(None, snapshot); }
         }
     }
@@ -356,8 +386,14 @@ impl SceneSampledTextures {
     /// The current scene may already have published another snapshot.
     pub(super) fn capture_submitted(&mut self, submission: Option<SubmissionId>, fallback: Option<BindGroupId>) {
         if self.queued.is_empty() {
+            if fallback.is_none() && let Some(generation) = self.committed_bank {
+                self.bank_submitted(generation, submission);
+            }
             self.submitted(submission, fallback);
         } else {
+            for generation in std::mem::take(&mut self.queued_banks) {
+                self.bank_submitted(generation, submission);
+            }
             for snapshot in std::mem::take(&mut self.queued) {
                 self.submitted(submission, snapshot);
             }
@@ -408,6 +444,9 @@ impl SceneSampledTextures {
         self.snapshot_readers.accepted(submission);
         for old in &mut self.retired { old.readers.accepted(submission); }
         for old in &mut self.retired_textures { old.readers.accepted(submission); }
+        for bank in self.banked.iter_mut().chain(self.retired_banks.iter_mut()) {
+            bank.readers.accepted(submission);
+        }
     }
 
     pub(super) fn completed(&mut self, submission: SubmissionId) {
@@ -417,6 +456,9 @@ impl SceneSampledTextures {
         self.slots.complete(submission);
         for old in &mut self.retired { old.readers.completed(submission); }
         for old in &mut self.retired_textures { old.readers.completed(submission); }
+        for bank in self.banked.iter_mut().chain(self.retired_banks.iter_mut()) {
+            bank.readers.completed(submission);
+        }
     }
 
     pub(super) fn idle(&mut self) {
@@ -426,19 +468,24 @@ impl SceneSampledTextures {
         self.snapshot_readers.idle();
         for old in &mut self.retired { old.readers.idle(); }
         for old in &mut self.retired_textures { old.readers.idle(); }
+        for bank in self.banked.iter_mut().chain(self.retired_banks.iter_mut()) { bank.readers.idle(); }
     }
 
     pub(super) fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        if self.readers.ready() && self.queued.is_empty() && !self.bank_transition_pending {
-            // All banked draws are conservatively tracked as draw-local
-            // (legacy) readers by the existing scene submission contract.
-            for bank in &mut self.retired_banks {
-                while let Some(&snapshot) = bank.snapshots.last() {
-                    device.destroy_bind_group(snapshot)?;
-                    bank.snapshots.pop();
-                }
+        let mut bank_index = 0;
+        while bank_index < self.retired_banks.len() {
+            if !self.bank_ready(&self.retired_banks[bank_index]) {
+                bank_index += 1;
+                continue;
             }
-            self.retired_banks.clear();
+            let bank = &mut self.retired_banks[bank_index];
+            while let Some(&snapshot) = bank.snapshots.last() {
+                device.destroy_bind_group(snapshot)?;
+                bank.snapshots.pop();
+            }
+            self.retired_banks.swap_remove(bank_index);
+        }
+        if self.readers.ready() && self.queued.is_empty() && !self.bank_transition_pending {
             let mut index = 0;
             while index < self.retired_unmapped.len() {
                 if self.bank_references(self.retired_unmapped[index].view) {
@@ -572,6 +619,33 @@ pub(super) fn indices(textures: &HashMap<TextureAssetId, TextureResources>, draw
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bank_generation_retirement_is_independent_of_new_scene_readers() {
+        let layout = BindGroupLayoutId::from_parts(1, 1);
+        let mut table = SceneSampledTextures::new(layout, 4, TextureViewId::from_parts(1, 1)).unwrap();
+        let bank = |generation| BankGeneration {
+            generation, readers: Readers::default(), layout, materials: HashMap::new(),
+            views: HashSet::new(), snapshots: Vec::new(),
+        };
+        let a = SubmissionId::from_parts(10, 1);
+        let b = SubmissionId::from_parts(11, 1);
+        table.banked = Some(bank(1));
+        table.commit_snapshot(None);
+        table.queue_capture(None);
+        table.retired_banks.push(table.banked.take().unwrap());
+        table.banked = Some(bank(2));
+        table.commit_snapshot(None);
+        assert!(!table.bank_ready(&table.retired_banks[0]));
+        table.capture_submitted(Some(a), None);
+        table.queue_capture(None);
+        table.capture_submitted(Some(b), None);
+        assert!(!table.bank_ready(&table.retired_banks[0]));
+        table.completed(a);
+        assert!(table.bank_ready(&table.retired_banks[0]));
+        assert!(!table.readers.ready());
+        assert!(!table.banked.as_ref().unwrap().readers.ready());
+    }
 
     #[test]
     fn late_old_generation_submission_extends_retired_image_readers() {
