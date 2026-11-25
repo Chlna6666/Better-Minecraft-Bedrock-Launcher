@@ -60,6 +60,41 @@ pub struct RendererExtensionPass {
     pub depth_attachment: Option<DepthAttachment>,
 }
 impl RendererExtensionPass {
+    /// Standalone/native test adapter. Preserve compact and shared-table
+    /// metadata even when the caller appends a flat final composite pass.
+    pub fn submit_batch<D: PresentationDevice>(
+        device: &mut D, owned: &[Self], tail: &[RenderPassCommands<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        let mut passes = owned.iter().map(Self::commands).collect::<Vec<_>>();
+        if !owned.iter().any(|pass| pass.run_plan.is_some()) {
+            passes.extend_from_slice(tail);
+            if owned.iter().any(|pass| pass.sampled_table.is_some()) {
+                let tables = owned.iter().map(|pass| pass.sampled_table)
+                    .chain(std::iter::repeat_n(None, tail.len())).collect::<Vec<_>>();
+                let tags = owned.iter().map(|pass| pass.gpu_work_tag)
+                    .chain(std::iter::repeat_n(None, tail.len())).collect::<Vec<_>>();
+                return device.render_to_textures_sampled_profiled(&passes, &tables, &[], &tags);
+            }
+            return device.render_to_textures(&passes);
+        }
+        let tail_owners = tail.iter().map(|pass| Arc::<[RenderCommand]>::from(pass.commands)).collect::<Vec<_>>();
+        passes.extend(tail.iter().zip(&tail_owners).map(|(pass, owner)| RenderPassCommands {
+            color_attachments: pass.color_attachments, render_pass: pass.render_pass,
+            commands: owner.as_ref(), color_load_op: pass.color_load_op,
+            depth_attachment: pass.depth_attachment, clear_region: pass.clear_region,
+            viewport: pass.viewport, resolve_target: pass.resolve_target,
+        }));
+        let owners = owned.iter().map(|pass| Arc::clone(&pass.commands))
+            .chain(tail_owners.iter().cloned()).collect::<Vec<_>>();
+        let plans = owned.iter().map(|pass| pass.run_plan.clone())
+            .chain(std::iter::repeat_n(None, tail.len())).collect::<Vec<_>>();
+        let tables = owned.iter().map(|pass| pass.sampled_table)
+            .chain(std::iter::repeat_n(None, tail.len())).collect::<Vec<_>>();
+        let tags = owned.iter().map(|pass| pass.gpu_work_tag)
+            .chain(std::iter::repeat_n(None, tail.len())).collect::<Vec<_>>();
+        device.render_to_textures_runs_profiled(&passes, &owners, &plans, &tables, &tags)
+    }
+
     /// Borrows this owned plan for the host graphics submission.
     /// The caller must forward both `sampled_table` and `run_plan` to the native batch API.
     pub fn commands(&self) -> RenderPassCommands<'_> {
