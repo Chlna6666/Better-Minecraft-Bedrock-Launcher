@@ -106,7 +106,7 @@ struct CachedCommands {
 
 /// Replace the immutable sampled table, never the geometry binding, PSO,
 /// index buffer, indirect address, scissor or draw order.
-fn rebind_sampled_commands(commands: &mut [RenderCommand], old: BindGroupId, new: BindGroupId) {
+pub(super) fn rebind_sampled_commands(commands: &mut [RenderCommand], old: BindGroupId, new: BindGroupId) {
     for command in commands {
         let groups = match command {
             RenderCommand::Draw(draw) => &mut draw.bind_groups,

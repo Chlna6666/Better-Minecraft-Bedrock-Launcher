@@ -110,6 +110,49 @@ struct Cached {
     cost: CostModel,
 }
 
+/// A uniform set-one replacement preserves every grouping equivalence
+/// relation and indirect argument address. Check the full native identity
+/// instead of trusting matching draw counts, a hash, or a queued GPU wait.
+/// No allocations or GPU metadata uploads are needed for this comparison.
+fn sampled_snapshot_replacement(
+    previous: &[RenderCommand], next: &[RenderCommand],
+) -> Option<(BindGroupId, BindGroupId)> {
+    if previous.len() != next.len() { return None; }
+    let [_, old] = previous.first()?.bind_groups() else { return None; };
+    let [_, new] = next.first()?.bind_groups() else { return None; };
+    if old == new { return None; }
+    for (a, b) in previous.iter().zip(next) {
+        let [geometry_a, table_a] = a.bind_groups() else { return None; };
+        let [geometry_b, table_b] = b.bind_groups() else { return None; };
+        if geometry_a != geometry_b || table_a != old || table_b != new
+            || a.pipeline() != b.pipeline() || a.scissor() != b.scissor()
+        { return None; }
+        match (a, b) {
+            (RenderCommand::DrawIndirect(a), RenderCommand::DrawIndirect(b))
+                if a.arguments == b.arguments && a.offset == b.offset => {}
+            (RenderCommand::DrawIndexedIndirect(a), RenderCommand::DrawIndexedIndirect(b))
+                if a.arguments == b.arguments && a.offset == b.offset
+                    && a.index_buffer == b.index_buffer => {}
+            _ => return None,
+        }
+    }
+    Some((*old, *new))
+}
+
+impl Cached {
+    fn try_rebind_sampled_snapshot(&mut self, next: &Arc<[RenderCommand]>) -> bool {
+        let Some((old, new)) = sampled_snapshot_replacement(&self.source, next) else { return false; };
+        if let Some(prepared) = self.prepared.as_mut() {
+            super::renderer::rebind_sampled_commands(&mut prepared.commands, old, new);
+        }
+        self.source = Arc::clone(next);
+        // Keep the gather list and measured history. An outstanding probe
+        // spans the old snapshot, so do not pair it with new draw timings.
+        self.cost.pending = None;
+        true
+    }
+}
+
 const MIN_SAMPLES: u32 = 6;
 const PROBE_INTERVAL: u32 = 32;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -467,7 +510,8 @@ impl ViewCompactor {
     }
 
     fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
-        if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
+        let unchanged = self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands));
+        if !unchanged && !self.cached.as_mut().is_some_and(|cached| cached.try_rebind_sampled_snapshot(&pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
@@ -518,6 +562,39 @@ mod tests {
             },
             scissor: None,
         })
+    }
+
+    #[test]
+    fn sampled_replacement_preserves_compaction_only_for_exact_native_topology() {
+        let geometry = BindGroupId::from_parts(1, 1);
+        let old = BindGroupId::from_parts(2, 1);
+        let new = BindGroupId::from_parts(3, 1);
+        let mut previous: Vec<_> = (0..256).rev().map(|i| draw(i * 16)).collect();
+        for command in &mut previous {
+            let RenderCommand::DrawIndirect(draw) = command else { unreachable!() };
+            draw.bind_groups = bind_group_list([geometry, old]);
+        }
+        let mut next = previous.clone();
+        super::super::renderer::rebind_sampled_commands(&mut next, old, new);
+        assert_eq!(sampled_snapshot_replacement(&previous, &next), Some((old, new)));
+        let a = plan(&previous, 256).unwrap();
+        let b = plan(&next, 256).unwrap();
+        assert_eq!(a.runs, b.runs);
+        assert_eq!(a.gather, b.gather);
+
+        let mut cached = Cached { source: Arc::from(previous.as_slice()), prepared: None, cost: CostModel::default() };
+        cached.cost.original.observe(123);
+        let published: Arc<[RenderCommand]> = Arc::from(next.as_slice());
+        assert!(cached.try_rebind_sampled_snapshot(&published));
+        assert!(Arc::ptr_eq(&cached.source, &published));
+        assert_eq!(cached.cost.original.ns, 123);
+        let RenderCommand::DrawIndirect(draw) = &mut next[0] else { unreachable!() };
+        draw.offset += 16;
+        assert!(sampled_snapshot_replacement(&previous, &next).is_none());
+        next[0] = published[0].clone();
+        let RenderCommand::DrawIndirect(draw) = &mut next[1] else { unreachable!() };
+        draw.bind_groups[0] = BindGroupId::from_parts(9, 1);
+        assert!(sampled_snapshot_replacement(&previous, &next).is_none());
     }
 
     #[test]
