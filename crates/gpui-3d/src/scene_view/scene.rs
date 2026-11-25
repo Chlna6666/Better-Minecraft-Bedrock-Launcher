@@ -3950,9 +3950,20 @@ impl SceneResources {
         })
     }
 
+    pub(in crate::scene_view) fn release_completed_sampled_snapshots(
+        &mut self, device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<()> {
+        if let Some(table) = self.sampled_textures.as_mut()
+            && table.has_completed_retirement()
+        {
+            table.release_completed(device)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::scene_view) fn sampled_maintenance_pending(&self) -> bool {
         self.sampled_textures.as_ref().is_some_and(|table| {
-            table.needs_remap() || table.needs_publication() || table.has_completed_retirement()
+            table.needs_remap() || table.needs_publication()
         })
     }
 

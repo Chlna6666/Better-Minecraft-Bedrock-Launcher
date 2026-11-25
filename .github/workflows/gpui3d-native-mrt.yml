@@ -105,6 +105,7 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_retirement_excludes_unrelated_generations_and_legacy_reads
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_replacement_preserves_compaction_only_for_exact_native_topology
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_pass_publication_keeps_command_allocation_and_order
+          cargo test -p gpui-3d --lib --features gpui/x11 effects_capture_commands_reuse_arcs_until_geometry_or_pipeline_changes
       - name: Verify production Vulkan bindless Color PSOs against legacy
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash

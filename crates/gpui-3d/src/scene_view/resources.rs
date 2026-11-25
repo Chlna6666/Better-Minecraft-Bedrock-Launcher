@@ -33,6 +33,8 @@ pub(super) struct RendererResources {
     fragment_shader: Option<ShaderModuleId>,
     voxel_fragment_shader: Option<ShaderModuleId>,
     pipelines: [Option<RenderPipelineId>; 18],
+    // A handle generation independent of per-view geometry revisions.
+    pub(super) pipeline_revision: u64,
     sampled: Option<SampledPipelines>,
     /// A previous native scene PSO may still be referenced by an in-flight
     /// independent producer queue. Defer destruction until GPU fence proof.
@@ -268,6 +270,7 @@ impl RendererResources {
                 std::mem::replace(&mut sampled.pipelines, next).into_iter().flatten()
             );
         }
+        self.pipeline_revision = self.pipeline_revision.wrapping_add(1);
         Ok(())
     }
 

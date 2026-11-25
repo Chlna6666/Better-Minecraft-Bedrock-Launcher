@@ -190,9 +190,39 @@ struct EffectGraphKey {
     froxel_valid: bool,
     multisampled: bool,
 }
+/// The sampled descriptor is deliberately excluded from this identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CaptureCommandKey {
+    scene: u64,
+    pipelines: [u64; 2],
+}
+
+#[derive(Default)]
+struct CaptureCommands {
+    cached: Option<(CaptureCommandKey, [Arc<[RenderCommand]>; 2])>,
+}
+
+impl CaptureCommands {
+    fn get_or_build(
+        &mut self, key: CaptureCommandKey,
+        build: impl FnOnce() -> gpui::Result<[Arc<[RenderCommand]>; 2]>,
+    ) -> gpui::Result<[Arc<[RenderCommand]>; 2]> {
+        if let Some((previous, commands)) = &self.cached
+            && *previous == key
+        {
+            return Ok(commands.clone());
+        }
+        // Publish both streams together; never cache a partial failed build.
+        let commands = build()?;
+        self.cached = Some((key, commands.clone()));
+        Ok(commands)
+    }
+}
+
 pub(super) struct EffectScene {
     pub(super) last_seen: Instant,
     pub(super) capture: Option<SceneView>,
+    capture_commands: CaptureCommands,
     pub(super) targets_valid: bool,
     pub(super) queued_capture: bool,
     pub(super) ssr_hiz: Option<SsrHiZ>,
@@ -263,6 +293,9 @@ impl EffectScene {
         let mut shading = view.voxel_shading;
         shading.shadow_strength = 0.;
         let capture = view.with_voxel_shader().with_voxel_shading(shading)?;
+        // Pure fence retirement does not change rendered pixels, geometry
+        // or descriptors currently bound by the capture.
+        self.scene.release_completed_sampled_snapshots(device)?;
         let capture_changed = !self.targets_valid
             || self.scene.sampled_maintenance_pending()
             || self
@@ -276,10 +309,17 @@ impl EffectScene {
                 .context("screen scene preparation")?;
         }
         if capture_changed {
-            let mut opaque = Vec::new();
-            self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
-            let mut attributes = Vec::new();
-            self.scene.append_offscreen_steps(resources[1], true, &mut attributes)?;
+            let key = CaptureCommandKey {
+                scene: self.scene.command_revision,
+                pipelines: [resources[0].pipeline_revision, resources[1].pipeline_revision],
+            };
+            let [opaque, attributes] = self.capture_commands.get_or_build(key, || {
+                let mut opaque = Vec::new();
+                self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
+                let mut attributes = Vec::new();
+                self.scene.append_offscreen_steps(resources[1], true, &mut attributes)?;
+                Ok([opaque.into(), attributes.into()])
+            })?;
             let sampled_table = self.scene.sampled_snapshot(resources[0]);
             debug_assert_eq!(sampled_table, self.scene.sampled_snapshot(resources[1]));
             let msaa = self.targets.msaa.as_ref();
@@ -611,6 +651,7 @@ impl EffectScene {
             Ok(Self {
                 last_seen: Instant::now(),
                 capture: None,
+                capture_commands: CaptureCommands::default(),
                 targets_valid: false,
                 queued_capture: false,
                 ssr_hiz: None,
@@ -1084,5 +1125,33 @@ mod stable_shadow_tests {
         assert!(upstream.z >= bounds.min.z && upstream.z <= bounds.max.z);
         let behind = eye - sun * 256.0;
         assert!(behind.y < bounds.min.y);
+    }
+}
+
+#[cfg(test)]
+mod capture_command_tests {
+    use super::*;
+
+    #[test]
+    fn effects_capture_commands_reuse_arcs_until_geometry_or_pipeline_changes() {
+        let mut cache = CaptureCommands::default();
+        let first = CaptureCommandKey { scene: 1, pipelines: [2, 3] };
+        let build = || -> gpui::Result<[Arc<[RenderCommand]>; 2]> { Ok(std::array::from_fn(|_| Arc::from([RenderCommand::Draw(DrawCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: bind_group_list([BindGroupId::from_parts(1, 1)]),
+            vertex_count: 3, first_vertex: 0, instance_count: 1, first_instance: 0,
+            scissor: None,
+        })]))) };
+        let a = cache.get_or_build(first, build).unwrap();
+        let b = cache.get_or_build(first, || panic!("stable topology must reuse both command Arcs")).unwrap();
+        assert!(Arc::ptr_eq(&a[0], &b[0]) && Arc::ptr_eq(&a[1], &b[1]));
+        let changed = CaptureCommandKey { pipelines: [4, 3], ..first };
+        assert!(cache.get_or_build(changed, || Err(anyhow::anyhow!("failed build"))).is_err());
+        let old = cache.get_or_build(first, || unreachable!()).unwrap();
+        assert!(Arc::ptr_eq(&old[0], &a[0]));
+        let c = cache.get_or_build(changed, build).unwrap();
+        assert!(!Arc::ptr_eq(&c[0], &a[0]));
+        let d = cache.get_or_build(CaptureCommandKey { scene: 2, ..changed }, build).unwrap();
+        assert!(!Arc::ptr_eq(&d[0], &c[0]));
     }
 }

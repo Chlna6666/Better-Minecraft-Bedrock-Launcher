@@ -506,7 +506,7 @@ pub(super) fn pass(
     target: TextureViewId,
     depth: TextureViewId,
     resolve_target: Option<TextureViewId>,
-    commands: Vec<RenderCommand>,
+    commands: impl Into<Arc<[RenderCommand]>>,
     clear: bool,
 ) -> RendererExtensionPass {
     RendererExtensionPass {
