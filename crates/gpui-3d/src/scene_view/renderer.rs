@@ -5,7 +5,7 @@ use super::{
 };
 use crate::prepare::StructuralDrawDelta;
 use crate::NativeOffscreenPass;
-use crate::native_offscreen::submit_owned_native_offscreen_passes;
+use crate::native_offscreen::{submit_owned_native_offscreen_passes, submit_planned_native_offscreen_passes};
 use anyhow::{anyhow, bail};
 use gfx_core::{BackendKind, BindGroupId, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
@@ -92,6 +92,7 @@ struct CachedCommands {
     sampled_snapshot: Option<BindGroupId>,
     pass_sampled: Option<bool>,
     commands: Vec<RenderCommand>,
+    generated_runs: super::command_runs::GeneratedRunCache,
     /// Only this canonical layout may be remapped through logical Section deltas.
     generated_draw_count: Option<usize>,
     blended_batch_start: Option<usize>,
@@ -1699,7 +1700,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // can request the generic IndependentGraphicsIfAvailable mode through
         // gfx-core when measured concurrency justifies its extra submissions.
         // Per-view compaction scratch and cost models, one native graphics batch.
-        let native_result = if let Some(compactor) = self.draw_compaction.as_mut() {
+        let native_result = if self.pending_passes.iter().any(|pass| pass.run_plan.is_some()) {
+            submit_planned_native_offscreen_passes(&self.pending_passes, |passes, owners, plans, tags, tables| {
+                device.submit_run_offscreen_batch(passes, owners, plans, tables, tags)
+            })
+        } else if let Some(compactor) = self.draw_compaction.as_mut() {
             compactor.submit_batch(device, &self.pending_passes, &self.pending_capture_epochs)
         } else {
             submit_owned_native_offscreen_passes(&self.pending_passes, |passes, owners, tags, tables| {
@@ -2041,6 +2046,12 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         }
         let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
         let mut capture_commands: Option<(Arc<[RenderCommand]>, OffscreenCommandTraits)> = None;
+        let mut capture_run_plan = None;
+        // Compaction's counted gather ABI still needs the flat logical input.
+        // Prefer compact producer runs only when that optional path is off.
+        let compact_limit = if self.draw_compaction.is_none() && self.offscreen.is_some() {
+            device.compact_draw_run_limit()
+        } else { 0 };
         let commands_count = {
             // Both paths retain the same canonical native Draw command
             // cache. The offscreen path shares an immutable command snapshot
@@ -2073,6 +2084,19 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let generated_count = scene.generated_singleton_command_count();
             let first_blended = scene.first_blended_batch_index();
             if self.offscreen.is_some() {
+                if compact_limit > 1 && scene.generated_command_visibility().is_none()
+                    && let Some(count) = generated_count
+                    && let Some(published) = cache.generated_runs.refresh(
+                        scene.command_revision, count, first_blended, scene.native_command_delta(),
+                        scene.blend_only_command_change, compact_limit, &build_range)?
+                {
+                    let logical = published.plan.logical_draw_count();
+                    capture_run_plan = Some(published.plan);
+                    capture_commands = Some((published.commands, OffscreenCommandTraits {
+                        authored_scissors: false, indirect_only: logical != 0,
+                    }));
+                    logical
+                } else {
                 if scene.blend_only_command_change
                     && let (Some(count), Some(first)) = (generated_count, first_blended)
                 {
@@ -2094,6 +2118,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 let count = shared.0.len();
                 capture_commands = Some(shared);
                 count
+                }
             } else {
                 let first_step = steps.len();
                 cache.append_spliced(
@@ -2139,6 +2164,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 scene.capture_revision,
                 gpu_work_tag,
                 commands,
+                capture_run_plan,
                 sampled_table,
                 traits.authored_scissors,
                 traits.indirect_only,
