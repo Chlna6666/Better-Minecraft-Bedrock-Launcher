@@ -21,9 +21,9 @@ pub(super) struct Compositor {
     ms_post_pipeline: Option<RenderPipelineId>,
     froxel_post_pipeline: Option<RenderPipelineId>,
     froxel_ms_post_pipeline: Option<RenderPipelineId>,
-    post_extent: Extent2d,
-    pipeline: Option<(RenderPassId, Extent2d, RenderPipelineId)>,
-    ms_pipeline: Option<(RenderPassId, Extent2d, RenderPipelineId)>,
+    pipeline: Option<(RenderPassId, RenderPipelineId)>,
+    ms_pipeline: Option<(RenderPassId, RenderPipelineId)>,
+    retired_pipelines: Vec<RenderPipelineId>,
 }
 impl Compositor {
     pub(super) fn new(
@@ -237,7 +237,7 @@ impl Compositor {
                 froxel_ms_post_pipeline,
                 pipeline: None,
                 ms_pipeline: None,
-                post_extent,
+                retired_pipelines: Vec::new(),
             })
         })();
         cleanup.finish(device, result)
@@ -271,62 +271,15 @@ impl Compositor {
             _ => self.post_pipeline,
         }
     }
-    pub(super) fn sync_post(
-        &mut self,
-        device: &mut dyn ExtensionDevice,
-        context: &RendererExtensionContext,
-    ) -> gpui::Result<()> {
-        if self.post_extent == context.viewport() {
-            return Ok(());
+    /// Post pipelines have immutable attachment formats and dynamic viewport
+    /// state. Keep them across resolution changes and different scene views.
+    /// Retire replaced composite pipelines only after the previous owner
+    /// frame has submitted or abandoned its complete command stream.
+    pub(super) fn release_retired(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        while let Some(&pipeline) = self.retired_pipelines.last() {
+            device.destroy_render_pipeline(pipeline)?;
+            self.retired_pipelines.pop();
         }
-        let target = context.offscreen(self.post_pass, Format::Rgba8Unorm, context.viewport());
-        let pipeline = create_pipeline(
-            device,
-            self.pipeline_layout,
-            &self.shaders,
-            target.clone(),
-            false,
-            false,
-            false,
-        )?;
-        device.destroy_render_pipeline(std::mem::replace(&mut self.post_pipeline, pipeline))?;
-        if let (Some(ms), Some(ms_pipeline)) = (&self.ms_shaders, self.ms_post_pipeline) {
-            match create_pipeline(device, self.pipeline_layout, ms, target.clone(), false, true, false) {
-                Ok(pipeline) => {
-                    self.ms_post_pipeline = Some(pipeline);
-                    device.destroy_render_pipeline(ms_pipeline)?;
-                }
-                Err(error) => {
-                    // Keep the previous-size multisampled pipeline; the caller reports the
-                    // failure and the next frame retries with the same extent.
-                    self.ms_post_pipeline = Some(ms_pipeline);
-                    return Err(error);
-                }
-            }
-        }
-        if let (Some(shader), Some(old)) =
-            (self.froxel_shaders[0], self.froxel_post_pipeline)
-        {
-            let set = [self.shaders[0], shader, self.shaders[2]];
-            let pipeline = create_pipeline(
-                device, self.pipeline_layout, &set, target.clone(),
-                false, false, true,
-            )?;
-            self.froxel_post_pipeline = Some(pipeline);
-            device.destroy_render_pipeline(old)?;
-        }
-        if let (Some(shader), Some(old)) =
-            (self.froxel_shaders[1], self.froxel_ms_post_pipeline)
-        {
-            let set = [self.shaders[0], shader, self.shaders[2]];
-            let pipeline = create_pipeline(
-                device, self.pipeline_layout, &set, target.clone(),
-                false, true, true,
-            )?;
-            self.froxel_ms_post_pipeline = Some(pipeline);
-            device.destroy_render_pipeline(old)?;
-        }
-        self.post_extent = context.viewport();
         Ok(())
     }
     pub(super) fn pipeline(
@@ -341,9 +294,8 @@ impl Compositor {
         } else {
             self.pipeline
         };
-        if let Some((pass, extent, pipeline)) = cached
+        if let Some((pass, pipeline)) = cached
             && pass == context.render_pass()
-            && extent == context.viewport()
         {
             return Ok(pipeline);
         }
@@ -365,10 +317,8 @@ impl Compositor {
         } else {
             &mut self.pipeline
         };
-        if let Some((_, _, old)) =
-            slot.replace((context.render_pass(), context.viewport(), pipeline))
-        {
-            device.destroy_render_pipeline(old)?;
+        if let Some((_, old)) = slot.replace((context.render_pass(), pipeline)) {
+            self.retired_pipelines.push(old);
         }
         Ok(pipeline)
     }
@@ -436,10 +386,11 @@ impl Compositor {
         })?)
     }
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
-        if let Some((_, _, pipeline)) = self.pipeline.take() {
+        self.release_retired(device)?;
+        if let Some((_, pipeline)) = self.pipeline.take() {
             device.destroy_render_pipeline(pipeline)?;
         }
-        if let Some((_, _, pipeline)) = self.ms_pipeline.take() {
+        if let Some((_, pipeline)) = self.ms_pipeline.take() {
             device.destroy_render_pipeline(pipeline)?;
         }
         device.destroy_render_pipeline(self.post_pipeline)?;
