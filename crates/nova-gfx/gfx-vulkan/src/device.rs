@@ -4252,6 +4252,7 @@ impl VulkanDevice {
         }
 
         self.wait_for_pending_work()?;
+        self.descriptor_pools.trim_idle(&self.device, matches!(level, MemoryTrimLevel::Aggressive))?;
         let target_idle_pages = if matches!(level, MemoryTrimLevel::Moderate) {
             1
         } else {

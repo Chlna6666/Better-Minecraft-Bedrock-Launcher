@@ -45,6 +45,7 @@ pub struct SampledTextureSlots {
     free: Vec<u32>,
     dirty: BTreeMap<u32, TextureViewId>,
     waiting: HashMap<SubmissionId, Vec<SampledTextureSlot>>,
+    current_snapshot: Option<BindGroupId>,
 }
 
 impl SampledTextureSlots {
@@ -60,6 +61,7 @@ impl SampledTextureSlots {
         Ok(Self {
             fallback, slots, views: vec![fallback; capacity as usize],
             free: (1..capacity).rev().collect(), dirty: BTreeMap::new(), waiting: HashMap::new(),
+            current_snapshot: None,
         })
     }
 
@@ -134,19 +136,36 @@ impl SampledTextureSlots {
 
     /// Publish the first native immutable snapshot; only clear the dirty
     /// journal after the backend successfully creates the table.
-    pub fn create_snapshot(&mut self, device: &mut impl ResourceDevice, layout: BindGroupLayoutId) -> Result<BindGroupId> {
+    pub fn create_snapshot<D: ResourceDevice + ?Sized>(&mut self, device: &mut D, layout: BindGroupLayoutId) -> Result<BindGroupId> {
+        if self.current_snapshot.is_some() {
+            return Err(Error::InvalidInput("sampled slot table already has a published snapshot".into()));
+        }
         let snapshot = device.create_sampled_texture_table(layout, &self.views)?;
+        self.current_snapshot = Some(snapshot);
         self.dirty.clear();
         Ok(snapshot)
+    }
+
+    /// Latest snapshot identity; old snapshots remain independently owned
+    /// by the caller until their GPU readers have retired.
+    #[must_use]
+    pub const fn current_snapshot(&self) -> Option<BindGroupId> {
+        self.current_snapshot
     }
 
     /// Publish changes over the caller's current snapshot. None means no
     /// native allocation was needed. On failure the dirty journal is intact.
     /// The caller must retire the old snapshot separately after its last use.
-    pub fn publish(&mut self, device: &mut impl ResourceDevice, current: BindGroupId) -> Result<Option<BindGroupId>> {
+    pub fn publish<D: ResourceDevice + ?Sized>(&mut self, device: &mut D, current: BindGroupId) -> Result<Option<BindGroupId>> {
+        // A different or stale base can silently resurrect unchanged slots.
+        // Reject it even if there are no pending dirty writes.
+        if self.current_snapshot != Some(current) {
+            return Err(Error::InvalidInput("sampled texture snapshot base is not current".into()));
+        }
         if self.dirty.is_empty() { return Ok(None); }
         let changes: Vec<_> = self.dirty.iter().map(|(&index, &view)| (index, view)).collect();
         let snapshot = device.fork_sampled_texture_table(current, &changes)?;
+        self.current_snapshot = Some(snapshot);
         self.dirty.clear();
         Ok(Some(snapshot))
     }

@@ -325,6 +325,32 @@ impl Pools {
         Ok(())
     }
 
+    // Idle tables still consume native pool capacity. Release them first,
+    // then drop entirely empty pages without touching live descriptor sets.
+    pub(super) fn trim_idle(&mut self, device: &ash::Device, aggressive: bool) -> Result<()> {
+        let target_tables = if aggressive { 0 } else { 2 };
+        while self.idle_tables.len() > target_tables {
+            let entry = self.idle_tables.remove(0);
+            if let Err(error) = self.free(device, entry.pool, entry.set, entry.demand) {
+                self.idle_tables.insert(0, entry);
+                return Err(error);
+            }
+            self.idle_table_descriptors -= entry.demand.0[2];
+        }
+        let mut keep_empty = usize::from(!aggressive);
+        self.pages.retain(|page| {
+            if page.free_sets != PAGE_CAPACITY { return true; }
+            if keep_empty != 0 {
+                keep_empty -= 1;
+                return true;
+            }
+            // All descriptor sets have been freed from this native pool.
+            unsafe { device.destroy_descriptor_pool(page.pool, None) };
+            false
+        });
+        Ok(())
+    }
+
     pub(super) fn allocate(
         &mut self,
         device: &ash::Device,
@@ -530,6 +556,9 @@ mod tests {
         assert!(slots.allocate(views[1]).is_err());
         // Publish a fallback snapshot while the old table is still GPU-owned.
         let cleared = slots.publish(&mut device, old).unwrap().unwrap();
+        assert_eq!(slots.current_snapshot(), Some(cleared));
+        assert!(slots.publish(&mut device, old).is_err());
+        assert!(slots.create_snapshot(&mut device, layout).is_err());
         check_pixels(&mut device, [0, 1, 2, 3]);
         SubmissionDevice::wait_submission(&mut device, reader).unwrap();
         slots.complete(reader);
@@ -538,6 +567,9 @@ mod tests {
         assert_eq!((reused[0].index(), reused[1].index()), (1, 3));
         assert!(!slots.contains(first) && !slots.contains(last));
         assert!(slots.contains(middle));
+        let pending = slots.dirty_changes().collect::<Vec<_>>();
+        assert!(slots.publish(&mut device, old).is_err());
+        assert_eq!(slots.dirty_changes().collect::<Vec<_>>(), pending);
         let next = slots.publish(&mut device, cleared).unwrap().unwrap();
         for (set, order) in [(cleared, [0, 0, 2, 0]), (next, [0, 3, 2, 1])] {
             let submission = submit(&mut device, set);
@@ -596,6 +628,8 @@ mod tests {
         device.destroy_bind_group(reused).unwrap();
         device.destroy_bind_group_layout(layout).unwrap();
         assert!(device.descriptor_pools.idle_tables.is_empty());
+        device.trim_memory(MemoryTrimLevel::Aggressive).unwrap();
+        assert!(device.descriptor_pools.pages.is_empty());
         for view in views { device.destroy_texture_view(view).unwrap(); }
         for texture in textures { device.destroy_texture(texture).unwrap(); }
         eprintln!("NOVA_VULKAN_SAMPLED_TABLE=pass");
