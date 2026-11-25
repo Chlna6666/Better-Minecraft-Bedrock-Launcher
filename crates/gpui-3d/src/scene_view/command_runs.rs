@@ -181,6 +181,12 @@ fn grouped_runs(opaque: &[Run], blend: Vec<Run>, limit: u32) -> Vec<Run> {
         });
         append(&mut groups[gi], run.clone(), limit);
     }
+    // Match the uncompressed path when grouping provides no draw reuse.
+    if groups.len() == opaque.len() && opaque.iter().all(|run| run.len == 1) {
+        let mut result = opaque.to_vec();
+        result.extend(blend);
+        return result;
+    }
     let mut result = Vec::with_capacity(opaque.len() + blend.len());
     for pipeline in pipelines {
         for group in pipeline {
