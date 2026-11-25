@@ -84,6 +84,7 @@ pub struct Shader {
     entry_points: Vec<(String, ShaderStage)>,
     target_os: Option<String>,
     msl_version: MslVersion,
+    vulkan_sampled_table: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +104,7 @@ impl Shader {
             entry_points: Vec::new(),
             target_os: None,
             msl_version: MslVersion::V1_0,
+            vulkan_sampled_table: false,
         }
     }
 
@@ -112,6 +114,13 @@ impl Shader {
     /// feature, such as the `instance_id` attribute added in MSL 1.2.
     pub fn msl_version(mut self, version: MslVersion) -> Self {
         self.msl_version = version;
+        self
+    }
+
+    /// Emit this shader only for Vulkan, with explicit sampled texture
+    /// descriptor-array validation. Other backends keep ordinary variants.
+    pub fn vulkan_sampled_texture_table(mut self) -> Self {
+        self.vulkan_sampled_table = true;
         self
     }
 
@@ -278,6 +287,7 @@ impl ShaderSet {
 
         let prepared = shaders
             .iter()
+            .filter(|shader| !shader.vulkan_sampled_table || backends.contains(&Backend::Vulkan))
             .map(|shader| PreparedShader::new(shader))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -311,6 +321,9 @@ impl ShaderSet {
         let mut arms = String::new();
         for prepared in shaders {
             let shader = prepared.shader;
+            if shader.vulkan_sampled_table && backend != Backend::Vulkan {
+                continue;
+            }
             for (entry_point, stage) in &shader.entry_points {
                 let (extension, include_macro, constructor, payload, glsl, metal) =
                     self.compile_entry(out_dir, backend, prepared, entry_point, *stage)?;
@@ -488,7 +501,11 @@ struct PreparedShader<'a> {
 impl<'a> PreparedShader<'a> {
     fn new(shader: &'a Shader) -> Result<Self, Error> {
         let source = shader.source()?;
-        let module = gfx_shader::WgslModule::parse(&source).map_err(|error| Error::Validate {
+        let module = if shader.vulkan_sampled_table {
+            gfx_shader::WgslModule::parse_sampled_texture_table(&source)
+        } else {
+            gfx_shader::WgslModule::parse(&source)
+        }.map_err(|error| Error::Validate {
             shader: shader.name.clone(),
             message: error.to_string(),
         })?;

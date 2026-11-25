@@ -170,7 +170,7 @@ fn vs_main(
 
 const PI: f32 = 3.14159265359;
 
-fn apply_normal_map(input: VertexOutput, surface_normal: vec3<f32>) -> vec3<f32> {
+fn apply_normal_map(input: VertexOutput, surface_normal: vec3<f32>, draw: DrawParams) -> vec3<f32> {
     let projected_world_tangent = input.world_tangent.xyz
         - surface_normal * dot(surface_normal, input.world_tangent.xyz);
     if (length(projected_world_tangent) <= 0.00001) {
@@ -291,7 +291,7 @@ fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
 
     var surface_normal = normalize(input.world_normal);
     if (draw_params.normal_mapping_enabled != 0u) {
-        surface_normal = apply_normal_map(input, surface_normal);
+        surface_normal = apply_normal_map(input, surface_normal, draw_params);
     }
     let view_direction = normalize(frame.camera_position.xyz - input.world_position);
     var metallic = clamp(draw_params.metallic, 0.0, 1.0);
@@ -409,7 +409,7 @@ fn scene_base(input:VertexOutput)->vec4<f32>{
 fn oct_normal(n:vec3<f32>)->vec2<f32>{let p=n/(abs(n.x)+abs(n.y)+abs(n.z));return select(p.xy,(vec2<f32>(1.0)-abs(p.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),p.xy>=vec2<f32>(0.0)),p.z<0.0);}
 @fragment fn fs_scene_surface(input:VertexOutput)->@location(0) vec4<f32>{
     let color=scene_base(input);let draw=draws[input.draw_index];var n=normalize(input.world_normal);
-    if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n);}
+    if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n,draw);}
     var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){let p=textureSample(metallic_roughness_texture,material_sampler,input.uv);if((draw.texture_flags&16u)!=0u){roughness=p.b;metallic=p.r;}else{roughness*=p.g;metallic*=p.b;}}
     // Coverage does not imply transmission: ordinary alpha-blended surfaces stay diffuse.
@@ -428,7 +428,7 @@ struct SceneAttributeTargets {
     let color=scene_base(input);
     let draw=draws[input.draw_index];
     var n=normalize(input.world_normal);
-    if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n);}
+    if(draw.normal_mapping_enabled!=0u){n=apply_normal_map(input,n,draw);}
     var roughness=draw.roughness;var metallic=draw.metallic;
     if((draw.texture_flags&8u)!=0u){
         let p=textureSample(metallic_roughness_texture,material_sampler,input.uv);

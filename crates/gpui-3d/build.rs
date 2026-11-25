@@ -7,6 +7,44 @@ use gfx_shader_build::{
     BackendSelection, Dx12ArtifactPolicy, MslVersion, Shader, ShaderSet, ShaderStage,
 };
 
+#[cfg(feature = "gpui-sidecar")]
+fn sampled_table_variant(source: &str, textures: &[(&str, &str)], entries: &[&str]) -> Shader {
+    // One descriptor array, separate from the ordinary geometry/sampler
+    // group. Fixed size for the initial portable-limit Vulkan variant.
+    let mut code = String::from("@group(1) @binding(0) var material_images: binding_array<texture_2d<f32>, 64>;\n");
+    let source = source.replace("draw_params", "draw");
+    for line in source.lines() {
+        if textures.iter().any(|(name, _)| {
+            line.trim_start().starts_with("@group(0)") &&
+            line.contains(&format!("var {name}:"))
+        }) {
+            continue;
+        }
+        code.push_str(line);
+        code.push('\n');
+    }
+    for &(name, field) in textures {
+        let mut replaced = 0;
+        for operation in ["textureSample", "textureSampleGrad"] {
+            let from = format!("{operation}({name},");
+            let to = format!("{operation}(material_images[draw.{field}],");
+            replaced += code.matches(&from).count();
+            code = code.replace(&from, &to);
+        }
+        assert!(replaced > 0, "bindless texture {name} has no sampling sites");
+        assert!(!code.contains(&format!("var {name}:")), "legacy texture declaration survived");
+    }
+    let mut shader = Shader::new(format!("sampled_table_{}", entries[0])).vulkan_sampled_texture_table();
+    for entry in entries {
+        let from = format!("fn {entry}(");
+        let name = format!("{entry}_bindless");
+        assert_eq!(code.matches(&from).count(), 1, "missing or ambiguous fragment entry {entry}");
+        code = code.replace(&from, &format!("fn {name}("));
+        shader = shader.entry(name, ShaderStage::Fragment);
+    }
+    shader.wgsl(code)
+}
+
 fn main() {
     // Standalone games need only the offscreen renderer artifacts. The
     // optional GPUI sidecar generates its extra CSM/Froxel/UI shader set
@@ -44,6 +82,19 @@ fn main() {
     #[cfg(feature = "gpui-sidecar")]
     {
         shaders = shaders
+        .shader(sampled_table_variant(
+            concat!(include_str!("src/pbr.wgsl"), "\n", include_str!("src/scene_view.wgsl")),
+            &[("albedo_texture", "albedo_index"), ("normal_map_texture", "normal_index"),
+                ("occlusion_texture", "occlusion_index"), ("metallic_roughness_texture", "metallic_roughness_index")],
+            &["fs_main", "fs_hdr", "fs_scene_surface", "fs_scene_albedo", "fs_scene_attributes_mrt", "fs_scene_shadow"],
+        ))
+        .shader(sampled_table_variant(
+            concat!(include_str!("src/pbr.wgsl"), "\n", include_str!("src/scene_view/voxel.wgsl"), "\n",
+                include_str!("src/scene_view/voxel_lighting.wgsl")),
+            &[("albedo_texture", "albedo_index"), ("normal_texture", "normal_index"),
+                ("material_texture", "metallic_roughness_index")],
+            &["fs_voxel", "fs_voxel_capture", "fs_voxel_surface", "fs_voxel_albedo", "fs_voxel_attributes_mrt", "fs_voxel_shadow"],
+        ))
         .shader(
             Shader::new("sidecar_composite")
                 .wgsl_file("src/scene_view/sidecar_composite.wgsl")
