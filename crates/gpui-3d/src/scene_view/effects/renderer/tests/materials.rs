@@ -57,8 +57,26 @@ pub(super) fn verify_hidden_lines<D: Device + TextureTransferDevice>(
             ..VoxelShading::default()
         })
         .unwrap();
-    let mut renderer = view.create_renderer(device, context.clone()).unwrap();
-    let pixels = draw(device, renderer.as_mut(), context, &view, target, depth);
+    // The public renderer composites a separate sidecar color target and
+    // deliberately does not write GPUI's depth attachment. Exercise the same
+    // production geometry pipeline directly on the depth image under test.
+    let mut resources = crate::scene_view::resources::RendererResources::new(device, context).unwrap();
+    let mut scene = crate::scene_view::scene::SceneResources::new(device, D::BACKEND_KIND).unwrap();
+    scene.prepare(device, &mut resources, &view, context).unwrap();
+    let mut commands = Vec::new();
+    scene.append_steps(&resources, view.voxel_shader, &mut commands).unwrap();
+    assert!(!commands.is_empty(), "wireframe geometry must produce draw commands");
+    PresentationDevice::render_to_textures(device, &[RenderPassCommands {
+        color_attachments: &[target.view],
+        render_pass: context.render_pass(),
+        commands: &commands,
+        color_load_op: LoadOp::Clear(ClearColor::default()),
+        depth_attachment: Some(DepthAttachment {
+            target: depth.view, depth_load_op: LoadOp::Clear(1.), stencil_load_op: None,
+        }),
+        clear_region: None, viewport: None, resolve_target: None,
+    }]).unwrap();
+    let pixels = TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes;
     let values = TextureTransferDevice::read_texture(device, depth.texture).unwrap();
     let at = (32 * 64 + 32) * 4;
     let z = f32::from_le_bytes(values.bytes[at..at + 4].try_into().unwrap());
@@ -67,7 +85,8 @@ pub(super) fn verify_hidden_lines<D: Device + TextureTransferDevice>(
         pixels.chunks_exact(4).any(|pixel| pixel[0] > 80),
         "visible quad edges must remain"
     );
-    renderer.destroy(device).unwrap();
+    scene.destroy(device).unwrap();
+    resources.destroy(device).unwrap();
 }
 
 pub(super) fn verify_water_animation<D: Device + TextureTransferDevice>(

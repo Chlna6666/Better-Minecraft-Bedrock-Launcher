@@ -448,7 +448,13 @@ mod tests {
                 color_load_op: LoadOp::Clear(ClearColor::default()), depth_attachment: None,
                 clear_region: None, viewport: None, resolve_target: None,
             }], &[None], gfx_core::OffscreenQueuePreference::OrderedGraphics)
-                .unwrap().expect("tracked graphics submission")
+                .unwrap().unwrap_or_else(|| {
+                    // Ordered offscreen batches may deliberately return None.
+                    // A real checkpoint on the same queue proves all earlier
+                    // descriptor readers, without changing the production API.
+                    ResourceDevice::checkpoint_gpu_queue(device, gfx_core::GpuQueueId::PRIMARY)
+                        .expect("ordered graphics checkpoint")
+                })
         };
         let check_pixels = |device: &mut VulkanDevice, order: [usize; 4]| {
             let pixels = TextureTransferDevice::read_texture(device, target).unwrap();
