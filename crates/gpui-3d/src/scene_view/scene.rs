@@ -1004,6 +1004,7 @@ impl SceneResources {
             && !self.sampled_textures.as_ref().is_some_and(|table| {
                 table.needs_remap() || table.needs_publication()
                     || table.layout_transition_pending()
+                    || (renderer.sampled_table_layout().is_some() && !table.matches_layout(renderer.sampled_table_layout()))
                     || table.selected(renderer.sampled_table_layout()) != old_sampled
             })
         {
@@ -4012,9 +4013,10 @@ impl SceneResources {
         self.sampled_textures.as_ref().is_none_or(|table| table.can_migrate_capacity(capacity))
     }
 
-    pub(in crate::scene_view) fn sampled_maintenance_pending(&self) -> bool {
+    pub(in crate::scene_view) fn sampled_maintenance_pending(&self, renderer: &RendererResources) -> bool {
         self.sampled_textures.as_ref().is_some_and(|table| {
             table.needs_remap() || table.needs_publication() || table.layout_transition_pending()
+                || (renderer.sampled_table_layout().is_some() && !table.matches_layout(renderer.sampled_table_layout()))
         })
     }
 
