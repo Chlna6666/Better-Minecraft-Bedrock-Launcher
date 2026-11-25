@@ -608,6 +608,18 @@ impl Window {
         }
     }
 
+    /// Compare the inherited context without constructing a temporary TextStyle or context.
+    pub(super) fn retained_paint_context_matches(&self, previous: &RetainedPaintContext) -> bool {
+        previous.device_scale_factor == self.scale_factor()
+            && previous.opacity == self.element_opacity
+            && previous.scale == self.element_visual_transform.scale
+            && previous.translation == self.element_visual_transform.translation
+            && previous.content_mask == self.content_mask()
+            && previous.visual_content_mask == self.visual_content_mask()
+            && previous.rem_size == self.rem_size()
+            && self.with_text_style_ref(|style| &previous.text_style == style)
+    }
+
     /// Register an exact semantic proof for the current request-layout subtree.
     ///
     /// Safe `Div` containers compose only direct-child semantic stamps, so ancestors compare O(n)
@@ -623,7 +635,6 @@ impl Window {
         plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
         identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
     ) {
-        let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
         let descriptor = if let Some((text, text_style, rem_size)) = plain_text_semantics {
             RetainedSemanticDescriptor::PlainText {
                 text,
@@ -637,19 +648,42 @@ impl Window {
             let Some(style) = div_layout.retained_semantic_key.take() else {
                 return;
             };
+            // Compare the committed ordered child stamps before allocating.
+            // Unchanged large containers need no temporary child buffer.
+            let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
+            let previous_descriptor = previous.and_then(|range| range.semantic_descriptor.as_ref());
+            let semantics = &self.next_frame.retained_layout_semantics;
+            let child_stamp = |id: &LayoutId| {
+                semantics.get(id)
+                    .filter(|child| child.identity_is_stable())
+                    .map(|child| &child.stamp)
+            };
+            if let Some(old) = previous_descriptor
+                && let RetainedSemanticDescriptor::Div { style: old_style, children } = old.as_ref()
+                && old_style == &style
+                && children.len() == div_layout.child_layout_ids.len()
+                && div_layout.child_layout_ids.iter().zip(children.iter())
+                    .all(|(id, stamp)| child_stamp(id) == Some(stamp))
+            {
+                let generation = previous.and_then(|range| range.semantic_generation).unwrap_or(1);
+                let descriptor = Rc::clone(old);
+                self.next_frame.retained_layout_semantics.insert(
+                    layout_id,
+                    RetainedSemanticEntry {
+                        descriptor: Some(descriptor),
+                        stamp: RetainedSemanticStamp { segment: retained_segment.clone(), generation },
+                        identity_ambiguity,
+                    },
+                );
+                return;
+            }
+
             let mut children = SmallVec::with_capacity(div_layout.child_layout_ids.len());
             for child_layout_id in &div_layout.child_layout_ids {
-                let Some(child) = self
-                    .next_frame
-                    .retained_layout_semantics
-                    .get(child_layout_id)
-                else {
+                let Some(stamp) = child_stamp(child_layout_id) else {
                     return;
                 };
-                if !child.identity_is_stable() {
-                    return;
-                }
-                children.push(child.stamp.clone());
+                children.push(stamp.clone());
             }
             RetainedSemanticDescriptor::Div { style, children }
         };
@@ -706,7 +740,9 @@ impl Window {
         };
         current.identity_is_stable()
             && matches!(descriptor.as_ref(), RetainedSemanticDescriptor::Div { .. })
-            && retained.semantic_descriptor.as_ref() == Some(descriptor)
+            && retained.semantic_descriptor.as_ref().is_some_and(|previous| {
+                Rc::ptr_eq(previous, descriptor) || previous.as_ref() == descriptor.as_ref()
+            })
             && retained.semantic_generation == Some(current.stamp.generation)
     }
 
@@ -789,7 +825,7 @@ impl Window {
             }
         }
 
-        if retained.paint_context.as_ref() != &self.current_retained_paint_context() {
+        if !self.retained_paint_context_matches(retained.paint_context.as_ref()) {
             return None;
         }
         if targeted_replay {
@@ -858,11 +894,10 @@ impl Window {
         explicit_cached_view: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
-        let context = self.current_retained_paint_context();
         let paint_context = match self.next_frame.last_retained_paint_context.as_ref() {
-            Some(previous) if previous.as_ref() == &context => Rc::clone(previous),
+            Some(previous) if self.retained_paint_context_matches(previous.as_ref()) => Rc::clone(previous),
             _ => {
-                let context = Rc::new(context);
+                let context = Rc::new(self.current_retained_paint_context());
                 self.next_frame.last_retained_paint_context = Some(Rc::clone(&context));
                 context
             }
