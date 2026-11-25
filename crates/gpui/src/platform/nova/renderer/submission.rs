@@ -267,6 +267,7 @@ impl NovaRenderer {
                         // if the later UI sampler/Present has not. Notify 3D
                         // resident allocators now; texture consumer cohorts
                         // remain tied to their distinct actual UI fence.
+                        self.on_offscreen_submission_complete(predecessor);
                         self.renderer_registry.gpu_submission_completed(predecessor);
                     }
                     SubmissionStatus::Pending => break,
@@ -389,6 +390,7 @@ impl NovaRenderer {
                 // This explicit slow-path wait is used for trim/resize, not
                 // per-frame CPU synchronization. It still proves the exact
                 // native producer completed before its UI consumer.
+                self.on_offscreen_submission_complete(predecessor);
                 self.renderer_registry.gpu_submission_completed(predecessor);
             }
             let started_at = Instant::now();
