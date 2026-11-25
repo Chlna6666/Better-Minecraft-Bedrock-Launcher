@@ -115,6 +115,7 @@ pub(super) struct SceneSampledTextures {
     retired_banks: Vec<BankGeneration>,
     retired_unmapped: Vec<TextureResources>,
     bank_transition_pending: bool,
+    bank_build_failed: bool,
     next_bank_generation: u64,
     committed_bank: Option<u64>,
     queued_banks: HashSet<u64>,
@@ -144,7 +145,7 @@ impl SceneSampledTextures {
     pub(super) fn new(layout: BindGroupLayoutId, capacity: u32, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
         Ok(Self {
             layout, fallback, banked: None, retired_banks: Vec::new(),
-            retired_unmapped: Vec::new(), bank_transition_pending: false,
+            retired_unmapped: Vec::new(), bank_transition_pending: false, bank_build_failed: false,
             next_bank_generation: 1, committed_bank: None, queued_banks: HashSet::new(),
             slots: SampledTextureSlots::new(capacity, fallback)?,
             unmapped: 0, readers: Readers::default(), legacy_readers: Readers::default(),
@@ -276,12 +277,17 @@ impl SceneSampledTextures {
     ) {
         let eligible = single.is_none() && self.unmapped != 0 && layout == Some(self.layout);
         if !eligible {
+            self.bank_build_failed = false;
             if let Some(old) = self.banked.take() {
                 self.retired_banks.push(old);
                 self.bank_transition_pending = true;
             }
             return;
         }
+        // Allocation or bank-budget exhaustion must not recreate a failed
+        // generation on every camera-only redraw. Retry on changed material
+        // demand or a capacity/layout migration.
+        if self.bank_build_failed && !refresh { return; }
         if self.banked.as_ref().is_some_and(|bank| bank.layout == self.layout && !refresh) {
             return;
         }
@@ -317,6 +323,7 @@ impl SceneSampledTextures {
             self.retired_banks.push(old);
             self.bank_transition_pending = true;
         }
+        self.bank_build_failed = next.is_none();
         if next.is_some() { self.bank_transition_pending = true; }
         self.banked = next;
     }
