@@ -1581,6 +1581,36 @@ mod platform {
             self.submit_texture_passes_timed(passes, Some(tags), true)
         }
 
+        fn compact_draw_run_limit(&self) -> u32 {
+            if self.fixed_icb { indirect::MAX_COUNT } else { 0 }
+        }
+
+        fn render_to_textures_runs_profiled(
+            &mut self, passes: &[RenderPassCommands<'_>],
+            owners: &[std::sync::Arc<[RenderCommand]>],
+            supplied: &[Option<std::sync::Arc<gfx_core::DrawRunPlan>>],
+            tables: &[Option<BindGroupId>], tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            if supplied.len() != passes.len() || passes.len() != owners.len() || passes.len() != tags.len()
+                || (!tables.is_empty() && tables.len() != passes.len())
+                || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+            { return Err(Error::InvalidInput("Metal representative stream metadata mismatch".into())); }
+            if tables.iter().any(Option::is_some) {
+                return Err(Error::Unavailable("Metal pass-level sampled table unsupported".into()));
+            }
+            let limit = PresentationDevice::compact_draw_run_limit(self);
+            if supplied.iter().zip(owners).any(|(plan, owner)| plan.as_ref().is_some_and(|plan|
+                !plan.matches_representatives(owner, limit)))
+            { return Err(Error::InvalidInput("Metal representative stream identity or limit mismatch".into())); }
+            if supplied.iter().all(Option::is_none) {
+                return self.render_to_textures_owned_profiled(passes, owners, tables, tags);
+            }
+            let plans = owners.iter().zip(supplied).map(|(owner, supplied)| {
+                supplied.clone().unwrap_or_else(|| std::sync::Arc::new(gfx_core::DrawRunPlan::new(owner, limit)))
+            }).collect::<Vec<_>>();
+            self.submit_texture_passes_planned(passes, Some(tags), &[], true, &plans)
+        }
+
         fn render_to_textures_owned_profiled(
             &mut self, passes: &[RenderPassCommands<'_>],
             owners: &[std::sync::Arc<[RenderCommand]>], tables: &[Option<BindGroupId>],
