@@ -369,7 +369,7 @@ impl Compactor {
     pub(super) fn new(device: &mut dyn ExtensionDevice, context: &RendererExtensionContext) -> Option<Self> {
         // Unvalidated driver cost: preserve default behavior until benchmarked.
         let argument_stride = match context.backend_kind() {
-            BackendKind::Vulkan | BackendKind::OpenGl => 16,
+            BackendKind::Vulkan | BackendKind::OpenGl | BackendKind::Metal => 16,
             BackendKind::Dx12 => 32,
             _ => return None,
         };

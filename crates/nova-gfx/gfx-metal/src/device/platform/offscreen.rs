@@ -14,7 +14,7 @@ struct PreparedPass {
 }
 
 impl MetalDevice {
-    fn prepare_texture_pass(&self, pass: &RenderPassCommands<'_>) -> Result<PreparedPass> {
+    fn prepare_texture_pass(&self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding]) -> Result<PreparedPass> {
         let layout = self.render_passes.get(pass.render_pass)?;
         if pass.color_attachments.is_empty() || pass.color_attachments.len() != layout.color_formats.len() {
             return Err(Error::InvalidInput("Metal offscreen attachment count mismatch".into()));
@@ -110,8 +110,13 @@ impl MetalDevice {
             znear: 0.0, zfar: 1.0,
         };
         let mut steps = Vec::with_capacity(pass.commands.len());
-        for command in pass.commands {
+        let mut counts = counts.iter().peekable();
+        for (index, command) in pass.commands.iter().enumerate() {
             let mut step = self.prepare_render_step(layout, command)?;
+            if counts.peek().is_some_and(|count| count.command_index == index) {
+                let count = *counts.next().expect("counted command");
+                step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
+            }
             if color_ids.iter().any(|&id| step.bindings.samples_texture(id))
                 || resolve.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
                 || depth_view.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
@@ -131,6 +136,7 @@ impl MetalDevice {
             });
             steps.push(step);
         }
+        if counts.next().is_some() { return Err(Error::InvalidInput("Metal count bindings must be ordered and reference a draw".into())); }
         Ok(PreparedPass {
             colors,
             resolve: resolve.map(|(_, texture, discard)| (texture, discard)),
@@ -154,13 +160,24 @@ impl MetalDevice {
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         tracked: bool,
     ) -> Result<Option<SubmissionId>> {
+        self.submit_texture_passes_counted(passes, tags, &[], tracked)
+    }
+
+    pub(super) fn submit_texture_passes_counted(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+        counts: &[&[gfx_core::IndirectCountBinding]], tracked: bool,
+    ) -> Result<Option<SubmissionId>> {
+        if !counts.is_empty() && counts.len() != passes.len() {
+            return Err(Error::InvalidInput("Metal counted pass metadata length mismatch".into()));
+        }
         if tags.is_some_and(|tags| tags.len() != passes.len()) {
             return Err(Error::InvalidInput("Metal render tag count mismatch".into()));
         }
         if passes.is_empty() { return Ok(None); }
         // Validate the complete batch before submitting anything. A rejected
         // later pass must never leave a partially committed producer graph.
-        let prepared = passes.iter().map(|pass| self.prepare_texture_pass(pass))
+        let prepared = passes.iter().enumerate().map(|(index, pass)| self.prepare_texture_pass(pass, counts.get(index).copied().unwrap_or(&[])))
             .collect::<Result<Vec<_>>>()?;
         let ranges = tags.map(|tags| tags.iter().enumerate().filter_map(|(index, tag)| {
             tag.map(|tag| timestamps::TaggedRange { first: index, last: index, tag })
@@ -170,6 +187,14 @@ impl MetalDevice {
             let command_buffer = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal offscreen command buffer unavailable".into()))?;
             for (pass_index, pass) in prepared.iter().enumerate() {
+                // The GPU conversion executes before the render encoder.
+                // All temporary native objects remain referenced by this
+                // same ordered command buffer until its execution completes.
+                for step in &pass.steps {
+                    if let PreparedMetalDraw::Counted(run) = &step.draw {
+                        run.encode(&command_buffer)?;
+                    }
+                }
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
                 for (index, texture) in pass.colors.iter().enumerate() {
                 // SAFETY: all attachments were validated before encoding.

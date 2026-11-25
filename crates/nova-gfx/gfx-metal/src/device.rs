@@ -54,6 +54,7 @@ mod platform {
     mod offscreen;
     mod compute;
     mod timestamps;
+    mod indirect;
     use bindings::{NativeBindGroup, PreparedBindings};
     use super::*;
     use crate::registry::ResourceRegistry;
@@ -109,6 +110,8 @@ mod platform {
         submissions: ResourceRegistry<MetalSubmission>,
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
         work_timestamps: timestamps::WorkTimestamps,
+        icb: Option<indirect::IcbProgram>,
+        gpu_driven: bool,
         submitted_frames: u64,
     }
 
@@ -133,6 +136,19 @@ mod platform {
             let disabled_depth_state = device.newDepthStencilStateWithDescriptor(&disabled_depth)
                 .ok_or_else(|| Error::Backend("failed to create disabled Metal depth state".into()))?;
             let work_timestamps = timestamps::WorkTimestamps::new(&device);
+            let gpu_driven = std::env::var_os("NOVA_GFX_METAL_GPU_DRIVEN").as_deref() == Some(std::ffi::OsStr::new("1"))
+                && device.supportsFamily(objc2_metal::MTLGPUFamily::Apple7);
+            let icb = if std::env::var_os("NOVA_GFX_METAL_ICB").as_deref() == Some(std::ffi::OsStr::new("1"))
+                && device.supportsFamily(objc2_metal::MTLGPUFamily::Apple7)
+            {
+                match indirect::IcbProgram::new(&device) {
+                    Ok(program) => Some(program),
+                    Err(error) => {
+                        eprintln!("Metal GPU ICB unavailable: {error}");
+                        None
+                    }
+                }
+            } else { None };
             Ok(Self {
                 device,
                 command_queue,
@@ -156,6 +172,8 @@ mod platform {
                 submissions: ResourceRegistry::new("submission"),
                 last_frame_gpu_timestamps: None,
                 work_timestamps,
+                icb,
+                gpu_driven,
                 submitted_frames: 0,
             })
         }
@@ -461,6 +479,7 @@ mod platform {
                 fragment_shader,
                 render_pass.sample_count,
                 depth_format,
+                self.icb.is_some(),
             )?;
             Ok(self.render_pipelines.insert(MetalRenderPipeline {
                 sample_count: render_pass.sample_count,
@@ -1116,9 +1135,8 @@ mod platform {
                 max_invocations_per_workgroup: convert(size.width),
                 max_workgroup_size: [convert(size.width), convert(size.height), convert(size.depth)],
                 max_workgroup_shared_memory_bytes: convert(self.device.maxThreadgroupMemoryLength()),
-                // Keep GPU-driven geometry disabled until the private-buffer
-                // upload path and native shader ABI are verified on macOS.
-                indirect_draw: false,
+                // Experimental, independently gated from counted ICB support.
+                indirect_draw: self.gpu_driven,
             }
         }
         fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
@@ -1130,7 +1148,7 @@ mod platform {
                 max_dimension_2d: 16384, max_array_layers: 2048,
                 array_resources: true, layer_uploads: true,
                 // Generated-mesh selection stays gated until native shader regression passes.
-                indexed_sampling: false,
+                indexed_sampling: self.gpu_driven,
             }
         }
         fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
@@ -1500,6 +1518,23 @@ mod platform {
 
         fn ordered_mixed_graphics_compute_supported(&self) -> bool { true }
 
+        fn indirect_draw_count_limit(&self) -> Option<u32> {
+            self.icb.as_ref().map(|_| indirect::MAX_COUNT)
+        }
+
+        fn render_to_texture_counted(&mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding]) -> Result<()> {
+            self.render_to_texture_counted_profiled(pass, counts, None)
+        }
+
+        fn render_to_texture_counted_profiled(&mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding], tag: Option<gfx_core::GpuTimestampTag>) -> Result<()> {
+            self.submit_texture_passes_counted(std::slice::from_ref(pass), Some(&[tag]), &[counts], false).map(|_| ())
+        }
+
+        fn render_to_textures_counted_profiled(&mut self, passes: &[RenderPassCommands<'_>], counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<gfx_core::GpuTimestampTag>]) -> Result<Option<SubmissionId>> {
+            if passes.len() != counts.len() { return Err(Error::InvalidInput("Metal counted pass metadata length mismatch".into())); }
+            self.submit_texture_passes_counted(passes, Some(tags), counts, true)
+        }
+
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
             self.submit_texture_passes(std::slice::from_ref(pass), false).map(|_| ())
         }
@@ -1764,6 +1799,7 @@ mod platform {
         fragment_shader: &MetalShaderModule,
         sample_count: u32,
         depth_format: Option<Format>,
+        supports_icb: bool,
     ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
         if desc.vertex_entry_point != vertex_shader.entry_point || desc.fragment_entry_point != fragment_shader.entry_point {
             return Err(Error::InvalidInput("Metal pipeline entry point differs from shader module".into()));
@@ -1795,6 +1831,7 @@ mod platform {
         pipeline_desc.setVertexFunction(Some(&vertex_function));
         pipeline_desc.setFragmentFunction(Some(&fragment_function));
         pipeline_desc.setRasterSampleCount(sample_count as usize);
+        if supports_icb { pipeline_desc.setSupportIndirectCommandBuffers(true); }
         if let Some(format) = depth_format {
             pipeline_desc.setDepthAttachmentPixelFormat(format_to_metal(format));
         }
@@ -1849,6 +1886,7 @@ mod platform {
     }
 
     enum PreparedMetalDraw {
+        Counted(indirect::CountedRun),
         Indirect {
             arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
             offset: usize,
@@ -1906,6 +1944,7 @@ mod platform {
             step.bindings.encode(encoder);
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
+                PreparedMetalDraw::Counted(run) => run.execute(encoder),
                 PreparedMetalDraw::Indirect { arguments, offset } => {
                     // SAFETY: the portable 16-byte argument record is validated and retained.
                     unsafe { encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
