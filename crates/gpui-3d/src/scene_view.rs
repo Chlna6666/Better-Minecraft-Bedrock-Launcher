@@ -35,6 +35,7 @@ mod voxel_style;
 pub use voxel_style::{VoxelDisplay, VoxelIllumination, VoxelShading, VoxelShadingError};
 mod artifacts;
 mod batching;
+mod command_runs;
 mod culling;
 mod draw_compaction;
 mod effects;
