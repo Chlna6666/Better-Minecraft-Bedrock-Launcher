@@ -62,6 +62,22 @@ pub trait ExtensionDevice {
         }
     }
 
+    /// Maximum compact representative span supported by the native owner.
+    fn compact_draw_run_limit(&self) -> u32 { 0 }
+
+    /// Submit compact native runs without expanding logical draws.
+    fn submit_run_offscreen_batch(
+        &mut self, passes: &[gfx_core::RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[gfx_core::RenderCommand]>],
+        plans: &[Option<std::sync::Arc<gfx_core::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        if plans.len() != passes.len() || plans.iter().any(Option::is_some) {
+            return Err(gfx_core::Error::Unavailable("compact draw runs unsupported".into()));
+        }
+        self.submit_owned_offscreen_batch(passes, owners, tables, tags)
+    }
+
     /// Optional native GPU draw-count limit for an ordered offscreen pass.
     fn counted_offscreen_limit(&self) -> Option<u32> { None }
 
@@ -525,6 +541,19 @@ where
         tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<gfx_core::SubmissionId>> {
         OffscreenSubmissionDevice::submit_owned_offscreen_batch(self, passes, owners, tables, tags)
+    }
+
+    fn compact_draw_run_limit(&self) -> u32 {
+        OffscreenSubmissionDevice::compact_draw_run_limit(self)
+    }
+
+    fn submit_run_offscreen_batch(
+        &mut self, passes: &[gfx_core::RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[gfx_core::RenderCommand]>],
+        plans: &[Option<std::sync::Arc<gfx_core::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        OffscreenSubmissionDevice::submit_run_offscreen_batch(self, passes, owners, plans, tables, tags)
     }
 
     fn counted_offscreen_limit(&self) -> Option<u32> {
