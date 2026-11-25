@@ -481,6 +481,7 @@ impl EffectsRenderer {
             target: state.targets.resolved.view,
             color_attachments: Arc::from([]),
             gpu_work_tag: None,
+            run_plan: None,
             sampled_table: None,
             render_pass: self.compositor.post_pass,
             commands: vec![quad(
@@ -550,6 +551,7 @@ pub(super) fn pass(
         target,
         color_attachments: Arc::from([]),
         gpu_work_tag: None,
+        run_plan: None,
         sampled_table: None,
         render_pass,
         commands: commands.into(),
