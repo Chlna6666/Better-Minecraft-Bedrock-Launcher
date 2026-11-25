@@ -136,3 +136,11 @@ jobs:
           cargo test -p gfx-vulkan --lib retirement_tests
           cargo test -p gfx-vulkan --lib native_generation_retirement_waits_for_all_three_fence_classes -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/generation-fences.txt"
           grep -Fq 'NOVA_VULKAN_GENERATION_FENCES=pass' "$RUNNER_TEMP/generation-fences.txt"
+      - name: Verify immutable sampled descriptor table snapshots
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p gfx-vulkan --lib sampled_table_dirty_spans_are_exact_and_ordered
+          cargo test -p gfx-vulkan --lib native_sampled_table_snapshot_preserves_old_slots -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/sampled-table.txt"
+          grep -Fq 'NOVA_VULKAN_SAMPLED_TABLE=pass' "$RUNNER_TEMP/sampled-table.txt"

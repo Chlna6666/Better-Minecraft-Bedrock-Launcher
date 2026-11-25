@@ -5426,6 +5426,10 @@ impl ResourceDevice for VulkanDevice {
         self.create_sampled_table(layout, views)
     }
 
+    fn fork_sampled_texture_table(&mut self, source: BindGroupId, changes: &[(u32, TextureViewId)]) -> Result<BindGroupId> {
+        self.fork_sampled_table(source, changes)
+    }
+
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
         Self::destroy_buffer(self, buffer)
     }

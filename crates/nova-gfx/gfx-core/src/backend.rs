@@ -595,6 +595,15 @@ pub trait ResourceDevice {
         Err(Error::Unavailable("sampled texture descriptor tables are unsupported".into()))
     }
 
+    /// Create a new immutable snapshot from an existing table. Changes are
+    /// strictly increasing slot indices; unchanged slots preserve their view.
+    /// The old set remains live and must be retired separately by the caller.
+    fn fork_sampled_texture_table(
+        &mut self, _source: BindGroupId, _changes: &[(u32, TextureViewId)],
+    ) -> Result<BindGroupId> {
+        Err(Error::Unavailable("sampled texture descriptor tables are unsupported".into()))
+    }
+
     /// Destroys a buffer.
     ///
     /// # Errors

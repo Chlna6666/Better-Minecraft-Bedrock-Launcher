@@ -141,6 +141,79 @@ impl VulkanDevice {
     }
 }
 
+// Partition into contiguous dirty/unchanged spans without a dense scratch bitmap.
+fn table_spans(capacity: u32, changes: &[(u32, TextureViewId)]) -> Result<Vec<(u32, u32, bool)>> {
+    if changes.is_empty() || changes.iter().any(|&(index, _)| index >= capacity)
+        || changes.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    {
+        return Err(Error::InvalidInput("table edits must be nonempty, ordered, unique and in range".into()));
+    }
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    let mut i = 0;
+    while i < changes.len() {
+        let start = changes[i].0;
+        if cursor < start { spans.push((cursor, start - cursor, false)); }
+        i += 1;
+        let mut end = start + 1;
+        while i < changes.len() && changes[i].0 == end { end += 1; i += 1; }
+        spans.push((start, end - start, true));
+        cursor = end;
+    }
+    if cursor < capacity { spans.push((cursor, capacity - cursor, false)); }
+    Ok(spans)
+}
+
+impl VulkanDevice {
+    pub(super) fn fork_sampled_table(&mut self, source_id: BindGroupId, changes: &[(u32, TextureViewId)]) -> Result<BindGroupId> {
+        self.poll_cleanup();
+        let source = self.bind_groups.get(source_id)?;
+        let mut views = source.sampled_table.clone().ok_or_else(||
+            Error::InvalidInput("source is not a sampled texture table".into()))?;
+        let capacity = views.len() as u32;
+        let spans = table_spans(capacity, changes)?;
+        let layout_id = source.layout;
+        let source_set = source.descriptor_set;
+        let layout = self.bind_group_layouts.get(layout_id)?.layout;
+        for &(slot, view) in changes { views[slot as usize] = view; }
+        for &id in &views {
+            let view = self.texture_views.get(id)?;
+            self.textures.get(view.texture)?;
+        }
+        let dirty_views: Vec<_> = changes.iter().map(|&(_, view)| view).collect();
+        let infos = self.sampled_table_infos(&dirty_views)?;
+        let demand = Demand([0, 0, capacity, 0, 0]);
+        let (descriptor_set, descriptor_pool) =
+            self.descriptor_pools.allocate(&self.device, layout, demand)?;
+        let mut writes = Vec::new();
+        let mut copies = Vec::new();
+        let mut offset = 0;
+        for (start, count, dirty) in spans {
+            if dirty {
+                let end = offset + count as usize;
+                writes.push(vk::WriteDescriptorSet::default().dst_set(descriptor_set)
+                    .dst_binding(0).dst_array_element(start)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(&infos[offset..end]));
+                offset = end;
+            } else {
+                copies.push(vk::CopyDescriptorSet::default().src_set(source_set)
+                    .src_binding(0).src_array_element(start)
+                    .dst_set(descriptor_set).dst_binding(0).dst_array_element(start)
+                    .descriptor_count(count));
+            }
+        }
+        // Only the new destination changes; existing GPU readers keep their old set.
+        unsafe { self.device.update_descriptor_sets(&writes, &copies) };
+        Ok(self.bind_groups.insert(VulkanResourceSet {
+            sampled_depth: Vec::new(), sampled_table: Some(views),
+            descriptor_set, descriptor_pool, descriptor_demand: demand,
+            layout: layout_id,
+            desc: BindGroupDescriptor { label: None, layout: layout_id, entries: Vec::new() },
+        }))
+    }
+}
+
 const PAGE_CAPACITY: u32 = 256;
 const TYPES: [vk::DescriptorType; 5] = [
     vk::DescriptorType::UNIFORM_BUFFER,
@@ -279,6 +352,56 @@ fn create_pool(device: &ash::Device, capacity: [u32; 5]) -> Result<vk::Descripto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_table_dirty_spans_are_exact_and_ordered() {
+        let view = TextureViewId::from_parts(1, 1);
+        assert_eq!(table_spans(8, &[(1, view), (2, view), (5, view)]).unwrap(),
+            [(0, 1, false), (1, 2, true), (3, 2, false), (5, 1, true), (6, 2, false)]);
+        assert!(table_spans(8, &[(2, view), (2, view)]).is_err());
+        assert!(table_spans(8, &[(8, view)]).is_err());
+        assert!(table_spans(8, &[(3, view), (1, view)]).is_err());
+        assert!(table_spans(8, &[]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires native Vulkan device"]
+    fn native_sampled_table_snapshot_preserves_old_slots() {
+        let mut device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+        if ResourceDevice::sampled_texture_table_capacity(&device) < 4 {
+            eprintln!("NOVA_VULKAN_SAMPLED_TABLE=unsupported");
+            return;
+        }
+        let mut views = Vec::new();
+        let mut textures = Vec::new();
+        for _ in 0..2 {
+            let texture = device.create_texture(&TextureDescriptor {
+                label: None, size: gfx_core::Extent2d::new(1, 1).unwrap(), mip_level_count: 1,
+                format: Format::Rgba8Unorm, usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
+                memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2, sample_count: 1,
+            }).unwrap();
+            let view = device.create_texture_view(&gfx_core::TextureViewDescriptor {
+                label: None, texture, base_mip_level: 0, mip_level_count: 1, format: Format::Rgba8Unorm,
+            }).unwrap();
+            textures.push(texture);
+            views.push(view);
+        }
+        let layout = device.create_sampled_table_layout(4).unwrap();
+        let old = device.create_sampled_table(layout, &[views[0]; 4]).unwrap();
+        let next = device.fork_sampled_table(old, &[(1, views[1]), (2, views[1])]).unwrap();
+        let a = device.bind_groups.get(old).unwrap();
+        let b = device.bind_groups.get(next).unwrap();
+        assert_ne!(a.descriptor_set, b.descriptor_set);
+        assert_eq!(a.sampled_table.as_deref(), Some(&[views[0]; 4][..]));
+        assert_eq!(b.sampled_table.as_deref(), Some(&[views[0], views[1], views[1], views[0]][..]));
+        assert!(device.fork_sampled_table(old, &[(4, views[1])]).is_err());
+        device.destroy_bind_group(old).unwrap();
+        device.destroy_bind_group(next).unwrap();
+        device.destroy_bind_group_layout(layout).unwrap();
+        for view in views { device.destroy_texture_view(view).unwrap(); }
+        for texture in textures { device.destroy_texture(texture).unwrap(); }
+        eprintln!("NOVA_VULKAN_SAMPLED_TABLE=pass");
+    }
 
     #[test]
     fn descriptor_indexing_plan_never_enables_unqueried_or_update_after_bind_features() {
