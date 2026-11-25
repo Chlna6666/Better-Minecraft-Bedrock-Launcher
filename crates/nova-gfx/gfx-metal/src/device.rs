@@ -111,6 +111,8 @@ mod platform {
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
         work_timestamps: timestamps::WorkTimestamps,
         icb: Option<indirect::IcbProgram>,
+        fixed_icb: bool,
+        draw_run_plans: Vec<std::sync::Arc<gfx_core::DrawRunPlan>>,
         gpu_driven: bool,
         submitted_frames: u64,
     }
@@ -172,6 +174,8 @@ mod platform {
                 submissions: ResourceRegistry::new("submission"),
                 last_frame_gpu_timestamps: None,
                 work_timestamps,
+                fixed_icb: icb.is_some() && std::env::var_os("NOVA_GFX_METAL_ICB_FIXED").as_deref() == Some(std::ffi::OsStr::new("1")),
+                draw_run_plans: Vec::new(),
                 icb,
                 gpu_driven,
                 submitted_frames: 0,
@@ -1061,6 +1065,9 @@ mod platform {
         /// Reclaims only staging pages which are no longer referenced by GPU work.
         pub fn trim_memory(&mut self, level: gfx_core::MemoryTrimLevel) -> Result<()> {
             self.texture_uploads.trim(level);
+            if matches!(level, gfx_core::MemoryTrimLevel::Light) {
+                self.draw_run_plans.retain(|plan| plan.is_live());
+            } else { self.draw_run_plans.clear(); }
             if let Some(icb) = &self.icb { icb.trim(); }
             Ok(())
         }
@@ -1572,6 +1579,36 @@ mod platform {
 
         fn render_to_textures_on_queue(&mut self, passes: &[RenderPassCommands<'_>], tags: &[Option<gfx_core::GpuTimestampTag>], _queue: gfx_core::OffscreenQueuePreference) -> Result<Option<SubmissionId>> {
             self.submit_texture_passes_timed(passes, Some(tags), true)
+        }
+
+        fn render_to_textures_owned_profiled(
+            &mut self, passes: &[RenderPassCommands<'_>],
+            owners: &[std::sync::Arc<[RenderCommand]>], tables: &[Option<BindGroupId>],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            if passes.len() != owners.len() || passes.len() != tags.len()
+                || (!tables.is_empty() && tables.len() != passes.len())
+                || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+            { return Err(Error::InvalidInput("Metal owned draw stream metadata mismatch".into())); }
+            if tables.iter().any(Option::is_some) {
+                return Err(Error::Unavailable("Metal pass-level sampled tables unsupported".into()));
+            }
+            if !self.fixed_icb { return self.submit_texture_passes_timed(passes, Some(tags), true); }
+            self.draw_run_plans.retain(|plan| plan.is_live());
+            let mut plans = Vec::with_capacity(owners.len());
+            for owner in owners {
+                if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches(owner, indirect::MAX_COUNT)) {
+                    let plan = self.draw_run_plans.remove(index);
+                    plans.push(std::sync::Arc::clone(&plan));
+                    self.draw_run_plans.push(plan);
+                } else {
+                    let plan = std::sync::Arc::new(gfx_core::DrawRunPlan::new(owner, indirect::MAX_COUNT));
+                    plans.push(std::sync::Arc::clone(&plan));
+                    if self.draw_run_plans.len() >= 32 { self.draw_run_plans.remove(0); }
+                    self.draw_run_plans.push(plan);
+                }
+            }
+            self.submit_texture_passes_planned(passes, Some(tags), &[], true, &plans)
         }
     }
 
