@@ -267,6 +267,17 @@ impl Interactivity {
         }
     }
 
+    /// Use the exact same logical bounds and snapped padding for prepaint
+    /// clamping and wheel admission (the hitbox may be visually transformed).
+    fn scroll_max(&self, bounds: Bounds<Pixels>, style: &crate::Style, window: &Window) -> Size<Pixels> {
+        let padding = style.padding.to_pixels(bounds.size.into(), window.rem_size())
+            .map(|edge| crate::layout::snap_logical_to_device_pixel(*edge, window.scale_factor()));
+        let padding_size = size(padding.left + padding.right, padding.top + padding.bottom);
+        (self.content_size + padding_size - bounds.size)
+            .map(|pixels| (pixels * 100.0).round() / 100.0)
+            .max(&Default::default())
+    }
+
     pub(crate) fn clamp_scroll_position(
         &self,
         bounds: Bounds<Pixels>,
@@ -274,10 +285,6 @@ impl Interactivity {
         window: &mut Window,
         cx: &mut App,
     ) -> Point<Pixels> {
-        fn round_to_two_decimals(pixels: Pixels) -> Pixels {
-            const ROUNDING_FACTOR: f32 = 100.0;
-            (pixels * ROUNDING_FACTOR).round() / ROUNDING_FACTOR
-        }
 
         if let Some(scroll_offset) = self.scroll_offset.as_ref() {
             let mut scroll_to_bottom = false;
@@ -290,20 +297,7 @@ impl Interactivity {
                 scroll_to_bottom = mem::take(&mut scroll_handle_state.scroll_to_bottom);
             }
 
-            let rem_size = window.rem_size();
-            // Taffy snaps padding to the device-pixel grid before computing layout. Recompute it
-            // with the same snapping here; otherwise fractional padding can create a tiny fake
-            // overflow and leave an otherwise fitting container scrollable by a sub-pixel amount.
-            let scale_factor = window.scale_factor();
-            let padding = style
-                .padding
-                .to_pixels(bounds.size.into(), rem_size)
-                .map(|edge| crate::layout::snap_logical_to_device_pixel(*edge, scale_factor));
-            let padding_size = size(padding.left + padding.right, padding.top + padding.bottom);
-            let padded_content_size = self.content_size + padding_size;
-            let scroll_max = (padded_content_size - bounds.size)
-                .map(round_to_two_decimals)
-                .max(&Default::default());
+            let scroll_max = self.scroll_max(bounds, style, window);
             let mut scroll_offset = scroll_offset.borrow_mut();
 
             scroll_offset.x = scroll_offset.x.clamp(-scroll_max.width, px(0.));
@@ -336,6 +330,7 @@ impl Interactivity {
 
     pub(crate) fn paint_scroll_listener(
         &self,
+        bounds: Bounds<Pixels>,
         hitbox: &Hitbox,
         style: &crate::Style,
         window: &mut Window,
@@ -347,6 +342,9 @@ impl Interactivity {
             let allow_concurrent_scroll = style.allow_concurrent_scroll;
             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
             let line_height = window.line_height();
+            let scroll_max = self.tracked_scroll_handle.as_ref()
+                .map(|handle| handle.0.borrow().max_offset)
+                .unwrap_or_else(|| self.scroll_max(bounds, style, window));
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -386,6 +384,17 @@ impl Interactivity {
                         } else {
                             delta_x = Pixels::ZERO;
                         }
+                    }
+                    // Adapt GPUI Fast's wheel admission: a wheel at an end
+                    // of the scroll range cannot move content and must not
+                    // invalidate the whole owning view.
+                    let moves = |offset: Pixels, delta: Pixels, max: Pixels| {
+                        !delta.is_zero() && (offset + delta).clamp(-max, px(0.)) != offset
+                    };
+                    if !moves(old_scroll_offset.x, delta_x, scroll_max.width)
+                        && !moves(old_scroll_offset.y, delta_y, scroll_max.height)
+                    {
+                        return;
                     }
                     scroll_offset.y += delta_y;
                     scroll_offset.x += delta_x;

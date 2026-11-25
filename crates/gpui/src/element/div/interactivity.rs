@@ -372,7 +372,7 @@ impl Interactivity {
                                                     cx,
                                                 );
                                                 self.paint_scroll_listener(
-                                                    hitbox, &style, window, cx,
+                                                    bounds, hitbox, &style, window, cx,
                                                 );
                                             }
 
