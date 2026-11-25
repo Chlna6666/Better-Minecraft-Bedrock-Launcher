@@ -85,6 +85,27 @@ pub fn submit_native_offscreen_passes(
     submit(&commands, &tags, &tables)
 }
 
+/// Forward the source allocation alongside the borrowed pass descriptor.
+/// Preserve the allocation-free single-view path.
+pub(crate) fn submit_owned_native_offscreen_passes(
+    passes: &[NativeOffscreenPass],
+    mut submit: impl FnMut(
+        &[RenderPassCommands<'_>], &[Arc<[RenderCommand]>],
+        &[Option<GpuTimestampTag>], &[Option<BindGroupId>],
+    ) -> Result<Option<SubmissionId>>,
+) -> Result<Option<SubmissionId>> {
+    let Some((first, rest)) = passes.split_first() else { return Ok(None); };
+    if rest.is_empty() {
+        return submit_native_offscreen_passes(passes, |commands, tags, tables| {
+            submit(commands, std::slice::from_ref(&first.commands), tags, tables)
+        });
+    }
+    let owners = passes.iter().map(|pass| Arc::clone(&pass.commands)).collect::<Vec<_>>();
+    submit_native_offscreen_passes(passes, |commands, tags, tables| {
+        submit(commands, &owners, tags, tables)
+    })
+}
+
 /// Submit the 3D batch directly to gfx-core without a GPUI dependency.
 ///
 /// This entry point is suitable for stand-alone games and offscreen engines
@@ -95,11 +116,13 @@ pub fn submit_native_graphics<D: OffscreenSubmissionDevice>(
     passes: &[NativeOffscreenPass],
     queue: OffscreenQueuePreference,
 ) -> Result<Option<SubmissionId>> {
-    submit_native_offscreen_passes(passes, |commands, tags, tables| {
-        if tables.iter().any(Option::is_some) {
-            device.submit_sampled_offscreen_batch(commands, tables, &[], tags)
-        } else {
+    submit_owned_native_offscreen_passes(passes, |commands, owners, tags, tables| {
+        if queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
+            && !tables.iter().any(Option::is_some)
+        {
             device.submit_offscreen_graphics(commands, tags, queue)
+        } else {
+            device.submit_owned_offscreen_batch(commands, owners, tables, tags)
         }
     })
 }
@@ -172,6 +195,24 @@ mod tests {
                 Ok(None)
             }).unwrap();
             assert!(Arc::ptr_eq(&pass.commands, &shared));
+        }
+    }
+
+    #[test]
+    fn owned_submission_preserves_source_allocation_for_each_pass() {
+        let passes = [pass(1, false), pass(2, true)];
+        for batch in [&passes[..1], &passes[..]] {
+            submit_owned_native_offscreen_passes(batch, |commands, owners, tags, tables| {
+                assert_eq!(commands.len(), batch.len());
+                assert_eq!(owners.len(), batch.len());
+                assert_eq!(tags.len(), batch.len());
+                assert_eq!(tables.len(), batch.len());
+                for ((descriptor, owner), original) in commands.iter().zip(owners).zip(batch) {
+                    assert!(Arc::ptr_eq(owner, &original.commands));
+                    assert!(std::ptr::eq(descriptor.commands, owner.as_ref()));
+                }
+                Ok(None)
+            }).unwrap();
         }
     }
 
