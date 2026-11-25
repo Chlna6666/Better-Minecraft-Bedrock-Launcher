@@ -105,7 +105,13 @@ pub(super) fn frame<D: Device + TextureTransferDevice>(
     }
     let submitted = Instant::now();
     let native = submit_native(renderer, device);
-    let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
+    let submission = if owned.iter().any(|pass| pass.sampled_table.is_some()) {
+        let tables = owned.iter().map(|pass| pass.sampled_table).chain([None]).collect::<Vec<_>>();
+        let tags = owned.iter().map(|pass| pass.gpu_work_tag).chain([None]).collect::<Vec<_>>();
+        PresentationDevice::render_to_textures_sampled_profiled(device, &passes, &tables, &[], &tags).unwrap()
+    } else {
+        PresentationDevice::render_to_textures(device, &passes).unwrap()
+    };
     let record = submitted.elapsed().as_secs_f64() * 1000.;
     let waiting = Instant::now();
     complete_frame(renderer, device, submission, native);
@@ -160,8 +166,13 @@ pub(super) fn inspect_passes<D: Device>(
     });
     for (index, pass) in passes.iter().enumerate() {
         let start = Instant::now();
-        let submission =
-            PresentationDevice::render_to_textures(device, std::slice::from_ref(pass)).unwrap();
+        let submission = if let Some(table) = owned.get(index).and_then(|plan| plan.sampled_table) {
+            PresentationDevice::render_to_textures_sampled_profiled(
+                device, std::slice::from_ref(pass), &[Some(table)], &[], &[owned[index].gpu_work_tag],
+            ).unwrap()
+        } else {
+            PresentationDevice::render_to_textures(device, std::slice::from_ref(pass)).unwrap()
+        };
         let record = start.elapsed().as_secs_f64() * 1000.;
         let waiting = Instant::now();
         complete_frame(renderer, device, submission, std::mem::take(&mut native));

@@ -185,6 +185,7 @@ mod native {
                 target: view,
                 color_attachments: Arc::from([]),
                 gpu_work_tag: None,
+                sampled_table: None,
                 render_pass: pass,
                 commands: Vec::new().into(),
                 color_load_op: LoadOp::Clear(ClearColor {

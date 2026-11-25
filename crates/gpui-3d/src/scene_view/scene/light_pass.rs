@@ -108,7 +108,7 @@ impl SceneResources {
                 true,
                 &mut commands,
                 Some((&groups, pass.culling.arguments)),
-                false,
+                true,
             )?;
             Ok(commands)
         })();

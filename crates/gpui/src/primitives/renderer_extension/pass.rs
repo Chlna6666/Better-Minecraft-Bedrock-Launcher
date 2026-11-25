@@ -46,6 +46,9 @@ pub struct RendererExtensionPass {
     /// Scissors are local to the target, and the GPU owner retains this Arc
     /// until its native queue accepts the producer submission.
     pub commands: Arc<[RenderCommand]>,
+    /// Optional sampled image table at set one, shared by the entire pass.
+    /// When present each command contains only its geometry set zero.
+    pub sampled_table: Option<BindGroupId>,
     /// Optional native GPU hardware timing tag for a pure indirect-draw window.
     /// Backends without the capability still execute normally.
     pub gpu_work_tag: Option<GpuTimestampTag>,
@@ -56,6 +59,7 @@ pub struct RendererExtensionPass {
 }
 impl RendererExtensionPass {
     /// Borrows this owned plan for the host graphics submission.
+    /// The caller must also forward `sampled_table` to the native batch API.
     pub fn commands(&self) -> RenderPassCommands<'_> {
         RenderPassCommands {
             color_attachments: if self.color_attachments.is_empty() {

@@ -229,7 +229,10 @@ impl ExtensionSubmission<'_> {
         } else {
             gfx_core::OffscreenQueuePreference::OrderedGraphics
         };
-        let submission = if independent {
+        let submission = if selected.iter().any(|pass| pass.sampled_table.is_some()) {
+            let tables = selected.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
+            device.render_to_textures_sampled_profiled(&passes, &tables, &[], &tags)?
+        } else if independent {
             device.render_to_textures_independent(&passes, &tags, preference)?
         } else {
             device.render_to_textures_on_queue(&passes, &tags, preference)?
@@ -306,6 +309,7 @@ impl ExtensionSubmission<'_> {
         }
         let independent = !mixed
             && self.registry.independent_producers_only()
+            && !self.registry.passes().iter().any(|pass| pass.sampled_table.is_some())
             && device.independent_graphics_queue_available();
         let cpu_started = (count > 0 && sidecar_bridge_trace_enabled()).then(Instant::now);
         let mut cursor = 0usize;

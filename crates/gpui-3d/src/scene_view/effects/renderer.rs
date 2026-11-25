@@ -444,6 +444,7 @@ impl EffectsRenderer {
             target: state.targets.resolved.view,
             color_attachments: Arc::from([]),
             gpu_work_tag: None,
+            sampled_table: None,
             render_pass: self.compositor.post_pass,
             commands: vec![quad(
                 self.compositor.post_pipeline(multisampled, froxel_view.is_some()), groups[0]
@@ -512,6 +513,7 @@ pub(super) fn pass(
         target,
         color_attachments: Arc::from([]),
         gpu_work_tag: None,
+        sampled_table: None,
         render_pass,
         commands: commands.into(),
         color_load_op: LoadOp::Clear(ClearColor::default()),

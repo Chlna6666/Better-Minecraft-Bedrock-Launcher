@@ -493,7 +493,13 @@ fn submit_draw<D: Device>(
         viewport: None,
         resolve_target: None,
     });
-    let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
+    let submission = if owned.iter().any(|pass| pass.sampled_table.is_some()) {
+        let tables = owned.iter().map(|pass| pass.sampled_table).chain([None]).collect::<Vec<_>>();
+        let tags = owned.iter().map(|pass| pass.gpu_work_tag).chain([None]).collect::<Vec<_>>();
+        PresentationDevice::render_to_textures_sampled_profiled(device, &passes, &tables, &[], &tags).unwrap()
+    } else {
+        PresentationDevice::render_to_textures(device, &passes).unwrap()
+    };
     renderer.render_passes_submitted();
     if let Some(submission) = submission {
         renderer.gpu_submission_accepted(submission);
@@ -723,12 +729,18 @@ fn bindless_production_effects_vulkan() {
     sampled.render(&view, &mut device, context.clone(), &mut steps).unwrap();
     let mut owned = Vec::new();
     sampled.drain_render_passes(&mut owned);
+    let snapshot = sampled.scenes[&view.id].scene.sampled_snapshot(&sampled.hdr).expect("shared snapshot");
     for pass in [sampled.pass, sampled.attributes_pass, sampled.shadow_pass] {
-        let commands: Vec<_> = owned.iter().filter(|plan| plan.commands().render_pass == pass)
-            .flat_map(|plan| plan.commands().commands.iter()).collect();
-        assert!(!commands.is_empty(), "missing sampled production geometry/shadow commands");
-        assert!(commands.iter().all(|command| command.bind_groups().len() == 2));
+        let mut count = 0;
+        for plan in owned.iter().filter(|plan| plan.render_pass == pass) {
+            assert_eq!(plan.sampled_table, Some(snapshot));
+            assert!(plan.commands.iter().all(|command| command.bind_groups().len() == 1));
+            count += plan.commands.len();
+        }
+        assert!(count > 0, "missing sampled production geometry/shadow commands");
     }
+    assert!(owned.iter().filter(|plan| ![sampled.pass, sampled.attributes_pass, sampled.shadow_pass].contains(&plan.render_pass))
+        .all(|plan| plan.sampled_table.is_none()), "post-processing must not inherit material tables");
     sampled.passes = owned;
     if let Some(submission) = submit_draw(&mut device, &mut sampled, &context, &target, &depth, &steps) {
         SubmissionDevice::wait_submission(&mut device, submission).unwrap();
@@ -754,6 +766,7 @@ fn bindless_production_effects_vulkan() {
     depth.destroy(&mut device).unwrap();
     PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
     eprintln!("GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass");
+    eprintln!("GPUI3D_VULKAN_PASS_SAMPLED_EFFECTS=pass");
 }
 
 #[test]

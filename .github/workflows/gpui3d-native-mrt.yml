@@ -119,6 +119,7 @@ jobs:
           grep -Fq 'GPUI3D_VULKAN_PASS_SAMPLED_TABLE=pass' "$RUNNER_TEMP/production-bindless.txt"
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_effects_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
+          grep -Fq 'GPUI3D_VULKAN_PASS_SAMPLED_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture

@@ -155,6 +155,7 @@ impl SsrHiZ {
                 target: target.view,
                 color_attachments: Arc::from([]),
                 gpu_work_tag: None,
+                sampled_table: None,
                 render_pass: self.render_pass,
                 commands: vec![RenderCommand::Draw(DrawCommand {
                     pipeline,

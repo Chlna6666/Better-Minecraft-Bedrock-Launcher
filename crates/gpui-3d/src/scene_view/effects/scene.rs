@@ -277,21 +277,25 @@ impl EffectScene {
         }
         if capture_changed {
             let mut opaque = Vec::new();
-            self.scene.append_steps(resources[0], true, &mut opaque)?;
+            self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
             let mut attributes = Vec::new();
-            self.scene.append_steps(resources[1], true, &mut attributes)?;
+            self.scene.append_offscreen_steps(resources[1], true, &mut attributes)?;
+            let sampled_table = self.scene.sampled_snapshot(resources[0]);
+            debug_assert_eq!(sampled_table, self.scene.sampled_snapshot(resources[1]));
             let msaa = self.targets.msaa.as_ref();
             // When MSAA is enabled the geometry renders into multisampled
             // color+depth copies and resolves into the single-sample views that
             // downstream compositing samples. `None` keeps the single-sample path.
-            passes.push(pass(
+            let mut opaque_plan = pass(
                 local.render_pass(),
                 msaa.map_or(self.targets.color.view, |m| m.color.view),
                 self.targets.depth.view,
                 msaa.map(|_| self.targets.color.view),
                 opaque,
                 true,
-            ));
+            );
+            opaque_plan.sampled_table = sampled_table;
+            passes.push(opaque_plan);
             let surface = msaa.map_or(self.targets.surface.view, |m| m.surface.view);
             let mut attributes_plan = pass(
                 attributes_pass,
@@ -302,6 +306,7 @@ impl EffectScene {
                 true,
             );
             attributes_plan.color_attachments = Arc::from([surface, self.targets.albedo.view]);
+            attributes_plan.sampled_table = sampled_table;
             passes.push(attributes_plan);
             self.capture = Some(capture);
             self.queued_capture = true;
@@ -744,14 +749,16 @@ impl EffectScene {
             let commands = self.scene.shadow_steps(
                 device, renderer, camera, cascade, caster_bounds, &context,
             )?;
-            passes.push(pass(
+            let mut shadow_plan = pass(
                 shadow_pass,
                 self.shadow_color[cascade].view,
                 self.shadow[cascade].view,
                 None,
                 commands,
                 true,
-            ));
+            );
+            shadow_plan.sampled_table = self.scene.sampled_snapshot(renderer);
+            passes.push(shadow_plan);
             self.queued_shadow[cascade] = true;
         }
         if self.queued_shadow.iter().any(|&queued| queued) {
