@@ -84,12 +84,33 @@ pub(super) struct SampledTierCache {
     candidate: Option<(u32, std::time::Instant)>,
     last_attempt: Option<std::time::Instant>,
     retained: Vec<SampledFamily>,
+    active_readers: FamilyReaders,
+}
+
+#[derive(Default)]
+struct FamilyReaders {
+    queued: bool,
+    untracked: bool,
+    fences: std::collections::HashSet<gfx_core::SubmissionId>,
+}
+
+impl FamilyReaders {
+    fn submitted(&mut self, submission: Option<gfx_core::SubmissionId>) {
+        if !std::mem::take(&mut self.queued) { return; }
+        if let Some(id) = submission { self.fences.insert(id); }
+        else { self.untracked = true; }
+    }
+    fn accepted(&mut self, id: gfx_core::SubmissionId) {
+        if std::mem::take(&mut self.untracked) { self.fences.insert(id); }
+    }
+    fn ready(&self) -> bool { !self.queued && !self.untracked && self.fences.is_empty() }
 }
 
 struct SampledFamily {
     capacity: u32,
     contexts: Vec<(gfx_core::RenderPassId, Format)>,
     passes: Vec<SampledPipelines>,
+    readers: FamilyReaders,
 }
 
 impl SampledTierCache {
@@ -146,11 +167,11 @@ impl SampledTierCache {
             || capacity > self.maximum.unwrap_or(current)
         { return Ok(false); }
         let context_keys = contexts.iter().map(|context| (context.render_pass(), context.color_format())).collect::<Vec<_>>();
-        let next = if let Some(index) = self.retained.iter().position(|family| family.capacity == capacity) {
+        let (next, next_readers) = if let Some(index) = self.retained.iter().position(|family| family.capacity == capacity && family.contexts == context_keys) {
             // A cached PSO must never be used with a different render pass.
             // Leave the current family intact on incompatible context changes.
-            if self.retained[index].contexts != context_keys { return Ok(false); }
-            self.retained.swap_remove(index).passes
+            let family = self.retained.swap_remove(index);
+            (family.passes, family.readers)
         } else {
             let mut staged = Vec::with_capacity(renderers.len());
             for (index, (renderer, context)) in renderers.iter().zip(contexts).enumerate() {
@@ -163,16 +184,76 @@ impl SampledTierCache {
                     }
                 }
             }
-            staged
+            (staged, FamilyReaders::default())
         };
         let mut previous = Vec::with_capacity(renderers.len());
         for (renderer, next) in renderers.iter_mut().zip(next) {
             previous.push(renderer.sampled.replace(next).expect("validated sampled family"));
             renderer.pipeline_revision = renderer.pipeline_revision.wrapping_add(1);
         }
-        self.retained.push(SampledFamily { capacity: current, contexts: context_keys, passes: previous });
+        self.retained.push(SampledFamily {
+            capacity: current, contexts: context_keys, passes: previous,
+            readers: std::mem::replace(&mut self.active_readers, next_readers),
+        });
         self.candidate = None;
         Ok(true)
+    }
+
+    pub(super) fn queue_use(&mut self) { self.active_readers.queued = true; }
+
+    pub(super) fn submitted(&mut self, id: Option<gfx_core::SubmissionId>) {
+        self.active_readers.submitted(id);
+        for family in &mut self.retained { family.readers.submitted(id); }
+    }
+
+    pub(super) fn abandon(&mut self, may_have_submitted: bool) {
+        if may_have_submitted { self.submitted(None); }
+        else {
+            self.active_readers.queued = false;
+            for family in &mut self.retained { family.readers.queued = false; }
+        }
+    }
+
+    pub(super) fn accepted(&mut self, id: gfx_core::SubmissionId) {
+        self.active_readers.accepted(id);
+        for family in &mut self.retained { family.readers.accepted(id); }
+    }
+
+    pub(super) fn completed(&mut self, id: gfx_core::SubmissionId) {
+        self.active_readers.fences.remove(&id);
+        for family in &mut self.retained { family.readers.fences.remove(&id); }
+    }
+
+    pub(super) fn idle(&mut self) {
+        self.active_readers.fences.clear();
+        self.active_readers.untracked = false;
+        for family in &mut self.retained {
+            family.readers.fences.clear();
+            family.readers.untracked = false;
+        }
+    }
+
+    pub(super) fn needs_completion(&self) -> bool {
+        self.retained.iter().any(|family| !family.readers.ready())
+    }
+
+    /// Release old families only when no scene can publish an old table
+    /// and every actual GPU reader has completed. The Vulkan backend
+    /// independently defers destruction of native objects.
+    pub(super) fn release_completed(&mut self, device: &mut dyn ExtensionDevice,
+        mut referenced: impl FnMut(BindGroupLayoutId) -> bool) -> gpui::Result<()> {
+        let mut index = 0;
+        while index < self.retained.len() {
+            let family = &mut self.retained[index];
+            let layout = family.passes.first().and_then(|pass| pass.layout);
+            if !family.readers.ready() || layout.is_some_and(&mut referenced) {
+                index += 1;
+                continue;
+            }
+            for pass in family.passes.iter_mut().rev() { pass.destroy(device)?; }
+            self.retained.swap_remove(index);
+        }
+        Ok(())
     }
 
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -199,6 +280,26 @@ fn sampled_capacity_target(current: u32, maximum: u32, demand: usize) -> Option<
 mod sampled_capacity_policy_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn family_reader_proof_is_generation_local() {
+        let a = gfx_core::SubmissionId::from_parts(1, 1);
+        let b = gfx_core::SubmissionId::from_parts(2, 1);
+        let mut old = FamilyReaders::default();
+        old.queued = true;
+        old.submitted(Some(a));
+        let mut next = FamilyReaders::default();
+        next.queued = true;
+        next.submitted(None);
+        next.accepted(b);
+        assert!(!old.ready());
+        assert!(!next.ready());
+        old.fences.remove(&b);
+        assert!(!old.ready());
+        old.fences.remove(&a);
+        assert!(old.ready());
+        assert!(!next.ready());
+    }
 
     #[test]
     fn sampled_capacity_policy_hysteresis_and_growth() {
