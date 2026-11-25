@@ -134,7 +134,10 @@ impl Element for StyledText {
             })
         });
 
-        let layout_id = self.layout.layout(self.text.clone(), runs, window, cx);
+        // The element carries its own layout state, which is new every time it is built.
+        let layout_id = self
+            .layout
+            .layout(self.text.clone(), runs, true, window, cx);
         (layout_id, ())
     }
 

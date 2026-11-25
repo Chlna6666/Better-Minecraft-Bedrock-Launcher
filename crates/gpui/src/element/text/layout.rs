@@ -46,21 +46,28 @@ impl TextLayout {
             // requests. Never hand two live requests the same mutable text
             // state in a single frame.
             window.with_element_state(&id, |previous: Option<Self>, window| {
+                let fresh_state = previous.is_none();
                 let state = previous.unwrap_or_default();
-                let layout_id = state.layout(text, None, window, cx);
+                let layout_id = state.layout(text, None, fresh_state, window, cx);
                 ((layout_id, state.clone()), state)
             })
         } else {
             let state = Self::default();
-            let layout_id = state.layout(text, None, window, cx);
+            let layout_id = state.layout(text, None, true, window, cx);
             (layout_id, state)
         }
     }
 
+    /// Requests the text's layout node.
+    ///
+    /// `require_measure` must be set when the caller's `TextLayout` state is not carried from
+    /// the last frame: the measured lines live in that state, so a cache hit that skips the
+    /// measure closure would leave prepaint with nothing to draw.
     pub(super) fn layout(
         &self,
         text: SharedString,
         runs: Option<Vec<TextRun>>,
+        require_measure: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> LayoutId {
@@ -250,7 +257,7 @@ impl TextLayout {
                 ("intrinsic_text", measured.width, measured.height),
                 move |_, _, _, _| measured,
             )
-        } else if text_layout_measurement_is_pure() {
+        } else if !require_measure && text_layout_measurement_is_pure() {
             // Wrapped and truncated text is still a pure function of its measurement key and
             // the constraints Taffy hands it: the closure returns the cached size whenever
             // the key and the wrap/truncate widths match, and otherwise shapes from state the
