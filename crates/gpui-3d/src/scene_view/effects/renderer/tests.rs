@@ -566,7 +566,12 @@ fn bindless_production_color_vulkan() {
             scene.insert(None, Node::new().with_mesh(mesh.clone())
                 .with_materials([Arc::new(material)])
                 .with_transform(crate::Transform {
-                    translation: Vec3::new(if i % 2 == 0 { -0.6 } else { 0.6 }, 0., 0.),
+                    translation: if colors.len() > 2 {
+                        Vec3::new((i % 8) as f32 * 0.25 - 0.875,
+                            (i / 8) as f32 * 0.25 - 0.875, 0.)
+                    } else { Vec3::new(if i % 2 == 0 { -0.6 } else { 0.6 }, 0., 0.) },
+                    scale: if colors.len() > 2 { Vec3::new(0.18, 0.18, 0.18) }
+                        else { crate::Transform::IDENTITY.scale },
                     ..crate::Transform::IDENTITY
                 })).unwrap();
             assets.push(texture);
@@ -606,8 +611,7 @@ fn bindless_production_color_vulkan() {
             clear_region: None, viewport: None, resolve_target: None,
         }]).unwrap();
         let explicit_pixels = TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes;
-        if actual_sets[0] == 2 {
-            let snapshot = scene.sampled_snapshot(renderer).expect("sampled table");
+        if actual_sets[0] == 2 && let Some(snapshot) = scene.sampled_snapshot(renderer) {
             let mut shared_commands = Vec::new();
             scene.append_offscreen_steps(renderer, view.voxel_shader, &mut shared_commands).unwrap();
             assert_eq!(shared_commands.len(), commands.len());
@@ -639,6 +643,13 @@ fn bindless_production_color_vulkan() {
             }
             let shared_pixels = TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes;
             assert_eq!(shared_pixels, explicit_pixels, "pass-level sampled binding differs from per-draw binding");
+        } else if actual_sets[0] == 2 {
+            let mut banked_commands = Vec::new();
+            scene.append_offscreen_steps(renderer, view.voxel_shader, &mut banked_commands).unwrap();
+            assert_eq!(banked_commands, commands, "banked offscreen commands must retain draw-local tables");
+            let banks = commands.iter().map(|command| command.bind_groups()[1])
+                .collect::<std::collections::HashSet<_>>();
+            assert!(banks.len() > 1, "overflow must use multiple descriptor banks");
         }
         explicit_pixels
     };
@@ -660,7 +671,9 @@ fn bindless_production_color_vulkan() {
         // cannot all fit; no out-of-range or fallback-colored draw is allowed.
         let overflow = (0..64u8).map(|i| [i, 255, 255 - i, 255]).collect::<Vec<_>>();
         let view = fixture(&overflow, voxel);
-        render(&mut device, &mut sampled_scene, &mut sampled, &view, Some(1), "overflow");
+        let expected = render(&mut device, &mut legacy_scene, &mut legacy, &view, Some(1), "overflow legacy reference");
+        let actual = render(&mut device, &mut sampled_scene, &mut sampled, &view, Some(2), "banked overflow");
+        assert_eq!(actual, expected, "production multi-bank pixel mismatch, voxel={voxel}");
         // Shrinking the working set retires old slots. A subsequent unchanged
         // frame must be able to recover and use the sampled PSO again.
         let recovered = fixture(&[[255, 0, 0, 255], [0, 0, 255, 255]], voxel);
