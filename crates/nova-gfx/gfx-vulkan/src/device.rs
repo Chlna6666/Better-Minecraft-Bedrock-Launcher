@@ -2924,6 +2924,45 @@ impl VulkanDevice {
         })
     }
 
+    fn submit_counted_texture_passes(
+        &mut self, passes: &[RenderPassCommands<'_>], tables: &[Option<BindGroupId>],
+        counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<gfx_core::GpuTimestampTag>],
+        tracked: bool,
+    ) -> Result<Option<SubmissionId>> {
+        if (!counts.is_empty() && passes.len() != counts.len()) || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+        {
+            return Err(Error::InvalidInput("sampled pass metadata length mismatch".into()));
+        }
+        for (pass, &counts) in passes.iter().zip(counts) {
+            if counts.is_empty() { continue; }
+            let limit = self.indirect_draw_count_limit().ok_or_else(|| {
+                Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
+            })?;
+            let mut previous = None;
+            for &count in counts {
+                if previous.is_some_and(|index| index >= count.command_index) {
+                    return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
+                }
+                previous = Some(count.command_index);
+                let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
+                    Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
+                    Some(RenderCommand::DrawIndexedIndirect(draw)) => (draw.arguments, draw.offset, 20),
+                    _ => return Err(Error::InvalidInput("count binding requires an indirect draw".into())),
+                };
+                let args = self.buffers.get(arguments)?;
+                let counter = self.buffers.get(count.count_buffer)?;
+                if !args.desc.usage.contains(BufferUsage::INDIRECT)
+                    || !counter.desc.usage.contains(BufferUsage::INDIRECT)
+                {
+                    return Err(Error::InvalidInput("counted draw buffers require INDIRECT usage".into()));
+                }
+                count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
+            }
+        }
+        self.record_texture_passes(passes, Some(tags), false, counts, tables, tracked)
+    }
+
     fn record_texture_passes(
         &mut self,
         passes: &[RenderPassCommands<'_>],
@@ -2931,6 +2970,7 @@ impl VulkanDevice {
         independent: bool,
         counts: &[&[gfx_core::IndirectCountBinding]],
         tables: &[Option<BindGroupId>],
+        tracked: bool,
     ) -> Result<Option<SubmissionId>> {
         if !tables.is_empty() && tables.len() != passes.len() {
             return Err(Error::InvalidInput("offscreen sampled table length mismatch".into()));
@@ -3026,6 +3066,8 @@ impl VulkanDevice {
             // a duplicate SubmissionId that could outlive its VkFence.
             self.submit_command_encoder_independent(encoder, false)
                 .map(|_| None)
+        } else if tracked {
+            self.submit_encoder(encoder).map(Some)
         } else {
             self.submit_command_encoder_deferred(encoder).map(|_| None)
         };
@@ -6121,10 +6163,10 @@ impl PresentationDevice for VulkanDevice {
     ) -> Result<()> {
         if counts.is_empty() {
             return self.record_texture_passes(std::slice::from_ref(pass),
-                Some(std::slice::from_ref(&tag)), false, &[], &[]).map(|_| ());
+                Some(std::slice::from_ref(&tag)), false, &[], &[], false).map(|_| ());
         }
-        self.render_to_textures_counted_profiled(
-            std::slice::from_ref(pass), std::slice::from_ref(&counts), std::slice::from_ref(&tag),
+        self.submit_counted_texture_passes(
+            std::slice::from_ref(pass), &[], std::slice::from_ref(&counts), std::slice::from_ref(&tag), false,
         ).map(|_| ())
     }
 
@@ -6142,42 +6184,11 @@ impl PresentationDevice for VulkanDevice {
         &mut self, passes: &[RenderPassCommands<'_>], tables: &[Option<BindGroupId>],
         counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<gfx_core::GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
-        if (!counts.is_empty() && passes.len() != counts.len()) || passes.len() != tags.len()
-            || (!tables.is_empty() && tables.len() != passes.len())
-        {
-            return Err(Error::InvalidInput("sampled pass metadata length mismatch".into()));
-        }
-        for (pass, &counts) in passes.iter().zip(counts) {
-            if counts.is_empty() { continue; }
-            let limit = self.indirect_draw_count_limit().ok_or_else(|| {
-                Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
-            })?;
-            let mut previous = None;
-            for &count in counts {
-                if previous.is_some_and(|index| index >= count.command_index) {
-                    return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
-                }
-                previous = Some(count.command_index);
-                let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
-                    Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
-                    Some(RenderCommand::DrawIndexedIndirect(draw)) => (draw.arguments, draw.offset, 20),
-                    _ => return Err(Error::InvalidInput("count binding requires an indirect draw".into())),
-                };
-                let args = self.buffers.get(arguments)?;
-                let counter = self.buffers.get(count.count_buffer)?;
-                if !args.desc.usage.contains(BufferUsage::INDIRECT)
-                    || !counter.desc.usage.contains(BufferUsage::INDIRECT)
-                {
-                    return Err(Error::InvalidInput("counted draw buffers require INDIRECT usage".into()));
-                }
-                count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
-            }
-        }
-        self.record_texture_passes(passes, Some(tags), false, counts, tables)
+        self.submit_counted_texture_passes(passes, tables, counts, tags, true)
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[])
+        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[], false)
             .map(|_| ())
     }
 
@@ -6185,7 +6196,7 @@ impl PresentationDevice for VulkanDevice {
         &mut self,
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, None, false, &[], &[])?;
+        self.record_texture_passes(passes, None, false, &[], &[], false)?;
         Ok(None)
     }
 
@@ -6195,7 +6206,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), false, &[], &[])
+        self.record_texture_passes(passes, Some(tags), false, &[], &[], true)
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -6208,7 +6219,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[], &[])
+        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[], &[], false)
     }
 }
 

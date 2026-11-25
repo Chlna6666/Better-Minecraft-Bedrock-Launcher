@@ -595,10 +595,17 @@ pub(super) fn same_capture(a: &SceneView, b: &SceneView) -> bool {
 
 impl RendererExtensionRenderer for EffectsRenderer {
     fn render_passes_submitted(&mut self) {
+        self.render_passes_submitted_with_submission(None);
+    }
+
+    fn render_passes_submitted_with_submission(&mut self, submission: Option<gfx_core::SubmissionId>) {
         for state in self.scenes.values_mut() {
             state.submitted_retirements = state.retired.len();
             if state.queued_capture || state.queued_shadow.iter().any(|&queued| queued) {
-                state.scene.draw_producer_submitted(None);
+                state.scene.draw_producer_submitted(submission);
+                if let Some(submission) = submission {
+                    state.scene.draw_submission_accepted(submission);
+                }
             }
             if std::mem::take(&mut state.queued_capture) {
                 state.targets_valid = true;

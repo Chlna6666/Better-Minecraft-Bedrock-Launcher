@@ -339,7 +339,8 @@ impl ExtensionSubmission<'_> {
             ResourceDevice::dispatch_compute_bind_group(device, dispatch)?;
             cursor = stage.after_graphics_pass;
         }
-        if let Some(submission) = self.submit_graphics(device, cursor..count, independent)? {
+        let final_graphics = self.submit_graphics(device, cursor..count, independent)?;
+        if let Some(submission) = final_graphics {
             last = Some(submission);
         }
         if let Some(started) = cpu_started {
@@ -352,7 +353,10 @@ impl ExtensionSubmission<'_> {
                 self.pending.len(),
             );
         }
-        self.registry.render_passes_submitted();
+        // Never substitute an unrelated native producer or a submission
+        // preceding the last graphics run. Independent queues retain their
+        // existing conservative completion contract.
+        self.registry.render_passes_submitted(if independent { None } else { final_graphics });
         Ok(last)
     }
 }

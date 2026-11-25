@@ -321,6 +321,12 @@ pub trait RendererExtensionRenderer {
     /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
     /// This is submission ordering, not a resource-reclamation completion signal.
     fn render_passes_submitted(&mut self) {}
+    /// The final accepted producer on the same ordered graphics queue covers
+    /// earlier graphics/compute stages in this extension batch. This is not
+    /// a completion event. None preserves the conservative consumer fallback.
+    fn render_passes_submitted_with_submission(&mut self, _submission: Option<gfx_core::SubmissionId>) {
+        self.render_passes_submitted();
+    }
     /// Abandon drained producer plans without publishing their output.
     /// An attempted graphics submission may have accepted a prefix (including
     /// backends with no SubmissionId); preserve possible readers in that case.

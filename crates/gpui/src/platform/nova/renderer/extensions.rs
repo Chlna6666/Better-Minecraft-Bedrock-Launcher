@@ -61,11 +61,11 @@ impl RendererRegistry {
         self.graphics_attempted = true;
     }
 
-    pub(super) fn render_passes_submitted(&mut self) {
+    pub(super) fn render_passes_submitted(&mut self, submission: Option<gfx_core::SubmissionId>) {
         self.graphics_attempted = false;
         for type_id in self.submitted_types.drain(..) {
             if let Some(renderer) = self.renderers.get_mut(&type_id) {
-                renderer.render_passes_submitted();
+                renderer.render_passes_submitted_with_submission(submission);
             }
         }
     }
@@ -387,14 +387,14 @@ mod tests {
             .renderers
             .insert(second_id, Box::new(Submitted(second.clone())));
         registry.submitted_types.push(first_id);
-        registry.render_passes_submitted();
+        registry.render_passes_submitted(None);
         assert_eq!(first.load(Ordering::Relaxed), 1);
         assert_eq!(second.load(Ordering::Relaxed), 0);
-        registry.render_passes_submitted();
+        registry.render_passes_submitted(None);
         assert_eq!(first.load(Ordering::Relaxed), 1);
         registry.submitted_types.push(second_id);
         registry.begin_frame();
-        registry.render_passes_submitted();
+        registry.render_passes_submitted(None);
         assert_eq!(second.load(Ordering::Relaxed), 0);
     }
 
