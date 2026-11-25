@@ -1369,6 +1369,29 @@ pub trait PresentationDevice {
         self.render_to_textures_on_queue(passes, tags, OffscreenQueuePreference::OrderedGraphics)
     }
 
+    /// Ordered batch whose per-pass sampled image table is bound at set one.
+    /// Commands contain only set zero for a pass with a shared table.
+    /// Empty metadata means no shared tables/counts. Backends must reject
+    /// unsupported nonempty shared tables before submitting any work.
+    fn render_to_textures_sampled_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>], tables: &[Option<BindGroupId>],
+        counts: &[&[crate::IndirectCountBinding]], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if (!tables.is_empty() && tables.len() != passes.len())
+            || (!counts.is_empty() && counts.len() != passes.len()) || tags.len() != passes.len()
+        {
+            return Err(Error::InvalidInput("sampled pass metadata length mismatch".into()));
+        }
+        if tables.iter().any(Option::is_some) {
+            return Err(Error::Unavailable("pass-level sampled tables are unsupported".into()));
+        }
+        if counts.is_empty() {
+            self.render_to_textures_on_queue(passes, tags, OffscreenQueuePreference::OrderedGraphics)
+        } else {
+            self.render_to_textures_counted_profiled(passes, counts, tags)
+        }
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the
@@ -1512,6 +1535,14 @@ pub trait OffscreenSubmissionDevice {
         self.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics)
     }
 
+    /// Ordered native graphics with a sampled table shared by all draws in each pass.
+    fn submit_sampled_offscreen_batch(
+        &mut self, _passes: &[RenderPassCommands<'_>], _tables: &[Option<BindGroupId>],
+        _counts: &[&[crate::IndirectCountBinding]], _tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        Err(Error::Unavailable("pass-level sampled tables are unsupported".into()))
+    }
+
     /// Hardware-supported independent native graphics-queue availability.
     fn supports_independent_offscreen_graphics(&self) -> bool;
 }
@@ -1559,6 +1590,13 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         PresentationDevice::render_to_textures_counted_profiled(self, passes, counts, tags)
+    }
+
+    fn submit_sampled_offscreen_batch(
+        &mut self, passes: &[RenderPassCommands<'_>], tables: &[Option<BindGroupId>],
+        counts: &[&[crate::IndirectCountBinding]], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        PresentationDevice::render_to_textures_sampled_profiled(self, passes, tables, counts, tags)
     }
 
     fn supports_independent_offscreen_graphics(&self) -> bool {

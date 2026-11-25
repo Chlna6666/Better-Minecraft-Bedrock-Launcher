@@ -1783,6 +1783,14 @@ impl VulkanDevice {
                 "fragment shader module must use ShaderStage::Fragment".to_string(),
             ));
         }
+        // Store the exact compatible layout pair for pass-level sampled bindings.
+        let shared_sampled_layouts = if let Some(id) = desc.pipeline_layout {
+            match self.pipeline_layouts.get(id)?.bind_group_layouts.as_slice() {
+                &[geometry, table] if self.bind_group_layouts.get(table)?.sampled_table_capacity.is_some() =>
+                    Some([geometry, table]),
+                _ => None,
+            }
+        } else { None };
         let (pipeline_layout, owns_pipeline_layout) =
             if let Some(pipeline_layout_id) = desc.pipeline_layout {
                 (self.pipeline_layouts.get(pipeline_layout_id)?.layout, false)
@@ -1815,6 +1823,7 @@ impl VulkanDevice {
             pipeline,
             pipeline_layout,
             owns_pipeline_layout,
+            shared_sampled_layouts,
         }))
     }
 
@@ -2243,6 +2252,7 @@ impl VulkanDevice {
             present_image,
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
+            shared_sampled_set: None,
             multi_draw_indirect: self.multi_draw_indirect,
             max_draw_indirect_count: self.max_draw_indirect_count,
             extent,
@@ -2298,6 +2308,7 @@ impl VulkanDevice {
         graph_write_hazard: bool,
         gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
         counts: &[gfx_core::IndirectCountBinding],
+        sampled_table: Option<BindGroupId>,
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
@@ -2454,6 +2465,24 @@ impl VulkanDevice {
         // Reuse the resolved native descriptor range for consecutive draws with
         // identical portable bindings. No repeated registry lookups or copies.
         let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
+        // Resolve the shared descriptor once per pass, not for every draw.
+        // The table API accepts sampled color views only; depth_accesses
+        // therefore remains driven by the draw-local geometry sets.
+        let shared_sampled = sampled_table.map(|id| {
+            let group = self.bind_groups.get(id)?;
+            let views = group.sampled_table.as_ref().ok_or_else(|| {
+                Error::InvalidInput("shared set one is not a sampled image table".into())
+            })?;
+            for &view in views {
+                let image = self.texture_views.get(view)?.texture;
+                if render_target_textures.contains(&image)
+                    || resolve_view.map(|id| self.texture_views.get(id).map(|v| v.texture)).transpose()? == Some(image)
+                {
+                    return Err(Error::InvalidInput("shared sampled table aliases a color attachment".into()));
+                }
+            }
+            Ok::<_, Error>((group.layout, group.descriptor_set))
+        }).transpose()?;
         let mut counts = counts.iter().peekable();
         for (command_index, step) in steps.iter().enumerate() {
             let count = if counts.peek().is_some_and(|count| count.command_index == command_index) {
@@ -2470,6 +2499,15 @@ impl VulkanDevice {
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
             let groups = step.bind_groups();
+            if let Some((table_layout, _)) = shared_sampled {
+                let [geometry] = groups else {
+                    return Err(Error::InvalidInput("shared sampled pass requires exactly one draw-local set".into()));
+                };
+                let geometry_layout = self.bind_groups.get(*geometry)?.layout;
+                if pipeline_record.shared_sampled_layouts != Some([geometry_layout, table_layout]) {
+                    return Err(Error::InvalidInput("shared sampled pass pipeline layout mismatch".into()));
+                }
+            }
             let set_range = if let Some((previous, range)) = &previous_sets
                 && *previous == groups
             {
@@ -2632,6 +2670,7 @@ impl VulkanDevice {
             present_image: None,
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
+            shared_sampled_set: shared_sampled.map(|(_, set)| set),
             multi_draw_indirect: self.multi_draw_indirect,
             max_draw_indirect_count: self.max_draw_indirect_count,
             extent,
@@ -2872,7 +2911,11 @@ impl VulkanDevice {
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         independent: bool,
         counts: &[&[gfx_core::IndirectCountBinding]],
+        tables: &[Option<BindGroupId>],
     ) -> Result<Option<SubmissionId>> {
+        if !tables.is_empty() && tables.len() != passes.len() {
+            return Err(Error::InvalidInput("offscreen sampled table length mismatch".into()));
+        }
         if !counts.is_empty() && counts.len() != passes.len() {
             return Err(Error::InvalidInput("offscreen count table length mismatch".into()));
         }
@@ -2946,6 +2989,7 @@ impl VulkanDevice {
                         })
                 }),
                 counts.get(index).copied().unwrap_or(&[]),
+                tables.get(index).copied().flatten(),
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -6058,7 +6102,7 @@ impl PresentationDevice for VulkanDevice {
     ) -> Result<()> {
         if counts.is_empty() {
             return self.record_texture_passes(std::slice::from_ref(pass),
-                Some(std::slice::from_ref(&tag)), false, &[]).map(|_| ());
+                Some(std::slice::from_ref(&tag)), false, &[], &[]).map(|_| ());
         }
         self.render_to_textures_counted_profiled(
             std::slice::from_ref(pass), std::slice::from_ref(&counts), std::slice::from_ref(&tag),
@@ -6069,8 +6113,20 @@ impl PresentationDevice for VulkanDevice {
         &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[gfx_core::IndirectCountBinding]],
         tags: &[Option<gfx_core::GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
-        if passes.len() != counts.len() || passes.len() != tags.len() {
+        if passes.len() != counts.len() {
             return Err(Error::InvalidInput("counted pass metadata length mismatch".into()));
+        }
+        self.render_to_textures_sampled_profiled(passes, &[], counts, tags)
+    }
+
+    fn render_to_textures_sampled_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>], tables: &[Option<BindGroupId>],
+        counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if (!counts.is_empty() && passes.len() != counts.len()) || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+        {
+            return Err(Error::InvalidInput("sampled pass metadata length mismatch".into()));
         }
         for (pass, &counts) in passes.iter().zip(counts) {
             if counts.is_empty() { continue; }
@@ -6098,11 +6154,11 @@ impl PresentationDevice for VulkanDevice {
                 count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
             }
         }
-        self.record_texture_passes(passes, Some(tags), false, counts)
+        self.record_texture_passes(passes, Some(tags), false, counts, tables)
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[])
+        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[])
             .map(|_| ())
     }
 
@@ -6110,7 +6166,7 @@ impl PresentationDevice for VulkanDevice {
         &mut self,
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, None, false, &[])?;
+        self.record_texture_passes(passes, None, false, &[], &[])?;
         Ok(None)
     }
 
@@ -6120,7 +6176,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), false, &[])
+        self.record_texture_passes(passes, Some(tags), false, &[], &[])
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -6133,7 +6189,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[])
+        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[], &[])
     }
 }
 
@@ -6676,6 +6732,7 @@ struct VulkanRenderPipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     owns_pipeline_layout: bool,
+    shared_sampled_layouts: Option<[BindGroupLayoutId; 2]>,
 }
 
 #[derive(Clone)]
@@ -8285,6 +8342,7 @@ struct CommandRecordInfo<'a> {
     present_image: Option<vk::Image>,
     steps: &'a [CommandDrawStepInfo],
     descriptor_sets: &'a [vk::DescriptorSet],
+    shared_sampled_set: Option<vk::DescriptorSet>,
     multi_draw_indirect: bool,
     max_draw_indirect_count: u32,
     extent: vk::Extent2D,
@@ -8750,6 +8808,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         let mut previous_pipeline = None;
         let mut previous_scissor = None;
         let mut previous_bindings = None;
+        let mut previous_sampled_layout = None;
         let mut previous_index = None;
         let mut step_iter = info.steps.iter().peekable();
         while let Some(step) = step_iter.next() {
@@ -8782,6 +8841,17 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 );
             }
             previous_bindings = Some((step.pipeline_layout, sets));
+            // Vulkan keeps set one valid across set-zero binds using the
+            // same pipeline layout. Bind it again only on a layout change.
+            if let Some(table) = info.shared_sampled_set
+                && previous_sampled_layout != Some(step.pipeline_layout)
+            {
+                info.device.cmd_bind_descriptor_sets(
+                    info.command_buffer, vk::PipelineBindPoint::GRAPHICS,
+                    step.pipeline_layout, 1, &[table], &[],
+                );
+                previous_sampled_layout = Some(step.pipeline_layout);
+            }
             match step.draw {
                 CommandDrawStepKind::Indirect { buffer, offset } => {
                     if let Some((count_buffer, count_offset, max_count)) = step.count {
