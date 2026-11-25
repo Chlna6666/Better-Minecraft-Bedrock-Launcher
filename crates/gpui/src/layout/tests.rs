@@ -5,8 +5,17 @@ use crate::{
 };
 use std::{cell::Cell, rc::Rc};
 
-fn layout_identity(name: &'static str) -> Option<GlobalElementId> {
-    Some(GlobalElementId::from_path(&[ElementId::from(name)]))
+/// The plain identifier, for the committed-lifetime callback.
+fn element_identity(name: &'static str) -> GlobalElementId {
+    GlobalElementId::from_path(&[ElementId::from(name)])
+}
+
+/// The owner pair the layout engine keys its nodes by.
+fn layout_identity(name: &'static str) -> Option<(u64, GlobalElementId)> {
+    let id = element_identity(name);
+    let mut hasher = collections::FxHasher::default();
+    std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
+    Some((std::hash::Hasher::finish(&hasher), id))
 }
 
 #[gpui::test]
@@ -167,7 +176,7 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
             assert_eq!(removed, first);
             engine.compute_layout(removed.2, AvailableSpace::min_size(), window, cx);
             engine.clear();
-            let center_identity = layout_identity("center").unwrap();
+            let center_identity = element_identity("center");
             engine.retain_committed_elements(|id| id != &center_identity, true);
             assert_eq!(engine.taffy.total_node_count(), 3);
         })
@@ -321,17 +330,19 @@ fn native_taffy_keeps_cached_subtrees_until_committed_unmount(cx: &mut TestAppCo
     window
         .update(cx, |_, window, cx| {
             let mut engine = TaffyLayoutEngine::new();
-            let child_identity = layout_identity("child").unwrap();
-            let root_identity = layout_identity("root").unwrap();
+            let child_identity = element_identity("child");
+            let root_identity = element_identity("root");
+            let child_owner = layout_identity("child").unwrap();
+            let root_owner = layout_identity("root").unwrap();
             let child = engine.request_layout(
-                Some(child_identity.clone()),
+                Some(child_owner),
                 Style::default(),
                 px(16.),
                 1.,
                 &[],
             );
             let root = engine.request_layout(
-                Some(root_identity.clone()),
+                Some(root_owner),
                 Style::default(),
                 px(16.),
                 1.,
@@ -373,9 +384,14 @@ fn native_taffy_prunes_unused_layout_slots_but_not_replayed_or_degraded_slots(
     window
         .update(cx, |_, _, _| {
             let mut engine = TaffyLayoutEngine::new();
-            let owner = layout_identity("multi-layout-owner").unwrap();
+            let owner = element_identity("multi-layout-owner");
+            let owner_pair = layout_identity("multi-layout-owner").unwrap();
             let request = |engine: &mut TaffyLayoutEngine| {
-                engine.request_layout(Some(owner.clone()), Style::default(), px(16.), 1., &[])
+                let pair = (
+                    owner_pair.0,
+                    owner_pair.1.clone(),
+                );
+                engine.request_layout(Some(pair), Style::default(), px(16.), 1., &[])
             };
 
             let first = request(&mut engine);

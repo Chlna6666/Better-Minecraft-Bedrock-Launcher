@@ -1,3 +1,11 @@
+/// The owner pair the layout engine keys its nodes by.
+fn owner(name: &'static str) -> Option<(u64, crate::GlobalElementId)> {
+    let id = crate::GlobalElementId::from_path(&[crate::ElementId::from(name)]);
+    let mut hasher = collections::FxHasher::default();
+    std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
+    Some((std::hash::Hasher::finish(&hasher), id))
+}
+
 use super::{AvailableSpace, TaffyLayoutEngine};
 use crate::{
     AppContext as _, ElementId, GlobalElementId, Style, TestAppContext, WindowOptions, px, size,
@@ -15,13 +23,15 @@ fn interaction_flags_preserve_native_pure_measure_cache(cx: &mut TestAppContext)
             let mut engine = TaffyLayoutEngine::new();
             let count = Rc::new(Cell::new(0));
             let scale_factor = window.scale_factor();
-            let owner = GlobalElementId::from_path(&[ElementId::from("pure-measure")]);
+            let plain_owner = GlobalElementId::from_path(&[ElementId::from("pure-measure")]);
+            let owner_pair = owner("pure-measure").unwrap();
             let request = |engine: &mut TaffyLayoutEngine, allow_scroll: bool| {
                 let mut style = Style::default();
                 style.allow_concurrent_scroll = allow_scroll;
                 let count = count.clone();
+                let pair = (owner_pair.0, owner_pair.1.clone());
                 engine.request_fingerprinted_layout(
-                    Some(owner.clone()),
+                    Some(pair),
                     style,
                     px(16.),
                     scale_factor,

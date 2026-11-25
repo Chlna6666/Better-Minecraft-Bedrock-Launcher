@@ -1,3 +1,11 @@
+/// The owner pair the layout engine keys its nodes by.
+fn owner(name: &'static str) -> Option<(u64, crate::GlobalElementId)> {
+    let id = crate::GlobalElementId::from_path(&[crate::ElementId::from(name)]);
+    let mut hasher = collections::FxHasher::default();
+    std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
+    Some((std::hash::Hasher::finish(&hasher), id))
+}
+
 use super::engine::{EXPECT_MESSAGE, TaffyLayoutEngine};
 use crate::{AlignItems, Display, ElementId, FlexDirection, GlobalElementId, JustifyContent, Style, px, relative, size};
 
@@ -57,13 +65,13 @@ fn persistent_layout_restores_child_style_after_passthrough_is_removed() {
     child_style.display = Display::Flex;
     child_style.size = size(relative(0.75).into(), px(120.).into());
 
-    let child = engine.request_layout(Some(GlobalElementId::from_path(&[ElementId::from("child")])), child_style.clone(), px(16.), 1.0, &[]);
+    let child = engine.request_layout(owner("child"), child_style.clone(), px(16.), 1.0, &[]);
     let mut wrapper_style = Style::default();
     wrapper_style.percentage_passthrough = true;
-    engine.request_layout(Some(GlobalElementId::from_path(&[ElementId::from("wrapper")])), wrapper_style, px(16.), 1.0, &[child]);
+    engine.request_layout(owner("wrapper"), wrapper_style, px(16.), 1.0, &[child]);
     engine.clear();
 
-    let same_child = engine.request_layout(Some(GlobalElementId::from_path(&[ElementId::from("child")])), child_style.clone(), px(16.), 1.0, &[]);
+    let same_child = engine.request_layout(owner("child"), child_style.clone(), px(16.), 1.0, &[]);
     assert_eq!(child, same_child);
     let expected_style = super::convert::ToTaffy::to_taffy(
         &crate::LayoutStyle::from(&child_style),
