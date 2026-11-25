@@ -59,14 +59,17 @@ struct SampledPipelines {
 impl SampledPipelines {
     fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         for pipeline in &mut self.pipelines {
-            if let Some(id) = pipeline.take() { device.destroy_render_pipeline(id)?; }
+            if let Some(id) = *pipeline {
+                device.destroy_render_pipeline(id)?;
+                *pipeline = None;
+            }
         }
-        if let Some(id) = self.fragment.take() { device.destroy_shader_module(id)?; }
-        if let Some(id) = self.voxel_fragment.take() { device.destroy_shader_module(id)?; }
+        if let Some(id) = self.fragment { device.destroy_shader_module(id)?; self.fragment = None; }
+        if let Some(id) = self.voxel_fragment { device.destroy_shader_module(id)?; self.voxel_fragment = None; }
         if self.owns_layout {
-            if let Some(id) = self.pipeline_layout.take() { device.destroy_pipeline_layout(id)?; }
-            if let Some(id) = self.layout.take() { device.destroy_bind_group_layout(id)?; }
-            if let Some(id) = self.geometry_layout.take() { device.destroy_bind_group_layout(id)?; }
+            if let Some(id) = self.pipeline_layout { device.destroy_pipeline_layout(id)?; self.pipeline_layout = None; }
+            if let Some(id) = self.layout { device.destroy_bind_group_layout(id)?; self.layout = None; }
+            if let Some(id) = self.geometry_layout { device.destroy_bind_group_layout(id)?; self.geometry_layout = None; }
         }
         Ok(())
     }
@@ -111,6 +114,7 @@ struct SampledFamily {
     contexts: Vec<(gfx_core::RenderPassId, Format)>,
     passes: Vec<SampledPipelines>,
     readers: FamilyReaders,
+    retiring: bool,
 }
 
 impl SampledTierCache {
@@ -167,7 +171,7 @@ impl SampledTierCache {
             || capacity > self.maximum.unwrap_or(current)
         { return Ok(false); }
         let context_keys = contexts.iter().map(|context| (context.render_pass(), context.color_format())).collect::<Vec<_>>();
-        let (next, next_readers) = if let Some(index) = self.retained.iter().position(|family| family.capacity == capacity && family.contexts == context_keys) {
+        let (next, next_readers) = if let Some(index) = self.retained.iter().position(|family| !family.retiring && family.capacity == capacity && family.contexts == context_keys) {
             // A cached PSO must never be used with a different render pass.
             // Leave the current family intact on incompatible context changes.
             let family = self.retained.swap_remove(index);
@@ -194,6 +198,7 @@ impl SampledTierCache {
         self.retained.push(SampledFamily {
             capacity: current, contexts: context_keys, passes: previous,
             readers: std::mem::replace(&mut self.active_readers, next_readers),
+            retiring: false,
         });
         self.candidate = None;
         Ok(true)
@@ -250,6 +255,7 @@ impl SampledTierCache {
                 index += 1;
                 continue;
             }
+            family.retiring = true;
             for pass in family.passes.iter_mut().rev() { pass.destroy(device)?; }
             self.retained.swap_remove(index);
         }
@@ -592,8 +598,9 @@ impl RendererResources {
     pub(super) fn release_completed(
         &mut self, device: &mut dyn ExtensionDevice,
     ) -> gpui::Result<()> {
-        while let Some(pipeline) = self.ready_pipeline_release.pop() {
+        while let Some(&pipeline) = self.ready_pipeline_release.last() {
             device.destroy_render_pipeline(pipeline)?;
+            self.ready_pipeline_release.pop();
         }
         Ok(())
     }
