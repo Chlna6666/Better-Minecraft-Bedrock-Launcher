@@ -94,6 +94,13 @@ jobs:
       - name: Compile native backend test suite
         id: native_compile
         run: cargo test -p gpui-3d --lib --features gpui/x11 --no-run
+      - name: Verify resident descriptor-index aware draw records
+        if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p gpui-3d --lib --features gpui/x11 draw_cache_
+          cargo test -p gpui-3d --lib --features gpui/x11 full_material_cache_preserves_unchanged_resident_gpu_records
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
