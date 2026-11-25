@@ -111,8 +111,10 @@ impl MetalDevice {
             znear: 0.0, zfar: 1.0,
         };
         const MIN_FIXED_RUN: u32 = 32;
-        let capacity = plan.map_or(pass.commands.len(), |plan| plan.runs().iter()
-            .map(|&length| if length >= MIN_FIXED_RUN { 1 } else { length as usize }).sum());
+        let compact = plan.is_some_and(|plan| plan.is_compressed());
+        let capacity = plan.map_or(pass.commands.len(), |plan| if compact { pass.commands.len() } else {
+            plan.runs().iter().map(|&length| if length >= MIN_FIXED_RUN { 1 } else { length as usize }).sum()
+        });
         let mut steps = Vec::with_capacity(capacity);
         let mut preparation = RenderStateCache::default();
         let mut counts = counts.iter().peekable();
@@ -128,11 +130,11 @@ impl MetalDevice {
             if counts.peek().is_some_and(|count| count.command_index == index) {
                 let count = *counts.next().expect("counted command");
                 step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
-            } else if remaining >= MIN_FIXED_RUN {
+            } else if remaining >= MIN_FIXED_RUN || (compact && remaining > 1) {
                 step.draw = PreparedMetalDraw::Counted(self.prepare_fixed_run(command, remaining, &step.pipeline)?);
                 consumed = remaining;
             }
-            index += consumed as usize;
+            index += if compact { 1 } else { consumed as usize };
             remaining -= consumed;
             if checked_bindings.insert(std::rc::Rc::as_ptr(&step.bindings))
                 && (color_ids.iter().any(|&id| step.bindings.samples_texture(id))
