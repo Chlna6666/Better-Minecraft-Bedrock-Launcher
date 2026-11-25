@@ -2090,6 +2090,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             // Validate before recording any producer work; a failed
             // projection must not leave a pending capture without its epoch.
             let captured_projection = FrameProjection::new(prepared_view, &render_context)?;
+            let sampled_table = scene.sampled_snapshot(&self.resources);
             surface.enqueue(
                 device,
                 scene_view.id,
@@ -2097,7 +2098,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 scene.capture_revision,
                 gpu_work_tag,
                 commands,
-                scene.sampled_snapshot(&self.resources),
+                sampled_table,
                 traits.authored_scissors,
                 traits.indirect_only,
                 &mut self.pending_passes,
@@ -2112,6 +2113,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                     start.elapsed(),
                 );
             }
+            scene.queue_sampled_capture(sampled_table);
             // The published input must be the one actually rendered: during
             // a pending full replacement, the producer may capture a retained
             // compatible scene instead of the incoming SceneView.

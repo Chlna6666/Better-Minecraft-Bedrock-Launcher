@@ -359,6 +359,7 @@ impl EffectScene {
             attributes_plan.color_attachments = Arc::from([surface, self.targets.albedo.view]);
             attributes_plan.sampled_table = sampled_table;
             passes.push(attributes_plan);
+            self.scene.queue_sampled_capture(sampled_table);
             self.capture = Some(capture);
             self.queued_capture = true;
         }
@@ -810,6 +811,7 @@ impl EffectScene {
                 true,
             );
             shadow_plan.sampled_table = self.scene.sampled_snapshot(renderer);
+            self.scene.queue_sampled_capture(shadow_plan.sampled_table);
             passes.push(shadow_plan);
             self.queued_shadow[cascade] = true;
         }

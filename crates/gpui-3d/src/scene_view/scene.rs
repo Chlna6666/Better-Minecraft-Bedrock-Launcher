@@ -638,12 +638,16 @@ impl SceneResources {
     /// This scene's latest native DrawIndirect read, stamped after the GPU
     /// owner actually accepted the producer batch. Bounds, DrawParams and
     /// Instance slot allocators must share this same reader generation.
+    pub(super) fn queue_sampled_capture(&mut self, snapshot: Option<BindGroupId>) {
+        if let Some(table) = self.sampled_textures.as_mut() { table.queue_capture(snapshot); }
+    }
+
     pub(super) fn draw_producer_submitted(
         &mut self,
         submission: Option<gfx_core::SubmissionId>,
     ) {
         self.arena.native_draw_submitted(submission);
-        if let Some(table) = self.sampled_textures.as_mut() { table.submitted(submission, self.committed_sampled_snapshot); }
+        if let Some(table) = self.sampled_textures.as_mut() { table.capture_submitted(submission, self.committed_sampled_snapshot); }
         self.stable_slots.draw_producer_submitted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_producer_submitted(submission);
