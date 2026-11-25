@@ -61,7 +61,7 @@ struct BankGeneration {
     generation: u64,
     readers: Readers,
     layout: BindGroupLayoutId,
-    materials: HashMap<MaterialTextures, (usize, [u32; 4])>,
+    materials: HashMap<MaterialTextures, (usize, [u32; 4], [Option<TextureViewId>; 4])>,
     views: HashSet<TextureViewId>,
     snapshots: Vec<BindGroupId>,
 }
@@ -88,7 +88,7 @@ impl BankGeneration {
                 }
             }
             let lease = allocator.acquire_material(images)?;
-            materials.insert(key, (lease.bank(), lease.indices()));
+            materials.insert(key, (lease.bank(), lease.indices(), images));
             // This allocator is generation-local: all leases remain live
             // until its immutable snapshots are created.
         }
@@ -266,7 +266,7 @@ impl SceneSampledTextures {
 
     pub(super) fn bank_snapshot(&self, draw: &PreparedDraw) -> Option<BindGroupId> {
         let bank = self.banked.as_ref()?;
-        let (index, _) = bank.materials.get(&material_textures(draw))?;
+        let (index, _, _) = bank.materials.get(&material_textures(draw))?;
         bank.snapshots.get(*index).copied()
     }
 
@@ -306,15 +306,17 @@ impl SceneSampledTextures {
         if let Some(bank) = &self.banked {
             if bank.layout == self.layout {
                 let mut keys = HashSet::new();
-                let mut views = HashSet::new();
+                let mut identical = true;
                 for draw in draws {
                     let key = material_textures(draw);
                     if keys.insert(key) {
-                        views.extend(key.iter().flatten().filter_map(|id| textures.get(id).map(|texture| texture.view)));
+                        let images = key.map(|asset| asset.and_then(|id| textures.get(&id).map(|texture| texture.view)));
+                        identical &= bank.materials.get(&key).is_some_and(|entry| entry.2 == images);
                     }
                 }
-                if keys.len() == bank.materials.len() && keys.iter().all(|key| bank.materials.contains_key(key))
-                    && views == bank.views { return; }
+                // Equal unions of views are insufficient: two asset IDs
+                // may have swapped their native views between publications.
+                if identical && keys.len() == bank.materials.len() { return; }
             }
         }
         let next = match BankGeneration::build(device, self.layout, self.slots.capacity(), self.fallback, draws, textures) {
