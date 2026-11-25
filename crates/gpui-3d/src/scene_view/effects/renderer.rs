@@ -283,10 +283,13 @@ impl EffectsRenderer {
         }
         // All material passes switch as one family. The cache retains old
         // PSOs/layouts for already queued captures and migrated scene tables.
-        if let Some(current) = self.hdr.sampled_table_capacity() {
+        if let Some(current) = self.hdr.sampled_table_capacity()
+            && self.sampled_tiers.begin_frame(context.frame_time())
+        {
             let demand = self.scenes.values().map(|state| state.scene.sampled_capacity_demand()).max().unwrap_or(1);
             if let Some(target) = self.sampled_tiers.suggest(current, demand, context.frame_time())
-                && self.scenes.values().all(|state| state.scene.sampled_can_migrate(target))
+                && let Some(target) = SampledTierCache::feasible_target(current, target,
+                    |tier| self.scenes.values().all(|state| state.scene.sampled_can_migrate(tier)))
                 && self.sampled_tiers.switch(device, &mut [&mut self.hdr, &mut self.attributes, &mut self.shadow_resources],
                     &[local.clone(), local.offscreen(self.attributes_pass, Format::Rgba16Float, extent),
                       local.offscreen(self.shadow_pass, Format::R8Unorm, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?)],
