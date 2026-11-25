@@ -1039,10 +1039,11 @@ impl SidecarGpuBackend {
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
         let Some(current) = self.resources.sampled_table_capacity() else { return Ok(()); };
-        if !self.pending_passes.is_empty() { return Ok(()); }
+        if !self.pending_passes.is_empty() || !self.sampled_tiers.begin_frame(context.frame_time()) { return Ok(()); }
         let demand = self.scenes.values().map(SceneResources::sampled_capacity_demand).max().unwrap_or(1);
         if let Some(target) = self.sampled_tiers.suggest(current, demand, context.frame_time())
-            && self.scenes.values().all(|scene| scene.sampled_can_migrate(target))
+            && let Some(target) = super::resources::SampledTierCache::feasible_target(current, target,
+                |tier| self.scenes.values().all(|scene| scene.sampled_can_migrate(tier)))
             && self.sampled_tiers.switch(device, &mut [&mut self.resources], std::slice::from_ref(context), target)?
         {
             self.command_cache.clear();
