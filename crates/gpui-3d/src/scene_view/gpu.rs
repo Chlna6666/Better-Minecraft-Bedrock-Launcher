@@ -1587,6 +1587,7 @@ mod sparse_arena_retirement_tests {
 pub(super) struct TextureResources {
     pub(super) texture: TextureId,
     pub(super) view: TextureViewId,
+    pub(super) sampled_slot: Option<gfx_core::SampledTextureSlot>,
 }
 
 pub(super) struct DrawBindingResources<'a> {
@@ -1648,7 +1649,7 @@ pub(super) fn create_texture(
             return Err(error.into());
         }
     };
-    Ok(TextureResources { texture, view })
+    Ok(TextureResources { texture, view, sampled_slot: None })
 }
 
 fn write_texture_mips(

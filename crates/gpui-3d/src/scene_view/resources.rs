@@ -17,6 +17,9 @@ use gfx_core::{
 use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 
+/// Must match the fixed-size binding_array in build.rs.
+pub(super) const SAMPLED_TABLE_CAPACITY: u32 = 64;
+
 pub(super) struct RendererResources {
     pass: PassKind,
     owns_layout: bool,
@@ -30,6 +33,7 @@ pub(super) struct RendererResources {
     fragment_shader: Option<ShaderModuleId>,
     voxel_fragment_shader: Option<ShaderModuleId>,
     pipelines: [Option<RenderPipelineId>; 18],
+    sampled: Option<SampledPipelines>,
     /// A previous native scene PSO may still be referenced by an in-flight
     /// independent producer queue. Defer destruction until GPU fence proof.
     awaiting_pipeline_gpu: Vec<RenderPipelineId>,
@@ -39,7 +43,90 @@ pub(super) struct RendererResources {
     samplers: [Option<SamplerId>; 6],
 }
 
+struct SampledPipelines {
+    layout: Option<BindGroupLayoutId>,
+    pipeline_layout: Option<PipelineLayoutId>,
+    fragment: Option<ShaderModuleId>,
+    voxel_fragment: Option<ShaderModuleId>,
+    pipelines: [Option<RenderPipelineId>; 18],
+}
+
+impl SampledPipelines {
+    fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        for pipeline in &mut self.pipelines {
+            if let Some(id) = pipeline.take() { device.destroy_render_pipeline(id)?; }
+        }
+        if let Some(id) = self.fragment.take() { device.destroy_shader_module(id)?; }
+        if let Some(id) = self.voxel_fragment.take() { device.destroy_shader_module(id)?; }
+        if let Some(id) = self.pipeline_layout.take() { device.destroy_pipeline_layout(id)?; }
+        if let Some(id) = self.layout.take() { device.destroy_bind_group_layout(id)?; }
+        Ok(())
+    }
+}
+
 impl RendererResources {
+    pub(super) fn sampled_table_layout(&self) -> Option<BindGroupLayoutId> {
+        self.sampled.as_ref().and_then(|sampled| sampled.layout)
+    }
+
+    /// Experimental production Color pass. The other passes keep their legacy
+    /// PSOs until their own image/alpha/depth comparisons are covered.
+    fn try_enable_sampled(
+        &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+    ) -> gpui::Result<()> {
+        // Set zero still declares four sampled images, three storage buffers,
+        // a sampler and a uniform in the fragment stage. Budget all nine.
+        if self.pass != PassKind::Color || context.backend_kind() != BackendKind::Vulkan
+            || device.sampled_texture_table_capacity() < SAMPLED_TABLE_CAPACITY + 9
+            || std::env::var_os("GPUI_3D_BINDLESS").is_none_or(|value| value != "1")
+        {
+            return Ok(());
+        }
+        let mut sampled = SampledPipelines {
+            layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
+            pipelines: [None; 18],
+        };
+        let result: gpui::Result<()> = (|| {
+            let layout = device.create_sampled_texture_table_layout(SAMPLED_TABLE_CAPACITY)?;
+            sampled.layout = Some(layout);
+            sampled.pipeline_layout = Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("gpui-3d sampled scene pipeline layout".into()),
+                bind_group_layouts: vec![self.bind_group_layout()?, layout],
+            })?);
+            sampled.fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
+                label: Some("gpui-3d sampled material fragment".into()),
+                binary: embedded_shader(context, ShaderStage::Fragment, "fs_main_bindless")?,
+            })?);
+            sampled.voxel_fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
+                label: Some("gpui-3d sampled voxel fragment".into()),
+                binary: embedded_shader(context, ShaderStage::Fragment, "fs_voxel_bindless")?,
+            })?);
+            // Every slot in the fixed array, including unused slots, must
+            // reference a valid initialized sampled image.
+            let fallback = self.fallback_texture.ok_or_else(|| anyhow!("missing fallback texture"))?;
+            device.write_texture_batch(&[gfx_core::TextureWrite {
+                descriptor: gfx_core::TextureWriteDescriptor {
+                    texture: fallback, mip_level: 0,
+                    layout: gfx_core::TextureDataLayout::new(0, 4, 1)?,
+                    origin: gfx_core::Origin2d { x: 0, y: 0 },
+                    size: Extent2d::new(1, 1)?,
+                },
+                data: &[255, 255, 255, 255],
+            }])?;
+            let pipelines = self.create_pipeline_set(device, context, Some(&sampled))?;
+            sampled.pipelines = pipelines;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.sampled = Some(sampled),
+            Err(error) => {
+                sampled.destroy(device)?;
+                eprintln!("gpui-3d bindless Color pipeline unavailable: {error:#}; using legacy");
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn rejects_material(&self, material: &crate::Material) -> bool {
         material.alpha_mode == crate::AlphaMode::Blend
             && (self.pass == PassKind::Shadow
@@ -64,6 +151,7 @@ impl RendererResources {
             fragment_shader: None,
             voxel_fragment_shader: None,
             pipelines: [Some(pipeline); 18],
+            sampled: None,
             awaiting_pipeline_gpu: Vec::new(),
             ready_pipeline_release: Vec::new(),
             fallback_texture: None,
@@ -116,6 +204,34 @@ impl RendererResources {
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
+        let next = self.create_pipeline_set(device, context, None)?;
+        let sampled_next = if let Some(sampled) = self.sampled.as_ref() {
+            match self.create_pipeline_set(device, context, Some(sampled)) {
+                Ok(pipelines) => Some(pipelines),
+                Err(error) => {
+                    for pipeline in next.into_iter().flatten() {
+                        device.destroy_render_pipeline(pipeline)?;
+                    }
+                    return Err(error);
+                }
+            }
+        } else { None };
+        // Replace the two complete PSO generations together.
+        self.awaiting_pipeline_gpu.extend(
+            std::mem::replace(&mut self.pipelines, next).into_iter().flatten()
+        );
+        if let (Some(sampled), Some(next)) = (self.sampled.as_mut(), sampled_next) {
+            self.awaiting_pipeline_gpu.extend(
+                std::mem::replace(&mut sampled.pipelines, next).into_iter().flatten()
+            );
+        }
+        Ok(())
+    }
+
+    fn create_pipeline_set(
+        &self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+        sampled: Option<&SampledPipelines>,
+    ) -> gpui::Result<[Option<RenderPipelineId>; 18]> {
         let mut next = [None; 18];
         for (index, slot) in next.iter_mut().enumerate() {
             if index >= 12 && self.cull_shader.is_none() {
@@ -131,7 +247,7 @@ impl RendererResources {
                 1 => Some(gfx_core::FrontFace::Ccw),
                 _ => Some(gfx_core::FrontFace::Cw),
             };
-            match create_pipeline(device, self, context, mode, index / 6, face) {
+            match create_pipeline(device, self, context, mode, index / 6, face, sampled) {
                 Ok(pipeline) => *slot = Some(pipeline),
                 Err(error) => {
                     for pipeline in next.into_iter().flatten() {
@@ -141,13 +257,7 @@ impl RendererResources {
                 }
             }
         }
-        // The old PSOs are still valid for previous GPU submissions. Vulkan
-        // destroy_render_pipeline may synchronously wait for the device, so
-        // swap the complete replacement set and fence-retire the old handles.
-        self.awaiting_pipeline_gpu.extend(
-            std::mem::replace(&mut self.pipelines, next).into_iter().flatten()
-        );
-        Ok(())
+        Ok(next)
     }
 
     pub(super) fn has_retired_pipelines(&self) -> bool {
@@ -173,27 +283,37 @@ impl RendererResources {
         blended: bool,
         front_face: Option<gfx_core::FrontFace>,
     ) -> gpui::Result<RenderPipelineId> {
-        self.pipeline_variant(usize::from(voxel), blended, front_face)
+        self.pipeline_variant(usize::from(voxel), blended, front_face, false)
     }
     pub(super) fn generated_pipeline(
         &self,
         blended: bool,
         front_face: Option<gfx_core::FrontFace>,
     ) -> gpui::Result<RenderPipelineId> {
-        self.pipeline_variant(2, blended, front_face)
+        self.pipeline_variant(2, blended, front_face, false)
     }
+    pub(super) fn sampled_pipeline(
+        &self, variant: usize, blended: bool, front_face: Option<gfx_core::FrontFace>,
+    ) -> gpui::Result<RenderPipelineId> {
+        self.pipeline_variant(variant, blended, front_face, true)
+    }
+
     fn pipeline_variant(
         &self,
         variant: usize,
         blended: bool,
         front_face: Option<gfx_core::FrontFace>,
+        sampled: bool,
     ) -> gpui::Result<RenderPipelineId> {
         let face = match front_face {
             None => 0,
             Some(gfx_core::FrontFace::Ccw) => 1,
             Some(gfx_core::FrontFace::Cw) => 2,
         };
-        self.pipelines[variant * 6 + usize::from(blended) * 3 + face]
+        let pipelines = if sampled {
+            &self.sampled.as_ref().ok_or_else(|| anyhow!("sampled pipeline unavailable"))?.pipelines
+        } else { &self.pipelines };
+        pipelines[variant * 6 + usize::from(blended) * 3 + face]
             .ok_or_else(|| anyhow!("GPUI 3D draw pipeline is unavailable"))
     }
     pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -212,6 +332,9 @@ impl RendererResources {
             .chain(self.ready_pipeline_release.drain(..))
         {
             device.destroy_render_pipeline(pipeline)?;
+        }
+        if let Some(mut sampled) = self.sampled.take() {
+            sampled.destroy(device)?;
         }
         if let Some(shader) = self.generated_vertex_shader.take() {
             device.destroy_shader_module(shader)?;
@@ -358,8 +481,14 @@ fn create_pipeline(
     mode: PipelineMode,
     variant: usize,
     front_face: Option<gfx_core::FrontFace>,
+    sampled: Option<&SampledPipelines>,
 ) -> gpui::Result<RenderPipelineId> {
     let voxel = variant != 0;
+    let fragment = if let Some(sampled) = sampled {
+        if voxel { sampled.voxel_fragment } else { sampled.fragment }
+    } else if voxel { resources.voxel_fragment_shader } else { resources.fragment_shader };
+    let entry = resources.pass.entries()[usize::from(voxel)];
+    let fragment_entry = if sampled.is_some() { format!("{entry}_bindless") } else { entry.into() };
     let (label, blend, depth_write) = match (mode, voxel) {
         (PipelineMode::Opaque, false) => ("gpui-3d opaque pipeline", false, true),
         (PipelineMode::Blend, false) => ("gpui-3d blended pipeline", true, false),
@@ -389,16 +518,11 @@ fn create_pipeline(
                 "vs_main"
             }
             .into(),
-            fragment_shader: if voxel {
-                resources.voxel_fragment_shader
-            } else {
-                resources.fragment_shader
-            }
-            .ok_or_else(|| anyhow!("GPUI 3D fragment shader is unavailable"))?,
-            fragment_entry_point: resources.pass.entries()[usize::from(voxel)].into(),
+            fragment_shader: fragment.ok_or_else(|| anyhow!("GPUI 3D fragment shader is unavailable"))?,
+            fragment_entry_point: fragment_entry,
             vertex_buffers: Vec::new(),
             render_pass: context.render_pass(),
-            pipeline_layout: resources.pipeline_layout,
+            pipeline_layout: sampled.map_or(resources.pipeline_layout, |sampled| sampled.pipeline_layout),
             color_targets: if resources.pass == PassKind::AttributesMrt {
                 vec![
                     gfx_core::ColorTargetState::new(context.color_format(), BlendMode::Replace),

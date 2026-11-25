@@ -139,6 +139,7 @@ pub(super) struct SceneResources {
     retired_meshes: Vec<MeshResources>,
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
+    sampled_textures: Option<sampled_textures::SceneSampledTextures>,
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     /// Layout stamp captured by the last full sync_draw_resources pass. The
@@ -389,6 +390,7 @@ mod light_pass;
 mod page_refs;
 mod reorder;
 pub(in crate::scene_view) mod stable_slots;
+mod sampled_textures;
 
 /// Values that only affect the frame-wide uniform buffer, not the prepared draw list.
 #[derive(Clone, Copy, PartialEq)]
@@ -625,6 +627,7 @@ impl SceneResources {
     }
     pub(super) fn has_retired_arena_ranges(&self) -> bool {
         self.arena.has_retired_ranges() || self.stable_slots.has_retired_slots()
+            || self.sampled_textures.as_ref().is_some_and(|table| table.has_retired())
             || self.culling.as_ref().is_some_and(CullResources::has_retired_slots)
     }
 
@@ -636,6 +639,7 @@ impl SceneResources {
         submission: Option<gfx_core::SubmissionId>,
     ) {
         self.arena.native_draw_submitted(submission);
+        if let Some(table) = self.sampled_textures.as_mut() { table.submitted(submission); }
         self.stable_slots.draw_producer_submitted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_producer_submitted(submission);
@@ -651,6 +655,7 @@ impl SceneResources {
         submission: gfx_core::SubmissionId,
     ) {
         self.arena.gpu_submission_accepted(submission);
+        if let Some(table) = self.sampled_textures.as_mut() { table.accepted(submission); }
         self.stable_slots.submission_accepted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_submission_accepted(submission);
@@ -662,6 +667,7 @@ impl SceneResources {
         submission: gfx_core::SubmissionId,
     ) {
         self.arena.gpu_submission_completed(submission);
+        if let Some(table) = self.sampled_textures.as_mut() { table.completed(submission); }
         self.stable_slots.submission_completed(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_submission_completed(submission);
@@ -670,6 +676,7 @@ impl SceneResources {
 
     pub(super) fn reclaim_arena_after_gpu_idle(&mut self) {
         self.arena.reclaim_after_gpu_idle();
+        if let Some(table) = self.sampled_textures.as_mut() { table.idle(); }
         self.stable_slots.gpu_work_completed();
         if let Some(culling) = self.culling.as_mut() {
             culling.gpu_work_completed();
@@ -842,6 +849,7 @@ impl SceneResources {
             retired_meshes: Vec::new(),
             voxel_shader: false,
             textures: HashMap::new(),
+            sampled_textures: None,
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_layout: 0,
@@ -879,6 +887,17 @@ impl SceneResources {
         scene_view: &SceneView,
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
+        if self.sampled_textures.is_none() && self.scene.is_none()
+            && let Some(layout) = renderer.sampled_table_layout()
+        {
+            self.sampled_textures = Some(sampled_textures::SceneSampledTextures::new(
+                layout, renderer.fallback_texture_view()?,
+            )?);
+        }
+        let old_sampled = self.sampled_snapshot(renderer);
+        if let Some(table) = self.sampled_textures.as_mut() {
+            table.release_completed(device)?;
+        }
         let trace_started = trace_timings().then(Instant::now);
         let mut camera_ms = 0.0;
         let mut buffer_ms = 0.0;
@@ -1575,7 +1594,12 @@ impl SceneResources {
         {
             self.command_delta = self.prepared.structural_draw_delta().cloned();
         }
-        let command_inputs_changed = (draw_list_changed && !resident_commands_stable)
+        if let Some(table) = self.sampled_textures.as_mut() {
+            table.publish(device)?;
+        }
+        let sampled_changed = old_sampled != self.sampled_snapshot(renderer);
+        if sampled_changed { self.command_delta = None; }
+        let command_inputs_changed = sampled_changed || (draw_list_changed && !resident_commands_stable)
             || sampler_changed
             || shadow_created
             || voxel_shader_changed
@@ -1847,14 +1871,19 @@ impl SceneResources {
             bindings_unchanged && self.resident_command_pipelines_unchanged(&dirty);
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
-        let draw_result = self.draw_record_cache.encode_resident_delta(
-            &self.prepared.draws,
-            mapping,
-            &dirty,
-            &self.draw_slot_keys,
-            &self.uploaded_tables[0],
-            &mut scratch,
-        );
+        let draw_result = if self.sampled_textures.is_some() {
+            let textures = &self.textures;
+            self.draw_record_cache.encode_resident_delta_with_textures(
+                &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
+                &self.uploaded_tables[0], &mut scratch,
+                |draw| Ok(sampled_textures::indices(textures, draw)),
+            )
+        } else {
+            self.draw_record_cache.encode_resident_delta(
+                &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
+                &self.uploaded_tables[0], &mut scratch,
+            )
+        };
         self.scratch_packed_draws = scratch;
         let draw_patches = draw_result?;
         let mut scratch = std::mem::take(&mut self.dirty_instance_run);
@@ -2048,14 +2077,19 @@ impl SceneResources {
 
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
-        let draw_result = self.draw_record_cache.encode_resident_delta(
-            &self.prepared.draws,
-            mapping,
-            &dirty,
-            &self.draw_slot_keys,
-            &self.uploaded_tables[0],
-            &mut scratch,
-        );
+        let draw_result = if self.sampled_textures.is_some() {
+            let textures = &self.textures;
+            self.draw_record_cache.encode_resident_delta_with_textures(
+                &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
+                &self.uploaded_tables[0], &mut scratch,
+                |draw| Ok(sampled_textures::indices(textures, draw)),
+            )
+        } else {
+            self.draw_record_cache.encode_resident_delta(
+                &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
+                &self.uploaded_tables[0], &mut scratch,
+            )
+        };
         self.scratch_packed_draws = scratch;
         let draw_patches = draw_result?;
         let mut scratch = std::mem::take(&mut self.dirty_instance_run);
@@ -2319,16 +2353,21 @@ impl SceneResources {
             // Encode material snapshots directly into physical GPU slots. No
             // intermediate dense logical 80-byte table and no second reorder
             // copy are needed for the common streaming Section update.
-            self.draw_record_cache.encode_stable(
-                &self.prepared.draws,
-                mapping,
-                high_water,
-                &self.draw_slot_keys,
-                &self.uploaded_tables[0],
-                &mut next_draw_keys,
-                &mut draw_bytes,
-                &mut self.scratch_packed_draws,
-            )?;
+            if self.sampled_textures.is_some() {
+                let textures = &self.textures;
+                self.draw_record_cache.encode_stable_with_textures(
+                    &self.prepared.draws, mapping, high_water, &self.draw_slot_keys,
+                    &self.uploaded_tables[0], &mut next_draw_keys, &mut draw_bytes,
+                    &mut self.scratch_packed_draws,
+                    |draw| Ok(sampled_textures::indices(textures, draw)),
+                )?;
+            } else {
+                self.draw_record_cache.encode_stable(
+                    &self.prepared.draws, mapping, high_water, &self.draw_slot_keys,
+                    &self.uploaded_tables[0], &mut next_draw_keys, &mut draw_bytes,
+                    &mut self.scratch_packed_draws,
+                )?;
+            }
             self.encode_stable_instances(
                 mapping,
                 high_water,
@@ -2339,11 +2378,17 @@ impl SceneResources {
                 &mut dirty_instance_run,
             )?
         } else {
-            self.draw_record_cache.encode(
-                &self.prepared.draws,
-                &mut draw_bytes,
-                &mut next_draw_keys,
-            )?;
+            if self.sampled_textures.is_some() {
+                let textures = &self.textures;
+                self.draw_record_cache.encode_with_textures(
+                    &self.prepared.draws, &mut draw_bytes, &mut next_draw_keys,
+                    |draw| Ok(sampled_textures::indices(textures, draw)),
+                )?;
+            } else {
+                self.draw_record_cache.encode(
+                    &self.prepared.draws, &mut draw_bytes, &mut next_draw_keys,
+                )?;
+            }
             self.encode_draw_instances_cached(
                 &self.prepared.draws,
                 voxel_shader,
@@ -2847,7 +2892,8 @@ impl SceneResources {
                 let asset = scene_view
                     .texture(id)
                     .ok_or_else(|| anyhow!("GPUI 3D scene view has no texture asset {}", id.0))?;
-                let resources = create_texture(device, asset)?;
+                let mut resources = create_texture(device, asset)?;
+                if let Some(table) = self.sampled_textures.as_mut() { table.allocate(&mut resources); }
                 self.textures.insert(id, resources);
             }
         }
@@ -2867,7 +2913,7 @@ impl SceneResources {
             .collect::<Vec<_>>();
         for id in stale {
             if let Some(texture) = self.textures.remove(&id) {
-                destroy_texture(device, texture)?;
+                self.retire_scene_texture(device, texture)?;
             }
         }
         Ok(())
@@ -2880,10 +2926,18 @@ impl SceneResources {
     ) -> gpui::Result<()> {
         for id in removed {
             if let Some(texture) = self.textures.remove(id) {
-                destroy_texture(device, texture)?;
+                self.retire_scene_texture(device, texture)?;
             }
         }
         Ok(())
+    }
+
+    fn retire_scene_texture(&mut self, device: &mut dyn ExtensionDevice, texture: TextureResources) -> gpui::Result<()> {
+        if let Some(table) = self.sampled_textures.as_mut() {
+            table.retire(device, texture)
+        } else {
+            destroy_texture(device, texture)
+        }
     }
 
     fn ensure_meshes(
@@ -3860,6 +3914,10 @@ impl SceneResources {
         })
     }
 
+    fn sampled_snapshot(&self, renderer: &RendererResources) -> Option<BindGroupId> {
+        self.sampled_textures.as_ref().and_then(|table| table.selected(renderer.sampled_table_layout()))
+    }
+
     pub(super) fn append_steps(
         &self,
         renderer: &RendererResources,
@@ -3875,6 +3933,7 @@ impl SceneResources {
         steps: &mut Vec<RenderCommand>,
         shadow: Option<(&[BindGroupId], BufferId)>,
     ) -> gpui::Result<()> {
+        let sampled = self.sampled_snapshot(renderer);
         let command_started = trace_timings().then(Instant::now);
         let previous_step_count = steps.len();
         steps.reserve(self.batches.len());
@@ -3941,7 +4000,12 @@ impl SceneResources {
                     .get(batch_index)
                     .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
                 let voxel = mesh_key(draw, voxel_shader).1;
-                let pipeline = if mesh.generated.is_some() {
+                let pipeline = if sampled.is_some() {
+                    renderer.sampled_pipeline(
+                        if mesh.generated.is_some() { 2 } else { usize::from(voxel) },
+                        draw.material.alpha_mode == AlphaMode::Blend, draw.raster_front_face(),
+                    )?
+                } else if mesh.generated.is_some() {
                     renderer.generated_pipeline(
                         draw.material.alpha_mode == AlphaMode::Blend,
                         draw.raster_front_face(),
@@ -3964,7 +4028,7 @@ impl SceneResources {
                 if mesh.generated.is_some() {
                     steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                         pipeline,
-                        bind_groups: bind_group_list([*draw_resources]),
+                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
                         arguments: shadow
                             .map(|value| value.1)
                             .or_else(|| {
@@ -3981,7 +4045,7 @@ impl SceneResources {
                     if let Some(culling) = &self.culling {
                         steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                             pipeline,
-                            bind_groups: bind_group_list([*draw_resources]),
+                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
                             arguments: shadow.map_or(culling.arguments, |value| value.1),
                             offset: address.arguments_offset,
                             scissor: None,
@@ -3989,7 +4053,7 @@ impl SceneResources {
                     } else {
                         steps.push(RenderCommand::Draw(DrawCommand {
                             pipeline,
-                            bind_groups: bind_group_list([*draw_resources]),
+                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
                             vertex_count: draw.part.index_count(),
                             first_vertex: 0,
                             instance_count,
@@ -4000,7 +4064,7 @@ impl SceneResources {
                 } else {
                     steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
                         pipeline,
-                        bind_groups: bind_group_list([*draw_resources]),
+                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
                         index_buffer: IndexBufferBinding {
                             buffer: mesh.indices,
                             format: mesh.index_format,
@@ -4065,6 +4129,7 @@ impl SceneResources {
             range.end <= tail_start
                 || blend_order.iter().all(|&index| index < blend_order.len())
         });
+        let sampled = self.sampled_snapshot(renderer);
         let push_command = |index: usize, steps: &mut Vec<RenderCommand>| -> gpui::Result<()> {
             let draw = &self.prepared.draws[index];
             if renderer.rejects_material(&draw.material) {
@@ -4078,13 +4143,14 @@ impl SceneResources {
                 .draw_addresses
                 .get(index)
                 .ok_or_else(|| anyhow!("GPUI 3D draw address was not initialized"))?;
-            let pipeline = renderer.generated_pipeline(
-                draw.material.alpha_mode == AlphaMode::Blend,
-                draw.raster_front_face(),
-            )?;
+            let pipeline = if sampled.is_some() {
+                renderer.sampled_pipeline(2, draw.material.alpha_mode == AlphaMode::Blend, draw.raster_front_face())?
+            } else {
+                renderer.generated_pipeline(draw.material.alpha_mode == AlphaMode::Blend, draw.raster_front_face())?
+            };
             steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                 pipeline,
-                bind_groups: bind_group_list([*binding]),
+                bind_groups: bind_group_list(std::iter::once(*binding).chain(sampled)),
                 arguments,
                 offset: address.arguments_offset,
                 scissor: None,
@@ -4175,6 +4241,7 @@ impl SceneResources {
                 &mut *self.argument_arena.borrow_mut(),
             )?;
         }
+        if let Some(mut table) = self.sampled_textures.take() { table.destroy(device)?; }
         for (_, texture) in self.textures.drain() {
             destroy_texture(device, texture)?;
         }

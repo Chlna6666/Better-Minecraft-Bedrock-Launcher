@@ -37,6 +37,7 @@ impl RendererResources {
             fragment_shader: None,
             voxel_fragment_shader: None,
             pipelines: [None; 18],
+            sampled: None,
             awaiting_pipeline_gpu: Vec::new(),
             ready_pipeline_release: Vec::new(),
             fallback_texture: None,
@@ -218,7 +219,8 @@ impl RendererResources {
                     mip_level_count: 1,
                     format: Format::Rgba8UnormSrgb,
                 })?);
-            resources.replace_pipelines(device, context)
+            resources.replace_pipelines(device, context)?;
+            resources.try_enable_sampled(device, context)
         })();
         if let Err(error) = result {
             if let Err(cleanup_error) = resources.destroy(device) {
