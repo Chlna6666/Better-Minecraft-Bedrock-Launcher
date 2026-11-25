@@ -67,6 +67,20 @@ impl OpenGlDevice {
         gpu_tag: Option<GpuTimestampTag>,
         counts: &[IndirectCountBinding],
     ) -> Result<()> {
+        self.render_target_planned(targets, resolve_view, pass, steps, load, depth,
+            clear_region, viewport, gpu_tag, counts, None)
+    }
+
+    pub(crate) fn render_target_planned(
+        &mut self, targets: &[RenderTarget], resolve_view: Option<TextureViewId>,
+        pass: RenderPassId, steps: &[RenderCommand], load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>, clear_region: Option<ScissorRect>,
+        viewport: Option<Viewport>, gpu_tag: Option<GpuTimestampTag>,
+        counts: &[IndirectCountBinding], plan: Option<&DrawRunPlan>,
+    ) -> Result<()> {
+        if plan.is_some() && !counts.is_empty() {
+            return Err(Error::InvalidInput("OpenGL fixed and counted run plans cannot overlap".into()));
+        }
         self.park()?;
         let pass = self.passes.get(pass)?;
         if targets.is_empty() || targets.len() != pass.color_attachments.len() {
@@ -313,12 +327,17 @@ impl OpenGlDevice {
             let mut bindings = self.binding_cache.borrow_mut();
             bindings.reset();
             let mut remaining = counts;
-            for (index, step) in steps.iter().enumerate() {
+            let mut planned = plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
+            let mut index = 0;
+            while index < steps.len() {
+                let step = &steps[index];
+                let draw_count = planned.next().unwrap_or(1);
                 let count = if remaining.first().is_some_and(|entry| entry.command_index == index) {
                     let entry = remaining[0];
                     remaining = &remaining[1..];
                     Some(entry)
                 } else { None };
+                index += draw_count as usize;
                 let scissor = match (viewport, step.scissor()) {
                     (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
                     (_, scissor) => scissor,
@@ -339,6 +358,7 @@ impl OpenGlDevice {
                     &mut state,
                     &mut bindings,
                     count,
+                    draw_count,
                 )?;
             }
             // A blur frame executes many short offscreen passes. glGetError after each
@@ -459,6 +479,7 @@ impl OpenGlDevice {
         state: &mut GlPassState,
         bindings: &mut crate::bindings::Cache,
         count: Option<IndirectCountBinding>,
+        draw_count: u32,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
         // The old per-Draw Vec allocation was O(attachments) heap work for
@@ -652,7 +673,7 @@ impl OpenGlDevice {
                         || draw.offset % 4 != 0
                         || draw
                             .offset
-                            .checked_add(16)
+                            .checked_add(u64::from(draw_count) * 16)
                             .is_none_or(|end| end > buffer.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -668,6 +689,9 @@ impl OpenGlDevice {
                         let fns = self.indirect_count.ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;
                         (fns.arrays)(topology, offset as usize as *const std::ffi::c_void,
                             count.count_offset as isize, count.max_draw_count as i32, 16);
+                    } else if draw_count > 1 {
+                        let fns = self.multi_draw.ok_or_else(|| Error::Unavailable("OpenGL multi draw unavailable".into()))?;
+                        (fns.arrays)(topology, offset as usize as *const std::ffi::c_void, draw_count as i32, 16);
                     } else {
                         self.gl.draw_arrays_indirect_offset(topology, offset);
                     }
@@ -683,7 +707,7 @@ impl OpenGlDevice {
                         || draw.offset % 4 != 0
                         || draw
                             .offset
-                            .checked_add(20)
+                            .checked_add(u64::from(draw_count) * 20)
                             .is_none_or(|end| end > arguments.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -713,7 +737,7 @@ impl OpenGlDevice {
                     } else {
                         let plan = self.index_rebase_plan(draw.offset, arguments.desc.size,
                             draw.index_buffer.offset, index.desc.size, bytes,
-                            count.map_or(1, |count| count.max_draw_count))?;
+                            count.map_or(draw_count, |count| count.max_draw_count))?;
                         let scratch = self.index_rebase.borrow_mut().encode(&self.gl, arguments.native, plan)?;
                         // Compute uses SSBO slots zero and one. Restore the
                         // graphics program and invalidate the native bind cache.
@@ -734,6 +758,9 @@ impl OpenGlDevice {
                         let fns = self.indirect_count.ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;
                         (fns.elements)(topology, kind, offset as usize as *const std::ffi::c_void,
                             count.count_offset as isize, count.max_draw_count as i32, 20);
+                    } else if draw_count > 1 {
+                        let fns = self.multi_draw.ok_or_else(|| Error::Unavailable("OpenGL multi draw unavailable".into()))?;
+                        (fns.elements)(topology, kind, offset as usize as *const std::ffi::c_void, draw_count as i32, 20);
                     } else {
                         self.gl.draw_elements_indirect_offset(topology, kind, offset);
                     }
