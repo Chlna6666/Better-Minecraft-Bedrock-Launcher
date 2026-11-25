@@ -25,9 +25,12 @@ struct DrawParams {
     normal_mapping_enabled: u32,
     occlusion_strength: f32,
     alpha_mode: u32,
-    light_count: u32,
+    albedo_index: u32,
     shading_model: u32,
     texture_flags: u32,
+    normal_index: u32,
+    occlusion_index: u32,
+    metallic_roughness_index: u32,
 };
 
 struct FrameParams {

@@ -29,9 +29,12 @@ struct DrawParams {
     normal_mapping_enabled: u32,
     occlusion_strength: f32,
     alpha_mode: u32,
-    light_count: u32,
+    albedo_index: u32,
     shading_model: u32,
     texture_flags: u32,
+    normal_index: u32,
+    occlusion_index: u32,
+    metallic_roughness_index: u32,
 };
 
 struct Instance {
@@ -56,7 +59,7 @@ struct Frame {
     light_view_projection: mat4x4<f32>,
     camera_position: vec4<f32>,
     light_direction: vec4<f32>,
-    light_color: vec4<f32>,
+    light_color: vec4<f32>, // w: frame light count as bitcast u32
     ambient: vec4<f32>,
     // exposure, tonemap mode, debug view, shadow strength
     post: vec4<f32>,
@@ -331,7 +334,7 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
         // Blended surfaces keep their authored shading but must not be darkened by shadows
         // meant for the opaque depth writers behind them.
     }
-    for (var light_index = 0u; light_index < draw_params.light_count; light_index += 1u) {
+    for (var light_index = 0u; light_index < bitcast<u32>(frame.light_color.w); light_index += 1u) {
         let light = lights[light_index];
         if (light.kind == LIGHT_KIND_AMBIENT) {
             ambient_radiance += light.color * light.intensity;

@@ -519,6 +519,7 @@ impl GpuState {
             light_view_projection,
             camera,
             directional,
+            u32::try_from(prepared.lights.len()).map_err(|_| RenderError::Preparation("light count exceeds u32".into()))?,
             &effective_options,
             target,
             render_target,
@@ -1723,6 +1724,7 @@ fn encode_frame_into(
     light_view_projection: Mat4,
     camera: Camera,
     directional: Option<(Vec3, [f32; 3], f32)>,
+    light_count: u32,
     options: &RenderOptions,
     target: (u32, u32),
     render_target: (u32, u32),
@@ -1737,7 +1739,7 @@ fn encode_frame_into(
     let (direction, color, intensity) =
         directional.unwrap_or((Vec3::new(0.0, -1.0, 0.0), [1.0, 1.0, 1.0], 1.0));
     write_vec4(bytes, [direction.x, direction.y, direction.z, intensity]);
-    write_vec4(bytes, [color[0], color[1], color[2], 0.0]);
+    write_vec4(bytes, [color[0], color[1], color[2], f32::from_bits(light_count)]);
     write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
     write_vec4(
         bytes,

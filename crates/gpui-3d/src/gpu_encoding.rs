@@ -8,9 +8,9 @@ use std::collections::HashMap;
 
 pub(crate) const PACKED_VERTEX_STRIDE: u32 = 64;
 pub(crate) const VOXEL_VERTEX_STRIDE: u32 = 24;
-// WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
-// stride is 80 bytes. Keeping this smaller makes DX12/Vulkan expose only a prefix of the
-// record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
+// WGSL DrawParams occupies 80 bytes with 16-byte struct alignment.
+// The former light-count word and trailing padding now hold four sampled
+// descriptor indices. Legacy shaders ignore them; light counts are frame data.
 pub(crate) const DRAW_PARAMS_STRIDE: u32 = 80;
 pub(crate) const DRAW_SLOT_STRIDE: usize = 512;
 pub(crate) const FRAME_PARAMS_STRIDE: usize = 272;
@@ -186,6 +186,21 @@ pub(crate) fn encode_draw_record(
     bytes: &mut Vec<u8>,
     stride: usize,
 ) -> anyhow::Result<()> {
+    encode_draw_record_with_textures(draw, bytes, stride, [0; 4])
+}
+
+/// Encode the same resident record for a descriptor-indexed material.
+/// Texture indices are ordered albedo, normal, occlusion, metallic/roughness.
+/// Non-bindless renderers use zero and retain their ordinary texture bindings.
+pub(crate) fn encode_draw_record_with_textures(
+    draw: &crate::PreparedDraw,
+    bytes: &mut Vec<u8>,
+    stride: usize,
+    texture_indices: [u32; 4],
+) -> anyhow::Result<()> {
+    if stride < DRAW_PARAMS_STRIDE as usize {
+        return Err(anyhow!("GPUI 3D draw slot is smaller than the shader ABI"));
+    }
     let slot_start = bytes.len();
     write_vec4(bytes, draw.material.base_color);
     write_vec4(bytes, draw.material.emissive);
@@ -197,8 +212,7 @@ pub(crate) fn encode_draw_record(
     write_u32(bytes, u32::from(normal_mapping_enabled));
     write_f32(bytes, draw.material.occlusion_strength);
     write_u32(bytes, alpha_mode_value(draw.material.alpha_mode));
-    // Light count is a frame uniform; this word stays zero to keep the record layout.
-    write_u32(bytes, 0);
+    write_u32(bytes, texture_indices[0]);
     let shading_model = match draw.material.shading_model {
         ShadingModel::MetallicRoughness => SHADING_MODEL_METALLIC_ROUGHNESS,
         ShadingModel::Unlit => SHADING_MODEL_UNLIT,
@@ -229,9 +243,12 @@ pub(crate) fn encode_draw_record(
         texture_flags |= 32;
     }
     write_u32(bytes, texture_flags);
+    for index in &texture_indices[1..] {
+        write_u32(bytes, *index);
+    }
 
     let encoded_size = bytes.len() - slot_start;
-    if encoded_size > DRAW_PARAMS_STRIDE as usize {
+    if encoded_size != DRAW_PARAMS_STRIDE as usize {
         return Err(anyhow!(
                 "GPUI 3D DrawParams encoding is {encoded_size} bytes but WGSL stride is {DRAW_PARAMS_STRIDE}"
             )
@@ -437,6 +454,15 @@ mod tests {
         let mut draw = Vec::new();
         encode_draw_slot(&prepared.draws[0], &mut draw).unwrap();
         assert_eq!(draw.len(), DRAW_SLOT_STRIDE);
+        let mut bindless = Vec::new();
+        encode_draw_record_with_textures(&prepared.draws[0], &mut bindless, DRAW_PARAMS_STRIDE as usize, [11, 22, 33, 44]).unwrap();
+        assert_eq!(bindless.len(), 80);
+        for (offset, index) in [(56, 11u32), (68, 22), (72, 33), (76, 44)] {
+            assert_eq!(&bindless[offset..offset + 4], &index.to_ne_bytes());
+        }
+        assert_eq!(&bindless[..56], &draw[..56]);
+        assert_eq!(&bindless[60..68], &draw[60..68]);
+        assert!(encode_draw_record_with_textures(&prepared.draws[0], &mut Vec::new(), 79, [0; 4]).is_err());
         let mut instance = Vec::new();
         encode_instances_into(&prepared, &mut instance).unwrap();
         assert_eq!(instance.len(), INSTANCE_STRIDE as usize);
