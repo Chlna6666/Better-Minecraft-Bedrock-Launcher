@@ -977,6 +977,7 @@ impl SidecarSurface {
         capture_revision: u64,
         gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
         mut geometry: Arc<[RenderCommand]>,
+        run_plan: Option<Arc<DrawRunPlan>>,
         sampled_table: Option<BindGroupId>,
         authored_scissors: bool,
         indirect_only: bool,
@@ -988,6 +989,9 @@ impl SidecarSurface {
         // local viewport. The native target clips unscissored commands for
         // free; only intersect authored local scissors when they are present.
         let extent = region_extent(region);
+        if run_plan.is_some() && authored_scissors {
+            return Err(anyhow::anyhow!("compact draw stream cannot be clipped by mutating its source identity"));
+        }
         clip_local_commands(&mut geometry, extent, authored_scissors);
         let recreate = self.targets.get(&id)
             .is_none_or(|target| !target.can_relocate(extent));
@@ -1012,6 +1016,7 @@ impl SidecarSurface {
             gpu_work_tag: gpu_work_tag.filter(|_| indirect_only),
             render_pass: self.capture_pass,
             commands: geometry,
+            run_plan,
             sampled_table,
             // Unlike the ordinary swapchain clear (alpha=1), this is a
             // composited *producer* texture. Pixels outside the 3D widget
@@ -1249,6 +1254,7 @@ mod tests {
             target: TextureViewId::from_parts(1, 1),
             render_pass: RenderPassId::from_parts(1, 1),
             commands: Arc::clone(&cmds),
+            run_plan: None,
             sampled_table: None,
             gpu_work_tag: None,
             color_load_op: LoadOp::Load,
