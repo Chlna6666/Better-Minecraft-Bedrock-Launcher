@@ -4000,6 +4000,14 @@ impl SceneResources {
         Ok(())
     }
 
+    pub(super) fn sampled_capacity_demand(&self) -> usize {
+        self.textures.len().saturating_add(1)
+    }
+
+    pub(super) fn sampled_can_migrate(&self, capacity: u32) -> bool {
+        self.sampled_textures.as_ref().is_none_or(|table| table.can_migrate_capacity(capacity))
+    }
+
     pub(in crate::scene_view) fn sampled_maintenance_pending(&self) -> bool {
         self.sampled_textures.as_ref().is_some_and(|table| {
             table.needs_remap() || table.needs_publication() || table.layout_transition_pending()
