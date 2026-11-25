@@ -2120,6 +2120,7 @@ impl VulkanDevice {
         // Reuse the resolved native descriptor range for consecutive draws with
         // identical portable bindings. No repeated registry lookups or copies.
         let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
+        let mut previous_bank = None;
         let mut command_index = 0;
         while command_index < steps.len() {
             let step = &steps[command_index];
@@ -2137,6 +2138,11 @@ impl VulkanDevice {
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
             let groups = step.bind_groups();
+            if previous_bank != Some((step.pipeline(), groups)) {
+                self.validate_draw_sampled_bank(pipeline_record, groups,
+                    render_target_texture.as_slice(), None)?;
+                previous_bank = Some((step.pipeline(), groups));
+            }
             let set_range = if let Some((previous, range)) = &previous_sets
                 && *previous == groups
             {
@@ -2300,6 +2306,31 @@ impl VulkanDevice {
 
     /// Records one offscreen pass writing `color_views.len()` color attachments
     /// plus an optional depth attachment. Used for MRT (multi-color) targets.
+    /// Validate the draw-local bank against its pipeline ABI. A bank is an
+    /// immutable ordinary set-one binding, not a reason to split a render pass.
+    fn validate_draw_sampled_bank(
+        &self, pipeline: &VulkanRenderPipeline, groups: &[BindGroupId],
+        color_targets: &[TextureId], resolve: Option<TextureId>,
+    ) -> Result<()> {
+        let Some([geometry_layout, table_layout]) = pipeline.shared_sampled_layouts else {
+            return Ok(());
+        };
+        let [geometry, table] = groups else {
+            return Err(Error::InvalidInput("sampled pipeline requires geometry and material bank sets".into()));
+        };
+        let geometry = self.bind_groups.get(*geometry)?;
+        let table = self.bind_groups.get(*table)?;
+        if geometry.layout != geometry_layout || table.layout != table_layout || table.sampled_table.is_none() {
+            return Err(Error::InvalidInput("draw sampled bank pipeline layout mismatch".into()));
+        }
+        if table.sampled_color_attachments.iter().any(|image|
+            color_targets.contains(image) || resolve == Some(*image))
+        {
+            return Err(Error::InvalidInput("draw sampled bank aliases a color attachment".into()));
+        }
+        Ok(())
+    }
+
     fn record_render_step_list_views(
         &mut self,
         encoder_id: CommandEncoderId,
@@ -2477,12 +2508,12 @@ impl VulkanDevice {
         // Resolve the shared descriptor once per pass, not for every draw.
         // The table API accepts sampled color views only; depth_accesses
         // therefore remains driven by the draw-local geometry sets.
+        let resolve_texture = resolve_view.map(|id| self.texture_views.get(id).map(|v| v.texture)).transpose()?;
         let shared_sampled = sampled_table.map(|id| {
             let group = self.bind_groups.get(id)?;
             if group.sampled_table.is_none() {
                 return Err(Error::InvalidInput("shared set one is not a sampled image table".into()));
             }
-            let resolve_texture = resolve_view.map(|id| self.texture_views.get(id).map(|v| v.texture)).transpose()?;
             if group.sampled_color_attachments.iter().any(|image|
                 render_target_textures.contains(image) || resolve_texture == Some(*image))
             {
@@ -2491,6 +2522,7 @@ impl VulkanDevice {
             Ok::<_, Error>((group.layout, group.descriptor_set))
         }).transpose()?;
         let mut previous_geometry_layout = None;
+        let mut previous_bank = None;
         let mut counts = counts.iter().peekable();
         let mut planned_runs = run_plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
         let mut command_index = 0;
@@ -2534,6 +2566,10 @@ impl VulkanDevice {
                 if pipeline_record.shared_sampled_layouts != Some([geometry_layout, table_layout]) {
                     return Err(Error::InvalidInput("shared sampled pass pipeline layout mismatch".into()));
                 }
+            } else if previous_bank != Some((step.pipeline(), groups)) {
+                self.validate_draw_sampled_bank(pipeline_record, groups,
+                    &render_target_textures, resolve_texture)?;
+                previous_bank = Some((step.pipeline(), groups));
             }
             let set_range = if let Some((previous, range)) = &previous_sets
                 && *previous == groups
