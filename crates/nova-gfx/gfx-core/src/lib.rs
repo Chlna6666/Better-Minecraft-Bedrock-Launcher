@@ -2911,6 +2911,7 @@ pub struct DrawRunPlan {
     indirect_only: bool,
     limit: u32,
     packed: bool,
+    compressed: bool,
 }
 
 impl DrawRunPlan {
@@ -2954,7 +2955,7 @@ impl DrawRunPlan {
             runs.push(count);
             cursor += count as usize;
         }
-        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit, packed }
+        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit, packed, compressed: false }
     }
 
     /// Exact allocation identity and native limit, not a content hash.
@@ -2969,8 +2970,61 @@ impl DrawRunPlan {
     }
 
     fn matches_mode(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32, packed: bool) -> bool {
-        self.packed == packed && self.limit == limit.max(1)
+        !self.compressed && self.packed == packed && self.limit == limit.max(1)
             && self.source.ptr_eq(&std::sync::Arc::downgrade(commands))
+    }
+
+    /// A compact producer stream contains one command per native run, not
+    /// one per logical draw. Each length represents contiguous portable
+    /// indirect argument records (16 or 20 bytes). No hidden draw state
+    /// exists: the representative's PSO, sets, scissor and index binding
+    /// apply to every record. Direct commands must have length one.
+    pub fn from_representatives(
+        commands: &std::sync::Arc<[RenderCommand]>, runs: Vec<u32>, limit: u32,
+    ) -> Result<Self> {
+        if commands.len() != runs.len() || limit == 0 {
+            return Err(Error::InvalidInput("compact draw run metadata length mismatch".into()));
+        }
+        let mut indirect_only = !commands.is_empty();
+        for (command, &length) in commands.iter().zip(&runs) {
+            if length == 0 || length > limit {
+                return Err(Error::InvalidInput("compact draw run exceeds native limit".into()));
+            }
+            let span = match command {
+                RenderCommand::DrawIndirect(draw) => Some((draw.offset, 16u64)),
+                RenderCommand::DrawIndexedIndirect(draw) => Some((draw.offset, 20u64)),
+                _ => { indirect_only = false; None }
+            };
+            if let Some((offset, stride)) = span {
+                if offset % 4 != 0 || offset.checked_add(u64::from(length) * stride).is_none() {
+                    return Err(Error::InvalidInput("compact indirect draw span overflow".into()));
+                }
+            } else if length != 1 {
+                return Err(Error::InvalidInput("direct draw cannot be a multi-record run".into()));
+            }
+        }
+        Ok(Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only,
+            limit, packed: false, compressed: true })
+    }
+
+    /// Validate the exact representative allocation and device limit.
+    pub fn matches_representatives(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> bool {
+        self.compressed && self.limit <= limit
+            && self.source.ptr_eq(&std::sync::Arc::downgrade(commands))
+    }
+
+    /// True when the source contains representatives rather than individual draws.
+    pub fn is_compressed(&self) -> bool { self.compressed }
+
+    /// Number of source commands consumed by a run. A compact run advances
+    /// one representative regardless of its GPU record count.
+    pub fn source_span(&self, count: u32) -> usize {
+        if self.compressed { 1 } else { count as usize }
+    }
+
+    /// Logical draw count before run compression.
+    pub fn logical_draw_count(&self) -> usize {
+        self.runs.iter().fold(0usize, |total, &count| total.saturating_add(count as usize))
     }
 
     /// Whether a producer still owns the source snapshot.
@@ -2996,6 +3050,21 @@ mod draw_run_plan_tests {
             pipeline: RenderPipelineId::from_parts(1, 1), bind_groups: bind_group_list([]),
             arguments: BufferId::from_parts(1, 1), offset, scissor: None,
         })
+    }
+
+    #[test]
+    fn compressed_representatives_have_distinct_source_and_logical_spans() {
+        let commands: Arc<[RenderCommand]> = vec![draw(0), draw(128)].into();
+        let plan = DrawRunPlan::from_representatives(&commands, vec![8, 2], 8).unwrap();
+        assert!(plan.is_compressed());
+        assert!(plan.matches_representatives(&commands, 16));
+        assert!(!plan.matches_representatives(&commands, 4));
+        assert!(!plan.matches(&commands, 8));
+        assert_eq!(plan.logical_draw_count(), 10);
+        assert_eq!(plan.source_span(8), 1);
+        assert!(DrawRunPlan::from_representatives(&commands, vec![9, 1], 8).is_err());
+        assert!(DrawRunPlan::from_representatives(&commands, vec![0, 1], 8).is_err());
+        assert!(DrawRunPlan::from_representatives(&commands, vec![1], 8).is_err());
     }
 
     #[test]
