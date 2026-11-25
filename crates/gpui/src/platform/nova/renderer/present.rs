@@ -231,7 +231,8 @@ impl ExtensionSubmission<'_> {
             gfx_core::OffscreenQueuePreference::OrderedGraphics
         };
         let has_tables = selected.iter().any(|pass| pass.sampled_table.is_some());
-        let submission = if independent && !has_tables {
+        let has_runs = selected.iter().any(|pass| pass.run_plan.is_some());
+        let submission = if independent && !has_tables && !has_runs {
             device.render_to_textures_independent(&passes, &tags, preference)?
         } else {
             // Preserve producer Arc identity through the native ABI. Only
@@ -243,7 +244,12 @@ impl ExtensionSubmission<'_> {
             } else {
                 Vec::new()
             };
-            device.render_to_textures_owned_profiled(&passes, &owners, &tables, &tags)?
+            if has_runs {
+                let plans = selected.iter().map(|pass| pass.run_plan.clone()).collect::<Vec<_>>();
+                device.render_to_textures_runs_profiled(&passes, &owners, &plans, &tables, &tags)?
+            } else {
+                device.render_to_textures_owned_profiled(&passes, &owners, &tables, &tags)?
+            }
         };
         if let Some(submission) = submission {
             self.pending.push(PendingSubmission {
@@ -317,7 +323,7 @@ impl ExtensionSubmission<'_> {
         }
         let independent = !mixed
             && self.registry.independent_producers_only()
-            && !self.registry.passes().iter().any(|pass| pass.sampled_table.is_some())
+            && !self.registry.passes().iter().any(|pass| pass.sampled_table.is_some() || pass.run_plan.is_some())
             && device.independent_graphics_queue_available();
         let cpu_started = (count > 0 && sidecar_bridge_trace_enabled()).then(Instant::now);
         let mut cursor = 0usize;
