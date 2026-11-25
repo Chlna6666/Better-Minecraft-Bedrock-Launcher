@@ -309,7 +309,13 @@ impl Compactor {
         epochs: &[(SceneViewId, u64)],
     ) -> Result<Option<SubmissionId>> {
         let ordinary = |device: &mut dyn ExtensionDevice| crate::submit_native_offscreen_passes(
-            passes, |passes, tags| device.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics),
+            passes, |passes, tags, tables| {
+                if tables.iter().any(Option::is_some) {
+                    device.submit_sampled_offscreen_batch(passes, tables, &[], tags)
+                } else {
+                    device.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics)
+                }
+            },
         );
         // Duplicate views could overwrite their own output before the first draw.
         if passes.len() != epochs.len() || epochs.iter().map(|(id, _)| *id).collect::<HashSet<_>>().len() != epochs.len() {
@@ -370,7 +376,12 @@ impl Compactor {
             counts.push(table);
             tags.push(decision.and_then(|choice| choice.tag).or(pass.gpu_work_tag));
         }
-        device.submit_counted_offscreen_batch(&native, &counts, &tags)
+        if passes.iter().any(|pass| pass.sampled_table.is_some()) {
+            let tables = passes.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
+            device.submit_sampled_offscreen_batch(&native, &tables, &counts, &tags)
+        } else {
+            device.submit_counted_offscreen_batch(&native, &counts, &tags)
+        }
     }
 
     pub(super) fn observe(&mut self, sample: GpuTimestampSample) {

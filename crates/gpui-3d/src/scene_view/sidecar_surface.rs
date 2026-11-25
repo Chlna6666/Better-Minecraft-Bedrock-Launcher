@@ -977,6 +977,7 @@ impl SidecarSurface {
         capture_revision: u64,
         gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
         mut geometry: Arc<[RenderCommand]>,
+        sampled_table: Option<BindGroupId>,
         authored_scissors: bool,
         indirect_only: bool,
         passes: &mut Vec<NativeOffscreenPass>,
@@ -1011,6 +1012,7 @@ impl SidecarSurface {
             gpu_work_tag: gpu_work_tag.filter(|_| indirect_only),
             render_pass: self.capture_pass,
             commands: geometry,
+            sampled_table,
             // Unlike the ordinary swapchain clear (alpha=1), this is a
             // composited *producer* texture. Pixels outside the 3D widget
             // must stay transparent or they would obscure the GPUI scene.
@@ -1247,6 +1249,7 @@ mod tests {
             target: TextureViewId::from_parts(1, 1),
             render_pass: RenderPassId::from_parts(1, 1),
             commands: Arc::clone(&cmds),
+            sampled_table: None,
             gpu_work_tag: None,
             color_load_op: LoadOp::Load,
             depth_attachment: None,

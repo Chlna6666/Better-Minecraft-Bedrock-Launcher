@@ -1664,10 +1664,14 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let native_result = if let Some(compactor) = self.draw_compaction.as_mut() {
             compactor.submit_batch(device, &self.pending_passes, &self.pending_capture_epochs)
         } else {
-            submit_native_offscreen_passes(&self.pending_passes, |passes, tags| {
-                device.submit_offscreen_graphics(
-                    passes, tags, gfx_core::OffscreenQueuePreference::OrderedGraphics,
-                )
+            submit_native_offscreen_passes(&self.pending_passes, |passes, tags, tables| {
+                if tables.iter().any(Option::is_some) {
+                    device.submit_sampled_offscreen_batch(passes, tables, &[], tags)
+                } else {
+                    device.submit_offscreen_graphics(
+                        passes, tags, gfx_core::OffscreenQueuePreference::OrderedGraphics,
+                    )
+                }
             })
         };
         let submitted = match native_result {
@@ -2007,12 +2011,23 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let _phase =
                 gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CommandEncode);
             let cache = self.command_cache.entry(scene_view.id).or_default();
-            cache.refresh_sampled_snapshot(scene.sampled_snapshot(&self.resources));
+            let pass_sampled = self.offscreen.is_some();
+            if !pass_sampled {
+                cache.refresh_sampled_snapshot(scene.sampled_snapshot(&self.resources));
+            }
             let build = |output: &mut Vec<RenderCommand>| {
-                scene.append_steps(&self.resources, scene_view.voxel_shader, output)
+                if pass_sampled {
+                    scene.append_offscreen_steps(&self.resources, scene_view.voxel_shader, output)
+                } else {
+                    scene.append_steps(&self.resources, scene_view.voxel_shader, output)
+                }
             };
             let build_range = |range: std::ops::Range<usize>, output: &mut Vec<RenderCommand>| {
-                scene.append_generated_singleton_range(&self.resources, output, range)
+                if pass_sampled {
+                    scene.append_offscreen_singleton_range(&self.resources, output, range)
+                } else {
+                    scene.append_generated_singleton_range(&self.resources, output, range)
+                }
             };
             let generated_count = scene.generated_singleton_command_count();
             let first_blended = scene.first_blended_batch_index();
@@ -2078,6 +2093,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 scene.capture_revision,
                 gpu_work_tag,
                 commands,
+                scene.sampled_snapshot(&self.resources),
                 traits.authored_scissors,
                 traits.indirect_only,
                 &mut self.pending_passes,

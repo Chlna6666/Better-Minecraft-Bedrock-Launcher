@@ -6,7 +6,7 @@
 //! wait for a CPU fence, or own a backend-specific device.
 
 use gfx_core::{
-    ClearColor, DepthAttachment, GpuTimestampTag, LoadOp, OffscreenQueuePreference,
+    BindGroupId, ClearColor, DepthAttachment, GpuTimestampTag, LoadOp, OffscreenQueuePreference,
     OffscreenSubmissionDevice, RenderCommand, RenderPassCommands, RenderPassId,
     Result, SubmissionId, TextureViewId,
 };
@@ -24,6 +24,8 @@ pub struct NativeOffscreenPass {
     pub render_pass: RenderPassId,
     /// Immutable draw commands, including native indirect draws.
     pub commands: Arc<[RenderCommand]>,
+    /// Shared sampled set one. When present, draw commands bind only set zero.
+    pub sampled_table: Option<BindGroupId>,
     /// Optional hardware GPU timestamp; never substitute host/API time.
     pub gpu_work_tag: Option<GpuTimestampTag>,
     /// How to initialize or preserve the color attachment.
@@ -34,7 +36,8 @@ pub struct NativeOffscreenPass {
 
 impl NativeOffscreenPass {
     /// Borrows the existing command slice and native render targets without
-    /// cloning or converting any DrawIndirect record.
+    /// cloning or converting any DrawIndirect record. Shared sampled-table
+    /// metadata must accompany this descriptor at submission.
     #[must_use]
     pub fn commands(&self) -> RenderPassCommands<'_> {
         RenderPassCommands {
@@ -65,6 +68,7 @@ pub fn submit_native_offscreen_passes(
     mut submit: impl FnMut(
         &[RenderPassCommands<'_>],
         &[Option<GpuTimestampTag>],
+        &[Option<BindGroupId>],
     ) -> Result<Option<SubmissionId>>,
 ) -> Result<Option<SubmissionId>> {
     let Some((first, rest)) = passes.split_first() else {
@@ -72,11 +76,13 @@ pub fn submit_native_offscreen_passes(
     };
     if rest.is_empty() {
         let command = first.commands();
-        return submit(std::slice::from_ref(&command), std::slice::from_ref(&first.gpu_work_tag));
+        return submit(std::slice::from_ref(&command), std::slice::from_ref(&first.gpu_work_tag),
+            std::slice::from_ref(&first.sampled_table));
     }
     let commands = passes.iter().map(NativeOffscreenPass::commands).collect::<Vec<_>>();
     let tags = passes.iter().map(|p| p.gpu_work_tag).collect::<Vec<_>>();
-    submit(&commands, &tags)
+    let tables = passes.iter().map(|p| p.sampled_table).collect::<Vec<_>>();
+    submit(&commands, &tags, &tables)
 }
 
 /// Submit the 3D batch directly to gfx-core without a GPUI dependency.
@@ -89,8 +95,12 @@ pub fn submit_native_graphics<D: OffscreenSubmissionDevice>(
     passes: &[NativeOffscreenPass],
     queue: OffscreenQueuePreference,
 ) -> Result<Option<SubmissionId>> {
-    submit_native_offscreen_passes(passes, |commands, tags| {
-        device.submit_offscreen_graphics(commands, tags, queue)
+    submit_native_offscreen_passes(passes, |commands, tags, tables| {
+        if tables.iter().any(Option::is_some) {
+            device.submit_sampled_offscreen_batch(commands, tables, &[], tags)
+        } else {
+            device.submit_offscreen_graphics(commands, tags, queue)
+        }
     })
 }
 
@@ -104,6 +114,7 @@ mod tests {
             target: TextureViewId::from_parts(id, 1),
             render_pass: RenderPassId::from_parts(1, 1),
             commands: Vec::<RenderCommand>::new().into(),
+            sampled_table: None,
             gpu_work_tag: tag.then_some(GpuTimestampTag {
                 batch_id: u64::from(id),
                 stage: GpuTimestampStage::DrawIndirect,
@@ -116,7 +127,7 @@ mod tests {
     #[test]
     fn empty_work_never_submits_any_native_commands() {
         let mut calls = 0;
-        let submission = submit_native_offscreen_passes(&[], |_, _| {
+        let submission = submit_native_offscreen_passes(&[], |_, _, _| {
             calls += 1;
             Ok(None)
         }).unwrap();
@@ -126,12 +137,14 @@ mod tests {
 
     #[test]
     fn one_view_borrows_original_draw_records() {
-        let pass = pass(10, true);
+        let mut pass = pass(10, true);
+        pass.sampled_table = Some(BindGroupId::from_parts(9, 1));
         let original_ptr = pass.commands.as_ptr();
-        let submitted = submit_native_offscreen_passes(&[pass], |commands, tags| {
+        let submitted = submit_native_offscreen_passes(&[pass], |commands, tags, tables| {
             assert_eq!(commands.len(), 1);
             assert!(std::ptr::eq(commands[0].commands.as_ptr(), original_ptr));
             assert_eq!(tags.len(), 1);
+            assert_eq!(tables, &[Some(BindGroupId::from_parts(9, 1))]);
             assert_eq!(tags[0].unwrap().batch_id, 10);
             Ok(None)
         });
@@ -142,10 +155,11 @@ mod tests {
     fn many_views_keep_painter_order_and_native_tags() {
         let passes = [pass(2, false), pass(3, true), pass(4, false)];
         let mut called = false;
-        submit_native_offscreen_passes(&passes, |commands, tags| {
+        submit_native_offscreen_passes(&passes, |commands, tags, tables| {
             called = true;
             assert_eq!(commands.len(), 3);
             assert_eq!(tags.len(), 3);
+            assert_eq!(tables, &[None, None, None]);
             assert_eq!(commands[0].color_attachments, &[passes[0].target]);
             assert_eq!(commands[1].color_attachments, &[passes[1].target]);
             assert_eq!(commands[2].color_attachments, &[passes[2].target]);
@@ -159,7 +173,7 @@ mod tests {
 
     #[test]
     fn submission_error_does_not_claim_a_gpu_fence() {
-        let err = submit_native_offscreen_passes(&[pass(1, false)], |_, _| {
+        let err = submit_native_offscreen_passes(&[pass(1, false)], |_, _, _| {
             Err(Error::Unavailable("native queue unavailable".into()))
         });
         assert!(matches!(err, Err(Error::Unavailable(_))));

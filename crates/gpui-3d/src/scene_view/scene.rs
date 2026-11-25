@@ -3967,16 +3967,26 @@ impl SceneResources {
         voxel_shader: bool,
         steps: &mut Vec<RenderCommand>,
     ) -> gpui::Result<()> {
-        self.append_pass_steps(renderer, voxel_shader, steps, None)
+        self.append_pass_steps(renderer, voxel_shader, steps, None, false)
     }
+
+    /// Native offscreen submission binds the sampled table at pass scope.
+    pub(super) fn append_offscreen_steps(
+        &self, renderer: &RendererResources, voxel_shader: bool, steps: &mut Vec<RenderCommand>,
+    ) -> gpui::Result<()> {
+        self.append_pass_steps(renderer, voxel_shader, steps, None, true)
+    }
+
     fn append_pass_steps(
         &self,
         renderer: &RendererResources,
         voxel_shader: bool,
         steps: &mut Vec<RenderCommand>,
         shadow: Option<(&[BindGroupId], BufferId)>,
+        pass_sampled: bool,
     ) -> gpui::Result<()> {
         let sampled = self.sampled_snapshot(renderer);
+        let draw_sampled = sampled.filter(|_| !pass_sampled);
         let command_started = trace_timings().then(Instant::now);
         let previous_step_count = steps.len();
         steps.reserve(self.batches.len());
@@ -3993,7 +4003,7 @@ impl SceneResources {
             && self.draw_resources.len() == self.prepared.draws.len()
             && self.draw_addresses.len() == self.prepared.draws.len();
         if generated_singletons {
-            self.append_generated_singleton_range(renderer, steps, 0..self.prepared.draws.len())?;
+            self.append_generated_singleton_range_inner(renderer, steps, 0..self.prepared.draws.len(), pass_sampled)?;
         } else {
             let bounds_visible = self.prepared.bounds_visibility();
             for (batch_index, batch) in self.batches.iter().enumerate() {
@@ -4071,7 +4081,7 @@ impl SceneResources {
                 if mesh.generated.is_some() {
                     steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                         pipeline,
-                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
+                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(draw_sampled)),
                         arguments: shadow
                             .map(|value| value.1)
                             .or_else(|| {
@@ -4088,7 +4098,7 @@ impl SceneResources {
                     if let Some(culling) = &self.culling {
                         steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                             pipeline,
-                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
+                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(draw_sampled)),
                             arguments: shadow.map_or(culling.arguments, |value| value.1),
                             offset: address.arguments_offset,
                             scissor: None,
@@ -4096,7 +4106,7 @@ impl SceneResources {
                     } else {
                         steps.push(RenderCommand::Draw(DrawCommand {
                             pipeline,
-                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
+                            bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(draw_sampled)),
                             vertex_count: draw.part.index_count(),
                             first_vertex: 0,
                             instance_count,
@@ -4107,7 +4117,7 @@ impl SceneResources {
                 } else {
                     steps.push(RenderCommand::DrawIndexed(DrawIndexedCommand {
                         pipeline,
-                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(sampled)),
+                        bind_groups: bind_group_list(std::iter::once(*draw_resources).chain(draw_sampled)),
                         index_buffer: IndexBufferBinding {
                             buffer: mesh.indices,
                             format: mesh.index_format,
@@ -4146,6 +4156,19 @@ impl SceneResources {
         renderer: &RendererResources,
         steps: &mut Vec<RenderCommand>,
         range: std::ops::Range<usize>,
+    ) -> gpui::Result<()> {
+        self.append_generated_singleton_range_inner(renderer, steps, range, false)
+    }
+
+    pub(super) fn append_offscreen_singleton_range(
+        &self, renderer: &RendererResources, steps: &mut Vec<RenderCommand>, range: std::ops::Range<usize>,
+    ) -> gpui::Result<()> {
+        self.append_generated_singleton_range_inner(renderer, steps, range, true)
+    }
+
+    fn append_generated_singleton_range_inner(
+        &self, renderer: &RendererResources, steps: &mut Vec<RenderCommand>, range: std::ops::Range<usize>,
+        pass_sampled: bool,
     ) -> gpui::Result<()> {
         if self.generated_singleton_command_count().is_none()
             || range.start > range.end
@@ -4193,7 +4216,7 @@ impl SceneResources {
             };
             steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                 pipeline,
-                bind_groups: bind_group_list(std::iter::once(*binding).chain(sampled)),
+                bind_groups: bind_group_list(std::iter::once(*binding).chain(sampled.filter(|_| !pass_sampled))),
                 arguments,
                 offset: address.arguments_offset,
                 scissor: None,
