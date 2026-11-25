@@ -246,6 +246,40 @@ impl PresentationDevice for OpenGlDevice {
         Ok(None)
     }
 
+    fn render_to_textures_owned_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[RenderCommand]>], tables: &[Option<BindGroupId>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != owners.len() || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+            || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        { return Err(Error::InvalidInput("OpenGL owned draw stream metadata mismatch".into())); }
+        if tables.iter().any(Option::is_some) {
+            return Err(Error::Unavailable("OpenGL pass-level sampled tables unsupported".into()));
+        }
+        if self.multi_draw.is_none() {
+            return self.render_to_textures_on_queue(passes, tags, OffscreenQueuePreference::OrderedGraphics);
+        }
+        self.draw_run_plans.retain(|plan| plan.is_live());
+        let limit = i32::MAX as u32;
+        for ((pass, owner), &tag) in passes.iter().zip(owners).zip(tags) {
+            let plan = if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches(owner, limit)) {
+                self.draw_run_plans.remove(index)
+            } else {
+                if self.draw_run_plans.len() >= 32 { self.draw_run_plans.remove(0); }
+                std::sync::Arc::new(DrawRunPlan::new(owner, limit))
+            };
+            self.draw_run_plans.push(std::sync::Arc::clone(&plan));
+            let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
+            let tag = tag.filter(|tag| tag.stage == GpuTimestampStage::DrawIndirect && plan.indirect_only());
+            self.render_target_planned(&targets, pass.resolve_target, pass.render_pass,
+                pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,
+                pass.viewport, tag, &[], Some(&plan))?;
+        }
+        Ok(None)
+    }
+
     fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],
