@@ -4,7 +4,7 @@
 use super::*;
 use gfx_core::{SampledTextureSlots, SubmissionId};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct Readers {
     submissions: HashSet<SubmissionId>,
     untracked: bool,
@@ -22,10 +22,15 @@ impl Readers {
     fn completed(&mut self, submission: SubmissionId) { self.submissions.remove(&submission); }
     fn idle(&mut self) { self.submissions.clear(); self.untracked = false; }
     fn ready(&self) -> bool { !self.untracked && self.submissions.is_empty() }
+    fn include(&mut self, other: &Self) {
+        self.submissions.extend(other.submissions.iter().copied());
+        self.untracked |= other.untracked;
+    }
 }
 
 struct RetiredSnapshot {
     snapshot: BindGroupId,
+    generation: u64,
     readers: Readers,
 }
 
@@ -41,7 +46,12 @@ pub(super) struct SceneSampledTextures {
     slots: SampledTextureSlots,
     unmapped: usize,
     readers: Readers,
+    legacy_readers: Readers,
     snapshot_readers: Readers,
+    generation: u64,
+    // First immutable generation that can contain each allocated image.
+    // An image is never moved between slots while it is live.
+    first_generation: HashMap<gfx_core::TextureViewId, u64>,
     // Command publication precedes queue acceptance. Pin the exact table
     // identities during that interval, including a legacy capture (None).
     queued: HashSet<Option<BindGroupId>>,
@@ -57,7 +67,8 @@ impl SceneSampledTextures {
     pub(super) fn new(layout: BindGroupLayoutId, capacity: u32, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
         Ok(Self {
             layout, slots: SampledTextureSlots::new(capacity, fallback)?,
-            unmapped: 0, readers: Readers::default(), snapshot_readers: Readers::default(),
+            unmapped: 0, readers: Readers::default(), legacy_readers: Readers::default(),
+            snapshot_readers: Readers::default(), generation: 0, first_generation: HashMap::new(),
             queued: HashSet::new(),
             pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(),
             retired_textures: Vec::new(), published: false, remap_pending: false,
@@ -67,6 +78,7 @@ impl SceneSampledTextures {
     pub(super) fn allocate(&mut self, texture: &mut TextureResources) {
         texture.sampled_slot = self.slots.allocate(texture.view).ok();
         if texture.sampled_slot.is_none() { self.unmapped += 1; }
+        else { self.first_generation.insert(texture.view, self.generation.saturating_add(1)); }
     }
 
     pub(super) fn retire(&mut self, device: &mut dyn ExtensionDevice, texture: TextureResources) -> gpui::Result<()> {
@@ -91,6 +103,7 @@ impl SceneSampledTextures {
                 texture.sampled_slot = self.slots.allocate(texture.view).ok();
                 if texture.sampled_slot.is_some() {
                     self.unmapped -= 1;
+                    self.first_generation.insert(texture.view, self.generation.saturating_add(1));
                     self.remap_pending = true;
                 }
             }
@@ -140,6 +153,19 @@ impl SceneSampledTextures {
         }
     }
 
+    /// Legacy draws can read any live material image, so remain conservative.
+    /// Sampled draws cannot read a texture allocated after their immutable
+    /// descriptor generation was published.
+    fn image_readers(&self, view: gfx_core::TextureViewId) -> Readers {
+        let Some(&first) = self.first_generation.get(&view) else { return self.readers.clone(); };
+        let mut readers = self.legacy_readers.clone();
+        if self.generation >= first { readers.include(&self.snapshot_readers); }
+        for old in &self.retired {
+            if old.generation >= first { readers.include(&old.readers); }
+        }
+        readers
+    }
+
     pub(super) fn submitted(&mut self, submission: Option<SubmissionId>, snapshot: Option<BindGroupId>) {
         self.readers.submitted(submission);
         if let Some(snapshot) = snapshot {
@@ -150,12 +176,15 @@ impl SceneSampledTextures {
             } else {
                 debug_assert!(false, "submitted unknown sampled snapshot");
             }
+        } else {
+            self.legacy_readers.submitted(submission);
         }
     }
 
     pub(super) fn accepted(&mut self, submission: SubmissionId) {
         // Only the ordered Graphics owner may seal unfenced reads.
         self.readers.accepted(submission);
+        self.legacy_readers.accepted(submission);
         self.snapshot_readers.accepted(submission);
         for old in &mut self.retired { old.readers.accepted(submission); }
         for old in &mut self.retired_textures { old.readers.accepted(submission); }
@@ -163,6 +192,7 @@ impl SceneSampledTextures {
 
     pub(super) fn completed(&mut self, submission: SubmissionId) {
         self.readers.completed(submission);
+        self.legacy_readers.completed(submission);
         self.snapshot_readers.completed(submission);
         self.slots.complete(submission);
         for old in &mut self.retired { old.readers.completed(submission); }
@@ -172,6 +202,7 @@ impl SceneSampledTextures {
     pub(super) fn idle(&mut self) {
         for reader in self.readers.submissions.drain() { self.slots.complete(reader); }
         self.readers.idle();
+        self.legacy_readers.idle();
         self.snapshot_readers.idle();
         for old in &mut self.retired { old.readers.idle(); }
         for old in &mut self.retired_textures { old.readers.idle(); }
@@ -205,11 +236,15 @@ impl SceneSampledTextures {
     pub(super) fn publish(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         // Preserve every removed image and its slot until untracked native
         // work receives an actual ordered submission fence (or idle proof).
+        if !self.cleared.is_empty() && (self.readers.untracked || !self.queued.is_empty()) {
+            return Ok(());
+        }
         if !self.readers.untracked && self.queued.is_empty() && !self.pending.is_empty() {
-            let readers: Vec<_> = self.readers.submissions.iter().copied().collect();
-            for texture in self.pending.drain(..) {
+            for texture in std::mem::take(&mut self.pending) {
                 let slot = texture.sampled_slot.expect("mapped retired texture");
-                self.slots.retire(slot, &readers)?;
+                let readers = self.image_readers(texture.view);
+                let submissions: Vec<_> = readers.submissions.iter().copied().collect();
+                self.slots.retire(slot, &submissions)?;
                 self.cleared.push(texture);
             }
         }
@@ -225,15 +260,23 @@ impl SceneSampledTextures {
                 if let Some(old) = previous {
                     self.retired.push(RetiredSnapshot {
                         snapshot: old,
+                        generation: self.generation,
                         readers: std::mem::take(&mut self.snapshot_readers),
                     });
                 }
-                if !self.cleared.is_empty() {
-                    self.retired_textures.push(RetiredTextures {
-                        textures: std::mem::take(&mut self.cleared),
-                        readers: self.readers.clone(),
-                    });
+                // Resolve each image against the generations that existed
+                // before this publication. The new snapshot contains none of
+                // these retired image identities, even if a slot was reused.
+                for texture in std::mem::take(&mut self.cleared) {
+                    let readers = self.image_readers(texture.view);
+                    self.first_generation.remove(&texture.view);
+                    if let Some(cohort) = self.retired_textures.iter_mut().find(|old| old.readers == readers) {
+                        cohort.textures.push(texture);
+                    } else {
+                        self.retired_textures.push(RetiredTextures { textures: vec![texture], readers });
+                    }
                 }
+                self.generation = self.generation.saturating_add(1);
             }
             Ok(None) => { self.published = true; }
             Err(error) => {
@@ -274,6 +317,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn texture_readers_exclude_snapshots_published_before_allocation() {
+        let mut table = SceneSampledTextures::new(
+            BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
+        ).unwrap();
+        let image = gfx_core::TextureViewId::from_parts(2, 1);
+        let a = SubmissionId::from_parts(10, 1);
+        let b = SubmissionId::from_parts(11, 1);
+        let legacy = SubmissionId::from_parts(12, 1);
+        table.generation = 2;
+        table.first_generation.insert(image, 2);
+        let mut old = Readers::default();
+        old.submitted(Some(a));
+        table.retired.push(RetiredSnapshot {
+            snapshot: BindGroupId::from_parts(1, 1), generation: 1, readers: old,
+        });
+        table.snapshot_readers.submitted(Some(b));
+        table.submitted(Some(legacy), None);
+        let readers = table.image_readers(image);
+        assert!(!readers.submissions.contains(&a));
+        assert!(readers.submissions.contains(&b));
+        assert!(readers.submissions.contains(&legacy));
+        table.completed(b);
+        table.completed(legacy);
+        assert!(table.image_readers(image).ready());
+    }
+
+    #[test]
     fn queued_capture_pins_the_encoded_generation_until_acceptance() {
         let mut table = SceneSampledTextures::new(
             BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
@@ -286,7 +356,7 @@ mod tests {
         table.slots.allocate(gfx_core::TextureViewId::from_parts(2, 1)).unwrap();
         table.slots.publish_with(first, |_, _| Ok(second)).unwrap();
         table.retired.push(RetiredSnapshot {
-            snapshot: first, readers: std::mem::take(&mut table.snapshot_readers),
+            snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
         });
         assert!(!table.has_completed_retirement());
         table.capture_submitted(Some(reader), Some(second));
@@ -314,7 +384,7 @@ mod tests {
         table.slots.allocate(gfx_core::TextureViewId::from_parts(2, 1)).unwrap();
         table.slots.publish_with(first, |_, _| Ok(second)).unwrap();
         table.retired.push(RetiredSnapshot {
-            snapshot: first, readers: std::mem::take(&mut table.snapshot_readers),
+            snapshot: first, generation: 1, readers: std::mem::take(&mut table.snapshot_readers),
         });
         table.submitted(Some(b), Some(second));
         assert!(!table.retired[0].readers.ready());
