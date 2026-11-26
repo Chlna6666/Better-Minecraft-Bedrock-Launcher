@@ -846,7 +846,7 @@ impl TaffyLayoutEngine {
         gaps: &[(LayoutClaimBlocks, LayoutId)],
         root: LayoutId,
     ) -> Option<(LayoutClaimBlocks, ClaimBlockMap)> {
-        if !anchor.prepaint_blocks().is_empty() || gaps.is_empty() {
+        if gaps.is_empty() {
             return None;
         }
         let mut excluded = smallvec::SmallVec::<[Range<usize>; 4]>::new();
@@ -886,14 +886,23 @@ impl TaffyLayoutEngine {
             if cursor < block.end { kept.push(cursor..block.end); }
         }
         if gaps.next().is_some() { return None; }
+        // Old dirty prepaint blocks are still rejected above. Clean lazy
+        // claims, however, can be adopted without rerunning their lifecycle.
+        let request_len: usize = kept.iter().map(Range::len).sum();
+        kept.extend(anchor.prepaint_blocks().iter().cloned());
+        let start = self.claimed_key_log.len();
         let mut map = ClaimBlockMap::default();
-        let mut target = self.claimed_key_log.len();
+        let mut target = start;
         for span in &kept {
             map.record(span.clone(), target);
             target += span.len();
         }
+        map.sort_by_source();
         let kept = self.try_keep_intervals(&kept, root)?;
-        Some((LayoutClaimBlocks::request(kept), map))
+        let middle = start + request_len;
+        let mut blocks = LayoutClaimBlocks::request(start..middle);
+        blocks.push_prepaint(middle..kept.end);
+        Some((blocks, map))
     }
 
     /// Adopt every prebuilt request block atomically. Old slots become

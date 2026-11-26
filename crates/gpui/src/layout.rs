@@ -55,9 +55,10 @@ impl LayoutClaimBlocks {
     }
 
     pub(crate) fn push_request(&mut self, range: Range<usize>) {
-        assert_eq!(self.request_count, self.blocks.len());
         if range.is_empty() { return; }
-        self.blocks.push(range);
+        // New request blocks can follow an already adopted prepaint block
+        // in physical log order. Keep the logical phase partition intact.
+        self.blocks.insert(self.request_count, range);
         self.request_count += 1;
     }
 
@@ -129,6 +130,10 @@ impl ClaimBlockMap {
         }
     }
 
+    pub(crate) fn sort_by_source(&mut self) {
+        self.segments.sort_unstable_by_key(|(source, _)| source.start);
+    }
+
     pub(crate) fn between(source: &LayoutClaimBlocks, target: &LayoutClaimBlocks) -> Option<Self> {
         let mut result = Self::default();
         for (sources, targets) in [
@@ -148,7 +153,7 @@ impl ClaimBlockMap {
                 return None;
             }
         }
-        result.segments.sort_unstable_by_key(|(source, _)| source.start);
+        result.sort_by_source();
         Some(result)
     }
 

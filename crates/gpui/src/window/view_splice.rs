@@ -203,7 +203,8 @@ impl Window {
             let gap_rebuild = old.rebuild.as_ref()?;
             let dirty = scope == Some(ViewDirtyScope::Direct);
             let ancestor = scope == Some(ViewDirtyScope::TraversalAncestor);
-            if !old.layout_state_range.is_empty() || !old.layout_claims.prepaint_blocks().is_empty()
+            if !old.layout_state_range.is_empty()
+                || (dirty && !old.layout_claims.prepaint_blocks().is_empty())
                 || (scope.is_some() && !old.splice_safe)
                 || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context
                     || open.iter().any(|ancestor| !ancestor.layout_claims.covers_request(&old.layout_claims))))
@@ -253,6 +254,7 @@ impl Window {
             engine.release_kept(&kept);
             return None;
         };
+        let new_request_start = self.claim_log_len();
         let states_start = self.begin_view_element_states();
         // The engine's block map is the only source of retained claim relocation.
         let mut parts: Vec<SplicePart> = Vec::with_capacity(plan.len());
@@ -318,8 +320,16 @@ impl Window {
             self.stash_prebuilt_gaps(parts);
             return None;
         }
+        let end = self.claim_log_len();
+        let claims = if kept.prepaint_blocks().is_empty() {
+            LayoutClaimBlocks::request(start..end)
+        } else {
+            let mut claims = kept.clone();
+            claims.push_request(new_request_start..end);
+            claims
+        };
         Some(ViewSplice {
-            anchor, kept, placement, parts, claims: LayoutClaimBlocks::request(start..self.claim_log_len()),
+            anchor, kept, placement, parts, claims,
             states: self.view_layout_state_range(states_start),
         })
     }
