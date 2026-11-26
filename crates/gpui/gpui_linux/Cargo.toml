@@ -1,0 +1,17 @@
+[package]
+name = "gpui_linux"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[features]
+wayland = ["portal-settings"]
+x11 = ["portal-settings"]
+portal-settings = ["dep:anyhow", "dep:ashpd", "dep:calloop", "dep:smol"]
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+anyhow = { version = "1", optional = true }
+ashpd = { version = "0.13.10", default-features = false, features = ["async-io", "settings"], optional = true }
+calloop = { version = "0.14.4", optional = true }
+smol = { version = "2.0", optional = true }

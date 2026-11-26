@@ -1,0 +1,18 @@
+[package]
+name = "gpui_macos"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+anyhow = "1"
+core-graphics = "0.25.0"
+foreign-types = "0.5"
+util = { version = "0.2.2", package = "gpui_util" }
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+bindgen = "0.73.2"
+
+[lints.rust]
+unsafe_code = "warn"
