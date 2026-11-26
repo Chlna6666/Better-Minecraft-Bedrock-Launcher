@@ -230,6 +230,34 @@ pub(crate) struct LayoutClaim {
 #[derive(Clone, Copy)]
 pub(crate) struct NativePlacementProof(usize);
 
+/// Classification of final native geometry, independent of the number of
+/// intermediate writes. A translation must preserve all non-position fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NativePlacementDelta {
+    Unchanged,
+    Translation,
+    Resize,
+    Metrics,
+}
+
+impl NativePlacementDelta {
+    fn between(previous: &taffy::tree::Layout, current: &taffy::tree::Layout) -> Self {
+        if previous == current { return Self::Unchanged; }
+        let mut translated = *previous;
+        translated.location = current.location;
+        if translated == *current { return Self::Translation; }
+        if previous.size != current.size { return Self::Resize; }
+        Self::Metrics
+    }
+}
+
+/// A cache invalidation is narrower than a placement proof: only location
+/// changes affect descendant origins, and only size/location affect bounds.
+struct BoundsMutation {
+    id: LayoutId,
+    moved: bool,
+}
+
 struct PlacementWatch {
     clean: Vec<(LayoutId, Option<LayoutId>)>,
     gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]>,
@@ -368,6 +396,7 @@ pub struct TaffyLayoutEngine {
     // DPI must not reuse the previous physical layout.
     root_constraints: FxHashMap<LayoutId, (Size<AvailableSpaceKey>, u32)>,
     layout_bounds_scratch_space: Vec<LayoutId>,
+    bounds_mutations: Vec<BoundsMutation>,
     pub(super) nodes_requested: usize,
     pub(super) measured_nodes_requested: usize,
     pub(super) roots_computed: usize,
@@ -428,6 +457,7 @@ impl TaffyLayoutEngine {
             node_layout_metadata: FxHashMap::default(),
             root_constraints: FxHashMap::default(),
             layout_bounds_scratch_space: Vec::new(),
+            bounds_mutations: Vec::new(),
             nodes_requested: 0,
             measured_nodes_requested: 0,
             roots_computed: 0,
@@ -499,6 +529,10 @@ impl TaffyLayoutEngine {
         }
         self.stale_style_fingerprints.remove(&id);
         self.robbed_parents.remove(&id);
+        if !self.unrounded_layout_origins.is_empty() || !self.absolute_layout_bounds.is_empty() {
+            self.absolute_layout_bounds.clear();
+            self.unrounded_layout_origins.clear();
+        }
         self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
         self.root_constraints.remove(&id);
         self.layout_changes = self.layout_changes.wrapping_add(1);
@@ -584,6 +618,7 @@ impl TaffyLayoutEngine {
         let claim_count = self.committed_claim_log.len();
         trim_to_working_set!(self.committed_claim_log, claim_count);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
+        trim_to_working_set!(self.bounds_mutations, node_working_set);
 
         self.nodes_requested = 0;
         self.measured_nodes_requested = 0;
@@ -611,6 +646,7 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.node_layout_metadata.len()));
         self.layout_bounds_scratch_space
             .shrink_to(floor.max(self.layout_bounds_scratch_space.len()));
+        self.bounds_mutations.shrink_to(floor.max(self.bounds_mutations.len()));
         self.layout_mutations.entries.shrink_to(floor.max(self.layout_mutations.entries.len()));
         self.layout_mutations.heads.shrink_to(floor.max(self.layout_mutations.heads.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
@@ -781,17 +817,20 @@ impl TaffyLayoutEngine {
     /// Consume the watch once the containing root is computed. A node that
     /// was changed and subsequently restored still has identical placement.
     /// Compare full native Layout values, not just bounds.
-    pub(crate) fn finish_splice_placement(&mut self, proof: NativePlacementProof) -> bool {
-        let Some(watch) = self.splice_placements.get_mut(proof.0).and_then(Option::take) else {
-            return false;
-        };
-        self.pending_replays.is_empty()
-            && self.placement_topology_matches(&watch)
-            && watch.clean.iter().all(|(id, _)| {
-                self.taffy.dirty((*id).into()).is_ok_and(|dirty| !dirty)
-                    && self.layout_mutations.previous_since(*id, watch.mutation_epoch)
-                        .is_none_or(|previous| self.taffy.layout((*id).into()).is_ok_and(|current| current == previous))
-            })
+    pub(crate) fn finish_splice_placement(&mut self, proof: NativePlacementProof) -> Option<NativePlacementDelta> {
+        let watch = self.splice_placements.get_mut(proof.0)?.take()?;
+        if !self.pending_replays.is_empty() || !self.placement_topology_matches(&watch) {
+            return None;
+        }
+        let mut delta = NativePlacementDelta::Unchanged;
+        for (id, _) in &watch.clean {
+            if self.taffy.dirty((*id).into()).ok()? { return None; }
+            if let Some(previous) = self.layout_mutations.previous_since(*id, watch.mutation_epoch) {
+                let current = self.taffy.layout((*id).into()).ok()?;
+                delta = delta.max(NativePlacementDelta::between(previous, current));
+            }
+        }
+        Some(delta)
     }
 
     #[cfg(test)]
@@ -987,11 +1026,13 @@ impl TaffyLayoutEngine {
                     self.taffy.get_child_id(id.into(), index) == (*child).into()
                 });
             if !child_order_unchanged {
-                if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
-                    Some(id), children) {
-                    self.absolute_layout_bounds.clear();
-                    self.unrounded_layout_origins.clear();
-                }
+                Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
+                    Some(id), children);
+                // Even attaching a previously parentless cached node or
+                // detaching a child changes its absolute origin without a
+                // native Layout write. Reconcile topology before observing.
+                self.absolute_layout_bounds.clear();
+                self.unrounded_layout_origins.clear();
                 self.layout_changes = self.layout_changes.wrapping_add(1);
                 self.taffy
                     .set_children(id.into(), LayoutId::to_taffy_slice(children))
@@ -1072,18 +1113,15 @@ impl TaffyLayoutEngine {
         robbed_parents: &mut FxHashSet<LayoutId>,
         new_parent: Option<LayoutId>,
         children: &[LayoutId],
-    ) -> bool {
-        let mut changed = false;
+    ) {
         for child in children {
             if let Some(parent) = taffy.parent((*child).into())
                 && Some(LayoutId::from(parent)) != new_parent
             {
-                changed = true;
                 robbed_parents.insert(parent.into());
                 taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
             }
         }
-        changed
     }
 
     fn create_taffy_node(
@@ -1096,8 +1134,9 @@ impl TaffyLayoutEngine {
         if measure.is_some() {
             self.remeasures = self.remeasures.wrapping_add(1);
         }
-        if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
-            None, children) {
+        Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
+            None, children);
+        if !children.is_empty() {
             self.absolute_layout_bounds.clear();
             self.unrounded_layout_origins.clear();
         }
@@ -1395,10 +1434,8 @@ impl TaffyLayoutEngine {
         //
 
         self.computed_layouts.insert(id);
-        // Descendants may already have been measured as standalone roots in
-        // this frame. Parent placement changes their absolute coordinates even
-        // when this is the parent's first computation.
-        self.invalidate_subtree_bounds(id);
+        // A standalone root may already have cached bounds. Observe actual
+        // native writes below instead of invalidating every descendant here.
 
         let transform = |v: AvailableSpace| match v {
             AvailableSpace::Definite(pixels) => {
@@ -1416,14 +1453,31 @@ impl TaffyLayoutEngine {
             "taffy_compute",
             crate::window::element_work::ElementWorkPhase::Layout,
         );
-        let observe = self.splice_placements.iter().any(Option::is_some);
+        let observe_placement = self.splice_placements.iter().any(Option::is_some);
+        let observe_bounds = !self.unrounded_layout_origins.is_empty()
+            || !self.absolute_layout_bounds.is_empty();
         let mutations = &mut self.layout_mutations;
-        if observe { mutations.begin_compute(); }
-        let mut record_mutation = |node, previous: &taffy::tree::Layout| {
-            mutations.record(LayoutId::from(node), previous);
+        if observe_placement { mutations.begin_compute(); }
+        let origins = &self.unrounded_layout_origins;
+        let bounds = &self.absolute_layout_bounds;
+        let changed_bounds = &mut self.bounds_mutations;
+        changed_bounds.clear();
+        let mut record_mutation = |node, previous: &taffy::tree::Layout, current: &taffy::tree::Layout| {
+            let id = LayoutId::from(node);
+            if observe_placement { mutations.record(id, previous); }
+            if observe_bounds {
+                let moved = previous.location != current.location;
+                // A cached descendant implies a cached origin for every ancestor.
+                // No cached origin means there is no cached subtree to invalidate.
+                if (moved && origins.contains_key(&id))
+                    || (previous.size != current.size && bounds.contains_key(&id))
+                {
+                    changed_bounds.push(BoundsMutation { id, moved });
+                }
+            }
         };
-        let observer: Option<&mut dyn FnMut(taffy::NodeId, &taffy::tree::Layout)> =
-            if observe { Some(&mut record_mutation) } else { None };
+        let observer: Option<&mut dyn FnMut(taffy::NodeId, &taffy::tree::Layout, &taffy::tree::Layout)> =
+            if observe_placement || observe_bounds { Some(&mut record_mutation) } else { None };
         self.taffy
             .compute_layout_with_measure_and_observer(
                 id.into(),
@@ -1482,6 +1536,7 @@ impl TaffyLayoutEngine {
             )
             .expect(EXPECT_MESSAGE);
         drop(taffy_work);
+        self.invalidate_changed_bounds();
         if let Some(parent) = parent {
             // A standalone computation overwrites this child's parent-relative
             // placement. Invalidate only ancestor layout caches so the next
@@ -1491,21 +1546,27 @@ impl TaffyLayoutEngine {
         self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
     }
 
-    fn invalidate_subtree_bounds(&mut self, id: LayoutId) {
-        if self.absolute_layout_bounds.is_empty() && self.unrounded_layout_origins.is_empty() {
-            return;
-        }
+    fn invalidate_changed_bounds(&mut self) {
+        if self.bounds_mutations.is_empty() { return; }
         let _work = crate::window::element_work::begin_named(
             "layout_bounds_invalidation",
             crate::window::element_work::ElementWorkPhase::Layout,
         );
+        // Native writes can repeat during measurement/placement. Removing
+        // origins as we visit them also deduplicates overlapping dirty roots.
         let stack = &mut self.layout_bounds_scratch_space;
         stack.clear();
-        stack.push(id);
-        while let Some(id) = stack.pop() {
-            self.absolute_layout_bounds.remove(&id);
-            self.unrounded_layout_origins.remove(&id);
-            stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
+        for mutation in self.bounds_mutations.drain(..) {
+            self.absolute_layout_bounds.remove(&mutation.id);
+            if !mutation.moved { continue; }
+            stack.push(mutation.id);
+            while let Some(id) = stack.pop() {
+                if self.unrounded_layout_origins.remove(&id).is_none() {
+                    continue;
+                }
+                self.absolute_layout_bounds.remove(&id);
+                stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
+            }
         }
     }
 

@@ -276,7 +276,7 @@ where
     /// The context provided for passing to measure functions if layout is run over this struct
     pub(crate) measure_function: MeasureFunction,
     // GPUI's optional exact mutation observer. No comparison on the ordinary path.
-    layout_observer: Option<&'t mut dyn FnMut(NodeId, &Layout)>,
+    layout_observer: Option<&'t mut dyn FnMut(NodeId, &Layout, &Layout)>,
 }
 
 impl<NodeContext, MeasureFunction> TaffyView<'_, NodeContext, MeasureFunction>
@@ -399,7 +399,7 @@ where
         let previous = &mut self.taffy.nodes[node_id.into()].unrounded_layout;
         if let Some(observer) = self.layout_observer.as_mut() {
             if *previous != *layout {
-                observer(node_id, previous);
+                observer(node_id, previous, layout);
             }
         }
         *previous = *layout;
@@ -985,14 +985,14 @@ impl<NodeContext> TaffyTree<NodeContext> {
     }
 
     /// Compute layout and optionally observe each changed unrounded layout
-    /// before its old value is overwritten. The callback is not invoked for
+    /// with its previous and replacement values, before overwriting. The callback is not invoked for
     /// unchanged writes or cache hits. Final rounding is not observed.
     pub fn compute_layout_with_measure_and_observer<'a, MeasureFunction>(
         &'a mut self,
         node_id: NodeId,
         available_space: Size<AvailableSpace>,
         measure_function: MeasureFunction,
-        layout_observer: Option<&'a mut dyn FnMut(NodeId, &Layout)>,
+        layout_observer: Option<&'a mut dyn FnMut(NodeId, &Layout, &Layout)>,
     ) -> Result<(), TaffyError>
     where
         MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,

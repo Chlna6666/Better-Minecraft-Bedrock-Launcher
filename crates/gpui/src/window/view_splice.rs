@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{Element, IntoElement, ViewElement, ViewRequestLayout};
-use crate::layout::{LayoutClaimBlocks, NativePlacementProof};
+use crate::layout::{LayoutClaimBlocks, NativePlacementDelta, NativePlacementProof};
 
 pub(super) struct PrebuiltGap {
     key: GlobalElementId,
@@ -325,9 +325,15 @@ impl Window {
     }
 
     pub(crate) fn can_prepaint_view_splice(&mut self, splice: &ViewSplice, bounds: Bounds<Pixels>) -> bool {
-        let placement_matches = self.layout_engine.as_mut()
-            .is_some_and(|engine| engine.finish_splice_placement(splice.placement));
-        placement_matches && !self.force_view_cache_refresh && self.splice_context_supported()
+        let placement = self.layout_engine.as_mut()
+            .and_then(|engine| engine.finish_splice_placement(splice.placement));
+        // Retained event closures and clipping are not yet relocatable. A
+        // native translation is classified precisely, but not replayed blindly.
+        if placement != Some(NativePlacementDelta::Unchanged) {
+            log::trace!(target: "gpui::diagnostics", "native splice placement rejected: {placement:?}");
+            return false;
+        }
+        !self.force_view_cache_refresh && self.splice_context_supported()
             && self.retained_view_context_matches(&splice.anchor, bounds)
             && splice.parts.iter().all(|part| match part {
                 SplicePart::Dirty(gap) => self.layout_bounds(gap.layout_id) == gap.old.bounds,
