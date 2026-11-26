@@ -339,3 +339,120 @@ fn inherited_clip_change_repaints_only_the_dependent_descendant(cx: &mut TestApp
         "a changed inherited overflow mask must invalidate the clipped descendant"
     );
 }
+
+struct PrepaintReplayBarrier {
+    child: Option<crate::AnyElement>,
+    enabled: bool,
+}
+
+impl IntoElement for PrepaintReplayBarrier {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for PrepaintReplayBarrier {
+    type RequestLayoutState = crate::AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some("prepaint-replay-barrier".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut child = self.child.take().expect("one layout");
+        (child.request_layout(window, cx), child)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_retained_replay_barrier(self.enabled, |window| child.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        child.paint(window, cx);
+    }
+}
+
+struct BarrierChild {
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for BarrierChild {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        crate::div().w(px(32.)).h(px(32.)).bg(crate::white())
+    }
+}
+
+struct BarrierRoot {
+    child: crate::Entity<BarrierChild>,
+    sibling: crate::Entity<BarrierChild>,
+    barrier: bool,
+}
+
+impl Render for BarrierRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::div().flex().flex_row().w(px(100.)).h(px(40.))
+            .child(PrepaintReplayBarrier {
+                child: Some(self.child.clone().into_any_element()),
+                enabled: self.barrier,
+            })
+            .child(self.sibling.clone())
+    }
+}
+
+#[gpui::test]
+fn prepaint_barrier_revokes_layout_admission_without_invalidating_sibling(cx: &mut TestAppContext) {
+    let child_builds = Rc::new(Cell::new(0));
+    let sibling_builds = Rc::new(Cell::new(0));
+    let (root, window) = cx.update(|cx| {
+        let child = cx.new(|_| BarrierChild { builds: child_builds.clone() });
+        let sibling = cx.new(|_| BarrierChild { builds: sibling_builds.clone() });
+        let window = cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| BarrierRoot { child, sibling, barrier: false })
+        }).unwrap();
+        (cx.read_window(&window, |root, _| root).unwrap(), AnyWindowHandle::from(window))
+    });
+
+    draw_window(window, cx);
+    let initial = (child_builds.get(), sibling_builds.get());
+    assert!(initial.0 > 0 && initial.1 > 0);
+    root.update(cx, |_, cx| cx.notify());
+    draw_window(window, cx);
+    assert_eq!((child_builds.get(), sibling_builds.get()), initial,
+        "the child must first be eligible for ordinary replay");
+
+    root.update(cx, |root, cx| { root.barrier = true; cx.notify(); });
+    draw_window(window, cx);
+    assert!(child_builds.get() > initial.0, "Prepaint binding changes revoke an earlier layout admission");
+    assert_eq!(sibling_builds.get(), initial.1, "the barrier must remain subtree-local");
+}

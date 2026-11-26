@@ -386,7 +386,12 @@ impl Window {
         record: &RetainedViewRecord,
         bounds: Bounds<Pixels>,
     ) -> bool {
-        record.bounds == bounds && self.retained_paint_context_matches(&record.context)
+        // Layout admission precedes Prepaint. An animation binding change
+        // can install a scoped replay barrier after that admission; check
+        // it again before replaying the old hitboxes and Paint operations.
+        !self.force_view_cache_refresh
+            && record.bounds == bounds
+            && self.retained_paint_context_matches(&record.context)
     }
 
     /// Copies the committed prepaint and paint ranges, returning the new prepaint range.
