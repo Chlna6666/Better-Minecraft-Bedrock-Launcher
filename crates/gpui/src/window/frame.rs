@@ -1,7 +1,6 @@
 use super::state::ElementVisualTransform;
 use super::*;
-use crate::element::{RetainedDivSelfScene, RetainedPlainTextKey};
-use std::borrow::Borrow;
+use crate::element::RetainedPlainTextKey;
 
 mod paint;
 mod retained_scene_index;
@@ -53,26 +52,6 @@ pub(crate) struct RetainedSceneSegment {
     pub(crate) entity_id: EntityId,
 }
 
-/// Structural identity used exclusively by retained rendering reconciliation.
-///
-/// Keeping this distinct from [`GlobalElementId`] prevents positional anonymous-element slots
-/// from accidentally becoming state-bearing application IDs while still allowing borrowed lookup
-/// by the structural path representation already produced by the lifecycle traversal.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct ReconcileKey(GlobalElementId);
-
-impl From<GlobalElementId> for ReconcileKey {
-    fn from(value: GlobalElementId) -> Self {
-        Self(value)
-    }
-}
-
-impl Borrow<GlobalElementId> for ReconcileKey {
-    fn borrow(&self) -> &GlobalElementId {
-        &self.0
-    }
-}
-
 /// Inherited state that changes either lifecycle side effects or the pixels produced by an
 /// otherwise identical retained element. Targeted reconciliation tracks the changed element path;
 /// this key lets unaffected descendants/siblings prove that their logical clip, visual clip, text
@@ -93,7 +72,7 @@ pub(crate) struct RetainedPaintContext {
 /// Retained lifecycle ranges for one stable rendering identity path.
 ///
 /// `metadata_range` points into `Frame::retained_element_order`. Entries are emitted in post-order,
-/// so one subtree occupies one contiguous span ending in its own [`ReconcileKey`]. This lets a
+/// so one subtree occupies one contiguous span ending in its own [`GlobalElementId`]. This lets a
 /// replayed subtree carry all descendant reconciliation metadata into the next frame without a
 /// full-map prefix scan.
 #[derive(Clone)]
@@ -106,8 +85,6 @@ pub(crate) struct RetainedElementRange {
     pub(crate) metadata_range: Range<usize>,
     /// Inherited paint context under which this range was originally emitted.
     pub(crate) paint_context: Rc<RetainedPaintContext>,
-    /// Exact self-scene style and child scene split for a reconciliation-safe `Div`.
-    pub(crate) div_self_scene: Option<Rc<RetainedDivSelfScene>>,
     /// Exact side-effect-free plain-text output identity used for generic dirty reconciliation.
     pub(crate) plain_text_key: Option<Rc<RetainedPlainTextKey>>,
     /// Whether this element's retained address is unambiguous in the frame that produced it.
@@ -153,8 +130,8 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
     retained_scene_index_spill_capacity: usize,
-    pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
-    pub(crate) retained_element_order: Vec<ReconcileKey>,
+    pub(crate) retained_element_ranges: FxHashMap<GlobalElementId, RetainedElementRange>,
+    pub(crate) retained_element_order: Vec<GlobalElementId>,
     /// Whole-view retained records. One entry per view drawn into this frame, keyed by its
     /// element path. A view that is drawn again from the committed frame is copied from here
     /// without running `Render` or walking its subtree.
@@ -753,9 +730,9 @@ impl Frame {
     /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
     pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
         self.retained_element_ranges.capacity()
-            .saturating_mul(std::mem::size_of::<(ReconcileKey, RetainedElementRange)>())
+            .saturating_mul(std::mem::size_of::<(GlobalElementId, RetainedElementRange)>())
             .saturating_add(self.retained_element_order.capacity()
-                .saturating_mul(std::mem::size_of::<ReconcileKey>()))
+                .saturating_mul(std::mem::size_of::<GlobalElementId>()))
             .saturating_add(self.view_retentions.capacity()
                 .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>()))
             .saturating_add(self.view_retention_order.capacity()

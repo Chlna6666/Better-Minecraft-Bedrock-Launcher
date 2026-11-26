@@ -96,9 +96,6 @@ pub(crate) enum ViewCacheDebugStatus {
     /// A parent lifecycle was traversed to reach a dirty child, but the parent contributes no own
     /// scene primitives and therefore did not repaint anything itself.
     TraversalOnly,
-    /// A parent lifecycle was traversed to reach a dirty child, while the parent's own scene
-    /// primitives were replayed unchanged.
-    SelfSceneReplay,
 }
 
 /// Window-scoped visual diagnostics used by GUI debugging tools.
@@ -296,17 +293,6 @@ impl Window {
     /// This must be called before painting children while the provisional marker is still last.
     pub(crate) fn record_element_traversal_only(&mut self, bounds: Bounds<Pixels>, cx: &mut App) {
         self.reclassify_debug_element_paint(bounds, ViewCacheDebugStatus::TraversalOnly, cx);
-    }
-
-    /// Reclassify the current element from a full own-paint marker into an ancestor traversal whose
-    /// own scene primitives were retained. This must be called before painting any child so the
-    /// last provisional marker still belongs to this parent.
-    pub(crate) fn record_element_self_scene_replay(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        cx: &mut App,
-    ) {
-        self.reclassify_debug_element_paint(bounds, ViewCacheDebugStatus::SelfSceneReplay, cx);
     }
 
     /// Record the result of one retained-view/boundary lookup. This is intentionally a no-op unless
@@ -606,7 +592,7 @@ pub(crate) fn paint_layout_bounds(
 
 fn cache_marker_color(status: ViewCacheDebugStatus) -> (u32, f32) {
     match status {
-        ViewCacheDebugStatus::Hit | ViewCacheDebugStatus::SelfSceneReplay => (0x30d158, 0.98),
+        ViewCacheDebugStatus::Hit => (0x30d158, 0.98),
         ViewCacheDebugStatus::TraversalOnly => (0x64d2ff, 0.98),
     }
 }
@@ -709,10 +695,6 @@ mod tests {
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
             cache_marker_color(ViewCacheDebugStatus::TraversalOnly).0
-        );
-        assert_eq!(
-            cache_marker_color(ViewCacheDebugStatus::Hit).0,
-            cache_marker_color(ViewCacheDebugStatus::SelfSceneReplay).0
         );
     }
 }

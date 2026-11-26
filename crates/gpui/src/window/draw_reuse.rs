@@ -1,5 +1,5 @@
 use super::frame::{
-    DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
+    DeferredRetainedMetadata, DeferredRetainedReplay, RetainedElementRange,
     RetainedPaintContext, RetainedReplayRanges,
 };
 use super::state::ElementVisualTransform;
@@ -761,7 +761,6 @@ impl Window {
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
         metadata_start: usize,
-        div_self_scene: Option<crate::element::RetainedDivSelfScene>,
         plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
         subtree_stable: bool,
@@ -776,7 +775,7 @@ impl Window {
             }
         };
         // Most elements have neither optional payload. Keep the frame-map
-        // records compact and share exact unchanged text/scene proofs across
+        // records compact and share exact unchanged text proofs across
         // generations rather than deep-cloning them during speculative replay.
         let previous = self.rendered_frame.retained_element_ranges.get(&retained_id);
         let plain_text_key = plain_text_key.map(|key| {
@@ -785,13 +784,7 @@ impl Window {
                 .cloned()
                 .unwrap_or_else(|| Rc::new(key))
         });
-        let div_self_scene = div_self_scene.map(|scene| {
-            previous.and_then(|range| range.div_self_scene.as_ref())
-                .filter(|old| old.style == scene.style && old.child_scene_range == scene.child_scene_range)
-                .cloned()
-                .unwrap_or_else(|| Rc::new(scene))
-        });
-        let key = ReconcileKey::from(retained_id);
+        let key = retained_id;
         self.next_frame.retained_element_order.push(key.clone());
         let metadata_end = self.next_frame.retained_element_order.len();
         self.next_frame.retained_element_ranges.insert(
@@ -803,7 +796,6 @@ impl Window {
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
                 paint_context,
-                div_self_scene,
                 plain_text_key,
                 identity_stable,
                 subtree_stable,
@@ -872,17 +864,6 @@ impl Window {
                 .is_none()
                 || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
                     .is_none()
-                || source_range
-                    .div_self_scene
-                    .as_ref()
-                    .is_some_and(|self_scene| {
-                        rebase_scene_range(
-                            &self_scene.child_scene_range,
-                            source_paint,
-                            target_paint,
-                        )
-                        .is_none()
-                    })
             {
                 return false;
             }
@@ -924,14 +905,6 @@ impl Window {
                     .expect("retained metadata prepaint range was validated before transfer");
             range.paint_range = rebase_paint_range(&range.paint_range, source_paint, target_paint)
                 .expect("retained metadata paint range was validated before transfer");
-            if let Some(self_scene) = range.div_self_scene.as_mut() {
-                let rebased = rebase_scene_range(&self_scene.child_scene_range, source_paint, target_paint)
-                    .expect("retained div scene range was validated before transfer");
-                if rebased != self_scene.child_scene_range {
-                    Rc::make_mut(self_scene).child_scene_range = rebased;
-                }
-            }
-
             let metadata_start_offset = range
                 .metadata_range
                 .start
@@ -1001,19 +974,6 @@ pub(crate) fn rebase_paint_range(
     Some(
         range.start.rebased_from(&source.start, &target.start)?
             ..range.end.rebased_from(&source.start, &target.start)?,
-    )
-}
-
-fn rebase_scene_range(
-    range: &Range<usize>,
-    source: &Range<PaintIndex>,
-    target: &Range<PaintIndex>,
-) -> Option<Range<usize>> {
-    let start_offset = range.start.checked_sub(source.start.scene_index)?;
-    let end_offset = range.end.checked_sub(source.start.scene_index)?;
-    Some(
-        target.start.scene_index.checked_add(start_offset)?
-            ..target.start.scene_index.checked_add(end_offset)?,
     )
 }
 

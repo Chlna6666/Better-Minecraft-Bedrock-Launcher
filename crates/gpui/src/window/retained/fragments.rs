@@ -1,17 +1,4 @@
 use super::super::*;
-use crate::element::RetainedDivSelfSceneStyle;
-use std::ops::Range;
-
-/// Previous-frame scene spans that belong to a parent element itself rather than to its children.
-///
-/// GPUI paints a styled `Div` as `shadow/background -> children -> border`. Keeping the prefix and
-/// suffix separate lets a structural ancestor route traversal to one dirty child without regenerating
-/// its own stable primitives.
-pub(crate) struct RetainedSelfSceneRanges {
-    pub(crate) prefix: Range<usize>,
-    pub(crate) suffix: Range<usize>,
-}
-
 impl Window {
     /// Returns whether the current view may use retained-path selective replay in this frame.
     ///
@@ -76,82 +63,6 @@ impl Window {
         self.retained_child_slot_stack.pop();
         self.retained_element_id_stack.pop();
         result
-    }
-
-    /// Returns the previous scene ranges owned by the currently painted `Div` itself.
-    ///
-    /// Unlike full subtree replay, this path is safe on generic application-dirty frames because it
-    /// never replays hitboxes/listeners or child lifecycle state. The current `Div` must provide an
-    /// exact shadow/background/border key matching the previous retained range, and its bounds must
-    /// be unchanged. The child split is recorded directly during paint, so child insertion/removal
-    /// cannot move a retained border to the wrong side of the current child scene.
-    pub(crate) fn retained_self_scene_ranges(
-        &self,
-        bounds: Bounds<Pixels>,
-        current_style: &RetainedDivSelfSceneStyle,
-    ) -> Option<RetainedSelfSceneRanges> {
-        if self.force_view_cache_refresh() {
-            return None;
-        }
-
-        let retained_id = self.current_retained_element_id()?;
-        let parent = self
-            .rendered_frame
-            .retained_element_ranges
-            .get(&retained_id)?;
-        let self_scene = parent.div_self_scene.as_ref()?;
-        if parent.bounds != bounds || &self_scene.style != current_style {
-            return None;
-        }
-        if !self.retained_paint_context_matches(parent.paint_context.as_ref()) {
-            return None;
-        }
-
-        let parent_start = parent.paint_range.start.scene_index;
-        let parent_end = parent.paint_range.end.scene_index;
-        let child_start = self_scene.child_scene_range.start;
-        let child_end = self_scene.child_scene_range.end;
-        if parent_start > child_start
-            || child_start > child_end
-            || child_end > parent_end
-            || parent_end > self.rendered_frame.scene().len()
-        {
-            return None;
-        }
-
-        let prefix = parent_start..child_start;
-        let suffix = child_end..parent_end;
-        if !self.rendered_frame.range_is_replayable(prefix.clone())
-            || !self.rendered_frame.range_is_replayable(suffix.clone())
-        {
-            return None;
-        }
-
-        Some(RetainedSelfSceneRanges { prefix, suffix })
-    }
-
-    /// Replay a validated previous-frame scene span into the current frame without replaying
-    /// hitboxes/listeners or any other lifecycle side effects.
-    pub(crate) fn replay_retained_scene_range(&mut self, range: Range<usize>) {
-        debug_assert!(range.start <= range.end);
-        debug_assert!(range.end <= self.rendered_frame.scene().len());
-        if range.is_empty() {
-            return;
-        }
-        let replay_start = self.next_frame.painter.len();
-        let spans = self
-            .rendered_frame
-            .retained_paint
-            .replay_quads(self.rendered_frame.scene(), range.clone());
-        if self
-            .next_frame
-            .painter
-            .replay(range.clone(), self.rendered_frame.scene(), spans)
-        {
-            Arc::get_mut(&mut self.next_frame.retained_paint)
-                .expect("unpublished paint retention")
-                .replay(range, &self.rendered_frame.retained_paint, replay_start);
-        }
     }
 
     /// Bound the persistent focus-target lookup when applications create and discard many unique

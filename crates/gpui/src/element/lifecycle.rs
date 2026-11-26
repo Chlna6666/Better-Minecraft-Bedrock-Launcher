@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{DivPrepaint, Element};
+use super::Element;
 
 /// A globally unique identifier for an element, used to track state across frames.
 #[derive(Clone, Deref, Debug)]
@@ -527,13 +527,6 @@ fn finish_element_paint(global_id: Option<&GlobalElementId>, window: &mut Window
 }
 
 #[inline(never)]
-fn retained_div_self_scene(prepaint: &dyn Any) -> Option<super::RetainedDivSelfScene> {
-    prepaint
-        .downcast_ref::<DivPrepaint>()
-        .and_then(DivPrepaint::retained_self_scene)
-}
-
-#[inline(never)]
 fn record_retained_painted_element(
     retained_id: GlobalElementId,
     bounds: Bounds<Pixels>,
@@ -541,7 +534,6 @@ fn record_retained_painted_element(
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     metadata_start: usize,
-    div_self_scene: Option<super::RetainedDivSelfScene>,
     plain_text_key: Option<RetainedPlainTextKey>,
     identity_stable: bool,
     outer_replay_safe: bool,
@@ -558,7 +550,6 @@ fn record_retained_painted_element(
         prepaint_range,
         paint_range,
         metadata_start,
-        div_self_scene,
         plain_text_key,
         identity_stable,
         subtree_stable,
@@ -844,7 +835,6 @@ impl<E: Element> Drawable<E> {
                         );
                     },
                 );
-                let div_self_scene = retained_div_self_scene(&prepaint as &dyn Any);
                 let identity_stable = retained_identity_stable;
                 record_retained_painted_element(
                     retained_id,
@@ -853,7 +843,6 @@ impl<E: Element> Drawable<E> {
                     prepaint_range,
                     paint_run.paint_range,
                     paint_run.metadata_start,
-                    div_self_scene,
                     plain_text_key,
                     identity_stable,
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),

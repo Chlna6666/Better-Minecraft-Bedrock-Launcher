@@ -86,7 +86,4 @@ pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
 
-pub(crate) use div::{
-    DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle,
-};
 pub(crate) use lifecycle::{ElementIdStack, GlobalIdCache, RetainedPlainTextKey};
