@@ -204,11 +204,10 @@ pub(super) fn auto_capture_static_background(
     {
         return reject_auto_static_capture(scene, "prefix_splits_retained_chunk");
     }
-    let structure = crate::window::retained::ReplayStructureIndex::new(scene);
-    if !structure.range_is_replayable(scene, 0..prefix_end) {
+    if !scene.paint_operations.range_is_replayable(0..prefix_end) {
         return reject_auto_static_capture(scene, "prefix_not_independently_replayable");
     }
-    if !structure.range_is_replayable(scene, prefix_end..scene.paint_operations.len()) {
+    if !scene.paint_operations.range_is_replayable(prefix_end..scene.paint_operations.len()) {
         return reject_auto_static_capture(scene, "foreground_not_independently_replayable");
     }
 
