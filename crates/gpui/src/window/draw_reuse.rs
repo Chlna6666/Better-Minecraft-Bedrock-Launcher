@@ -1,7 +1,6 @@
 use super::frame::{
     DeferredRetainedMetadata, DeferredRetainedReplay, ReconcileKey, RetainedElementRange,
-    RetainedPaintContext, RetainedReplayRanges, RetainedSemanticDescriptor, RetainedSemanticEntry,
-    RetainedSemanticStamp,
+    RetainedPaintContext, RetainedReplayRanges,
 };
 use super::state::ElementVisualTransform;
 use super::*;
@@ -632,142 +631,14 @@ impl Window {
             && self.with_text_style_ref(|style| &previous.text_style == style)
     }
 
-    /// Register an exact semantic proof for the current request-layout subtree.
-    ///
-    /// Safe `Div` containers compose only direct-child semantic stamps, so ancestors compare O(n)
-    /// direct children rather than recursively walking every descendant again. A child generation
-    /// changes whenever its exact semantic descriptor changes; layout-only changes are proven by
-    /// the separate recursive Taffy fingerprint.
-    pub(crate) fn register_retained_layout_semantics(
-        &mut self,
-        retained_id: &GlobalElementId,
-        retained_segment: &ElementId,
-        layout_id: LayoutId,
-        request_layout: &mut dyn Any,
-        plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
-        identity_stable: bool,
-    ) {
-        let descriptor = if let Some((text, text_style, rem_size)) = plain_text_semantics {
-            RetainedSemanticDescriptor::PlainText {
-                text,
-                text_style,
-                rem_size,
-            }
-        } else {
-            let Some(div_layout) = request_layout.downcast_mut::<crate::DivLayout>() else {
-                return;
-            };
-            let Some(style) = div_layout.retained_semantic_key.take() else {
-                return;
-            };
-            // Compare the committed ordered child stamps before allocating.
-            // Unchanged large containers need no temporary child buffer.
-            let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
-            let previous_descriptor = previous.and_then(|range| range.semantic_descriptor.as_ref());
-            let semantics = &self.next_frame.retained_layout_semantics;
-            let child_stamp = |id: &LayoutId| {
-                semantics.get(id)
-                    .filter(|child| child.identity_is_stable())
-                    .map(|child| &child.stamp)
-            };
-            if let Some(old) = previous_descriptor
-                && let RetainedSemanticDescriptor::Div { style: old_style, children } = old.as_ref()
-                && old_style == &style
-                && children.len() == div_layout.child_layout_ids.len()
-                && div_layout.child_layout_ids.iter().zip(children.iter())
-                    .all(|(id, stamp)| child_stamp(id) == Some(stamp))
-            {
-                let generation = previous.and_then(|range| range.semantic_generation).unwrap_or(1);
-                let descriptor = Rc::clone(old);
-                self.next_frame.retained_layout_semantics.insert(
-                    layout_id,
-                    RetainedSemanticEntry {
-                        descriptor: Some(descriptor),
-                        stamp: RetainedSemanticStamp { segment: retained_segment.clone(), generation },
-                        identity_stable,
-                    },
-                );
-                return;
-            }
-
-            let mut children = SmallVec::with_capacity(div_layout.child_layout_ids.len());
-            for child_layout_id in &div_layout.child_layout_ids {
-                let Some(stamp) = child_stamp(child_layout_id) else {
-                    return;
-                };
-                children.push(stamp.clone());
-            }
-            RetainedSemanticDescriptor::Div { style, children }
-        };
-
-        let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
-        let matching_descriptor = previous
-            .and_then(|range| range.semantic_descriptor.as_ref())
-            .filter(|old| old.as_ref() == &descriptor);
-        // The overwhelmingly common case is an unchanged descriptor on an unchanged frame.
-        // Reusing the committed `Rc` (and its generation) skips the `Rc::new` allocation and
-        // keeps the generation stable, which is what lets descendants prove themselves
-        // without walking their whole subtree again.
-        let (descriptor, generation) = match (matching_descriptor, previous) {
-            (Some(unchanged), Some(range)) => (
-                Rc::clone(unchanged),
-                range.semantic_generation.unwrap_or(1),
-            ),
-            (_, Some(range)) => {
-                let Some(next_generation) = range
-                    .semantic_generation
-                    .unwrap_or(0)
-                    .checked_add(1)
-                else {
-                    return;
-                };
-                (Rc::new(descriptor), next_generation)
-            }
-            (_, None) => (Rc::new(descriptor), 1),
-        };
-
-        self.next_frame.retained_layout_semantics.insert(
-            layout_id,
-            RetainedSemanticEntry {
-                descriptor: Some(descriptor),
-                stamp: RetainedSemanticStamp {
-                    segment: retained_segment.clone(),
-                    generation,
-                },
-                identity_stable,
-            },
-        );
-    }
-
-    fn retained_div_semantics_match(
-        &self,
-        retained: &RetainedElementRange,
-        layout_id: LayoutId,
-    ) -> bool {
-        let Some(current) = self.next_frame.retained_layout_semantics.get(&layout_id) else {
-            return false;
-        };
-        let Some(descriptor) = current.descriptor.as_ref() else {
-            return false;
-        };
-        current.identity_is_stable()
-            && matches!(descriptor.as_ref(), RetainedSemanticDescriptor::Div { .. })
-            && retained.semantic_descriptor.as_ref().is_some_and(|previous| {
-                Rc::ptr_eq(previous, descriptor) || previous.as_ref() == descriptor.as_ref()
-            })
-            && retained.semantic_generation == Some(current.stamp.generation)
-    }
-
     /// Returns a previously retained element range that is safe to replay in the current frame.
     ///
-    /// Generic dirty frames admit stationary side-effect-free subtrees with
-    /// exact semantic and recursive layout proofs, not only individual text.
-    /// Translation remains restricted to proven static rows.
+    /// Dirty frames admit exact side-effect-free text replay. Whole-view
+    /// retention owns general subtree replay; no per-Div semantic graph.
     pub(crate) fn reusable_retained_element(
         &self,
         retained_id: &GlobalElementId,
         bounds: Bounds<Pixels>,
-        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
     ) -> Option<(RetainedReplayRanges, Point<Pixels>)> {
@@ -809,20 +680,7 @@ impl Window {
             .is_some_and(|(current, previous)| {
                 current == previous && plain_text_range_is_side_effect_free(retained)
             });
-        let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
-        let static_subtree_proven = retained.identity_stable
-            && retained.subtree_stable
-            && div_semantics_proven
-            && layout_fingerprint.is_some()
-            && retained.layout_fingerprint == layout_fingerprint
-            && !retained_range_has_stateful_effects(retained)
-            && retained.prepaint_range.start.hitboxes_index == retained.prepaint_range.end.hitboxes_index;
-
-        // ReconcileSubtree means descendants may have changed even when this element's own bounds
-        // are stable. Replay is admitted only by two independent proofs: recursive layout identity
-        // and exact paint semantics. A moving absolute/flex/grid descendant changes the first;
-        // background/text/border changes propagate through semantic child generations and change
-        // the second. Unknown/custom/interactive subtrees remain conservative.
+        // A dirty route must be rebuilt unless its exact text output is unchanged.
         if targeted_replay
             && self.invalidator.requires_reconciliation_for_route(
                 retained_id,
@@ -831,7 +689,7 @@ impl Window {
         {
             if retained.layout_fingerprint.is_none()
                 || retained.layout_fingerprint != layout_fingerprint
-                || (!div_semantics_proven && !plain_text_proven)
+                || !plain_text_proven
             {
                 return None;
             }
@@ -850,7 +708,7 @@ impl Window {
             {
                 return None;
             }
-        } else if !plain_text_proven && !static_subtree_proven {
+        } else if !plain_text_proven {
             return None;
         }
 
@@ -866,7 +724,7 @@ impl Window {
         }
         let delta = bounds.origin - retained.bounds.origin;
         if delta != Point::default() {
-            let static_row_proven = (static_subtree_proven || (plain_text_proven && retained.identity_stable))
+            let static_row_proven = (plain_text_proven && retained.identity_stable)
                 && retained_id.0.iter().any(|segment| {
                 matches!(segment, ElementId::NamedInteger(name, _)
                     if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
@@ -893,7 +751,6 @@ impl Window {
         &mut self,
         retained_id: GlobalElementId,
         bounds: Bounds<Pixels>,
-        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         prepaint_range: Range<PrepaintStateIndex>,
         paint_range: Range<PaintIndex>,
@@ -914,35 +771,6 @@ impl Window {
                 context
             }
         };
-        // Keep the hash-map slot/bucket alive as a frame-local arena, but transfer the expensive
-        // descriptor payload into retained metadata instead of cloning TextStyle/child stamps.
-        let semantic_proof = self
-            .next_frame
-            .retained_layout_semantics
-            .get_mut(&layout_id)
-            .filter(|entry| entry.identity_is_stable())
-            .and_then(|entry| {
-                let generation = entry.stamp.generation;
-                entry
-                    .descriptor
-                    .take()
-                    .map(|descriptor| (descriptor, generation))
-            });
-        let (semantic_descriptor, semantic_generation) = semantic_proof
-            .map(|(descriptor, generation)| (Some(descriptor), Some(generation)))
-            .unwrap_or((None, None));
-        if identity_stable
-            && subtree_stable
-            && let Some(generation) = semantic_generation
-        {
-            Arc::get_mut(&mut self.next_frame.retained_paint)
-                .expect("unpublished paint retention")
-                .record(
-                    retained_id.clone(),
-                    generation,
-                    paint_range.start.scene_index..paint_range.end.scene_index,
-                );
-        }
         // Most elements have neither optional payload. Keep the frame-map
         // records compact and share exact unchanged text/scene proofs across
         // generations rather than deep-cloning them during speculative replay.
@@ -967,8 +795,6 @@ impl Window {
             RetainedElementRange {
                 bounds,
                 layout_fingerprint,
-                semantic_descriptor,
-                semantic_generation,
                 prepaint_range,
                 paint_range,
                 metadata_range: metadata_start..metadata_end,
@@ -1223,47 +1049,6 @@ fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 mod tests {
     use super::retained_metadata_fragment_range_is_valid;
 
-    #[gpui::test]
-    fn registering_div_semantics_moves_key_and_preserves_child_layouts(
-        cx: &mut crate::TestAppContext,
-    ) {
-        use crate::{Element, ParentElement, Styled};
-
-        let (_, visual) = cx.add_window_view(|_, _| crate::EmptyView);
-        visual.update(|window, cx| {
-            window.invalidator.set_phase(super::DrawPhase::Prepaint);
-            let (segment, id, ambiguity) = window.begin_retained_element(
-                super::super::element_context::RetainedElementIdentity::Explicit(
-                    "semantic-root".into(),
-                ),
-            );
-            let mut element = crate::div().bg(crate::white()).child(crate::div());
-            let (layout_id, mut layout) = element.request_layout(None, None, window, cx);
-            let expected_key = layout.retained_semantic_key.clone().expect("eligible div");
-            let child_ids = layout.child_layout_ids.clone();
-            assert_eq!(child_ids.len(), 1);
-            window.register_retained_layout_semantics(
-                &id,
-                &segment,
-                layout_id,
-                &mut layout,
-                None,
-                ambiguity,
-            );
-            window.end_retained_element();
-            window.invalidator.set_phase(super::DrawPhase::None);
-            assert!(layout.retained_semantic_key.is_none());
-            assert_eq!(layout.child_layout_ids, child_ids);
-            let entry = &window.next_frame.retained_layout_semantics[&layout_id];
-            let Some(super::RetainedSemanticDescriptor::Div { style, children }) =
-                entry.descriptor.as_deref()
-            else {
-                panic!("div semantics must be registered");
-            };
-            assert_eq!(style, &expected_key);
-            assert_eq!(children.len(), child_ids.len());
-        });
-    }
     #[test]
     fn compact_inclusion_prefix_preserves_fragment_membership_and_offsets() {
         // Test the same inclusion interpretation used during selective

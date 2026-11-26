@@ -1,6 +1,6 @@
 use super::state::ElementVisualTransform;
 use super::*;
-use crate::element::{RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey};
+use crate::element::{RetainedDivSelfScene, RetainedPlainTextKey};
 use std::borrow::Borrow;
 
 mod paint;
@@ -90,51 +90,6 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) rem_size: Pixels,
 }
 
-/// Parent-local semantic identity for one proven child subtree.
-///
-/// `segment` prevents two same-generation siblings from becoming interchangeable when their
-/// order changes, while `generation` changes only when that child's exact direct semantics or
-/// proven descendant stamps change.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RetainedSemanticStamp {
-    pub(crate) segment: ElementId,
-    pub(crate) generation: u64,
-}
-
-/// Exact request-layout-time semantics for a retained subtree that is safe to skip as a unit.
-///
-/// The descriptor is intentionally recursive only through compact direct-child stamps. This keeps
-/// comparison O(number of direct children) instead of recursively re-walking a large subtree for
-/// every ancestor candidate.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum RetainedSemanticDescriptor {
-    PlainText {
-        text: SharedString,
-        text_style: TextStyle,
-        rem_size: Pixels,
-    },
-    Div {
-        style: RetainedDivSemanticKey,
-        children: SmallVec<[RetainedSemanticStamp; 2]>,
-    },
-}
-
-/// Current-frame semantic proof registered as soon as an element finishes request-layout.
-#[derive(Clone)]
-pub(crate) struct RetainedSemanticEntry {
-    /// Frame-local payload. The map entry itself is kept as a stable arena slot so its hash
-    /// bucket can be reused next frame; paint moves the descriptor into RetainedElementRange.
-    pub(crate) descriptor: Option<Rc<RetainedSemanticDescriptor>>,
-    pub(crate) stamp: RetainedSemanticStamp,
-    pub(crate) identity_stable: bool,
-}
-
-impl RetainedSemanticEntry {
-    pub(crate) fn identity_is_stable(&self) -> bool {
-        self.identity_stable
-    }
-}
-
 /// Retained lifecycle ranges for one stable rendering identity path.
 ///
 /// `metadata_range` points into `Frame::retained_element_order`. Entries are emitted in post-order,
@@ -146,10 +101,6 @@ pub(crate) struct RetainedElementRange {
     pub(crate) bounds: Bounds<Pixels>,
     /// Recursive layout proof captured from the Taffy subtree that produced this element.
     pub(crate) layout_fingerprint: Option<u64>,
-    /// Exact direct semantics plus compact child semantic stamps for proof-based reconciliation.
-    pub(crate) semantic_descriptor: Option<Rc<RetainedSemanticDescriptor>>,
-    /// Monotonic generation for this retained identity's semantic descriptor.
-    pub(crate) semantic_generation: Option<u64>,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) metadata_range: Range<usize>,
@@ -171,7 +122,7 @@ pub(crate) struct RetainedElementRange {
 
 /// Minimal replay handle returned after a retained element has passed all semantic, layout and
 /// interaction safety checks. Keeping this separate from RetainedElementRange avoids cloning the
-/// retained semantic descriptor and paint payload on the fast path.
+/// retained paint payload on the fast path.
 pub(crate) struct RetainedReplayRanges {
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
@@ -218,8 +169,6 @@ pub(crate) struct Frame {
     /// Consecutive records typically inherit identical clip/text/transform state.
     /// Share that immutable context instead of storing a full copy in each record.
     pub(crate) last_retained_paint_context: Option<Rc<RetainedPaintContext>>,
-    /// Current request-layout semantic proofs keyed by the newly allocated layout node.
-    pub(crate) retained_layout_semantics: FxHashMap<LayoutId, RetainedSemanticEntry>,
     /// Number of ambiguous retained identities painted into this frame. Drawable snapshots this
     /// counter before and after child paint to derive subtree stability in O(1).
     pub(crate) retained_unstable_identity_count: usize,
@@ -429,7 +378,6 @@ impl Frame {
             view_retentions: FxHashMap::default(),
             view_retention_order: Vec::new(),
             last_retained_paint_context: None,
-            retained_layout_semantics: FxHashMap::default(),
             retained_unstable_identity_count: 0,
 
             #[cfg(any(test, feature = "test-support"))]
@@ -484,7 +432,6 @@ impl Frame {
         self.view_retentions.clear();
         self.view_retention_order.clear();
         self.last_retained_paint_context = None;
-        self.retained_layout_semantics.clear();
         self.retained_unstable_identity_count = 0;
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
@@ -646,7 +593,6 @@ impl Frame {
             + self.cached_view_layout_claims.capacity()
             + self.view_retentions.capacity()
             + self.view_retention_order.capacity()
-            + self.retained_layout_semantics.capacity()
             + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
     }
@@ -730,15 +676,15 @@ impl Frame {
             self.retained_element_ranges
                 .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_element_ranges.len()));
         }
-        if self.retained_layout_semantics.capacity()
-            > FRAME_MIN_RETAINED_CAPACITY.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.retained_layout_semantics
-                .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_layout_semantics.len()));
-        }
         if self.cached_view_layout_claims.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
             self.cached_view_layout_claims.shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()));
         }
+        let view_target = FRAME_MIN_RETAINED_CAPACITY.max(self.view_retentions.len());
+        if self.view_retentions.capacity() > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.view_retentions.shrink_to(view_target);
+        }
+        trim_frame_vec_capacity(&mut self.view_retention_order, FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
         self.tab_stops.trim_retained_capacity(false);
     }
 
@@ -809,20 +755,6 @@ impl Frame {
         self.tab_stops.trim_for_reuse(&current.tab_stops);
     }
 
-    /// Layout semantic entries are scratch, never consumed from the committed
-    /// frame. Return the entire map allocation to the next builder instead
-    /// of maintaining two alternating maps.
-    pub(super) fn recycle_layout_semantics(&mut self, committed: &mut Self) {
-        let mut entries = std::mem::take(&mut committed.retained_layout_semantics);
-        let target = FRAME_MIN_RETAINED_CAPACITY.max(entries.len());
-        entries.clear();
-        if entries.capacity() > target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
-            entries.shrink_to(target);
-        }
-        self.retained_layout_semantics = entries;
-        committed.last_retained_paint_context = None;
-    }
-
     /// Lower bound on retained metadata backing storage; excludes hash control
     /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
     pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
@@ -832,8 +764,11 @@ impl Frame {
                 .saturating_mul(std::mem::size_of::<ReconcileKey>()))
             .saturating_add(self.cached_view_layout_claims.capacity()
                 .saturating_mul(std::mem::size_of::<(GlobalElementId, Rc<[crate::layout::LayoutClaim]>)>()))
-            .saturating_add(self.retained_layout_semantics.capacity()
-                .saturating_mul(std::mem::size_of::<(LayoutId, RetainedSemanticEntry)>()))
+            .saturating_add(self.view_retentions.capacity()
+                .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>()))
+            .saturating_add(self.view_retention_order.capacity()
+                .saturating_mul(std::mem::size_of::<GlobalElementId>()))
+
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -865,8 +800,8 @@ impl Frame {
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);
                 self.cached_view_layout_claims.shrink_to(floor.max(self.cached_view_layout_claims.len()));
-                self.retained_layout_semantics
-                    .shrink_to(floor.max(self.retained_layout_semantics.len()));
+                self.view_retentions.shrink_to(floor.max(self.view_retentions.len()));
+                self.view_retention_order.shrink_to(floor.max(self.view_retention_order.len()));
                 self.tab_stops
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 #[cfg(any(test, feature = "test-support"))]

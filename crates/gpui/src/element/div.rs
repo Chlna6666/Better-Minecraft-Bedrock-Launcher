@@ -21,6 +21,6 @@ pub use scroll::{ScrollAnchor, ScrollHandle};
 pub use state::{ElementClickedState, InteractiveElementState};
 
 pub(crate) use component::{
-    DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle, RetainedDivSemanticKey,
+    DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle,
 };
 pub(crate) use tooltip::{ActiveTooltip, register_tooltip_mouse_handlers, set_tooltip_on_window};

@@ -402,7 +402,6 @@ impl Window {
         // frame becomes scratch. A still-active older publication keeps its payload while this frame starts a new builder.
         self.prune_static_image_atlas_residency();
         self.next_frame.clear_for_reuse(&self.rendered_frame);
-        self.next_frame.recycle_layout_semantics(&mut self.rendered_frame);
         log::trace!(
             target: "gpui::memory",
             "retained metadata window={} committed_inline_bytes={} scratch_inline_bytes={} records={} record_inline_bytes={}",

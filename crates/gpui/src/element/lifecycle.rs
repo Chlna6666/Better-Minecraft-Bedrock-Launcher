@@ -279,7 +279,6 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
-        layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
@@ -315,21 +314,6 @@ fn prepare_inspector_id(
         source_location: source,
     };
     window.build_inspector_element_id(path)
-}
-
-#[inline(never)]
-fn retained_plain_text_semantics(
-    element: &dyn Any,
-    window: &Window,
-) -> Option<(SharedString, TextStyle, Pixels)> {
-    let text = if let Some(text) = element.downcast_ref::<SharedString>() {
-        text.clone()
-    } else if let Some(text) = element.downcast_ref::<&'static str>() {
-        SharedString::from(*text)
-    } else {
-        return None;
-    };
-    Some((text, window.text_style(), window.rem_size()))
 }
 
 #[inline(never)]
@@ -422,7 +406,6 @@ fn try_reuse_retained_element(
     retained_segment: &ElementId,
     retained_id: &GlobalElementId,
     bounds: Bounds<Pixels>,
-    layout_id: LayoutId,
     layout_fingerprint: Option<u64>,
     plain_text_key: Option<&RetainedPlainTextKey>,
     window: &mut Window,
@@ -441,7 +424,6 @@ fn try_reuse_retained_element(
         window.reusable_retained_element(
             retained_id,
             bounds,
-            layout_id,
             layout_fingerprint,
             plain_text_key,
         )
@@ -556,7 +538,6 @@ fn retained_div_self_scene(prepaint: &dyn Any) -> Option<super::RetainedDivSelfS
 fn record_retained_painted_element(
     retained_id: GlobalElementId,
     bounds: Bounds<Pixels>,
-    layout_id: LayoutId,
     layout_fingerprint: Option<u64>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
@@ -575,7 +556,6 @@ fn record_retained_painted_element(
     window.record_retained_element_range(
         retained_id,
         bounds,
-        layout_id,
         layout_fingerprint,
         prepaint_range,
         paint_range,
@@ -688,7 +668,7 @@ impl<E: Element> Drawable<E> {
                     window,
                 );
 
-                let (layout_id, mut request_layout) = self.element.request_layout(
+                let (layout_id, request_layout) = self.element.request_layout(
                     mount.global_id.as_ref(),
                     mount.inspector_id.as_ref(),
                     window,
@@ -738,8 +718,7 @@ impl<E: Element> Drawable<E> {
                 let bounds = window.layout_bounds(layout_id);
                 let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
                 let identity_stable = retained_identity_stable;
-                // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
-                // this helper after two cheap type checks; safe Divs use semantic generations.
+                // Text replay needs exact shaped output; other elements use view retention.
                 let mut plain_text_key = retained_plain_text_key(
                     &self.element as &dyn Any,
                     &request_layout as &dyn Any,
@@ -781,7 +760,6 @@ impl<E: Element> Drawable<E> {
                     &retained_segment,
                     &retained_id,
                     bounds,
-                    layout_id,
                     layout_fingerprint,
                     plain_text_key.as_ref(),
                     window,
@@ -837,7 +815,6 @@ impl<E: Element> Drawable<E> {
                     retained_identity_stable,
                     inspector_id,
                     bounds,
-                    layout_id,
                     layout_fingerprint,
                     request_layout,
                     prepaint,
@@ -859,7 +836,6 @@ impl<E: Element> Drawable<E> {
                 retained_identity_stable,
                 inspector_id,
                 bounds,
-                layout_id,
                 layout_fingerprint,
                 mut request_layout,
                 mut prepaint,
@@ -902,7 +878,6 @@ impl<E: Element> Drawable<E> {
                 record_retained_painted_element(
                     retained_id,
                     bounds,
-                    layout_id,
                     layout_fingerprint,
                     prepaint_range,
                     paint_run.paint_range,

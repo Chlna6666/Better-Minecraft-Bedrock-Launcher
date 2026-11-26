@@ -163,7 +163,6 @@ impl Div {
 /// bounds of the children after the layout phase is complete.
 pub struct DivLayout {
     pub(crate) child_layout_ids: SmallVec<[LayoutId; 2]>,
-    pub(crate) retained_semantic_key: Option<RetainedDivSemanticKey>,
 }
 
 /// Exact visual state for the primitives owned directly by a retained [`Div`].
@@ -178,22 +177,6 @@ pub(crate) struct RetainedDivSelfSceneStyle {
     border_widths: Edges<AbsoluteLength>,
     corner_radii: Corners<AbsoluteLength>,
     box_shadow: Vec<BoxShadow>,
-}
-
-/// Exact direct semantic state for a side-effect-free [`Div`].
-///
-/// Layout-only fields are proven separately by the recursive Taffy layout fingerprint. This key
-/// captures the remaining direct paint/inheritance state that can change pixels while keeping the
-/// same final bounds. Descendant state is composed from child semantic stamps by the window
-/// retained reconciler, so a container is replayable only when every child can prove its own
-/// current semantics.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RetainedDivSemanticKey {
-    display: Display,
-    visibility: Visibility,
-    overflow: Point<Overflow>,
-    self_scene_style: RetainedDivSelfSceneStyle,
-    text: crate::TextStyleRefinement,
 }
 
 /// Exact retained self-scene metadata emitted by a reconciliation-safe [`Div`].
@@ -263,22 +246,6 @@ fn self_scene_style_if_replayable(
     style_allows_self_scene_replay(style, window, cx).then(|| retained_div_self_scene_style(style))
 }
 
-fn semantic_key_if_replayable(
-    style: &Style,
-    window: &Window,
-    cx: &App,
-) -> Option<RetainedDivSemanticKey> {
-    (style_allows_self_scene_replay(style, window, cx) && style.mouse_cursor.is_none()).then(|| {
-        RetainedDivSemanticKey {
-            display: style.display,
-            visibility: style.visibility,
-            overflow: style.overflow,
-            self_scene_style: retained_div_self_scene_style(style),
-            text: style.text.clone(),
-        }
-    })
-}
-
 fn style_has_self_scene_primitives(style: &Style) -> bool {
     !style.box_shadow.is_empty()
         || style
@@ -342,11 +309,7 @@ impl Element for Div {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let semantic_candidate = self.interactivity_is_reconciliation_transparent()
-            && self.prepaint_listener.is_none()
-            && !window.is_inspector_picking(cx);
         let mut child_layout_ids = SmallVec::new();
-        let mut retained_semantic_key = None;
         let image_cache = self
             .image_cache
             .as_mut()
@@ -359,9 +322,6 @@ impl Element for Div {
                 window,
                 cx,
                 |style, window, cx| {
-                    retained_semantic_key = semantic_candidate
-                        .then(|| semantic_key_if_replayable(&style, window, cx))
-                        .flatten();
                     window.with_text_style(style.text_style().cloned(), |window| {
                         child_layout_ids = self
                             .children
@@ -376,10 +336,7 @@ impl Element for Div {
 
         (
             layout_id,
-            DivLayout {
-                child_layout_ids,
-                retained_semantic_key,
-            },
+            DivLayout { child_layout_ids },
         )
     }
 
