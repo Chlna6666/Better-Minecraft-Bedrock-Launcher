@@ -15,4 +15,4 @@ separately and reused when adjacent chunks are rebuilt.
   structure and a caller-provided palette.
 
 The caller owns world loading, visibility scheduling, texture loading, and GPU
-submission. The crate uses CPU-side `gpui-3d` types with GPUI integration disabled.
+submission. The crate uses CPU-side `gpui_3d` types with GPUI integration disabled.

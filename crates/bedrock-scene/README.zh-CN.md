@@ -10,5 +10,5 @@
 - `chunk::prepare` 和 `SceneBuilder::build_selection` 生成选区的索引网格快照。
   `structure::build` 根据已解码的结构和调用方传入的调色板构建网格。
 
-世界读取、可见区块调度、纹理加载和 GPU 提交均由调用方负责。库使用 `gpui-3d` 的 CPU 侧
+世界读取、可见区块调度、纹理加载和 GPU 提交均由调用方负责。库使用 `gpui_3d` 的 CPU 侧
 数据类型，依赖声明关闭了 GPUI 集成。

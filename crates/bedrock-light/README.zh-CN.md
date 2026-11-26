@@ -3,7 +3,7 @@
 [English](README.md)
 
 独立于存储的 Bedrock 体素光照计算库，负责有界六邻接天空光/方块光传播；不包含瓦片渲染、
-UI、GPU 或世界 IO。`bedrock-block-model` 提供状态属性，应用组装单元区域，`gpui-3d`
+UI、GPU 或世界 IO。`bedrock-block-model` 提供状态属性，应用组装单元区域，`gpui_3d`
 负责 GPU 着色；`bedrock-map-render` 保持二维瓦片渲染职责。
 
 `LightVolume::solve` 允许 15 级天空光沿透明单元垂直向下保持，对横向光与方块光执行衰减，
