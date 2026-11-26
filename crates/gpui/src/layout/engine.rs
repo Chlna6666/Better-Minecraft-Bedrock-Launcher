@@ -50,9 +50,33 @@ struct DefaultMeasuredStyle {
 /// Native measurement identity. Text already computed its geometry and paint
 /// keys; do not hash them again or conflate a fresh mutable text state with an
 /// adopted state. The previous closure owns the state behind the pointer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SizeMeasurement {
+    Intrinsic(Size<Pixels>),
+    List(Size<Pixels>),
+}
+
+impl SizeMeasurement {
+    fn measure(self, known: Size<Option<Pixels>>, available: Size<AvailableSpace>) -> Size<Pixels> {
+        match self {
+            Self::Intrinsic(size) => size,
+            Self::List(content) => size(
+                known.width.unwrap_or(match available.width {
+                    AvailableSpace::Definite(width) => width,
+                    _ => content.width,
+                }),
+                match available.height {
+                    AvailableSpace::Definite(height) => content.height.min(height),
+                    _ => content.height,
+                },
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum MeasurementKey {
-    Value(u64),
+    Size(SizeMeasurement),
     Text {
         state: usize,
         geometry: u64,
@@ -74,16 +98,25 @@ impl MeasurementKey {
     }
 
     fn adopts(self, previous: Self) -> bool {
-        matches!(self, Self::Text { geometry_only: true, .. }) && self == previous
+        matches!(self, Self::Size(_) | Self::Text { geometry_only: true, .. }) && self == previous
     }
 }
 
 pub(super) struct NodeContext {
-    pub(super) measure: NodeMeasureFn,
+    measure: Option<NodeMeasureFn>,
     key: Option<MeasurementKey>,
     replayable: bool,
     measure_log: MeasureLog,
     replay_pending: bool,
+}
+
+impl NodeContext {
+    fn measure(&mut self, known: Size<Option<Pixels>>, available: Size<AvailableSpace>, scale: f32, window: &mut Window, cx: &mut App) -> Size<Pixels> {
+        if let Some(MeasurementKey::Size(input)) = self.key {
+            return input.measure(known, available).map(|axis| Pixels((axis.0.max(0.0) * scale).ceil() / scale));
+        }
+        (self.measure.as_mut().expect("dynamic measurement callback"))(known, available, window, cx)
+    }
 }
 
 // Keep the new callback on the stack until native adoption has failed.
@@ -94,7 +127,7 @@ struct MeasureRequest<F> {
     build: F,
 }
 
-impl<F: FnOnce() -> NodeMeasureFn> MeasureRequest<F> {
+impl<F: FnOnce() -> Option<NodeMeasureFn>> MeasureRequest<F> {
     fn into_context(self) -> NodeContext {
         NodeContext {
             measure: (self.build)(),
@@ -556,7 +589,7 @@ impl TaffyLayoutEngine {
         &mut self,
         owner: Option<(u64, GlobalElementId)>,
         children: &[LayoutId],
-        measure: Option<MeasureRequest<impl FnOnce() -> NodeMeasureFn>>,
+        measure: Option<MeasureRequest<impl FnOnce() -> Option<NodeMeasureFn>>>,
         style_fingerprint: Option<u64>,
         build_style: impl FnOnce() -> taffy::Style,
     ) -> LayoutId {
@@ -799,23 +832,33 @@ impl TaffyLayoutEngine {
         ) -> Size<Pixels>
         + 'static,
     ) -> LayoutId {
-        self.request_fingerprinted_layout(owner, style, rem_size, scale_factor, None, measure)
+        self.request_measured_node(owner, style, rem_size, scale_factor, MeasureRequest {
+            key: None, replayable: false, state_ready: true,
+            build: move || Some(boxed_measure(measure)),
+        })
     }
 
-    pub fn request_fingerprinted_layout(
+    pub(crate) fn request_size_layout(
         &mut self,
         owner: Option<(u64, GlobalElementId)>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
-        fingerprint_seed: Option<u64>,
-        measure: impl FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>
-        + 'static,
+        input: SizeMeasurement,
+    ) -> LayoutId {
+        self.request_measured_node(owner, style, rem_size, scale_factor, MeasureRequest {
+            key: Some(MeasurementKey::Size(input)), replayable: false, state_ready: true,
+            build: || None,
+        })
+    }
+
+    fn request_measured_node(
+        &mut self,
+        owner: Option<(u64, GlobalElementId)>,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+        request: MeasureRequest<impl FnOnce() -> Option<NodeMeasureFn>>,
     ) -> LayoutId {
         let _work = crate::window::element_work::begin_named(
             "layout_measured_node_request",
@@ -831,12 +874,7 @@ impl TaffyLayoutEngine {
         let layout_id = self.request_persistent_node(
             owner,
             &[],
-            Some(MeasureRequest {
-                key: fingerprint_seed.map(MeasurementKey::Value),
-                replayable: false,
-                state_ready: true,
-                build: move || boxed_measure(measure),
-            }),
+            Some(request),
             Some(style_fingerprint),
             move || pending_style.to_taffy(rem_size, scale_factor),
         );
@@ -912,7 +950,7 @@ impl TaffyLayoutEngine {
                 key,
                 replayable,
                 state_ready,
-                build: move || boxed_measure(measure),
+                build: move || Some(boxed_measure(measure)),
             }),
             Some(style_fingerprint),
             move || taffy_style,
@@ -932,7 +970,7 @@ impl TaffyLayoutEngine {
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                 continue;
             };
-            let actual = (context.measure)(known, available, window, cx);
+            let actual = context.measure(known, available, window.scale_factor(), window, cx);
             if actual != previous {
                 context.measure_log = MeasureLog::Empty;
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
@@ -1050,9 +1088,10 @@ impl TaffyLayoutEngine {
                                 untransform(available_space.height),
                             );
 
-                            let measured = (node_context.measure)(
+                            let measured = node_context.measure(
                                 known_dimensions,
                                 available_space,
+                                scale_factor,
                                 window,
                                 cx,
                             );

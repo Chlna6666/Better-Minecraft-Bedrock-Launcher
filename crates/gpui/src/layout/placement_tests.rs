@@ -8,12 +8,11 @@ fn owner(name: &'static str) -> Option<(u64, crate::GlobalElementId)> {
 
 use super::{AvailableSpace, TaffyLayoutEngine};
 use crate::{
-    AppContext as _, ElementId, GlobalElementId, Style, TestAppContext, WindowOptions, px, size,
+    AppContext as _, Style, TestAppContext, WindowOptions, px, size,
 };
-use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
-fn interaction_flags_preserve_native_pure_measure_cache(cx: &mut TestAppContext) {
+fn interaction_flags_preserve_native_size_measure_cache(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
@@ -21,37 +20,29 @@ fn interaction_flags_preserve_native_pure_measure_cache(cx: &mut TestAppContext)
     window
         .update(cx, |_, window, cx| {
             let mut engine = TaffyLayoutEngine::new();
-            let count = Rc::new(Cell::new(0));
             let scale_factor = window.scale_factor();
-            let plain_owner = GlobalElementId::from_path(&[ElementId::from("pure-measure")]);
             let owner_pair = owner("pure-measure").unwrap();
             let request = |engine: &mut TaffyLayoutEngine, allow_scroll: bool| {
                 let mut style = Style::default();
                 style.allow_concurrent_scroll = allow_scroll;
-                let count = count.clone();
                 let pair = (owner_pair.0, owner_pair.1.clone());
-                engine.request_fingerprinted_layout(
+                engine.request_size_layout(
                     Some(pair),
                     style,
                     px(16.),
                     scale_factor,
-                    Some(1),
-                    move |_, _, _, _| {
-                        count.set(count.get() + 1);
-                        size(px(20.), px(10.))
-                    },
+                    super::SizeMeasurement::Intrinsic(size(px(20.), px(10.))),
                 )
             };
             let first = request(&mut engine, false);
             engine.compute_layout(first, AvailableSpace::min_size(), window, cx);
-            let measured = count.get();
-            assert!(measured > 0);
+            let measured = engine.layout_bounds(first, scale_factor).size;
             engine.clear();
             let second = request(&mut engine, true);
             assert_eq!(first, second);
             assert!(!engine.taffy.dirty(second.into()).unwrap());
             engine.compute_layout(second, AvailableSpace::min_size(), window, cx);
-            assert_eq!(count.get(), measured);
+            assert_eq!(engine.layout_bounds(second, scale_factor).size, measured);
             assert_eq!(engine.layout_cache_metrics(), (1, 0));
         })
         .unwrap();

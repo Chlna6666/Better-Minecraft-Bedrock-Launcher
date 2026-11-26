@@ -1,5 +1,5 @@
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, ElementId,
+    AnyElement, App, Bounds, ContentMask, DispatchPhase, Element, ElementId,
     GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels,
     ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
@@ -94,27 +94,9 @@ impl Element for List {
                     let total_height = summary.height;
                     state.recycle_item_layouts(layout_response.item_layouts);
 
-                    window.request_keyed_size_layout(
+                    window.request_size_layout(
                         style,
-                        ("list", max_element_width, total_height),
-                        move |known_dimensions, available_space, _window, _cx| {
-                            let width =
-                                known_dimensions
-                                    .width
-                                    .unwrap_or(match available_space.width {
-                                        AvailableSpace::Definite(x) => x,
-                                        AvailableSpace::MinContent | AvailableSpace::MaxContent => {
-                                            max_element_width
-                                        }
-                                    });
-                            let height = match available_space.height {
-                                AvailableSpace::Definite(height) => total_height.min(height),
-                                AvailableSpace::MinContent | AvailableSpace::MaxContent => {
-                                    total_height
-                                }
-                            };
-                            size(width, height)
-                        },
+                        crate::layout::SizeMeasurement::List(size(max_element_width, total_height)),
                     )
                 })
             }

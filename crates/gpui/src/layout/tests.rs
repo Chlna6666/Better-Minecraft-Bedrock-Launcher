@@ -245,52 +245,48 @@ fn native_taffy_compares_stable_child_order_without_allocating_a_child_vector(
 }
 
 #[gpui::test]
-fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
+fn native_taffy_keeps_unchanged_size_measure_when_absolute_sibling_changes(
     cx: &mut TestAppContext,
 ) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-    let count = Rc::new(Cell::new(0));
     window
         .update(cx, |_, window, cx| {
             let mut engine = TaffyLayoutEngine::new();
             let build = |engine: &mut TaffyLayoutEngine, sibling_height: f32| {
-                let counter = count.clone();
-                let leaf = engine.request_fingerprinted_layout(
+                let leaf = engine.request_size_layout(
                     layout_identity("leaf"),
                     Style::default(),
                     px(16.),
                     1.,
-                    Some(41),
-                    move |_, _, _, _| {
-                        counter.set(counter.get() + 1);
-                        size(px(36.), px(12.))
-                    },
+                    super::SizeMeasurement::Intrinsic(size(px(36.), px(12.))),
                 );
                 let mut style = Style::default();
                 style.position = crate::Position::Absolute;
                 style.size.height = px(sibling_height).into();
                 let sibling =
                     engine.request_layout(layout_identity("overlay"), style, px(16.), 1., &[]);
-                engine.request_layout(
+                let root = engine.request_layout(
                     layout_identity("root"),
                     Style::default(),
                     px(16.),
                     1.,
                     &[leaf, sibling],
-                )
+                );
+                (root, leaf)
             };
-            let root = build(&mut engine, 20.);
+            let (root, leaf) = build(&mut engine, 20.);
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            assert!(count.get() > 0);
-            let measured = count.get();
+            let bounds = engine.layout_bounds(leaf, 1.);
             engine.clear();
-            let root = build(&mut engine, 70.);
+            let (root, reused_leaf) = build(&mut engine, 70.);
+            assert_eq!(leaf, reused_leaf);
+            assert!(!engine.taffy.dirty(leaf.into()).unwrap());
             assert!(engine.taffy.dirty(root.into()).unwrap());
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            assert_eq!(measured, count.get());
+            assert_eq!(bounds.size, engine.layout_bounds(leaf, 1.).size);
         })
         .unwrap();
 }
@@ -351,13 +347,12 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(cx: &mut
         .update(cx, |_, window, cx| {
             let mut engine = TaffyLayoutEngine::new();
             let scale_factor = window.scale_factor();
-            let first = engine.request_fingerprinted_layout(
+            let first = engine.request_size_layout(
                 layout_identity("slot"),
                 Style::default(),
                 px(16.),
                 scale_factor,
-                Some(1),
-                |_, _, _, _| size(px(20.), px(15.)),
+                super::SizeMeasurement::Intrinsic(size(px(20.), px(15.))),
             );
             engine.compute_layout(first, AvailableSpace::min_size(), window, cx);
             assert_eq!(
@@ -381,13 +376,12 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(cx: &mut
             );
             engine.clear();
 
-            let restored = engine.request_fingerprinted_layout(
+            let restored = engine.request_size_layout(
                 layout_identity("slot"),
                 Style::default(),
                 px(16.),
                 scale_factor,
-                Some(2),
-                |_, _, _, _| size(px(36.), px(12.)),
+                super::SizeMeasurement::Intrinsic(size(px(36.), px(12.))),
             );
             assert_eq!(restored, first);
             assert!(engine.taffy.dirty(restored.into()).unwrap());

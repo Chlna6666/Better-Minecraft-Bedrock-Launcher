@@ -257,10 +257,9 @@ impl TextLayout {
                 window,
                 cx,
             );
-            window.request_keyed_size_layout(
+            window.request_size_layout(
                 Default::default(),
-                ("intrinsic_text", measured.width, measured.height),
-                move |_, _, _, _| measured,
+                crate::layout::SizeMeasurement::Intrinsic(measured),
             )
         } else {
             window.request_default_measured_layout(measurement_key, replayable_measure, state_ready, measure)
