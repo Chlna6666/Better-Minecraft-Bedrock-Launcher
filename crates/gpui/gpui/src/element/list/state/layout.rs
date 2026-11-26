@@ -2,6 +2,7 @@ use crate::{
     App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size,
 };
 use sum_tree::{Bias, SumTree};
+use crate::window::scroll_rows::{RowListIdentity, RowPlan, RowPrepaint};
 
 use super::{ListItem, StateInner};
 use crate::element::list::{
@@ -81,6 +82,7 @@ impl StateInner {
         available_height: Pixels,
         padding: &Edges<Pixels>,
         render_item: &mut RenderItemFn,
+        retained_rows: Option<(&RowPlan, Point<Pixels>)>,
         window: &mut Window,
         cx: &mut App,
     ) -> LayoutItemsResponse {
@@ -134,19 +136,34 @@ impl StateInner {
             // identity of visible rows.
             if visible_height < available_height || item_size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
-                let (element, element_size) =
+                let retained_size = item_size.filter(|_| {
+                    visible_height < available_height && retained_rows.is_some_and(|(plan, origin)| {
+                        let item_origin = origin + Point::new(px(0.), visible_height);
+                        window.can_reuse_scroll_row(plan, item_index, item_origin)
+                    })
+                });
+                let (element, element_size, capture_reads) = if let Some(size) = retained_size {
+                    (None, size, None)
+                } else {
                     with_item_retained_key(window, item_index, |window| {
+                        let read_start = retained_rows.map(|_| cx.entities.state_read_index());
                         let mut element = render_item(item_index, window, cx);
+                        let read_start = read_start.filter(|_| {
+                            visible_height < available_height && element.can_capture_scroll_paint()
+                        });
                         measured_item_count += 1;
                         let element_size = element.layout_as_root(available_item_space, window, cx);
-                        (element, element_size)
-                    });
+                        let reads = read_start.map(|start| cx.entities.state_reads_since(start));
+                        (Some(element), element_size, reads)
+                    })
+                };
                 item_size = Some(element_size);
                 if visible_height < available_height {
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
                         element,
                         size: element_size,
+                        capture_reads,
                     });
                     if item.contains_focused(window, cx) {
                         rendered_focused_item = true;
@@ -172,6 +189,15 @@ impl StateInner {
         // created after the forward pass but inserted at the front, so positional retained slots
         // are fundamentally invalid here; item-index keys keep their identity deterministic.
         if rendered_height - scroll_top.offset_in_item < available_height {
+            if item_layouts.iter().any(|row| row.element.is_none()) {
+                // Anchoring at the tail changes every row origin. Decide the
+                // actual placement in the ordinary pass before carrying input.
+                self.measured_items_scratch = measured_items;
+                self.item_layouts_scratch = item_layouts;
+                return self.layout_items(
+                    available_width, available_height, padding, render_item, None, window, cx,
+                );
+            }
             while rendered_height < available_height {
                 cursor.prev();
                 if let Some(item) = cursor.item() {
@@ -193,8 +219,9 @@ impl StateInner {
                     rendered_height += element_size.height;
                     item_layouts.push_front(ItemLayout {
                         index: item_index,
-                        element,
+                        element: Some(element),
                         size: element_size,
+                        capture_reads: None,
                     });
                     if item.contains_focused(window, cx) {
                         rendered_focused_item = true;
@@ -303,8 +330,9 @@ impl StateInner {
                         });
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
-                        element,
+                        element: Some(element),
                         size: item_size,
+                        capture_reads: None,
                     });
                     break;
                 }
@@ -317,6 +345,7 @@ impl StateInner {
             max_item_width,
             scroll_top,
             item_layouts,
+            row_plan: None,
         }
     }
 
@@ -337,11 +366,25 @@ impl StateInner {
                 _ => {}
             }
 
+            let mask = ContentMask::new(bounds);
+            let mut row_plan = if autoscroll
+                && window.scroll_row_replay_is_enabled()
+                && !self.items.summary().has_focus_handles
+            {
+                let identity = RowListIdentity::Variable(crate::StateRead::new(&self.items_version));
+                let available_space = size(bounds.size.width.into(), AvailableSpace::MinContent);
+                window.with_content_mask(Some(mask), |window| {
+                    window.plan_scroll_rows(identity, self.items.summary().count, available_space, cx)
+                })
+            } else {
+                None
+            };
             let mut layout_response = self.layout_items(
                 Some(bounds.size.width),
                 bounds.size.height,
                 &padding,
                 render_item,
+                row_plan.as_ref().map(|plan| (plan, bounds.origin)),
                 window,
                 cx,
             );
@@ -354,14 +397,33 @@ impl StateInner {
                 item_origin.y -= layout_response.scroll_top.offset_in_item;
                 for item in &mut layout_response.item_layouts {
                     window.with_content_mask(
-                        Some(ContentMask {
-                            bounds,
-                            ..Default::default()
-                        }),
+                        Some(mask),
                         |window| {
+                            let start = item.capture_reads.as_ref()
+                                .map(|_| (window.prepaint_index(), cx.entities.state_read_index()));
                             with_item_retained_key(window, item.index, |window| {
-                                item.element.prepaint_at(item_origin, window, cx);
+                                if let Some(element) = item.element.as_mut() {
+                                    element.prepaint_at(item_origin, window, cx);
+                                }
                             });
+                            if let Some(plan) = row_plan.as_mut() {
+                                if item.element.is_none() {
+                                    let prepaint = window.reuse_scroll_row(plan, item.index, item_origin);
+                                    plan.prepainted.insert(item.index, prepaint);
+                                } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
+                                    let prepaint_reads = cx.entities.state_reads_since(read_start);
+                                    let reads = if prepaint_reads.is_empty() {
+                                        reads
+                                    } else {
+                                        reads.iter().chain(prepaint_reads.iter()).cloned().collect()
+                                    };
+                                    plan.prepainted.insert(item.index, RowPrepaint {
+                                        origin: item_origin,
+                                        records: start..window.prepaint_index(),
+                                        reads,
+                                    });
+                                }
+                            }
                         },
                     );
 
@@ -420,6 +482,7 @@ impl StateInner {
             }
 
             window.record_list_measured_items(measured_item_count);
+            layout_response.row_plan = row_plan;
             Ok(layout_response)
         })
     }

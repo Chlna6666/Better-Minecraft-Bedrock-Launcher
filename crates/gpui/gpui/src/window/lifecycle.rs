@@ -134,6 +134,11 @@ struct WindowInvalidatorInner {
     pub pending_layout_animation_deadlines: FxHashMap<(EntityId, u64), (Instant, u64)>,
     pub layout_animation_deadline_generation: u64,
     active_view_scoped: bool,
+    // A native scroll may move content without changing what it renders.
+    // Other invalidations revoke permission to reuse independently drawn rows.
+    scroll_content_revision: u64,
+    pending_scroll: bool,
+    drawing_scroll: bool,
 }
 
 #[derive(Clone)]
@@ -158,6 +163,9 @@ impl WindowInvalidator {
                 pending_layout_animation_deadlines: FxHashMap::default(),
                 layout_animation_deadline_generation: 0,
                 active_view_scoped: false,
+                scroll_content_revision: 0,
+                pending_scroll: false,
+                drawing_scroll: false,
             })),
         }
     }
@@ -381,6 +389,7 @@ impl WindowInvalidator {
         }
         inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
         inner.dirty_views.extend(owners.iter().copied());
+        inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
         if !inner.dirty {
             inner.pending_view_scoped = true;
         }
@@ -392,11 +401,27 @@ impl WindowInvalidator {
         &self,
         owners: impl IntoIterator<Item = EntityId>,
     ) -> bool {
+        self.invalidate_views(owners, false)
+    }
+
+    pub(super) fn invalidate_scroll_views(
+        &self,
+        owners: impl IntoIterator<Item = EntityId>,
+    ) -> bool {
+        self.invalidate_views(owners, true)
+    }
+
+    fn invalidate_views(&self, owners: impl IntoIterator<Item = EntityId>, scroll: bool) -> bool {
         let mut owners = owners.into_iter().peekable();
         if owners.peek().is_none() {
             return false;
         }
         let mut inner = self.inner.borrow_mut();
+        if scroll {
+            inner.pending_scroll = true;
+        } else {
+            inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
+        }
         inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
         if inner.draw_phase != DrawPhase::None {
             inner.dirty_views.extend(owners);
@@ -442,6 +467,7 @@ impl WindowInvalidator {
             .dirty_to_present_started_at
             .get_or_insert_with(Instant::now);
         inner.dirty_views.extend(owners.iter().copied());
+        inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
         if inner.draw_phase == DrawPhase::None {
             if unknown {
                 inner.pending_view_scoped = false;
@@ -477,11 +503,18 @@ impl WindowInvalidator {
             inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
             inner.pending_view_scoped = false;
             inner.active_view_scoped = false;
+            inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
         } else {
             inner.active_view_scoped = inner.pending_view_scoped;
             inner.pending_view_scoped = false;
+            inner.drawing_scroll = std::mem::take(&mut inner.pending_scroll);
         }
         inner.dirty = is_dirty;
+    }
+
+    pub(super) fn scroll_content_revision(&self) -> (u64, bool) {
+        let inner = self.inner.borrow();
+        (inner.scroll_content_revision, inner.drawing_scroll)
     }
 
     /// Window-owned overlay work does not invalidate an application view.

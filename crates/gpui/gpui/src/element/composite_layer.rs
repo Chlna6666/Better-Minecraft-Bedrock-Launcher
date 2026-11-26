@@ -87,7 +87,7 @@ impl<E: IntoElement + 'static> Element for CompositeLayerElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        element.prepaint(window, cx);
+        window.with_scroll_replay_barrier(true, |window| element.prepaint(window, cx));
     }
 
     fn paint(

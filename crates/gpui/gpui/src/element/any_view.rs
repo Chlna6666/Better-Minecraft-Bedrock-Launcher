@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use crate::layout::LayoutClaimBlocks;
+use crate::window::scroll_views::ScrollViewCapture;
 use std::{any::TypeId, fmt, ops::Range, rc::Rc};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
@@ -131,6 +132,8 @@ pub struct ViewRequestLayout {
     kind: ViewRequestLayoutKind,
     rebuild: Option<Rc<crate::window::ViewRebuild>>,
     splice_safe: bool,
+    scroll_capture: Option<Box<ScrollViewCapture>>,
+    scroll_read_start: Option<usize>,
 }
 
 impl ViewRequestLayout {
@@ -194,6 +197,7 @@ struct RetentionDraft {
 struct ReusedView {
     prepaint_range: Range<crate::window::PrepaintStateIndex>,
     context: Rc<crate::window::RetainedPaintContext>,
+    scrolled: Option<u64>,
 }
 
 impl Element for ViewElement {
@@ -224,6 +228,7 @@ impl Element for ViewElement {
             if let Some(splice) = window.try_splice_view(key, entity_id, id, cx) {
                 return (splice.anchor.layout_root, ViewRequestLayout {
                     rebuild: splice.anchor.rebuild.clone(), splice_safe,
+                    scroll_capture: None, scroll_read_start: None,
                     kind: ViewRequestLayoutKind::Spliced {
                         splice: Some(Box::new(splice)), retention: RetentionDraft::default(),
                         prepaint_range: None, context: None,
@@ -240,6 +245,8 @@ impl Element for ViewElement {
                 layout_root,
                 ViewRequestLayout {
                     rebuild: admission.rebuild.clone(),
+                    scroll_capture: None,
+                    scroll_read_start: None,
                     splice_safe: splice_safe && admission.splice_safe,
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
@@ -256,6 +263,8 @@ impl Element for ViewElement {
         let claim_start = window.claim_log_len();
         let element_state_start = window.begin_view_element_states();
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
+        let scroll_read_start = window.scroll_row_replay_is_enabled()
+            .then(|| cx.entities.state_read_index());
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         let (layout_id, element) = window.with_rendered_view(entity_id, |window| {
             window.record_rendered_view(entity_id, type_name);
@@ -270,6 +279,8 @@ impl Element for ViewElement {
             layout_id,
             ViewRequestLayout {
                 rebuild,
+                scroll_capture: None,
+                scroll_read_start,
                 splice_safe,
                 kind: ViewRequestLayoutKind::Built {
                     element,
@@ -314,6 +325,7 @@ impl Element for ViewElement {
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| {
             let context = Rc::new(window.current_retained_paint_context());
+            let key = crate::fast::layout_key::prepaint_layout_key(window);
             match &mut state.kind {
                 ViewRequestLayoutKind::Retained {
                     admission,
@@ -326,7 +338,16 @@ impl Element for ViewElement {
                     if *allow_reuse && window.retained_view_context_matches(admission, bounds)
                         && let Some(prepaint_range) = window.reuse_retained_view_prepaint(admission)
                     {
-                        *reused = Some(ReusedView { prepaint_range, context });
+                        *reused = Some(ReusedView { prepaint_range, context, scrolled: None });
+                        return;
+                    }
+                    if *allow_reuse
+                        && let Some(key) = key
+                        && let Some(prepaint_range) = window.prepaint_scrolled_view(
+                            key, entity_id, admission, &context, bounds, cx,
+                        )
+                    {
+                        *reused = Some(ReusedView { prepaint_range, context, scrolled: Some(key) });
                         return;
                     }
                     // The committed layout no longer describes what this view inherits. Give the
@@ -334,7 +355,11 @@ impl Element for ViewElement {
                     window.release_retained_view(layout_claims);
                     window.cancel_view_layout_states(layout_state_range);
                     // A layout rebuilt in Prepaint cannot vouch for RequestLayout inheritance.
-                    state.rebuild = None;
+                    if window.scroll_view_translation(admission, &context, bounds, cx).is_none() {
+                        state.rebuild = None;
+                    }
+                    state.scroll_read_start = window.scroll_row_replay_is_enabled()
+                        .then(|| cx.entities.state_read_index());
                     let layout_root = admission.layout_root;
                     let claim_start = window.claim_log_len();
                     let mut element = {
@@ -407,6 +432,13 @@ impl Element for ViewElement {
                     *state_retention = retention.take().expect("view retention slot");
                 }
             }
+            if let ViewRequestLayoutKind::Built { element, prepaint_range: Some(range), .. } = &mut state.kind
+                && let Some(read_start) = state.scroll_read_start
+            {
+                state.scroll_capture = window.plan_scroll_view_capture(
+                    key, element, range, bounds, read_start, cx,
+                );
+            }
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
 
@@ -457,7 +489,11 @@ impl Element for ViewElement {
                     return;
                 };
                 let start = window.paint_index();
-                window.replay_retained_view_paint(entity_id, admission);
+                if let Some(key) = reused.scrolled {
+                    window.paint_scrolled_view(key, admission, &reused.context);
+                } else {
+                    window.replay_retained_view_paint(entity_id, admission);
+                }
                 window.record_debug_view_cache_status(bounds, crate::window::debug_visualization::ViewCacheDebugStatus::Hit, cx);
                 let end = window.paint_index();
                 window.commit_view_retention(
@@ -505,7 +541,13 @@ impl Element for ViewElement {
                 ..
             } => {
                 let start = window.paint_index();
-                element.paint(window, cx);
+                if let (Some(capture), Some(range), Some(context)) =
+                    (state.scroll_capture.take(), prepaint_range.as_ref(), context.as_ref())
+                {
+                    window.paint_scroll_view(*capture, entity_id, element, range, context, cx);
+                } else {
+                    element.paint(window, cx);
+                }
                 let end = window.paint_index();
                 let (Some(slot), Some(prepaint_range), Some(context)) =
                     (retention.slot.as_ref(), prepaint_range.as_ref(), context.as_ref())
@@ -633,6 +675,75 @@ impl Render for EmptyView {
 mod tests {
     use super::*;
     use crate::AppContext as _;
+
+    #[gpui::test]
+    fn native_div_scroll_reuses_the_view_and_refreshes_click_geometry(cx: &mut crate::TestAppContext) {
+        use crate::{
+            InteractiveElement, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, PlatformInput,
+            ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, div, point, px,
+        };
+        use std::cell::Cell;
+
+        struct Page {
+            builds: Rc<Cell<usize>>,
+            clicks: Rc<Cell<usize>>,
+        }
+        impl Render for Page {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                let clicks = self.clicks.clone();
+                div().relative().w(px(200.)).h(px(512.)).flex_shrink_0().child(
+                    div().id("target").absolute().left(px(20.)).top(px(128.))
+                        .size(px(32.)).bg(crate::red())
+                        .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                )
+            }
+        }
+        struct Scroller(Entity<Page>);
+        impl Render for Scroller {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().id("scroller").w(px(200.)).h(px(128.)).overflow_y_scroll()
+                    .child(div().child(self.0.clone()))
+            }
+        }
+        let builds = Rc::new(Cell::new(0));
+        let clicks = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|_, cx| Scroller(cx.new(|_| Page {
+            builds: builds.clone(),
+            clicks: clicks.clone(),
+        })));
+        let wheel = || PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-32.))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(), app);
+            window.draw(app).clear();
+            let after_capture = builds.get();
+            window.dispatch_event(wheel(), app);
+            window.draw(app).clear();
+            assert_eq!(builds.get(), after_capture, "pure scroll must bypass Render");
+
+            let scale = window.scale_factor();
+            let scene = window.rendered_frame.scene();
+            let red = scene.quads.iter().find(|quad| quad.background == crate::red().into())
+                .expect("projected page button");
+            assert_eq!(red.bounds.origin.y, px(64.).scale(scale));
+
+            let position = point(px(30.), px(71.));
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left, position, click_count: 1,
+                modifiers: Default::default(), first_mouse: false,
+            }), app);
+            assert!(builds.get() > after_capture, "input restores captured callbacks");
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left, position, click_count: 1, modifiers: Default::default(),
+            }), app);
+            assert_eq!(clicks.get(), 1);
+        });
+    }
 
     #[test]
     fn ordinary_view_element_uses_caller_view_identity() {

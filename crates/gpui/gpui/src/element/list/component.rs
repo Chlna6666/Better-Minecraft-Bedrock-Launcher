@@ -84,6 +84,7 @@ impl Element for List {
                         available_height,
                         &padding,
                         &mut self.render_item,
+                        None,
                         window,
                         cx,
                     );
@@ -218,7 +219,12 @@ impl Element for List {
             |window| {
                 for item in &mut prepaint.layout.item_layouts {
                     let start = window.next_frame.painter.len();
-                    item.element.paint(window, cx);
+                    window.paint_planned_scroll_row(
+                        prepaint.layout.row_plan.as_mut(),
+                        item.index,
+                        item.element.take(),
+                        cx,
+                    );
                     let end = window.next_frame.painter.len();
                     window.next_frame.record_layer_row(layer_hitbox, item.index, start, end);
                 }

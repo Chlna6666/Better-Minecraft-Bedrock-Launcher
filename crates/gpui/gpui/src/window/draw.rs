@@ -187,6 +187,7 @@ impl Window {
         // Defensive: an unwound draw could leave stale frames behind.
         self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
+        self.next_frame.scroll_rows.enabled = self.invalidator.scroll_content_revision().1;
         // Unknown window changes may invalidate inherited context even when
         // another view-scoped notification was queued in the same frame.
         if was_dirty && !self.invalidator.active_view_scoped() {

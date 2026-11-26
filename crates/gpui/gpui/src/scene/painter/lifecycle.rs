@@ -31,6 +31,7 @@ impl Painter {
         self.retained_prefix_invalid = false;
         self.retained_prefix_verified_len = 0;
         self.blur_captures.clear();
+        self.scroll_capture = None;
 
         if primitive_count_before_clear == 0 {
             self.idle_clear_frames = self.idle_clear_frames.saturating_add(1);

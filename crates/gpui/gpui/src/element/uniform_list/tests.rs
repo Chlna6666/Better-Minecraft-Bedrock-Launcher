@@ -67,14 +67,26 @@ fn item_positions_far_down_long_list_remain_uniform(cx: &mut TestAppContext) {
 struct FixedRows {
     calls: Rc<RefCell<Vec<std::ops::Range<usize>>>>,
     scroll_handle: UniformListScrollHandle,
+    hover: bool,
 }
 
 impl Render for FixedRows {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let calls = self.calls.clone();
+        let hover = self.hover;
         uniform_list("fixed-rows", 100, move |range, _, _| {
+            use crate::{FluentBuilder, InteractiveElement};
             calls.borrow_mut().push(range.clone());
-            range.map(|_| crate::div().w_full().h(px(24.))).collect()
+            range
+                .map(|row| {
+                    crate::div()
+                        .id(row)
+                        .w_full()
+                        .h(px(24.))
+                        .bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                        .when(hover, |row| row.hover(|style| style.bg(crate::green())))
+                })
+                .collect()
         })
         .with_sizing_behavior(crate::ListSizingBehavior::Auto)
         .with_item_height(px(24.))
@@ -90,6 +102,7 @@ fn fixed_rows_do_not_render_a_measurement_sample(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|_, _| FixedRows {
         calls: calls.clone(),
         scroll_handle: UniformListScrollHandle::new(),
+        hover: false,
     });
     cx.run_until_parked();
     calls.borrow_mut().clear();
@@ -101,4 +114,77 @@ fn fixed_rows_do_not_render_a_measurement_sample(cx: &mut TestAppContext) {
     let calls = calls.borrow();
     assert!(!calls.is_empty());
     assert!(calls.iter().all(|range| range.start >= 10 && !range.is_empty()), "{calls:?}");
+}
+
+#[gpui::test]
+fn native_scroll_reuses_overlapping_uniform_rows(cx: &mut TestAppContext) {
+    use crate::{PlatformInput, ScrollDelta, ScrollWheelEvent};
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let (_, cx) = cx.add_window_view(|_, _| FixedRows {
+        calls: calls.clone(),
+        scroll_handle: UniformListScrollHandle::new(),
+        hover: false,
+    });
+    let wheel = || PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: point(px(4.), px(4.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-24.))),
+        ..Default::default()
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+        window.dispatch_event(wheel(), app);
+        window.draw(app).clear();
+        calls.borrow_mut().clear();
+
+        window.dispatch_event(wheel(), app);
+        window.draw(app).clear();
+        assert_eq!(&*calls.borrow(), &[6..7]);
+
+        let geometry = |window: &Window| {
+            window.rendered_frame.scene().quads.iter()
+                .map(|quad| (quad.bounds, quad.content_mask, quad.background))
+                .collect::<Vec<_>>()
+        };
+        let retained = geometry(window);
+        window.refresh();
+        window.draw(app).clear();
+        assert_eq!(retained, geometry(window));
+    });
+}
+
+#[gpui::test]
+fn native_scroll_repositions_retained_hover_hitboxes(cx: &mut TestAppContext) {
+    use crate::{MouseMoveEvent, PlatformInput, ScrollDelta, ScrollWheelEvent};
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let (_, cx) = cx.add_window_view(|_, _| FixedRows {
+        calls: calls.clone(),
+        scroll_handle: UniformListScrollHandle::new(),
+        hover: true,
+    });
+    let wheel = || PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: point(px(4.), px(4.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-24.))),
+        ..Default::default()
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+        window.dispatch_event(wheel(), app);
+        window.draw(app).clear();
+        calls.borrow_mut().clear();
+        window.dispatch_event(wheel(), app);
+        window.draw(app).clear();
+        assert_eq!(&*calls.borrow(), &[2..3, 6..7]);
+
+        let position = point(px(4.), px(50.));
+        window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
+            position, ..Default::default()
+        }), app);
+        window.draw(app).clear();
+        let quad = window.rendered_frame.scene().quads.iter()
+            .find(|quad| quad.background == crate::green().into())
+            .expect("hover style at translated row position");
+        assert_eq!(quad.bounds.origin.y, px(48.).scale(window.scale_factor()));
+    });
 }

@@ -27,6 +27,7 @@ impl std::fmt::Debug for ListState {
 
 pub(super) struct StateInner {
     pub(super) version: StateVersion,
+    items_version: StateVersion,
     pub(super) last_layout_bounds: Option<Bounds<Pixels>>,
     pub(super) last_padding: Option<Edges<Pixels>>,
     pub(super) items: SumTree<ListItem>,
@@ -53,6 +54,7 @@ impl ListState {
     pub fn new(item_count: usize, alignment: ListAlignment, overdraw: Pixels) -> Self {
         let this = Self(Rc::new(RefCell::new(StateInner {
             version: StateVersion::default(),
+            items_version: StateVersion::default(),
             last_layout_bounds: None,
             last_padding: None,
             items: SumTree::default(),
@@ -134,6 +136,7 @@ impl ListState {
         new_items.append(old_items.suffix(), ());
         drop(old_items);
         state.version.bump_if(!old_range.is_empty() || spliced_count != 0);
+        state.items_version.bump_if(!old_range.is_empty() || spliced_count != 0);
         state.items = new_items;
 
         if let Some(ListOffset {

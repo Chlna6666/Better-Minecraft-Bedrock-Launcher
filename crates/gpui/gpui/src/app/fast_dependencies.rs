@@ -261,6 +261,19 @@ impl AppDependencies {
         StateReadRecording::enter(Some(self.state_read_log.clone()))
     }
 
+    pub(crate) fn state_read_index(&self) -> usize {
+        self.state_read_log.borrow().len()
+    }
+
+    pub(crate) fn state_reads_since(&mut self, start: usize) -> Rc<[StateRead]> {
+        let reads = self.state_read_log.borrow();
+        if start == reads.len() {
+            self.no_states.get_or_insert_with(|| Rc::from([])).clone()
+        } else {
+            unique_states(&reads[start..])
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn entity(&mut self, owner: Option<EntityId>, entity: EntityId) {
         self.set_owner(owner);
@@ -328,6 +341,12 @@ pub(crate) enum StateReadStatus { Unchanged, Changed, Dead }
 pub(crate) struct StateRead {
     state: Weak<Cell<u64>>,
     at: u64,
+}
+
+impl PartialEq for StateRead {
+    fn eq(&self, other: &Self) -> bool {
+        self.at == other.at && self.state.ptr_eq(&other.state)
+    }
 }
 
 impl StateRead {

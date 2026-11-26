@@ -6,6 +6,10 @@ use crate::{ExternalPaths, TouchEvent, TouchPhase};
 mod control;
 
 impl Window {
+    pub(crate) fn rendered_hitbox_bounds(&self, id: HitboxId) -> Option<Bounds<Pixels>> {
+        self.rendered_frame.hitboxes.iter().find(|hitbox| hitbox.id == id).map(|hitbox| hitbox.bounds)
+    }
+
     /// Sets an input handler, such as [`ElementInputHandler`][element_input_handler], which interfaces with the
     /// platform to receive textual input with proper integration with concerns such
     /// as IME interactions. This handler will be active for the upcoming frame until the following frame is
@@ -424,6 +428,9 @@ impl Window {
         }
 
         self.invalidate_input_reads(previous_input);
+        if !matches!(&event, PlatformInput::ScrollWheel(_)) {
+            self.refresh_scrolled_view_input(cx);
+        }
         let binding_handled = if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(
                 any_mouse_event,

@@ -232,6 +232,14 @@ impl EntityMap {
         self.tracking_frame_dependencies
     }
 
+    pub(crate) fn state_read_index(&self) -> usize {
+        self.dependencies.borrow().state_read_index()
+    }
+
+    pub(crate) fn state_reads_since(&self, start: usize) -> std::rc::Rc<[crate::StateRead]> {
+        self.dependencies.borrow_mut().state_reads_since(start)
+    }
+
     pub(crate) fn begin_frame_dependencies(&mut self) {
         self.frame_entity_scratch.clear();
         self.dependencies.get_mut().clear();

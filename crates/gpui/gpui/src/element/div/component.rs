@@ -46,6 +46,23 @@ pub struct Div {
 }
 
 impl Div {
+    /// All coordinates and clips emitted by these built-in children can be
+    /// projected from an overscanned row into its actual viewport.
+    pub(crate) fn can_capture_scrolling_subtree(&mut self, restore_input: bool) -> bool {
+        self.prepaint_listener.is_none()
+            && self.interactivity_can_move(restore_input)
+            && capture_style(&self.interactivity.base_style, restore_input)
+            && self.interactivity.hover_style.as_deref().is_none_or(|style| capture_style(style, restore_input))
+            && self.interactivity.active_style.as_deref().is_none_or(|style| capture_style(style, restore_input))
+            && self.children.iter_mut().all(|child| {
+                if restore_input {
+                    child.can_capture_scrolling_view()
+                } else {
+                    child.can_capture_scroll_paint()
+                }
+            })
+    }
+
     /// Animate this leaf decoration's top/bottom presentation offsets in logical pixels.
     ///
     /// Each pair is `[top, bottom]` relative to stable final layout. This returns an animation
@@ -105,6 +122,10 @@ impl Div {
     /// Hitbox-producing state is checked again after prepaint; this predicate covers the remaining
     /// keyboard/action/tab and state-style paths that can mutate the dispatch tree without a hitbox.
     fn interactivity_is_reconciliation_transparent(&self) -> bool {
+        self.interactivity.hover_style.is_none() && self.interactivity_can_move(false)
+    }
+
+    fn interactivity_can_move(&self, restore_input: bool) -> bool {
         let interactivity = &self.interactivity;
         interactivity.hitbox_behavior == HitboxBehavior::Normal
             && interactivity.key_context.is_none()
@@ -116,9 +137,8 @@ impl Div {
             && interactivity.group.is_none()
             && interactivity.focus_style.is_none()
             && interactivity.in_focus_style.is_none()
-            && interactivity.hover_style.is_none()
             && interactivity.group_hover_style.is_none()
-            && interactivity.active_style.is_none()
+            && (restore_input || interactivity.active_style.is_none())
             && interactivity.group_active_style.is_none()
             && interactivity.drag_over_styles.is_empty()
             && interactivity.group_drag_over_styles.is_empty()
@@ -132,10 +152,10 @@ impl Div {
             && interactivity.action_listeners.is_empty()
             && interactivity.drop_listeners.is_empty()
             && interactivity.can_drop_predicate.is_none()
-            && interactivity.click_listeners.is_empty()
+            && (restore_input || interactivity.click_listeners.is_empty())
             && interactivity.drag_listener.is_none()
             && interactivity.hover_listener.is_none()
-            && interactivity.tooltip_builder.is_none()
+            && (restore_input || interactivity.tooltip_builder.is_none())
             && interactivity.window_control.is_none()
             && interactivity.tab_index.is_none()
             && !interactivity.tab_group
@@ -152,6 +172,24 @@ impl Div {
                 }
             }
     }
+}
+
+fn capture_style(style: &StyleRefinement, restore_input: bool) -> bool {
+    style.background_blur.is_none()
+        && style.filter_blur.is_none()
+        && style.transition.is_none()
+        && style.scale.is_none_or(|scale| scale == 1.)
+        // A moving descendant clip can happen to match the viewport at
+        // capture time. Its hits cannot be restored from that intersection.
+        && (!restore_input
+            || (style.overflow.x.is_none_or(|overflow| overflow == Overflow::Visible)
+                && style.overflow.y.is_none_or(|overflow| overflow == Overflow::Visible)))
+        && {
+            #[cfg(debug_assertions)]
+            { !style.debug.unwrap_or(false) && !style.debug_below.unwrap_or(false) }
+            #[cfg(not(debug_assertions))]
+            { true }
+        }
 }
 
 /// A frame state for a `Div` element, which contains layout IDs for its children.
@@ -374,10 +412,15 @@ impl Element for Div {
                 // progressive AnyView/deferred work, where work can actually be skipped safely.
                 if style.display != Display::None {
                     window.with_element_opacity(style.opacity, |window| {
-                        window.with_element_offset(scroll_offset, |window| {
-                            for child in &mut self.children {
-                                child.prepaint(window, cx);
-                            }
+                        let scrolls = global_id.is_some()
+                            && style.overflow.y == Overflow::Scroll
+                            && style.overflow.x != Overflow::Scroll;
+                        window.with_scroll_viewport(scrolls, scroll_offset, |window| {
+                            window.with_element_offset(scroll_offset, |window| {
+                                for child in &mut self.children {
+                                    child.prepaint(window, cx);
+                                }
+                            });
                         });
 
                         if let Some(listener) = self.prepaint_listener.as_ref() {

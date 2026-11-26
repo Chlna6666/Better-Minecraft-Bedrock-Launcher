@@ -12,7 +12,7 @@ use super::{
     SceneAnimationValue, blur_influence_radius,
 };
 
-use super::{QuadReplay, Scene};
+use super::{Operations, QuadReplay, Scene};
 mod lifecycle;
 mod replay;
 /// UI-owned drawing builder. Published Scene payload is moved out at commit.
@@ -28,6 +28,7 @@ pub(crate) struct Painter {
     recent_peak_paint_operations: usize,
     recent_peak_primitives: usize,
     blur_captures: Vec<BlurCaptureState>,
+    scroll_capture: Option<Operations>,
 }
 struct BlurCaptureState {
     config: BlurCapture,
@@ -66,6 +67,15 @@ const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
 const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 impl Painter {
+    pub(crate) fn begin_scroll_capture(&mut self) {
+        debug_assert!(self.scroll_capture.is_none() && self.blur_captures.is_empty());
+        self.scroll_capture = Some(Operations::default());
+    }
+
+    pub(crate) fn end_scroll_capture(&mut self) -> Operations {
+        self.scroll_capture.take().expect("open scroll paint capture")
+    }
+
     pub(crate) fn construction_capacity(&self) -> usize {
         self.primitive_bounds.retained_capacity()
             + self.layer_stack.capacity()
@@ -73,6 +83,10 @@ impl Painter {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+        if let Some(capture) = &mut self.scroll_capture {
+            capture.push(PaintOperation::StartLayer(bounds));
+            return;
+        }
         self.scene.revision = 0;
         if let Some(capture) = self.blur_captures.last_mut() {
             capture.scene.push_layer(bounds);
@@ -93,6 +107,10 @@ impl Painter {
     }
 
     pub fn pop_layer(&mut self) {
+        if let Some(capture) = &mut self.scroll_capture {
+            capture.push(PaintOperation::EndLayer);
+            return;
+        }
         self.scene.revision = 0;
         if let Some(capture) = self.blur_captures.last_mut() {
             capture.scene.pop_layer();
@@ -108,8 +126,12 @@ impl Painter {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
-        self.scene.revision = 0;
         let primitive = primitive.into();
+        if let Some(capture) = &mut self.scroll_capture {
+            capture.push(PaintOperation::Primitive(primitive));
+            return;
+        }
+        self.scene.revision = 0;
         if let Some(capture) = self.blur_captures.last_mut() {
             let operation_start = capture.scene.paint_operations.len();
             capture.scene.insert_primitive(primitive);

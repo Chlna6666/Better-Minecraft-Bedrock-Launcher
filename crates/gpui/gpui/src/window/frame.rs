@@ -122,6 +122,8 @@ pub(crate) struct Frame {
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(super) layer_inputs: Vec<LayerInput>,
     pub(super) layer_records: Vec<LayerRecord>,
+    pub(super) scroll_rows: super::scroll_rows::ScrollRows,
+    pub(super) scroll_views: super::scroll_views::ScrollViews,
     layer_record_slots: FxHashMap<HitboxId, usize>,
     painted_layers: Vec<usize>,
     pending_scene_layers: SceneLayers,
@@ -335,6 +337,8 @@ impl Frame {
             hitboxes: Vec::new(),
             layer_inputs: Vec::new(),
             layer_records: Vec::new(),
+            scroll_rows: super::scroll_rows::ScrollRows::default(),
+            scroll_views: super::scroll_views::ScrollViews::default(),
             layer_record_slots: FxHashMap::default(),
             painted_layers: Vec::new(),
             pending_scene_layers: SceneLayers::default(),
@@ -401,6 +405,8 @@ impl Frame {
         self.hitboxes.clear();
         self.layer_inputs.clear();
         self.layer_records.clear();
+        self.scroll_rows.clear();
+        self.scroll_views.clear();
         self.layer_record_slots.clear();
         self.painted_layers.clear();
         self.pending_scene_layers = SceneLayers::default();
@@ -962,6 +968,7 @@ impl Frame {
     /// returns only capacity that is far above the new working set.
     pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
         self.clear();
+        self.scroll_rows.trim_for_reuse(&current.scroll_rows);
         self.painter
             .trim_for_reuse(&current.painter, current.scene());
         if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {

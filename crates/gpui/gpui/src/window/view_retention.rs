@@ -500,6 +500,7 @@ impl Window {
             let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
             for entry in std::iter::once(&self.next_frame.view_retention_records[index]).chain(source_slots) {
                 self.replayed_view_owners.insert(entry.owner);
+                self.next_frame.scroll_views.carry(entry.key, &self.rendered_frame.scroll_views);
             }
             let source_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
             let target_scene = record.paint_range.start.scene_index..record.paint_range.end.scene_index;

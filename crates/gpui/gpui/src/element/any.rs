@@ -171,6 +171,27 @@ impl AnyElement {
         self.0.inner_element().downcast_mut::<T>()
     }
 
+    pub(crate) fn can_capture_scroll_paint(&mut self) -> bool {
+        self.can_capture_scrolling_subtree(false)
+    }
+
+    pub(crate) fn can_capture_scrolling_view(&mut self) -> bool {
+        self.can_capture_scrolling_subtree(true)
+    }
+
+    fn can_capture_scrolling_subtree(&mut self, restore_input: bool) -> bool {
+        let element = self.0.inner_element();
+        if let Some(div) = element.downcast_mut::<crate::Div>() {
+            div.can_capture_scrolling_subtree(restore_input)
+        } else if let Some(div) = element.downcast_mut::<crate::Stateful<crate::Div>>() {
+            div.element.can_capture_scrolling_subtree(restore_input)
+        } else {
+            element.is::<crate::SharedString>()
+                || element.is::<&'static str>()
+                || element.is::<crate::StyledText>()
+        }
+    }
+
     /// Request the layout ID of the element stored in this `AnyElement`.
     /// Used for laying out child elements in a parent element.
     pub fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {

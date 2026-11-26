@@ -95,7 +95,7 @@ impl Window {
     /// Real model writes or user notifications still travel through App.
     pub(crate) fn invalidate_native_scroll(&mut self, owner: EntityId) {
         self.record_frame_request_reason(super::state::FrameRequestReason::Input);
-        if self.invalidator.invalidate_dependent_views(std::iter::once(owner)) {
+        if self.invalidator.invalidate_scroll_views(std::iter::once(owner)) {
             self.schedule_dirty_frame();
         }
     }
@@ -111,12 +111,14 @@ impl Window {
             return;
         }
         self.checked_scroll_generation = Some(generation);
-        let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
+        let mut scrolled = smallvec::SmallVec::<[EntityId; 4]>::new();
         for source in &self.rendered_frame.mounted_scroll_sources {
-            if source.read.status() == StateReadStatus::Changed && !changed.contains(&source.owner) {
-                changed.push(source.owner);
+            if source.read.status() == StateReadStatus::Changed && !scrolled.contains(&source.owner) {
+                scrolled.push(source.owner);
             }
         }
+        self.invalidator.invalidate_scroll_views(scrolled);
+        let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         if self.invalidator.changed_state_owners(&mut changed) {
             self.invalidator.set_dirty(true);
         } else {

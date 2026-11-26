@@ -225,7 +225,20 @@ impl Interactivity {
                                 let clip_epoch = window.next_frame.input_clip_epoch;
                                 let visual_scale = window.visual_scale();
                                 let layer_hitbox = hitbox.as_ref().map(|hitbox| hitbox.id);
-                                let result = f(&style, scroll_offset, hitbox, window, cx);
+                                let result = window.with_scroll_replay_barrier(
+                                    window.scroll_row_replay_is_enabled()
+                                    && (style.filter_blur.is_some()
+                                        || style.transition.is_some()
+                                        || self.hover_style.is_some()
+                                        || self.group_hover_style.is_some()
+                                        || self.active_style.is_some()
+                                        || self.group_active_style.is_some()
+                                        || self.focus_style.is_some()
+                                        || self.in_focus_style.is_some()
+                                        || !self.drag_over_styles.is_empty()
+                                        || !self.group_drag_over_styles.is_empty()),
+                                    |window| f(&style, scroll_offset, hitbox, window, cx),
+                                );
                                 if let (Some(viewport), Some(offset)) = (viewport, self.scroll_offset.as_ref()) {
                                     let final_offset = *offset.borrow();
                                     // UniformList can resolve a deferred scroll inside the

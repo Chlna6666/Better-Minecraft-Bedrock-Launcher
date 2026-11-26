@@ -100,11 +100,10 @@ impl Interactivity {
             window.on_mouse_hit_test_transition(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
+                    let bounds = window.rendered_hitbox_bounds(hitbox.id).unwrap_or(hitbox.bounds);
                     window.notify_interactive_region(
                         current_view,
-
-                        hitbox.bounds,
-
+                        bounds,
                         cx,
                     );
                 }

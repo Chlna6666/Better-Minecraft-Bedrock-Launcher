@@ -5,6 +5,59 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[gpui::test]
+fn native_scroll_reuses_measured_list_rows(cx: &mut TestAppContext) {
+    use crate::{Context, Element, ListAlignment, ListState, PlatformInput, Render, Styled, Window, div, list, point, px};
+
+    struct Messages {
+        state: ListState,
+        builds: Rc<RefCell<Vec<usize>>>,
+    }
+    impl Render for Messages {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl crate::IntoElement {
+            let builds = self.builds.clone();
+            list(self.state.clone(), move |row, _, _| {
+                builds.borrow_mut().push(row);
+                div()
+                    .w_full()
+                    .h(px(if row % 2 == 0 { 20. } else { 30. }))
+                    .bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                    .into_any()
+            })
+            .w(px(200.))
+            .h(px(55.))
+        }
+    }
+    let builds = Rc::new(RefCell::new(Vec::new()));
+    let (_, cx) = cx.add_window_view(|_, _| Messages {
+        state: ListState::new(50, ListAlignment::Top, px(0.)).measure_all(),
+        builds: builds.clone(),
+    });
+    let wheel = |dy| PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: point(px(4.), px(4.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        ..Default::default()
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+        window.dispatch_event(wheel(-20.), app);
+        window.draw(app).clear();
+        builds.borrow_mut().clear();
+
+        window.dispatch_event(wheel(-30.), app);
+        window.draw(app).clear();
+        assert_eq!(&*builds.borrow(), &[4]);
+
+        let geometry = |window: &Window| window.rendered_frame.scene().quads.iter()
+            .map(|quad| (quad.bounds, quad.content_mask, quad.background))
+            .collect::<Vec<_>>();
+        let retained = geometry(window);
+        window.refresh();
+        window.draw(app).clear();
+        assert_eq!(retained, geometry(window));
+    });
+}
+
+#[gpui::test]
 fn test_reset_after_paint_before_scroll(cx: &mut TestAppContext) {
     use crate::{
         AppContext, Context, Element, IntoElement, ListState, Render, Styled, Window, div, list,
@@ -190,7 +243,7 @@ fn large_overdraw_bounds_speculative_measurements_and_keeps_row_indices(cx: &mut
 
 #[gpui::test]
 fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut TestAppContext) {
-    use crate::{Element, ListState, Styled, div, list, point, px, size};
+    use crate::{AppContext, Context, Element, IntoElement, ListState, Render, Styled, Window, div, list, point, px, size};
     use super::tree::Count;
     use std::cell::Cell;
     use sum_tree::Bias;
@@ -199,14 +252,20 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
     let state = ListState::new(12, crate::ListAlignment::Top, px(0.)).measure_all();
     let taller = Rc::new(Cell::new(false));
     let builds = Rc::new(Cell::new(0));
-    let mut draw = || {
-        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
-            let taller = taller.clone();
-            let builds = builds.clone();
-            list(state.clone(), move |index, _, _| {
+    struct Rows(ListState, Rc<Cell<bool>>, Rc<Cell<usize>>);
+    impl Render for Rows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let taller = self.1.clone();
+            let builds = self.2.clone();
+            list(self.0.clone(), move |index, _, _| {
                 builds.set(builds.get() + 1);
                 div().w_full().h(if matches!(index, 1 | 3) && taller.get() { px(30.) } else { px(20.) }).into_any()
             }).w_full().h_full()
+        }
+    }
+    let mut draw = || {
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, cx| {
+            cx.new(|_| Rows(state.clone(), taller.clone(), builds.clone())).into_element()
         });
     };
     draw();

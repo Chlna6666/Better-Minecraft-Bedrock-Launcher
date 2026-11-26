@@ -102,7 +102,9 @@ impl Element for DeferredContextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        with_deferred_inherited_context(&self.context, window, |window| child.prepaint(window, cx));
+        with_deferred_inherited_context(&self.context, window, |window| {
+            window.with_scroll_replay_barrier(true, |window| child.prepaint(window, cx))
+        });
     }
 
     fn paint(

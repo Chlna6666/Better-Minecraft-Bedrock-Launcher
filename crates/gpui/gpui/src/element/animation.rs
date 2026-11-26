@@ -1123,7 +1123,9 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
 
         // Entering or leaving renderer ownership must repaint descendants once. Without this
         // boundary, retained rows may keep a stale SceneAnimationId after the transition ends.
-        window.with_retained_replay_barrier(binding_changed, |window| element.prepaint(window, cx));
+        window.with_retained_replay_barrier(binding_changed, |window| {
+            window.with_scroll_replay_barrier(bound, |window| element.prepaint(window, cx))
+        });
 
         bound.then_some(state)
     }
@@ -1557,7 +1559,9 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         // The renderer owns this subtree only while the timeline is active. Completion schedules
         // one targeted repaint, and this barrier guarantees descendants drop the old animation id
         // instead of replaying it forever into later hover/scroll frames.
-        window.with_retained_replay_barrier(binding_changed, |window| element.prepaint(window, cx));
+        window.with_retained_replay_barrier(binding_changed, |window| {
+            window.with_scroll_replay_barrier(bound, |window| element.prepaint(window, cx))
+        });
 
         bound.then_some(states)
     }

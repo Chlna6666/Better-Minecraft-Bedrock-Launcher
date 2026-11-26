@@ -108,6 +108,8 @@ mod platform_events;
 mod prompts;
 mod properties;
 pub(crate) mod scroll_dependencies;
+pub(crate) mod scroll_rows;
+pub(crate) mod scroll_views;
 pub(crate) mod retained;
 mod state;
 mod view_retention;

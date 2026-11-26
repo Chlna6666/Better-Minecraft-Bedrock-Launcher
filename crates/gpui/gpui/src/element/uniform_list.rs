@@ -6,10 +6,12 @@
 
 mod builder;
 mod decoration;
+mod retention;
 mod scroll;
 #[cfg(test)]
 mod tests;
 
+use crate::window::scroll_rows::RowPlan;
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId,
     Hitbox, InspectorElementId, Interactivity, IntoElement, IsZero, LayoutId, ListSizingBehavior,
@@ -19,9 +21,7 @@ use smallvec::SmallVec;
 use std::{cmp, ops::Range};
 
 pub use decoration::UniformListDecoration;
-pub use scroll::{
-    ItemSize, ScrollStrategy, UniformListScrollHandle,
-};
+pub use scroll::{ItemSize, ScrollStrategy, UniformListScrollHandle};
 
 use super::ListHorizontalSizingBehavior;
 
@@ -70,9 +70,7 @@ pub struct UniformList {
     item_count: usize,
     item_to_measure_index: usize,
     fixed_item_height: Option<Pixels>,
-    render_items: Box<
-        dyn for<'a> Fn(Range<usize>, &'a mut Window, &'a mut App) -> SmallVec<[AnyElement; 64]>,
-    >,
+    render_items: Box<RenderItems>,
     pub(super) decorations: Vec<Box<dyn UniformListDecoration>>,
     pub(super) interactivity: Interactivity,
     pub(super) scroll_handle: Option<UniformListScrollHandle>,
@@ -80,10 +78,13 @@ pub struct UniformList {
     pub(super) horizontal_sizing_behavior: ListHorizontalSizingBehavior,
 }
 
+type RenderItems = dyn Fn(Range<usize>, &mut Window, &mut App) -> SmallVec<[AnyElement; 64]>;
+
 /// Frame state used by the [UniformList].
 pub struct UniformListLayout {
     item_size: Size<Pixels>,
-    items: SmallVec<[(usize, AnyElement); 32]>,
+    items: SmallVec<[(usize, Option<AnyElement>); 32]>,
+    row_plan: Option<RowPlan>,
     decorations: SmallVec<[AnyElement; 2]>,
 }
 
@@ -117,7 +118,10 @@ impl Element for UniformList {
             Size::default()
         } else if let Some(height) = self.fixed_item_height.filter(|_| {
             matches!(self.sizing_behavior, ListSizingBehavior::Auto)
-                && matches!(self.horizontal_sizing_behavior, ListHorizontalSizingBehavior::FitList)
+                && matches!(
+                    self.horizontal_sizing_behavior,
+                    ListHorizontalSizingBehavior::FitList
+                )
         }) {
             // The containing viewport supplies the width; no sample row needs
             // to be constructed, measured, or dropped before visible rows.
@@ -135,7 +139,10 @@ impl Element for UniformList {
                     window.with_text_style(style.text_style().cloned(), |window| {
                         window.request_size_layout(
                             style,
-                            crate::layout::SizeMeasurement::List(size(item_size.width, item_size.height * max_items)),
+                            crate::layout::SizeMeasurement::List(size(
+                                item_size.width,
+                                item_size.height * max_items,
+                            )),
                         )
                     })
                 }
@@ -151,6 +158,7 @@ impl Element for UniformList {
             UniformListLayout {
                 item_size,
                 items: SmallVec::new(),
+                row_plan: None,
                 decorations: SmallVec::new(),
             },
         )
@@ -185,6 +193,7 @@ impl Element for UniformList {
         );
 
         frame_state.items.clear();
+        frame_state.row_plan = None;
         frame_state.decorations.clear();
 
         let longest_item_size = frame_state.item_size;
@@ -210,6 +219,7 @@ impl Element for UniformList {
             handle.last_item_size = next;
             handle.deferred_scroll_to_item.take()
         });
+        let retain_rows = self.decorations.is_empty() && !can_scroll_horizontally;
 
         self.interactivity.prepaint(
             global_id,
@@ -319,6 +329,50 @@ impl Element for UniformList {
                         let visible_range = first_visible_element_ix
                             ..cmp::min(last_visible_element_ix, self.item_count);
 
+                        let content_mask = ContentMask {
+                            bounds,
+                            ..Default::default()
+                        };
+                        let row_origin = |ix| {
+                            let item_top =
+                                item_height_f64 * ix as f64 - scroll_top + padding.top.to_f64();
+                            padded_bounds.origin
+                                + point(
+                                    scroll_offset.x
+                                        + if can_scroll_horizontally {
+                                            padding.left
+                                        } else {
+                                            Pixels::ZERO
+                                        },
+                                    Pixels::from(item_top),
+                                )
+                        };
+                        let available_width = if can_scroll_horizontally {
+                            padded_bounds.size.width + scroll_offset.x.abs()
+                        } else {
+                            padded_bounds.size.width
+                        };
+                        let available_space = size(
+                            AvailableSpace::Definite(available_width),
+                            AvailableSpace::Definite(item_height),
+                        );
+                        if retain_rows && !y_flipped {
+                            retention::prepaint(
+                                self.render_items.as_ref(),
+                                self.item_count,
+                                frame_state,
+                                global_id,
+                                visible_range.clone(),
+                                row_origin,
+                                available_space,
+                                content_mask,
+                                window,
+                                cx,
+                            );
+                        }
+                        if frame_state.row_plan.is_some() {
+                            return;
+                        }
                         let items = if y_flipped {
                             let flipped_range = self.item_count.saturating_sub(visible_range.end)
                                 ..self.item_count.saturating_sub(visible_range.start);
@@ -328,33 +382,8 @@ impl Element for UniformList {
                         } else {
                             (self.render_items)(visible_range.clone(), window, cx)
                         };
-
-                        let content_mask = ContentMask {
-                            bounds,
-                            ..Default::default()
-                        };
                         window.with_content_mask(Some(content_mask), |window| {
                             for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
-                                let item_top =
-                                    item_height_f64 * ix as f64 - scroll_top + padding.top.to_f64();
-                                let item_origin = padded_bounds.origin
-                                    + point(
-                                        if can_scroll_horizontally {
-                                            scroll_offset.x + padding.left
-                                        } else {
-                                            scroll_offset.x
-                                        },
-                                        Pixels::from(item_top),
-                                    );
-                                let available_width = if can_scroll_horizontally {
-                                    padded_bounds.size.width + scroll_offset.x.abs()
-                                } else {
-                                    padded_bounds.size.width
-                                };
-                                let available_space = size(
-                                    AvailableSpace::Definite(available_width),
-                                    AvailableSpace::Definite(item_height),
-                                );
                                 // Materialization order changes as the viewport scrolls. Keep the
                                 // retained identity tied to the logical row, including flipped lists.
                                 let row_index = if y_flipped {
@@ -363,13 +392,11 @@ impl Element for UniformList {
                                     ix
                                 };
                                 window.with_list_item_layout_key(row_index, |window| {
-                                        item.layout_as_root(available_space, window, cx);
-                                        item.prepaint_at(item_origin, window, cx);
-                                    },
-                                );
-                                frame_state.items.push((row_index, item));
+                                    item.layout_as_root(available_space, window, cx);
+                                    item.prepaint_at(row_origin(ix), window, cx);
+                                });
+                                frame_state.items.push((row_index, Some(item)));
                             }
-
                             let bounds = Bounds::new(
                                 padded_bounds.origin
                                     + point(
@@ -427,12 +454,19 @@ impl Element for UniformList {
             window,
             cx,
             |_, window, cx| {
-                for (row, item) in &mut request_layout.items {
+                for (row, item) in request_layout.items.drain(..) {
                     let start = window.next_frame.painter.len();
-                    item.paint(window, cx);
+                    window.paint_planned_scroll_row(
+                        request_layout.row_plan.as_mut(),
+                        row,
+                        item,
+                        cx,
+                    );
                     if let Some(hitbox) = hitbox.as_ref() {
                         let end = window.next_frame.painter.len();
-                        window.next_frame.record_layer_row(hitbox.id, *row, start, end);
+                        window
+                            .next_frame
+                            .record_layer_row(hitbox.id, row, start, end);
                     }
                 }
                 for decoration in &mut request_layout.decorations {
