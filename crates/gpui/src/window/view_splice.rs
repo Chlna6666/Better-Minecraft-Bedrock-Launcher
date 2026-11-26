@@ -13,15 +13,16 @@ pub(super) struct PrebuiltGap {
     layout_id: LayoutId,
     state: ViewRequestLayout,
     claims: LayoutClaimBlocks,
-    states: Range<usize>,
+    states: StateAccessBlocks,
     node: Option<DispatchNodeId>,
 }
 
 pub(crate) struct ViewSplice {
     pub(crate) anchor: RetainedViewRecord,
     pub(crate) claims: LayoutClaimBlocks,
-    pub(crate) states: Range<usize>,
+    pub(crate) states: StateAccessBlocks,
     kept: LayoutClaimBlocks,
+    kept_states: StateAccessBlocks,
     placement: NativePlacementProof,
     parts: Vec<SplicePart>,
 }
@@ -36,7 +37,7 @@ struct AncestorPart {
     key: GlobalElementId,
     old: RetainedViewRecord,
     claims: LayoutClaimBlocks,
-    states: Range<usize>,
+    states: StateAccessBlocks,
     // Number of following entries belonging to this retained ancestor.
     descendants: usize,
     prepaint: Option<Range<PrepaintStateIndex>>,
@@ -47,7 +48,7 @@ struct CleanPart {
     key: GlobalElementId,
     old: RetainedViewRecord,
     claims: LayoutClaimBlocks,
-    states: Range<usize>,
+    states: StateAccessBlocks,
     prepaint: Option<Range<PrepaintStateIndex>>,
     reservation: Option<(ViewRetentionSlot, Range<usize>)>,
 }
@@ -108,25 +109,27 @@ impl Window {
     }
 
     pub(crate) fn adopt_gap_layout_spans(
-        &mut self, root: LayoutId, claims: &LayoutClaimBlocks, states: &Range<usize>,
-    ) -> Option<(LayoutClaimBlocks, Range<usize>)> {
-        let states = self.prebuilt_state_relocations.resolve(states);
+        &mut self, root: LayoutId, claims: &LayoutClaimBlocks, states: &StateAccessBlocks,
+    ) -> Option<(LayoutClaimBlocks, StateAccessBlocks)> {
+        let states = states.resolve(&self.prebuilt_state_relocations);
         if !claims.prepaint_blocks().is_empty()
-            || self.next_frame.accessed_element_states.get(states.clone()).is_none()
+            || !states.iter().all(|span| self.next_frame.accessed_element_states.get(span.clone()).is_some())
         {
             return None;
         }
         let claimed = self.layout_engine.as_mut()?.adopt_claim_blocks(claims, root)?;
         let accesses = &mut self.next_frame.accessed_element_states;
         let start = accesses.len();
-        accesses.reserve(states.len());
-        for index in states.clone() {
-            let state = accesses[index].take();
-            accesses.push(state);
+        accesses.reserve(states.iter().map(Range::len).sum());
+        for span in states.iter() {
+            let target = accesses.len();
+            for index in span.clone() {
+                let state = accesses[index].take();
+                accesses.push(state);
+            }
+            self.prebuilt_state_relocations.record(span.clone(), target);
         }
-        let end = accesses.len();
-        self.prebuilt_state_relocations.record(states, start);
-        Some((claimed, start..end))
+        Some((claimed, StateAccessBlocks::from_range(start..accesses.len())))
     }
 
     /// Arena-backed elements and their candidate claims never survive a frame.
@@ -144,6 +147,7 @@ impl Window {
 
     pub(crate) fn abandon_view_splice(&mut self, splice: ViewSplice) -> RetainedViewRecord {
         self.release_retained_view(&splice.kept);
+        self.cancel_view_layout_states(&splice.kept_states);
         self.stash_prebuilt_gaps(splice.parts);
         splice.anchor
     }
@@ -176,7 +180,7 @@ impl Window {
         if !anchor.splice_safe || !rebuild.splice_supported
             || rebuild.view.entity_id() != owner || id != Some(&rebuild.application_id)
             || !self.retained_paint_context_matches(&rebuild.layout)
-            || !anchor.layout_state_range.is_empty()
+            || !anchor.layout_state_range.iter().all(|span| self.rendered_frame.accessed_element_states.get(span.clone()).is_some())
             || !self.can_reuse_prepaint(&anchor.prepaint_range)
             || !self.can_reuse_paint(&anchor.paint_range)
         {
@@ -203,7 +207,9 @@ impl Window {
             let gap_rebuild = old.rebuild.as_ref()?;
             let dirty = scope == Some(ViewDirtyScope::Direct);
             let ancestor = scope == Some(ViewDirtyScope::TraversalAncestor);
-            if !old.layout_state_range.is_empty()
+            if (dirty && !old.layout_state_range.is_empty())
+                || !anchor.layout_state_range.covers(&old.layout_state_range)
+                || open.iter().any(|ancestor| !ancestor.layout_state_range.covers(&old.layout_state_range))
                 || (scope.is_some() && !old.splice_safe)
                 || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context
                     || open.iter().any(|ancestor| !ancestor.layout_claims.covers(&old.layout_claims))))
@@ -255,6 +261,14 @@ impl Window {
         };
         let new_request_start = self.claim_log_len();
         let states_start = self.begin_view_element_states();
+        let mut state_map = crate::layout::ClaimBlockMap::default();
+        let mut target = states_start;
+        for span in anchor.layout_state_range.iter() {
+            state_map.record(span.clone(), target);
+            target += span.len();
+        }
+        state_map.sort_by_source();
+        let kept_states = self.replay_view_layout_states(&anchor.layout_state_range);
         // The engine's block map is the only source of retained claim relocation.
         let mut parts: Vec<SplicePart> = Vec::with_capacity(plan.len());
         let mut open = smallvec::SmallVec::<[usize; 8]>::new();
@@ -266,18 +280,26 @@ impl Window {
                 let Some(claims) = claim_map.project(&old.layout_claims, !ancestor) else {
                     self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
+                    self.cancel_view_layout_states(&kept_states);
+                    self.stash_prebuilt_gaps(parts);
+                    return None;
+                };
+                let Some(states) = old.layout_state_range.project(&state_map, true) else {
+                    self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
+                    self.release_retained_view(&kept);
+                    self.cancel_view_layout_states(&kept_states);
                     self.stash_prebuilt_gaps(parts);
                     return None;
                 };
                 if ancestor {
                     open.push(parts.len());
                     parts.push(SplicePart::Ancestor(AncestorPart {
-                        key: gap_key, old, claims, states: states_start..states_start,
+                        key: gap_key, old, claims, states,
                         descendants: 0, prepaint: None, reservation: None,
                     }));
                 } else {
                     parts.push(SplicePart::Clean(CleanPart {
-                        key: gap_key, old, claims, states: states_start..states_start,
+                        key: gap_key, old, claims, states,
                         prepaint: None, reservation: None,
                     }));
                 }
@@ -308,6 +330,7 @@ impl Window {
             if !compatible {
                 self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                 self.release_retained_view(&kept);
+                self.cancel_view_layout_states(&kept_states);
                 self.stash_prebuilt_gaps(parts);
                 return None;
             }
@@ -316,6 +339,7 @@ impl Window {
         if !self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(placement) {
             self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
             self.release_retained_view(&kept);
+            self.cancel_view_layout_states(&kept_states);
             self.stash_prebuilt_gaps(parts);
             return None;
         }
@@ -328,7 +352,7 @@ impl Window {
             claims
         };
         Some(ViewSplice {
-            anchor, kept, placement, parts, claims,
+            anchor, kept, kept_states, placement, parts, claims,
             states: self.view_layout_state_range(states_start),
         })
     }

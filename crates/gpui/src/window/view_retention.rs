@@ -11,7 +11,83 @@
 
 use super::draw_reuse::{rebase_paint_range, rebase_prepaint_range};
 use super::*;
-use crate::layout::{ClaimBlockMap, LayoutClaimBlocks};
+use crate::layout::{ClaimBlockMap, LayoutClaimBlocks, SpanRelocations};
+
+/// State values remain uniquely owned by the frame map. These blocks only
+/// describe which access-log entries keep those values alive on publication.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StateAccessBlocks(smallvec::SmallVec<[Range<usize>; 1]>);
+
+impl StateAccessBlocks {
+    pub(crate) fn from_range(range: Range<usize>) -> Self {
+        let mut result = Self::default();
+        result.push(range);
+        result
+    }
+
+    pub(crate) fn push(&mut self, range: Range<usize>) {
+        if !range.is_empty() { self.0.push(range); }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool { self.0.is_empty() }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Range<usize>> { self.0.iter() }
+
+    pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {
+        let mut result = Self::default();
+        for span in self.iter() { result.push(moves.resolve(span)); }
+        result
+    }
+
+    fn normalize(&mut self) {
+        if self.0.len() <= 1 { return; }
+        self.0.sort_unstable_by_key(|span| span.start);
+        let mut len = 0;
+        for index in 0..self.0.len() {
+            let span = self.0[index].clone();
+            if len > 0 && self.0[len - 1].end >= span.start {
+                self.0[len - 1].end = self.0[len - 1].end.max(span.end);
+            } else {
+                self.0[len] = span;
+                len += 1;
+            }
+        }
+        self.0.truncate(len);
+    }
+
+    pub(crate) fn covers(&self, child: &Self) -> bool {
+        child.iter().all(|span| {
+            let index = self.0.partition_point(|block| block.end <= span.start);
+            self.0.get(index).is_some_and(|block| block.start <= span.start && block.end >= span.end)
+        })
+    }
+
+    pub(crate) fn project(&self, map: &ClaimBlockMap, complete: bool) -> Option<Self> {
+        let mut result = Self::default();
+        for span in self.iter() {
+            map.project_range(span, complete, |range| result.push(range))?;
+        }
+        Some(result)
+    }
+
+    fn between(&self, target: &Self) -> Option<ClaimBlockMap> {
+        let mut map = ClaimBlockMap::default();
+        let mut source = self.0.iter();
+        let mut dest = target.0.iter();
+        let (mut s, mut t) = (source.next(), dest.next());
+        let (mut a, mut b) = (0, 0);
+        while let (Some(old), Some(new)) = (s, t) {
+            let len = (old.len() - a).min(new.len() - b);
+            map.record(old.start + a..old.start + a + len, new.start + b);
+            a += len; b += len;
+            if a == old.len() { s = source.next(); a = 0; }
+            if b == new.len() { t = dest.next(); b = 0; }
+        }
+        if s.is_some() || t.is_some() { return None; }
+        map.sort_by_source();
+        Some(map)
+    }
+}
 
 /// Identity and effective inherited values at RequestLayout, distinct from Prepaint.
 pub(crate) struct ViewRebuild {
@@ -40,7 +116,7 @@ pub(crate) struct RetainedViewRecord {
     /// Descendant damage segments in paint order (the enclosing view's own segment follows).
     pub(crate) scene_segments: Range<usize>,
     /// Only states taken during request layout. Prepaint and paint replay their own spans.
-    pub(crate) layout_state_range: Range<usize>,
+    pub(crate) layout_state_range: StateAccessBlocks,
 }
 
 /// Prepaint order is also record order. A reservation without a paint commit
@@ -63,7 +139,7 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) rebuild: Option<Rc<ViewRebuild>>,
     pub(crate) splice_safe: bool,
     pub(crate) scene_segments_start: usize,
-    pub(crate) layout_state_range: Range<usize>,
+    pub(crate) layout_state_range: StateAccessBlocks,
     /// The retained source this frame copied, when the view was reused.
     pub(crate) reused: Option<RetainedViewRecord>,
 }
@@ -189,7 +265,7 @@ impl Window {
         &mut self, slot: &ViewRetentionSlot, nested: Range<usize>,
         source: &RetainedViewRecord, claims: LayoutClaimBlocks,
         prepaint: Range<PrepaintStateIndex>, paint: Range<PaintIndex>,
-        states: Range<usize>,
+        states: StateAccessBlocks,
     ) {
         let owner = source.rebuild.as_ref().expect("admitted clean subtree").view.entity_id();
         let old_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
@@ -240,7 +316,7 @@ impl Window {
         }
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
-            || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
+            || !record.layout_state_range.iter().all(|range| self.rendered_frame.accessed_element_states.get(range.clone()).is_some())
             || self.rendered_frame.view_retention_records.get(record.nested.clone()).is_none()
             || self.rendered_frame.retained_scene_segments.get(record.scene_segments.clone()).is_none()
         {
@@ -312,25 +388,26 @@ impl Window {
     }
 
     /// The element states taken since `start`, in access order.
-    pub(crate) fn view_layout_state_range(&self, start: usize) -> Range<usize> {
-        start..self.next_frame.accessed_element_states.len()
+    pub(crate) fn view_layout_state_range(&self, start: usize) -> StateAccessBlocks {
+        StateAccessBlocks::from_range(start..self.next_frame.accessed_element_states.len())
     }
 
-    /// Request-layout replay happens at admission, while the parent's layout
-    /// span is still open. This keeps nested layout state ranges contiguous.
-    pub(crate) fn replay_view_layout_states(&mut self, source: &Range<usize>) -> Range<usize> {
+    /// Keep state values in the frame map and replay only ownership references.
+    pub(crate) fn replay_view_layout_states(&mut self, source: &StateAccessBlocks) -> StateAccessBlocks {
         let start = self.next_frame.accessed_element_states.len();
-        self.next_frame.accessed_element_states.extend_from_slice(
-            &self.rendered_frame.accessed_element_states[source.clone()],
-        );
-        start..self.next_frame.accessed_element_states.len()
+        for span in source.iter() {
+            self.next_frame.accessed_element_states.extend_from_slice(
+                &self.rendered_frame.accessed_element_states[span.clone()],
+            );
+        }
+        self.view_layout_state_range(start)
     }
 
-    /// An admitted view that rebuilds in prepaint no longer owns its
-    /// speculative layout accesses. Keep the offsets stable for its ancestors.
-    pub(crate) fn cancel_view_layout_states(&mut self, range: &Range<usize>) {
-        let range = self.prebuilt_state_relocations.resolve(range);
-        self.next_frame.accessed_element_states[range].fill(None);
+    /// Cancel speculative ownership without moving other owners' offsets.
+    pub(crate) fn cancel_view_layout_states(&mut self, blocks: &StateAccessBlocks) {
+        for span in blocks.resolve(&self.prebuilt_state_relocations).iter() {
+            self.next_frame.accessed_element_states[span.clone()].fill(None);
+        }
     }
 
     /// Reserves this frame's record position for a view before its subtree runs.
@@ -368,7 +445,8 @@ impl Window {
         commit.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
             .resolve_claim_blocks(&commit.layout_claims);
         commit.layout_claims.normalize();
-        commit.layout_state_range = self.prebuilt_state_relocations.resolve(&commit.layout_state_range);
+        commit.layout_state_range = commit.layout_state_range.resolve(&self.prebuilt_state_relocations);
+        commit.layout_state_range.normalize();
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {
             let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
@@ -417,10 +495,11 @@ impl Window {
         target_claims: &LayoutClaimBlocks,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
-        target_states: &Range<usize>,
+        target_states: &StateAccessBlocks,
         target_scene_segments: &Range<usize>,
     ) {
         let Some(claim_map) = ClaimBlockMap::between(&source.layout_claims, target_claims) else { return; };
+        let Some(state_map) = source.layout_state_range.between(target_states) else { return; };
         for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
             let Some(nested) = entry.record.clone() else {
                 continue;
@@ -437,22 +516,25 @@ impl Window {
             else {
                 continue;
             };
-            let old_states = &nested.layout_state_range;
+            let mut layout_states = StateAccessBlocks::default();
             let source_prepaint_states = source.prepaint_range.start.accessed_element_states_index
                 ..source.prepaint_range.end.accessed_element_states_index;
             let target_prepaint_states = target_prepaint.start.accessed_element_states_index
                 ..target_prepaint.end.accessed_element_states_index;
-            // Lazy view layout can run inside the enclosing view's prepaint.
-            // Rebase it against that phase, not against the initial layout span.
-            let layout_states = if old_states.is_empty() {
-                target_states.start..target_states.start
-            } else if let Some(range) = rebase_span(old_states, &source.layout_state_range, target_states)
-                .or_else(|| rebase_span(old_states, &source_prepaint_states, &target_prepaint_states))
-            {
-                range
-            } else {
-                continue;
-            };
+            let mut valid_states = true;
+            for span in nested.layout_state_range.iter() {
+                let mut mapped = StateAccessBlocks::default();
+                if state_map.project_range(span, true, |range| mapped.push(range)).is_some() {
+                    for range in mapped.iter() { layout_states.push(range.clone()); }
+                } else if let Some(range) = rebase_span(span, &source_prepaint_states, &target_prepaint_states) {
+                    layout_states.push(range);
+                } else {
+                    valid_states = false;
+                    break;
+                }
+            }
+            if !valid_states { continue; }
+            layout_states.normalize();
             let Some(descendants) = rebase_span(&nested.nested, &source.nested, target_nested) else {
                 continue;
             };

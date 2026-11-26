@@ -136,7 +136,7 @@ pub(crate) use frame::{
 };
 pub(crate) use view_splice::ViewSplice;
 pub(crate) use view_retention::{
-    RetainedViewRecord, ViewRebuild, ViewRetentionCommit, ViewRetentionSlot,
+    RetainedViewRecord, StateAccessBlocks, ViewRebuild, ViewRetentionCommit, ViewRetentionSlot,
 };
 pub use frame_clock::FrameClock;
 use frame_clock::{FrameClockRequest, FrameClockState, ReceivedPlatformFrame};

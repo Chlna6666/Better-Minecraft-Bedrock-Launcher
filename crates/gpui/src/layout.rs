@@ -158,26 +158,30 @@ impl ClaimBlockMap {
         Some(result)
     }
 
+    pub(crate) fn project_range(
+        &self, span: &Range<usize>, complete: bool, mut emit: impl FnMut(Range<usize>),
+    ) -> Option<()> {
+        let mut copied = 0;
+        let index = self.segments.partition_point(|(source, _)| source.end <= span.start);
+        for (source, target) in &self.segments[index..] {
+            if source.start >= span.end { break; }
+            let start = source.start.max(span.start);
+            let end = source.end.min(span.end);
+            if start >= end { continue; }
+            copied += end - start;
+            emit(target + start - source.start..target + end - source.start);
+        }
+        (!complete || copied == span.len()).then_some(())
+    }
+
     pub(crate) fn project(&self, claims: &LayoutClaimBlocks, complete: bool) -> Option<LayoutClaimBlocks> {
         let mut result = LayoutClaimBlocks::default();
         for (prepaint, spans) in [(false, claims.request_blocks()), (true, claims.prepaint_blocks())] {
             for span in spans {
-                let mut copied = 0;
-                let index = self.segments.partition_point(|(source, _)| source.end <= span.start);
-                for (source, target) in &self.segments[index..] {
-                    if source.start >= span.end { break; }
-                    let start = source.start.max(span.start);
-                    let end = source.end.min(span.end);
-                    if start >= end { continue; }
-                    copied += end - start;
-                    let range = target + start - source.start..target + end - source.start;
-                    if prepaint {
-                        result.push_prepaint(range);
-                    } else {
-                        result.push_request(range);
-                    }
-                }
-                if complete && copied != span.len() { return None; }
+                self.project_range(span, complete, |range| {
+                    if prepaint { result.push_prepaint(range); }
+                    else { result.push_request(range); }
+                })?;
             }
         }
         Some(result)

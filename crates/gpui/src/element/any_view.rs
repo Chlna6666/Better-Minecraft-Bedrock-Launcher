@@ -142,7 +142,7 @@ impl ViewRequestLayout {
     /// states resolve relocated offsets at release/commit.
     pub(crate) fn adopt_prebuilt_layout(
         &mut self, window: &mut Window,
-        claims: &LayoutClaimBlocks, states: &Range<usize>,
+        claims: &LayoutClaimBlocks, states: &crate::window::StateAccessBlocks,
     ) -> bool {
         let ViewRequestLayoutKind::Built { layout_root, layout_claims, layout_state_range, .. } = &mut self.kind else {
             return false;
@@ -165,7 +165,7 @@ enum ViewRequestLayoutKind {
     Retained {
         admission: crate::window::RetainedViewRecord,
         layout_claims: LayoutClaimBlocks,
-        layout_state_range: Range<usize>,
+        layout_state_range: crate::window::StateAccessBlocks,
         retention: RetentionDraft,
         reused: Option<ReusedView>,
         allow_reuse: bool,
@@ -183,7 +183,7 @@ enum ViewRequestLayoutKind {
         layout_claims: LayoutClaimBlocks,
         prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
         context: Option<Rc<crate::window::RetainedPaintContext>>,
-        layout_state_range: Range<usize>,
+        layout_state_range: crate::window::StateAccessBlocks,
         retention: RetentionDraft,
     },
 }
@@ -302,9 +302,8 @@ impl Element for ViewElement {
         if let ViewRequestLayoutKind::Spliced { splice, .. } = &mut state.kind {
             if !window.can_prepaint_view_splice(splice.as_ref().expect("pending splice"), bounds) {
                 let anchor = window.abandon_view_splice(*splice.take().expect("pending splice"));
-                let empty = window.begin_view_element_states();
                 state.kind = ViewRequestLayoutKind::Retained {
-                    admission: anchor, layout_claims: LayoutClaimBlocks::default(), layout_state_range: empty..empty,
+                    admission: anchor, layout_claims: LayoutClaimBlocks::default(), layout_state_range: crate::window::StateAccessBlocks::default(),
                     retention: RetentionDraft::default(), reused: None, allow_reuse: false,
                 };
             }
@@ -343,7 +342,6 @@ impl Element for ViewElement {
                     state.rebuild = None;
                     let layout_root = admission.layout_root;
                     let claim_start = window.claim_log_len();
-                    let element_state_start = window.begin_view_element_states();
                     let mut element = {
                         let type_name =
                             cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
@@ -375,7 +373,7 @@ impl Element for ViewElement {
                         layout_claims,
                         prepaint_range: Some(prepaint_start.clone()..window.prepaint_index()),
                         context: Some(context),
-                        layout_state_range: element_state_start..element_state_start,
+                        layout_state_range: crate::window::StateAccessBlocks::default(),
                         retention: retention.take().expect("view retention slot"),
                     };
                 }
