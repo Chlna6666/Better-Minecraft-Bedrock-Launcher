@@ -172,6 +172,7 @@ struct WindowInvalidatorInner {
     pub dirty_views: FxHashSet<EntityId>,
     // Last successfully committed Render read owners. An unknown owner
     // requires the conservative window-wide fallback.
+    view_reads: FxHashMap<Option<EntityId>, crate::ViewReadSet>,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -201,6 +202,7 @@ impl WindowInvalidator {
                 dirty_to_present_started_at: Some(Instant::now()),
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
+                view_reads: FxHashMap::default(),
                 render_dependencies: FxHashMap::default(),
                 global_read_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
@@ -311,84 +313,44 @@ impl WindowInvalidator {
         self.invalidate_entity(entity, cx, false)
     }
 
-    pub(in crate::window) fn commit_render_dependencies(
+    /// Publish the current read log and only the owners whose lifecycle was replayed.
+    /// The reverse indexes are derived here, not merged with the previous indexes.
+    pub(in crate::window) fn commit_frame_dependencies(
         &self,
-        dependencies: &mut FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
+        log: &mut crate::FrameReadLog,
         entities: &mut FxHashSet<EntityId>,
-        replayed: bool,
+        replayed: &FxHashSet<EntityId>,
         mut is_live: impl FnMut(EntityId) -> bool,
         mut has_route: impl FnMut(EntityId) -> bool,
     ) {
         let mut inner = self.inner.borrow_mut();
-        if replayed {
-            // Deferred replay can skip Render as well as prepaint/paint.
-            // Preserve unknown reads and still-mounted readers until a full
-            // traversal replaces them. Over-invalidation is preferable to
-            // dropping a dependency whose lifecycle was not executed.
-            for (&entity, owners) in &inner.render_dependencies {
-                if !is_live(entity) {
-                    continue;
-                }
-                match owners {
-                    None => {
-                        dependencies.insert(entity, None);
-                        entities.insert(entity);
-                    }
-                    Some(owners) => {
-                        for &owner in owners {
-                            if has_route(owner) {
-                                entities.insert(entity);
-                                if let Some(readers) = dependencies.entry(entity)
-                                    .or_insert_with(|| Some(SmallVec::new()))
-                                    && !readers.contains(&owner)
-                                {
-                                    readers.push(owner);
-                                }
-                            }
-                        }
-                    }
-                }
+        let inner = &mut *inner;
+        // Unknown reads cannot be assigned to a replayed view. Preserve them
+        // conservatively until a complete traversal replaces the snapshot.
+        inner.view_reads.retain(|owner, _| match *owner {
+            Some(owner) => replayed.contains(&owner) && has_route(owner),
+            None => !replayed.is_empty(),
+        });
+        log.append_to(&mut inner.view_reads);
+        inner.render_dependencies.clear();
+        inner.global_read_dependencies.clear();
+        for (owner, reads) in &mut inner.view_reads {
+            // One entity can be mounted more than once; merge newly recorded
+            // reads with replayed reads for that owner without duplicate edges.
+            reads.entities.sort_unstable();
+            reads.entities.dedup();
+            reads.entities.retain(|entity| is_live(*entity));
+            reads.globals.sort_unstable();
+            reads.globals.dedup();
+            let owner = owner.filter(|owner| has_route(*owner));
+            for &entity in &reads.entities {
+                entities.insert(entity);
+                insert_dependency_owner(&mut inner.render_dependencies, entity, owner);
+            }
+            for &key in &reads.globals {
+                insert_dependency_owner(&mut inner.global_read_dependencies, key, owner);
             }
         }
-        for owners in dependencies.values_mut() {
-            if owners.as_ref().is_some_and(|owners| owners.is_empty() || owners.iter().any(|owner| !has_route(*owner))) {
-                *owners = None;
-            }
-        }
-        mem::swap(&mut inner.render_dependencies, dependencies);
-    }
-
-    pub(in crate::window) fn commit_global_read_dependencies(
-        &self,
-        dependencies: &mut crate::GlobalReadDependencies,
-        replayed: bool,
-        mut has_route: impl FnMut(EntityId) -> bool,
-    ) {
-        let mut inner = self.inner.borrow_mut();
-        if replayed {
-            for (&key, owners) in &inner.global_read_dependencies {
-                match owners {
-                    None => { dependencies.insert(key, None); }
-                    Some(owners) => {
-                        for &owner in owners {
-                            if has_route(owner)
-                                && let Some(readers) = dependencies.entry(key)
-                                    .or_insert_with(|| Some(SmallVec::new()))
-                                && !readers.contains(&owner)
-                            {
-                                readers.push(owner);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for owners in dependencies.values_mut() {
-            if owners.as_ref().is_some_and(|owners| owners.is_empty() || owners.iter().any(|owner| !has_route(*owner))) {
-                *owners = None;
-            }
-        }
-        mem::swap(&mut inner.global_read_dependencies, dependencies);
     }
 
     /// Global notifications are already dispatched by the App effect queue.
@@ -592,6 +554,7 @@ impl WindowInvalidator {
         }
 
         trim_collection!(dirty_views);
+        trim_collection!(view_reads);
         trim_collection!(render_dependencies);
         trim_collection!(global_read_dependencies);
         trim_collection!(pending_layout_animation_frames);
@@ -627,6 +590,21 @@ impl WindowInvalidator {
             ),
             "this method can only be called during request_layout, prepaint, or paint"
         );
+    }
+}
+
+fn insert_dependency_owner<K: Eq + std::hash::Hash>(
+    index: &mut FxHashMap<K, Option<SmallVec<[EntityId; 2]>>>,
+    key: K,
+    owner: Option<EntityId>,
+) {
+    match owner {
+        None => { index.insert(key, None); }
+        Some(owner) => {
+            if let Some(owners) = index.entry(key).or_insert_with(|| Some(SmallVec::new())) {
+                owners.push(owner);
+            }
+        }
     }
 }
 
@@ -668,29 +646,29 @@ mod view_invalidation_tests {
     }
 
     #[test]
-    fn deferred_replay_keeps_mounted_dependency_owners_and_drops_removed_ones() {
+    fn replay_carries_only_reused_owners_and_replaces_rebuilt_reads() {
         let invalidator = WindowInvalidator::new();
         let model = EntityId::from(11);
-        let mounted = EntityId::from(12);
-        let removed = EntityId::from(13);
+        let replayed = EntityId::from(12);
+        let rebuilt = EntityId::from(13);
+        let removed = EntityId::from(14);
         let global = TypeId::of::<u32>();
         let mut entities = FxHashSet::default();
-        let mut reads = FxHashMap::default();
-        reads.insert(model, Some(smallvec::smallvec![mounted, removed]));
-        invalidator.commit_render_dependencies(&mut reads, &mut entities, false, |_| true, |_| true);
-        let mut globals = crate::GlobalReadDependencies::default();
-        globals.insert((global, None), Some(smallvec::smallvec![mounted, removed]));
-        invalidator.commit_global_read_dependencies(&mut globals, false, |_| true);
-
-        reads.clear();
-        globals.clear();
+        let mut log = crate::FrameReadLog::default();
+        for owner in [replayed, rebuilt, removed] {
+            log.entity(Some(owner), model);
+            log.global(Some(owner), (global, None));
+        }
+        invalidator.commit_frame_dependencies(&mut log, &mut entities, &FxHashSet::default(), |_| true, |_| true);
         entities.clear();
-        invalidator.commit_render_dependencies(&mut reads, &mut entities, true, |_| true, |owner| owner == mounted);
-        invalidator.commit_global_read_dependencies(&mut globals, true, |owner| owner == mounted);
-        assert!(entities.contains(&model));
+        let new_model = EntityId::from(15);
+        log.entity(Some(rebuilt), new_model);
+        invalidator.commit_frame_dependencies(&mut log, &mut entities, &FxHashSet::from_iter([replayed]), |_| true, |owner| owner != removed);
         let inner = invalidator.inner.borrow();
-        assert_eq!(inner.render_dependencies.get(&model).unwrap().as_ref().unwrap().as_slice(), &[mounted]);
-        assert_eq!(inner.global_read_dependencies.get(&(global, None)).unwrap().as_ref().unwrap().as_slice(), &[mounted]);
+        assert_eq!(inner.render_dependencies[&model].as_ref().unwrap().as_slice(), &[replayed]);
+        assert_eq!(inner.render_dependencies[&new_model].as_ref().unwrap().as_slice(), &[rebuilt]);
+        assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[replayed]);
+        assert!(!inner.view_reads.contains_key(&Some(removed)));
     }
 
     #[test]
@@ -700,47 +678,42 @@ mod view_invalidation_tests {
         let value_reader = EntityId::from(1);
         let present_reader = EntityId::from(2);
         let absent_reader = EntityId::from(3);
-        let mut dependencies = crate::GlobalReadDependencies::default();
-        dependencies.insert((global, None), Some(smallvec::smallvec![value_reader]));
-        dependencies.insert((global, Some(true)), Some(smallvec::smallvec![present_reader]));
-        dependencies.insert((global, Some(false)), Some(smallvec::smallvec![absent_reader]));
-        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
+        let mut log = crate::FrameReadLog::default();
+        log.global(Some(value_reader), (global, None));
+        log.global(Some(present_reader), (global, Some(true)));
+        log.global(Some(absent_reader), (global, Some(false)));
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
 
         invalidator.set_dirty(false);
         invalidator.invalidate_global_dependency(TypeId::of::<u64>(), true);
         assert!(!invalidator.is_dirty());
-
         invalidator.invalidate_global_dependency(global, true);
         assert_eq!(invalidator.take_views(), FxHashSet::from_iter([value_reader, absent_reader]));
         invalidator.set_dirty(false);
         assert!(invalidator.active_view_scoped());
-
         invalidator.invalidate_global_dependency(global, false);
         assert_eq!(invalidator.take_views(), FxHashSet::from_iter([value_reader, present_reader]));
     }
 
     #[test]
-    fn unknown_global_read_preserves_conservative_replay_fallback() {
+    fn unscoped_reads_dominate_until_complete_traversal() {
         let invalidator = WindowInvalidator::new();
-        let global = TypeId::of::<u32>();
         let owner = EntityId::from(1);
-        let mut dependencies = crate::GlobalReadDependencies::default();
-        dependencies.insert((global, None), None);
-        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
-        dependencies.clear();
-        dependencies.insert((global, None), Some(smallvec::smallvec![owner]));
-        invalidator.commit_global_read_dependencies(&mut dependencies, true, |_| true);
-        invalidator.set_dirty(false);
-        invalidator.invalidate_global_dependency(global, true);
-        invalidator.set_dirty(false);
-        assert!(!invalidator.active_view_scoped());
-
-        dependencies.clear();
-        dependencies.insert((global, None), Some(smallvec::smallvec![owner]));
-        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
-        invalidator.invalidate_global_dependency(global, true);
-        invalidator.set_dirty(false);
-        assert!(invalidator.active_view_scoped());
+        let model = EntityId::from(2);
+        let global = TypeId::of::<u32>();
+        let mut log = crate::FrameReadLog::default();
+        log.entity(None, model);
+        log.global(None, (global, None));
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        log.entity(Some(owner), model);
+        log.global(Some(owner), (global, None));
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::from_iter([owner]), |_| true, |_| true);
+        assert_eq!(invalidator.inner.borrow().render_dependencies[&model], None);
+        assert_eq!(invalidator.inner.borrow().global_read_dependencies[&(global, None)], None);
+        log.entity(Some(owner), model);
+        log.global(Some(owner), (global, None));
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        assert_eq!(invalidator.inner.borrow().render_dependencies[&model].as_ref().unwrap().as_slice(), &[owner]);
     }
 
     #[gpui::test]
@@ -752,58 +725,13 @@ mod view_invalidation_tests {
             let model = EntityId::from(101);
             let first = EntityId::from(102);
             let second = EntityId::from(103);
-            let unrelated = EntityId::from(104);
-            let mut dependencies = FxHashMap::default();
-            dependencies.insert(model, Some(smallvec::smallvec![first, second]));
-            let mut entities = FxHashSet::default();
-            entities.insert(model);
-            invalidator.commit_render_dependencies(
-                &mut dependencies, &mut entities, false, |_| true, |_| true,
-            );
+            let mut log = crate::FrameReadLog::default();
+            log.entity(Some(first), model);
+            log.entity(Some(second), model);
+            invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
             invalidator.set_dirty(false);
             assert!(invalidator.invalidate_dependency(model, cx));
             assert_eq!(invalidator.take_views(), FxHashSet::from_iter([first, second]));
-            invalidator.set_dirty(false);
-            assert!(invalidator.active_view_scoped());
-        });
-    }
-
-    #[gpui::test]
-    fn unknown_dependency_survives_replay_until_a_full_traversal(
-        cx: &mut crate::TestAppContext,
-    ) {
-        cx.update(|cx| {
-            let invalidator = WindowInvalidator::new();
-            let model = EntityId::from(101);
-            let owner = EntityId::from(102);
-            let mut dependencies = FxHashMap::default();
-            let mut entities = FxHashSet::default();
-            dependencies.insert(model, None);
-            entities.insert(model);
-            invalidator.commit_render_dependencies(
-                &mut dependencies, &mut entities, false, |_| true, |_| true,
-            );
-            dependencies.clear();
-            entities.clear();
-            dependencies.insert(model, Some(smallvec::smallvec![owner]));
-            invalidator.commit_render_dependencies(
-                &mut dependencies, &mut entities, true, |_| true, |_| true,
-            );
-            assert!(entities.contains(&model));
-            invalidator.set_dirty(false);
-            invalidator.invalidate_dependency(model, cx);
-            invalidator.set_dirty(false);
-            assert!(!invalidator.active_view_scoped());
-
-            dependencies.clear();
-            dependencies.insert(model, Some(smallvec::smallvec![owner]));
-            invalidator.commit_render_dependencies(
-                &mut dependencies, &mut entities, false, |_| true, |_| true,
-            );
-            invalidator.take_views();
-            invalidator.invalidate_dependency(model, cx);
-            invalidator.set_dirty(false);
-            assert!(invalidator.active_view_scoped());
         });
     }
 

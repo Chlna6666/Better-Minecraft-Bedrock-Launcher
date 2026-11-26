@@ -59,13 +59,9 @@ impl Window {
 
     pub(super) fn commit_input_reads(&mut self) {
         let next = self.next_input_readers.get_mut();
-        if self.replayed_dependency_ranges {
-            // Some deferred lifecycles can be replayed without executing
-            // their Render. Never drop a still-mounted reader in that case.
-            for (&owner, &mask) in &self.input_readers {
-                if self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some() {
-                    *next.entry(owner).or_default() |= mask;
-                }
+        for owner in &self.replayed_view_owners {
+            if let Some(&mask) = self.input_readers.get(owner) {
+                *next.entry(*owner).or_default() |= mask;
             }
         }
         // A reader without a committed dispatch route must not be silently

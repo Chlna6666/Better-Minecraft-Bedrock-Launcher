@@ -235,7 +235,6 @@ impl Window {
             return false;
         }
 
-        self.replayed_dependency_ranges = true;
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -393,7 +392,6 @@ impl Window {
     /// not change afterwards, so paint must not pay for the validation again (and a required text
     /// layout was already pinned by the prepaint copy).
     pub(crate) fn replay_validated_paint(&mut self, range: Range<PaintIndex>) {
-        self.replayed_dependency_ranges = true;
         #[cfg(any(test, feature = "test-support"))]
         {
             let records: Vec<_> = self.rendered_frame.debug_bounds_records

@@ -174,7 +174,7 @@ impl Window {
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
         cx.entities.begin_frame_dependencies();
-        self.replayed_dependency_ranges = false;
+        self.replayed_view_owners.clear();
         self.input_dependency_owner = None;
         self.next_input_readers.get_mut().clear();
         self.next_scroll_reads.clear();
@@ -819,22 +819,15 @@ impl Window {
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
         let mut entities = mem::take(cx.entities.accessed_entities.get_mut());
-        let mut dependencies = cx.entities.finish_frame_dependencies();
-        self.invalidator.commit_render_dependencies(
-            &mut dependencies,
+        let mut log = cx.entities.finish_frame_read_log();
+        self.invalidator.commit_frame_dependencies(
+            &mut log,
             &mut entities,
-            self.replayed_dependency_ranges,
+            &self.replayed_view_owners,
             |entity| cx.entities.type_name_for_id(entity).is_some(),
             |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
         );
-        cx.entities.recycle_frame_dependencies(dependencies);
-        let mut global_dependencies = cx.entities.take_global_read_dependencies();
-        self.invalidator.commit_global_read_dependencies(
-            &mut global_dependencies,
-            self.replayed_dependency_ranges,
-            |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
-        );
-        cx.entities.recycle_global_read_dependencies(global_dependencies);
+        cx.entities.recycle_frame_read_log(log);
         let handle = self.handle;
         cx.record_entities_accessed(
             handle,

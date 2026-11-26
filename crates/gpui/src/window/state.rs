@@ -517,8 +517,8 @@ pub struct Window {
     /// Bumped whenever the window's default text style is replaced.
     pub(super) text_style_generation: Cell<u32>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
-    /// A retained lifecycle replay may omit unscoped reads of committed pixels.
-    pub(super) replayed_dependency_ranges: bool,
+    /// Only these views skipped their lifecycle and need their old read sets.
+    pub(super) replayed_view_owners: FxHashSet<EntityId>,
     pub(crate) input_dependency_owner: Option<EntityId>,
     pub(super) input_readers: FxHashMap<EntityId, u8>,
     pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,

@@ -235,6 +235,11 @@ impl Window {
     ) {
         let index = slot.0;
         let element_state_range = if let Some(source) = commit.reused.as_ref() {
+            for key in std::iter::once(&self.next_frame.view_retention_order[index]).chain(source.nested.iter()) {
+                if let Some(ElementId::View(owner)) = key.0.last() {
+                    self.replayed_view_owners.insert(*owner);
+                }
+            }
             let start = self.next_frame.accessed_element_states.len();
             self.keep_reused_view_element_states(&source.element_state_range);
             let states = start..self.next_frame.accessed_element_states.len();

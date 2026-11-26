@@ -171,11 +171,9 @@ impl Window {
     }
 
     pub(in crate::window) fn commit_scroll_reads(&mut self) {
-        if self.replayed_dependency_ranges {
-            for (owner, reads) in self.scroll_reads.drain() {
-                if self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some() {
-                    self.next_scroll_reads.entry(owner).or_insert(reads);
-                }
+        for owner in &self.replayed_view_owners {
+            if let Some(reads) = self.scroll_reads.remove(owner) {
+                merge_reads(self.next_scroll_reads.entry(*owner).or_default(), reads);
             }
         }
         self.next_scroll_reads.retain(|_, reads| !reads.is_empty());

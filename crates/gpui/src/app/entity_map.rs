@@ -64,14 +64,62 @@ impl Display for EntityId {
 pub(crate) type GlobalReadDependencies =
     FxHashMap<(TypeId, Option<bool>), Option<SmallVec<[EntityId; 2]>>>;
 
+/// Owner-scoped read logs. Adapt the append-and-deduplicate dependency recording
+/// in longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7
+/// (Apache-2.0; Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge).
+#[derive(Default)]
+pub(crate) struct FrameReadLog {
+    entities: Vec<(Option<EntityId>, EntityId)>,
+    globals: Vec<(Option<EntityId>, (TypeId, Option<bool>))>,
+}
+
+#[derive(Default)]
+pub(crate) struct ViewReadSet {
+    pub(crate) entities: SmallVec<[EntityId; 4]>,
+    pub(crate) globals: SmallVec<[(TypeId, Option<bool>); 2]>,
+}
+
+impl FrameReadLog {
+    pub(crate) fn entity(&mut self, owner: Option<EntityId>, entity: EntityId) {
+        self.entities.push((owner, entity));
+    }
+
+    pub(crate) fn global(&mut self, owner: Option<EntityId>, key: (TypeId, Option<bool>)) {
+        self.globals.push((owner, key));
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entities.clear();
+        self.globals.clear();
+    }
+
+    /// Repeated reads are recorded cheaply and deduplicated once at publication.
+    pub(crate) fn append_to(&mut self, reads: &mut FxHashMap<Option<EntityId>, ViewReadSet>) {
+        self.entities.sort_unstable();
+        self.entities.dedup();
+        self.globals.sort_unstable();
+        self.globals.dedup();
+        for (owner, entity) in self.entities.drain(..) {
+            reads.entry(owner).or_default().entities.push(entity);
+        }
+        for (owner, key) in self.globals.drain(..) {
+            reads.entry(owner).or_default().globals.push(key);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_sets(mut self) -> FxHashMap<Option<EntityId>, ViewReadSet> {
+        let mut sets = FxHashMap::default();
+        self.append_to(&mut sets);
+        sets
+    }
+}
+
 pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     entity_type_names: SecondaryMap<EntityId, &'static str>,
     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
-    // None is an access outside a proven Render scope. It dominates all
-    // scoped reads of the same entity for this frame.
-    render_dependencies: RefCell<FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>>,
-    global_read_dependencies: RefCell<GlobalReadDependencies>,
+    frame_read_log: RefCell<FrameReadLog>,
     tracking_frame_dependencies: bool,
     render_dependency_owner: Option<EntityId>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
@@ -116,8 +164,7 @@ impl EntityMap {
             entities: SecondaryMap::new(),
             entity_type_names: SecondaryMap::new(),
             accessed_entities: RefCell::new(FxHashSet::default()),
-            render_dependencies: RefCell::new(FxHashMap::default()),
-            global_read_dependencies: RefCell::new(FxHashMap::default()),
+            frame_read_log: RefCell::new(FrameReadLog::default()),
             tracking_frame_dependencies: false,
             render_dependency_owner: None,
             ref_counts: Arc::new(RwLock::new(EntityRefCounts {
@@ -215,16 +262,7 @@ impl EntityMap {
         if !self.tracking_frame_dependencies {
             return;
         }
-        let mut dependencies = self.render_dependencies.borrow_mut();
-        let Some(owner) = self.render_dependency_owner else {
-            dependencies.insert(entity, None);
-            return;
-        };
-        if let Some(owners) = dependencies.entry(entity).or_insert_with(|| Some(SmallVec::new()))
-            && !owners.contains(&owner)
-        {
-            owners.push(owner);
-        }
+        self.frame_read_log.borrow_mut().entity(self.render_dependency_owner, entity);
     }
 
     #[inline]
@@ -232,30 +270,11 @@ impl EntityMap {
         if !self.tracking_frame_dependencies {
             return;
         }
-        let mut dependencies = self.global_read_dependencies.borrow_mut();
-        let key = (global, existence);
-        let Some(owner) = self.render_dependency_owner else {
-            dependencies.insert(key, None);
-            return;
-        };
-        if let Some(owners) = dependencies.entry(key).or_insert_with(|| Some(SmallVec::new()))
-            && !owners.contains(&owner)
-        {
-            owners.push(owner);
-        }
+        self.frame_read_log.borrow_mut().global(self.render_dependency_owner, (global, existence));
     }
 
     pub(crate) fn tracking_frame_dependencies(&self) -> bool {
         self.tracking_frame_dependencies
-    }
-
-    pub(crate) fn take_global_read_dependencies(&mut self) -> GlobalReadDependencies {
-        std::mem::take(self.global_read_dependencies.get_mut())
-    }
-
-    pub(crate) fn recycle_global_read_dependencies(&mut self, mut dependencies: GlobalReadDependencies) {
-        dependencies.clear();
-        *self.global_read_dependencies.get_mut() = dependencies;
     }
 
     pub fn clear_accessed(&mut self) {
@@ -264,8 +283,7 @@ impl EntityMap {
 
     pub(crate) fn begin_frame_dependencies(&mut self) {
         self.clear_accessed();
-        self.render_dependencies.get_mut().clear();
-        self.global_read_dependencies.get_mut().clear();
+        self.frame_read_log.get_mut().clear();
         self.render_dependency_owner = None;
         self.tracking_frame_dependencies = true;
     }
@@ -277,22 +295,21 @@ impl EntityMap {
         std::mem::replace(&mut self.render_dependency_owner, owner)
     }
 
-    pub(crate) fn finish_frame_dependencies(&mut self) -> FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>> {
+    pub(crate) fn finish_frame_read_log(&mut self) -> FrameReadLog {
         self.tracking_frame_dependencies = false;
         self.render_dependency_owner = None;
-        std::mem::take(self.render_dependencies.get_mut())
+        std::mem::take(self.frame_read_log.get_mut())
     }
 
-    pub(crate) fn recycle_frame_dependencies(&mut self, mut dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>) {
-        dependencies.clear();
-        *self.render_dependencies.get_mut() = dependencies;
+    pub(crate) fn recycle_frame_read_log(&mut self, mut log: FrameReadLog) {
+        log.clear();
+        *self.frame_read_log.get_mut() = log;
     }
 
     pub(crate) fn discard_frame_dependencies(&mut self) {
         self.tracking_frame_dependencies = false;
         self.render_dependency_owner = None;
-        self.render_dependencies.get_mut().clear();
-        self.global_read_dependencies.get_mut().clear();
+        self.frame_read_log.get_mut().clear();
     }
 
     pub fn type_name_for_id(&self, entity_id: EntityId) -> Option<&'static str> {
@@ -303,7 +320,6 @@ impl EntityMap {
         let mut ref_counts = &mut *self.ref_counts.write();
         let dropped_entity_ids = ref_counts.dropped_entity_ids.drain(..);
         let accessed_entities = self.accessed_entities.get_mut();
-        let render_dependencies = self.render_dependencies.get_mut();
 
         dropped_entity_ids
             .filter_map(|entity_id| {
@@ -314,7 +330,6 @@ impl EntityMap {
                     "dropped an entity that was referenced"
                 );
                 accessed_entities.remove(&entity_id);
-                render_dependencies.remove(&entity_id);
                 self.entity_type_names.remove(entity_id);
                 // If the EntityId was allocated with `Context::reserve`,
                 // the entity may not have been inserted.

@@ -520,7 +520,7 @@ impl Window {
             resolved_text_style: RefCell::new(None),
             text_style_generation: Cell::new(0),
             rendered_entity_stack: Vec::new(),
-            replayed_dependency_ranges: false,
+            replayed_view_owners: FxHashSet::default(),
             input_dependency_owner: None,
             input_readers: FxHashMap::default(),
             next_input_readers: RefCell::new(FxHashMap::default()),

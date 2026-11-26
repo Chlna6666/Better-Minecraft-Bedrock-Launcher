@@ -226,7 +226,7 @@ mod tests {
     use crate::{AppContext, TestAppContext};
 
     #[gpui::test]
-    fn render_read_owners_are_deduplicated_and_unscoped_reads_dominate(cx: &mut TestAppContext) {
+    fn read_log_deduplicates_each_owner_and_preserves_unscoped_reads(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let model = cx.new(|_| 1);
             let other = cx.new(|_| 2);
@@ -241,12 +241,10 @@ mod tests {
             let _ = model.read(cx);
             cx.entities.set_render_dependency_owner(None);
             let _ = other.read(cx);
-            let dependencies = cx.entities.finish_frame_dependencies();
-            assert_eq!(
-                dependencies.get(&model.entity_id()).unwrap().as_ref().unwrap().as_slice(),
-                &[first.entity_id(), second.entity_id()],
-            );
-            assert_eq!(dependencies.get(&other.entity_id()), Some(&None));
+            let dependencies = cx.entities.finish_frame_read_log().into_sets();
+            assert_eq!(dependencies[&Some(first.entity_id())].entities.len(), 2);
+            assert_eq!(dependencies[&Some(second.entity_id())].entities.as_slice(), &[model.entity_id()]);
+            assert_eq!(dependencies[&None].entities.as_slice(), &[other.entity_id()]);
         });
     }
 
