@@ -29,6 +29,18 @@ pub(crate) struct ViewSplice {
 enum SplicePart {
     Clean(CleanPart),
     Dirty(PrebuiltGap),
+    Ancestor(AncestorPart),
+}
+
+struct AncestorPart {
+    key: GlobalElementId,
+    old: RetainedViewRecord,
+    claims: LayoutClaimBlocks,
+    states: Range<usize>,
+    // Number of following entries belonging to this retained ancestor.
+    descendants: usize,
+    prepaint: Option<Range<PrepaintStateIndex>>,
+    reservation: Option<(ViewRetentionSlot, Range<usize>)>,
 }
 
 struct CleanPart {
@@ -45,6 +57,7 @@ impl SplicePart {
         match self {
             Self::Clean(part) => &part.old,
             Self::Dirty(part) => &part.old,
+            Self::Ancestor(part) => &part.old,
         }
     }
 }
@@ -98,12 +111,12 @@ impl Window {
         &mut self, root: LayoutId, claims: &LayoutClaimBlocks, states: &Range<usize>,
     ) -> Option<(LayoutClaimBlocks, Range<usize>)> {
         let states = self.prebuilt_state_relocations.resolve(states);
-        if !claims.prepaint_blocks().is_empty() || claims.request_blocks().len() != 1
+        if !claims.prepaint_blocks().is_empty()
             || self.next_frame.accessed_element_states.get(states.clone()).is_none()
         {
             return None;
         }
-        let claimed = self.layout_engine.as_mut()?.adopt_claim_span(&claims.request_blocks()[0], root)?;
+        let claimed = self.layout_engine.as_mut()?.adopt_claim_blocks(claims, root)?;
         let accesses = &mut self.next_frame.accessed_element_states;
         let start = accesses.len();
         accesses.reserve(states.len());
@@ -113,7 +126,7 @@ impl Window {
         }
         let end = accesses.len();
         self.prebuilt_state_relocations.record(states, start);
-        Some((LayoutClaimBlocks::request(claimed), start..end))
+        Some((claimed, start..end))
     }
 
     /// Arena-backed elements and their candidate claims never survive a frame.
@@ -175,25 +188,39 @@ impl Window {
         let mut dispatch = smallvec::SmallVec::<[(Range<usize>, EntityId); 4]>::new();
         let mut prepaint = anchor.prepaint_range.start.clone();
         let mut paint = anchor.paint_range.start.clone();
-        for (gap_index, dirty) in indices {
+        let mut open = smallvec::SmallVec::<[RetainedViewRecord; 4]>::new();
+        for (gap_index, scope) in indices {
+            while open.last().is_some_and(|old| old.nested.end <= gap_index) {
+                let old = open.pop()?;
+                if !self.splice_fragment_supported(&prepaint, &old.prepaint_range.end, &paint, &old.paint_range.end) {
+                    return None;
+                }
+                prepaint = old.prepaint_range.end;
+                paint = old.paint_range.end;
+            }
             let slot = &self.rendered_frame.view_retention_records[gap_index];
             let old = slot.record.as_ref()?.clone();
             let gap_rebuild = old.rebuild.as_ref()?;
+            let dirty = scope == Some(ViewDirtyScope::Direct);
+            let ancestor = scope == Some(ViewDirtyScope::TraversalAncestor);
             if !old.layout_state_range.is_empty() || !old.layout_claims.prepaint_blocks().is_empty()
-                || (dirty && (!old.splice_safe || gap_rebuild.layout != rebuild.layout || old.context != anchor.context))
+                || (scope.is_some() && !old.splice_safe)
+                || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context))
                 || self.rendered_frame.retained_scene_segments.get(old.scene_segments.clone()).is_none()
-                // Stretches outside all immediate subtrees cannot contain mutable state.
-                || prepaint.accessed_element_states_index != old.prepaint_range.start.accessed_element_states_index
-                || paint.accessed_element_states_index != old.paint_range.start.accessed_element_states_index
-                || !self.can_reuse_prepaint(&(prepaint..old.prepaint_range.start.clone()))
+                || !self.splice_fragment_supported(&prepaint, &old.prepaint_range.start, &paint, &old.paint_range.start)
                 || !self.can_reuse_prepaint(&old.prepaint_range)
-                || !self.can_reuse_paint(&(paint..old.paint_range.start.clone()))
                 || !self.can_reuse_paint(&old.paint_range)
             {
                 return None;
             }
-            prepaint = old.prepaint_range.end.clone();
-            paint = old.paint_range.end.clone();
+            if ancestor {
+                prepaint = old.prepaint_range.start.clone();
+                paint = old.paint_range.start.clone();
+                open.push(old.clone());
+            } else {
+                prepaint = old.prepaint_range.end.clone();
+                paint = old.paint_range.end.clone();
+            }
             let view = if dirty {
                 dispatch.push((old.prepaint_range.start.dispatch_tree_index..old.prepaint_range.end.dispatch_tree_index, gap_rebuild.view.entity_id()));
                 claims.push((old.layout_claims.clone(), old.layout_root));
@@ -201,12 +228,16 @@ impl Window {
             } else {
                 None
             };
-            plan.push((slot.key.clone(), old, view));
+            plan.push((gap_index, slot.key.clone(), old, ancestor, view));
         }
-        if prepaint.accessed_element_states_index != anchor.prepaint_range.end.accessed_element_states_index
-            || paint.accessed_element_states_index != anchor.paint_range.end.accessed_element_states_index
-            || !self.can_reuse_prepaint(&(prepaint..anchor.prepaint_range.end.clone()))
-            || !self.can_reuse_paint(&(paint..anchor.paint_range.end.clone()))
+        while let Some(old) = open.pop() {
+            if !self.splice_fragment_supported(&prepaint, &old.prepaint_range.end, &paint, &old.paint_range.end) {
+                return None;
+            }
+            prepaint = old.prepaint_range.end;
+            paint = old.paint_range.end;
+        }
+        if !self.splice_fragment_supported(&prepaint, &anchor.prepaint_range.end, &paint, &anchor.paint_range.end)
             || !self.rendered_frame.dispatch_tree.can_splice_gaps(
                 anchor.prepaint_range.start.dispatch_tree_index..anchor.prepaint_range.end.dispatch_tree_index,
                 &dispatch,
@@ -223,19 +254,31 @@ impl Window {
         };
         let states_start = self.begin_view_element_states();
         // The engine's block map is the only source of retained claim relocation.
-        let mut parts = Vec::with_capacity(plan.len());
-        for (gap_key, old, view) in plan {
+        let mut parts: Vec<SplicePart> = Vec::with_capacity(plan.len());
+        let mut open = smallvec::SmallVec::<[usize; 8]>::new();
+        for (gap_index, gap_key, old, ancestor, view) in plan {
+            while open.last().is_some_and(|index| parts[*index].old().nested.end <= gap_index) {
+                close_ancestor(&mut parts, open.pop().expect("open ancestor"));
+            }
             let Some(mut view) = view else {
-                let Some(claims) = claim_map.project(&old.layout_claims, true) else {
+                let Some(claims) = claim_map.project(&old.layout_claims, !ancestor) else {
                     self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
                     self.stash_prebuilt_gaps(parts);
                     return None;
                 };
-                parts.push(SplicePart::Clean(CleanPart {
-                    key: gap_key, old, claims, states: states_start..states_start,
-                    prepaint: None, reservation: None,
-                }));
+                if ancestor {
+                    open.push(parts.len());
+                    parts.push(SplicePart::Ancestor(AncestorPart {
+                        key: gap_key, old, claims, states: states_start..states_start,
+                        descendants: 0, prepaint: None, reservation: None,
+                    }));
+                } else {
+                    parts.push(SplicePart::Clean(CleanPart {
+                        key: gap_key, old, claims, states: states_start..states_start,
+                        prepaint: None, reservation: None,
+                    }));
+                }
                 continue;
             };
             self.splice_building = true;
@@ -251,9 +294,14 @@ impl Window {
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
                 && !self.force_view_cache_refresh && states.is_empty();
+            let gap_claims = gap_start..self.claim_log_len();
+            for index in &open {
+                let SplicePart::Ancestor(ancestor) = &mut parts[*index] else { unreachable!() };
+                ancestor.claims.push_request(gap_claims.clone());
+            }
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
-                claims: LayoutClaimBlocks::request(gap_start..self.claim_log_len()), states, node: None,
+                claims: LayoutClaimBlocks::request(gap_claims), states, node: None,
             }));
             if !compatible {
                 self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
@@ -262,6 +310,7 @@ impl Window {
                 return None;
             }
         }
+        while let Some(index) = open.pop() { close_ancestor(&mut parts, index); }
         if !self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(placement) {
             self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
             self.release_retained_view(&kept);
@@ -281,31 +330,46 @@ impl Window {
             && self.retained_view_context_matches(&splice.anchor, bounds)
             && splice.parts.iter().all(|part| match part {
                 SplicePart::Dirty(gap) => self.layout_bounds(gap.layout_id) == gap.old.bounds,
-                SplicePart::Clean(_) => true,
+                SplicePart::Clean(_) | SplicePart::Ancestor(_) => true,
             })
+    }
+
+    fn splice_fragment_supported(
+        &self, prepaint: &PrepaintStateIndex, prepaint_end: &PrepaintStateIndex,
+        paint: &PaintIndex, paint_end: &PaintIndex,
+    ) -> bool {
+        prepaint.accessed_element_states_index == prepaint_end.accessed_element_states_index
+            && paint.accessed_element_states_index == paint_end.accessed_element_states_index
+            && self.can_reuse_prepaint(&(prepaint.clone()..prepaint_end.clone()))
+            && self.can_reuse_paint(&(paint.clone()..paint_end.clone()))
     }
 
     pub(crate) fn prepaint_view_splice(&mut self, splice: &mut ViewSplice, cx: &mut App) {
         let parent = self.next_frame.dispatch_tree.active_node_id().expect("view dispatch node");
-        let mut cursor = splice.anchor.prepaint_range.start.clone();
-        // Only copied intervals have a valid affine dispatch mapping. A
-        // removed interval is never a valid external parent of clean nodes.
         let mut relocated = smallvec::SmallVec::<[(Range<usize>, usize); 5]>::new();
-        for part in &mut splice.parts {
-            let old_start = part.old().prepaint_range.start.clone();
-            replay_prepaint(self, cursor..old_start, parent, &mut relocated);
+        self.prepaint_splice_parts(&mut splice.parts, &splice.anchor.prepaint_range, parent, &mut relocated, cx);
+    }
+
+    fn prepaint_splice_parts(
+        &mut self, mut parts: &mut [SplicePart], range: &Range<PrepaintStateIndex>,
+        parent: DispatchNodeId, relocated: &mut SmallVec<[(Range<usize>, usize); 5]>, cx: &mut App,
+    ) {
+        let mut cursor = range.start.clone();
+        while let Some((part, rest)) = parts.split_first_mut() {
+            replay_prepaint(self, cursor..part.old().prepaint_range.start.clone(), parent, relocated);
+            parts = rest;
             match part {
                 SplicePart::Clean(clean) => {
                     let start = self.prepaint_index();
                     clean.reservation = Some(self.reserve_spliced_clean(clean.key.clone(), &clean.old));
-                    replay_prepaint(self, clean.old.prepaint_range.clone(), parent, &mut relocated);
+                    replay_prepaint(self, clean.old.prepaint_range.clone(), parent, relocated);
                     clean.prepaint = Some(start..self.prepaint_index());
                     cursor = clean.old.prepaint_range.end.clone();
                 }
                 SplicePart::Dirty(gap) => {
                     let old = &gap.old;
                     let wrapper = DispatchNodeId(old.prepaint_range.start.dispatch_tree_index - 1);
-                    let node = relocate_dispatch(Some(wrapper), parent, &relocated).expect("validated gap wrapper");
+                    let node = relocate_dispatch(Some(wrapper), parent, relocated).expect("validated gap wrapper");
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
                     self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
@@ -315,16 +379,38 @@ impl Window {
                     gap.node = Some(node);
                     cursor = old.prepaint_range.end.clone();
                 }
+                SplicePart::Ancestor(ancestor) => {
+                    let (children, tail) = parts.split_at_mut(ancestor.descendants);
+                    parts = tail;
+                    let slot = self.reserve_view_retention(ancestor.key.clone());
+                    let start = self.prepaint_index();
+                    let claims_start = self.claim_log_len();
+                    self.prepaint_splice_parts(children, &ancestor.old.prepaint_range, parent, relocated, cx);
+                    ancestor.claims.push_prepaint(claims_start..self.claim_log_len());
+                    ancestor.prepaint = Some(start..self.prepaint_index());
+                    let nested = self.finish_view_retention_scope(&slot);
+                    ancestor.reservation = Some((slot, nested));
+                    cursor = ancestor.old.prepaint_range.end.clone();
+                }
             }
         }
-        replay_prepaint(self, cursor..splice.anchor.prepaint_range.end.clone(), parent, &mut relocated);
+        replay_prepaint(self, cursor..range.end.clone(), parent, relocated);
     }
 
     pub(crate) fn paint_view_splice(&mut self, splice: &mut ViewSplice, owner: EntityId, cx: &mut App) {
         let parent = self.next_frame.dispatch_tree.active_node_id().expect("view dispatch node");
-        let mut cursor = splice.anchor.paint_range.start.clone();
-        for part in &mut splice.parts {
+        self.paint_splice_parts(&mut splice.parts, &splice.anchor.paint_range, parent, cx);
+        self.replayed_view_owners.insert(owner);
+    }
+
+    fn paint_splice_parts(
+        &mut self, mut parts: &mut [SplicePart], range: &Range<PaintIndex>,
+        parent: DispatchNodeId, cx: &mut App,
+    ) {
+        let mut cursor = range.start.clone();
+        while let Some((part, rest)) = parts.split_first_mut() {
             self.replay_validated_paint(cursor..part.old().paint_range.start.clone());
+            parts = rest;
             match part {
                 SplicePart::Clean(clean) => {
                     let start = self.paint_index();
@@ -345,11 +431,38 @@ impl Window {
                     self.next_frame.dispatch_tree.set_active_node(parent);
                     cursor = old.paint_range.end.clone();
                 }
+                SplicePart::Ancestor(ancestor) => {
+                    let (children, tail) = parts.split_at_mut(ancestor.descendants);
+                    parts = tail;
+                    let owner = ancestor.old.rebuild.as_ref().expect("validated ancestor").view.entity_id();
+                    let (slot, nested) = ancestor.reservation.take().expect("prepainted ancestor");
+                    let scene_segments_start = self.next_frame.retained_scene_segments.len();
+                    let start = self.paint_index();
+                    self.with_rendered_view(owner, |window| {
+                        window.paint_splice_parts(children, &ancestor.old.paint_range, parent, cx);
+                        let end = window.paint_index();
+                        window.commit_view_retention(&slot, nested, ViewRetentionCommit {
+                            layout_root: ancestor.old.layout_root, layout_claims: ancestor.claims.clone(),
+                            prepaint_range: ancestor.prepaint.take().expect("prepaint range"),
+                            paint_range: start..end, bounds: ancestor.old.bounds,
+                            context: ancestor.old.context.clone(), rebuild: ancestor.old.rebuild.clone(),
+                            splice_safe: ancestor.old.splice_safe, scene_segments_start,
+                            layout_state_range: ancestor.states.clone(), reused: None,
+                        });
+                    });
+                    self.replayed_view_owners.insert(owner);
+                    cursor = ancestor.old.paint_range.end.clone();
+                }
             }
         }
-        self.replay_validated_paint(cursor..splice.anchor.paint_range.end.clone());
-        self.replayed_view_owners.insert(owner);
+        self.replay_validated_paint(cursor..range.end.clone());
     }
+}
+
+fn close_ancestor(parts: &mut [SplicePart], index: usize) {
+    let descendants = parts.len() - index - 1;
+    let SplicePart::Ancestor(ancestor) = &mut parts[index] else { unreachable!() };
+    ancestor.descendants = descendants;
 }
 
 fn replay_prepaint(

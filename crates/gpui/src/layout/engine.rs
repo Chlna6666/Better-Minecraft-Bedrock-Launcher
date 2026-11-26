@@ -672,7 +672,7 @@ impl TaffyLayoutEngine {
             return None;
         }
         let mut clean = Vec::with_capacity(kept.iter().map(|span| span.len()).sum());
-        for span in kept {
+        for span in kept.iter() {
             for claim in self.claimed_key_log.get(span.clone())?.iter().flatten() {
                 let id = claim.id;
                 if self.taffy.dirty(id.into()).ok()? || self.stale_style_fingerprints.contains(&id) {
@@ -811,30 +811,37 @@ impl TaffyLayoutEngine {
         Some((LayoutClaimBlocks::request(kept), map))
     }
 
-    /// Transfer a prebuilt subtree into its caller's open interval.
-    /// Old slots become tombstones and nested View states resolve their
-    /// offsets through the same relocation table before release or commit.
-    pub(crate) fn adopt_claim_span(
-        &mut self, span: &Range<usize>, root: LayoutId,
-    ) -> Option<Range<usize>> {
-        let span = self.claim_relocations.resolve(span);
-        let source = self.claimed_key_log.get(span.clone())?;
+    /// Adopt every prebuilt request block atomically. Old slots become
+    /// tombstones; nested lifecycle states resolve their original blocks.
+    pub(crate) fn adopt_claim_blocks(
+        &mut self, blocks: &LayoutClaimBlocks, root: LayoutId,
+    ) -> Option<LayoutClaimBlocks> {
+        if !blocks.prepaint_blocks().is_empty() { return None; }
+        let blocks = self.resolve_claim_blocks(blocks);
+        let mut ordered: smallvec::SmallVec<[&Range<usize>; 4]> = blocks.iter().collect();
+        ordered.sort_unstable_by_key(|range| range.start);
+        if ordered.windows(2).any(|pair| pair[0].end > pair[1].start) { return None; }
         let frame = self.request_frame;
-        if !source.iter().flatten().any(|claim| claim.id == root)
-            || !source.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+        let mut has_root = false;
+        for span in blocks.iter() {
+            let source = self.claimed_key_log.get(span.clone())?;
+            has_root |= source.iter().flatten().any(|claim| claim.id == root);
+            if !source.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
                 node.id == claim.id && node.claimed_in_frame == frame && !node.offscreen
-            }))
-        {
-            return None;
+            })) { return None; }
         }
+        if !has_root { return None; }
         let start = self.claimed_key_log.len();
-        self.claimed_key_log.reserve(span.len());
-        for index in span.clone() {
-            let entry = self.claimed_key_log[index].take();
-            self.claimed_key_log.push(entry);
+        self.claimed_key_log.reserve(blocks.iter().map(Range::len).sum());
+        for span in blocks.iter() {
+            let target = self.claimed_key_log.len();
+            for index in span.clone() {
+                let entry = self.claimed_key_log[index].take();
+                self.claimed_key_log.push(entry);
+            }
+            self.claim_relocations.record(span.clone(), target);
         }
-        self.claim_relocations.record(span, start);
-        Some(start..self.claimed_key_log.len())
+        Some(LayoutClaimBlocks::request(start..self.claimed_key_log.len()))
     }
 
     pub(crate) fn resolve_claim_blocks(&self, spans: &LayoutClaimBlocks) -> LayoutClaimBlocks {

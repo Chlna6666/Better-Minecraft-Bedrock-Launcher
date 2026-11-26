@@ -108,46 +108,63 @@ impl Window {
             && self.view_dirty_scope(view_id).is_none()
     }
 
-    /// Partition the anchor into non-overlapping immediate descendant subtrees.
-    /// A dirty intermediate subtree is rebuilt as one gap. Its clean siblings
-    /// keep their complete records; missing or ambiguous records reject admission.
-    pub(super) fn splice_subtrees(&self, anchor: &RetainedViewRecord) -> Option<Vec<(usize, bool)>> {
+    /// Walk retained records in prepaint order. Only directly dirty views
+    /// become gaps; traversal ancestors remain open around their descendants.
+    pub(super) fn splice_subtrees(&self, anchor: &RetainedViewRecord) -> Option<Vec<(usize, Option<ViewDirtyScope>)>> {
         let table = &self.rendered_frame.view_retention_records;
         let entries = table.get(anchor.nested.clone())?;
         let mut owners = FxHashSet::default();
+        let mut ancestors = smallvec::SmallVec::<[usize; 8]>::new();
         for (offset, entry) in entries.iter().enumerate() {
             let record = entry.record.as_ref()?;
             let owner = record.rebuild.as_ref()?.view.entity_id();
             let index = anchor.nested.start + offset;
-            if !owners.insert(owner)
+            while ancestors.last().is_some_and(|end| *end == index) { ancestors.pop(); }
+            if ancestors.last().is_some_and(|end| record.nested.end > *end)
+                || !owners.insert(owner)
                 || self.rendered_frame.view_retentions.get(&entry.key).copied() != Some(index)
                 || record.nested.start != index + 1 || record.nested.end > anchor.nested.end
                 || record.nested.end < record.nested.start
             {
                 return None;
             }
+            if !record.nested.is_empty() { ancestors.push(record.nested.end); }
         }
         let mut result = Vec::new();
         let mut index = anchor.nested.start;
-        let mut any_dirty = false;
         while index < anchor.nested.end {
             let record = table[index].record.as_ref()?;
             let rebuild = record.rebuild.as_ref()?;
-            let dirty = self.view_dirty_scope(rebuild.view.entity_id()).is_some();
-            if dirty && !rebuild.splice_supported {
-                return None;
-            }
-            if !dirty && table[record.nested.clone()].iter().any(|entry| {
+            let scope = self.view_dirty_scope(rebuild.view.entity_id());
+            if scope.is_some() && !rebuild.splice_supported { return None; }
+            if scope.is_none() && table[record.nested.clone()].iter().any(|entry| {
                 entry.record.as_ref().and_then(|record| record.rebuild.as_ref())
                     .is_none_or(|child| self.view_dirty_scope(child.view.entity_id()).is_some())
             }) {
                 return None;
             }
-            any_dirty |= dirty;
-            result.push((index, dirty));
-            index = record.nested.end;
+            result.push((index, scope));
+            index = if scope == Some(ViewDirtyScope::TraversalAncestor) {
+                index + 1
+            } else {
+                record.nested.end
+            };
         }
-        any_dirty.then_some(result)
+        // A missing dirty descendant is not evidence that the traversal
+        // ancestor can be retained. Fall back instead of losing invalidation.
+        let mut next_dirty = None;
+        for &(index, scope) in result.iter().rev() {
+            match scope {
+                Some(ViewDirtyScope::Direct) => next_dirty = Some(index),
+                Some(ViewDirtyScope::TraversalAncestor) => {
+                    if next_dirty.is_none_or(|dirty| dirty >= table[index].record.as_ref().unwrap().nested.end) {
+                        return None;
+                    }
+                }
+                None => {}
+            }
+        }
+        next_dirty.map(|_| result)
     }
 
     /// Reserve the entire clean subtree in the candidate table at its new
@@ -350,6 +367,7 @@ impl Window {
     ) {
         commit.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
             .resolve_claim_blocks(&commit.layout_claims);
+        commit.layout_claims.normalize();
         commit.layout_state_range = self.prebuilt_state_relocations.resolve(&commit.layout_state_range);
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {

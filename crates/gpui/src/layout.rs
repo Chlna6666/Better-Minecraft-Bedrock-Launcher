@@ -56,16 +56,38 @@ impl LayoutClaimBlocks {
 
     pub(crate) fn push_request(&mut self, range: Range<usize>) {
         assert_eq!(self.request_count, self.blocks.len());
-        if !range.is_empty() {
-            self.blocks.push(range);
-            self.request_count += 1;
-        }
+        if range.is_empty() { return; }
+        self.blocks.push(range);
+        self.request_count += 1;
     }
 
     pub(crate) fn push_prepaint(&mut self, range: Range<usize>) {
-        if !range.is_empty() {
-            self.blocks.push(range);
+        if range.is_empty() { return; }
+        self.blocks.push(range);
+    }
+
+    pub(crate) fn normalize(&mut self) {
+        let mut result = Self::default();
+        for (prepaint, spans) in [(false, self.request_blocks()), (true, self.prepaint_blocks())] {
+            let mut ordered: smallvec::SmallVec<[Range<usize>; 4]> = spans.iter().cloned().collect();
+            ordered.sort_unstable_by_key(|span| span.start);
+            let mut pending: Option<Range<usize>> = None;
+            for span in ordered {
+                if let Some(last) = pending.as_mut()
+                    && last.end == span.start
+                {
+                    last.end = span.end;
+                    continue;
+                }
+                if let Some(last) = pending.replace(span) {
+                    if prepaint { result.push_prepaint(last); } else { result.push_request(last); }
+                }
+            }
+            if let Some(last) = pending {
+                if prepaint { result.push_prepaint(last); } else { result.push_request(last); }
+            }
         }
+        *self = result;
     }
 
     pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {
