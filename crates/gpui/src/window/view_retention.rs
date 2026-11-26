@@ -98,6 +98,30 @@ impl Window {
             && self.view_dirty_scope(view_id).is_none()
     }
 
+    /// Select one directly dirty leaf in a traversal-only anchor. Reject a
+    /// missing record rather than assuming its subtree was clean. Broader
+    /// gap sets require independent phase-range remapping.
+    pub(crate) fn single_dirty_gap(
+        &self,
+        anchor: &RetainedViewRecord,
+    ) -> Option<usize> {
+        let records = &self.rendered_frame.view_retention_records;
+        let entries = records.get(anchor.nested.clone())?;
+        if entries.len() != 1 {
+            return None;
+        }
+        let entry = &entries[0];
+        let gap = entry.record.as_ref()?;
+        let owner = gap.rebuild.as_ref()?.view.entity_id();
+        if !self.direct_dirty_views.contains(&owner)
+            || !gap.nested.is_empty()
+            || !gap.rebuild.as_ref()?.splice_supported
+        {
+            return None;
+        }
+        Some(anchor.nested.start)
+    }
+
     /// Claims the committed layout of `key` and returns its record, or `None` when the view has to
     /// be built.
     ///

@@ -608,6 +608,51 @@ impl TaffyLayoutEngine {
         Some([start..middle, middle..self.claimed_key_log.len()])
     }
 
+    /// A gap must be a strict descendant of the anchor's native layout root.
+    /// Lazy layout roots and roots shared with a view wrapper cannot be replaced
+    /// without executing the ancestor's layout lifecycle.
+    pub(crate) fn layout_reaches(&self, root: LayoutId, child: LayoutId) -> bool {
+        let mut node = self.taffy.parent(child.into());
+        while let Some(parent) = node {
+            if parent == root.into() {
+                return true;
+            }
+            node = self.taffy.parent(parent);
+        }
+        false
+    }
+
+    /// Layout compatibility proof for a speculative gap. Pending measurement
+    /// replays are counted as uncertainty, not as equal measured results.
+    pub(crate) fn splice_layout_stamp(&self) -> (u64, u64, usize, usize) {
+        (self.layout_changes, self.remeasures, self.anonymous_nodes.len(), self.pending_replays.len())
+    }
+
+    /// Claim the clean prefix and suffix atomically. This first splice path
+    /// accepts a contiguous request-layout gap only; lazy Prepaint claims
+    /// need a separate phase transaction.
+    pub(crate) fn try_keep_around_gap(
+        &mut self,
+        anchor: &LayoutClaimSpans,
+        gap: &LayoutClaimSpans,
+        root: LayoutId,
+        gap_root: LayoutId,
+    ) -> Option<LayoutClaimSpans> {
+        if !anchor[1].is_empty() || !gap[1].is_empty()
+            || gap[0].is_empty()
+            || gap[0].start < anchor[0].start || gap[0].end > anchor[0].end
+            || !self.layout_reaches(root, gap_root)
+        {
+            return None;
+        }
+        let source = [anchor[0].start..gap[0].start, gap[0].end..anchor[0].end];
+        // Reject a stale gap root before claiming any of the anchor.
+        if !self.committed_claim_log.get(gap[0].clone())?.iter().flatten().any(|claim| claim.id == gap_root) {
+            return None;
+        }
+        self.try_keep_retained(&source, root)
+    }
+
     /// Cancel exactly the speculative claims made by admission, without
     /// scanning unrelated nodes or allocating a temporary set.
     pub(crate) fn release_kept(&mut self, spans: &LayoutClaimSpans) {
