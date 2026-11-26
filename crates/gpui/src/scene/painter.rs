@@ -251,17 +251,21 @@ impl Painter {
             content,
         };
 
-        if let Some(parent) = self.blur_captures.last_mut() {
+        let output = if let Some(parent) = self.blur_captures.last_mut() {
             parent.scene.insert_primitive(blur);
+            None
         } else {
+            let revision = blur.content.revision;
             let primitive = Primitive::from(blur);
             let Some(order) = self.order_for_primitive(&primitive) else {
                 self.close_capture_group(start, &config, group_source_bounds);
                 return;
             };
             self.push_ordered_primitive(primitive, order, false);
-        }
+            Some((revision, order))
+        };
         self.close_capture_group(start, &config, group_source_bounds);
+        self.scene.capture_groups.last_mut().expect("closed capture").output = output;
     }
 
     fn close_capture_group(

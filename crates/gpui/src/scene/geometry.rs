@@ -28,6 +28,10 @@ pub(crate) fn is_solid_quad(quad: &Quad) -> bool {
 pub(super) struct CaptureGroup {
     pub(super) range: Range<usize>,
     pub(super) bounds: Bounds<ScaledPixels>,
+    /// The published root output, if this capture actually produced one.
+    /// Revisions identify immutable source content; order narrows the lookup
+    /// after the typed blur stream is sorted. Ambiguous matches fall back.
+    pub(super) output: Option<(u64, super::DrawOrder)>,
 }
 
 impl CaptureGroup {
@@ -56,6 +60,7 @@ impl CaptureGroup {
     ) -> Self {
         Self {
             range,
+            output: None,
             bounds: bounds.dilate(blur_influence_radius(config.radius))
                 .intersect(&config.content_mask.bounds),
         }

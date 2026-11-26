@@ -40,8 +40,52 @@ mod tests {
         next.finish();
 
         assert_eq!(next.blurs.len(), 1);
+        // One root output was replayed, without rebuilding its child painter.
+        assert_eq!(next.replayed_primitives, 1);
+        assert_eq!(next.capture_groups[0].range, 0..previous.len());
+        assert_eq!(next.capture_groups[0].bounds, previous.capture_groups[0].bounds);
         assert!(Arc::ptr_eq(&previous.blurs[0].content, &next.blurs[0].content));
         assert_eq!(previous.blurs[0].content.revision, next.blurs[0].content.revision);
+    }
+
+    #[test]
+    fn static_capture_replay_rebinds_root_order_and_keeps_content() {
+        use std::sync::Arc;
+
+        let bounds = rect(0.0, 0.0, 32.0, 24.0);
+        let mut previous = crate::scene::Painter::default();
+        previous.begin_blur(super::super::BlurCapture {
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            radius: ScaledPixels(0.0),
+            opacity: 1.0,
+        });
+        for _ in 0..4 {
+            previous.insert_primitive(Quad {
+                bounds,
+                content_mask: ContentMask::new(bounds),
+                ..Default::default()
+            });
+        }
+        previous.end_blur();
+        previous.finish();
+
+        let mut next = crate::scene::Painter::default();
+        next.insert_primitive(Quad {
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            ..Default::default()
+        });
+        let start = next.len();
+        assert!(!next.replay(0..previous.len(), &previous, []));
+        next.finish();
+
+        assert_eq!(next.replayed_primitives, 1);
+        assert_eq!(next.capture_groups[0].range, start..start + previous.len());
+        assert_ne!(next.blurs[0].order, previous.blurs[0].order);
+        assert!(Arc::ptr_eq(&next.blurs[0].content, &previous.blurs[0].content));
     }
 
     #[test]

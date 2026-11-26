@@ -254,6 +254,14 @@ impl Painter {
                 spans.next();
                 continue;
             }
+            if let PaintOperation::StartBlur(config) = operation
+                && let Some(end) = self.replay_static_capture(
+                    prev_scene, index..range.end, config,
+                )
+            {
+                index = end;
+                continue;
+            }
             index += 1;
             match operation {
                 PaintOperation::Primitive(primitive) => {
@@ -337,6 +345,70 @@ impl Painter {
             }
             false
         }
+    }
+
+    /// Adopt a complete, static leaf capture directly from the committed scene.
+    /// The raw operation range remains available to damage and retention, but
+    /// no child painter, ordering tree or typed stream is rebuilt.
+    fn replay_static_capture(
+        &mut self,
+        previous: &Scene,
+        range: Range<usize>,
+        config: &BlurCapture,
+    ) -> Option<usize> {
+        if !self.blur_captures.is_empty()
+            || config.radius.0 != 0.0
+            || config.animation_id.is_some()
+            || !previous.animation_values.is_empty()
+        {
+            return None;
+        }
+        let first = previous.capture_groups.partition_point(|group| group.range.end <= range.start);
+        let group = previous.capture_groups.get(first)?;
+        // Groups close inside-out; the first group must be this exact leaf.
+        if group.range.start != range.start || group.range.end > range.end {
+            return None;
+        }
+        let (revision, order) = group.output?;
+        let first = previous.blurs.partition_point(|blur| blur.order < order);
+        let mut matches = previous.blurs[first..].iter()
+            .take_while(|blur| blur.order == order)
+            .filter(|blur| {
+                blur.content.revision == revision
+                    && blur.layer_id == config.layer_id
+                    && blur.bounds == config.bounds
+                    && blur.content_mask == config.content_mask
+                    && blur.radius == config.radius
+                    && blur.opacity == config.opacity
+                    && blur.animation_id.is_none()
+            });
+        let blur = matches.next()?;
+        if matches.next().is_some()
+            || !blur.content.capture_groups.is_empty()
+            || !blur.content.animation_values.is_empty()
+            || !blur.content.blurs.is_empty()
+            || !blur.content.backdrop_blurs.is_empty()
+            || !blur.content.surfaces.is_empty()
+            || !blur.content.renderer_extensions.is_empty()
+        {
+            return None;
+        }
+
+        let primitive = Primitive::from(blur.clone());
+        let new_order = self.order_for_primitive(&primitive)?;
+        if new_order != order {
+            self.retained_prefix_invalid = true;
+        }
+        let start = self.scene.len();
+        self.push_ordered_primitive(primitive, new_order, false);
+        self.scene.paint_operations.share(&previous.paint_operations, group.range.clone());
+        self.scene.capture_groups.push(super::super::geometry::CaptureGroup {
+            range: start..self.scene.len(),
+            bounds: group.bounds,
+            output: Some((revision, new_order)),
+        });
+        self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(1);
+        Some(group.range.end)
     }
 
     fn replay_quad_span(
