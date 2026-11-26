@@ -4365,7 +4365,7 @@ mod platform {
                     if region.is_empty() {
                         continue;
                     }
-                    dx12_rect_from_scissor(region, viewport_size)?
+                    dx12_rect_from_scissor(region, scissor_extent)?
                 } else {
                     scissor
                 };

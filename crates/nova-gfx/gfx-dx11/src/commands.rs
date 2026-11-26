@@ -141,10 +141,7 @@ impl Dx11Device {
         )?;
         let mut rtvs = Vec::with_capacity(targets.len());
         let mut size = Extent2d::new(1, 1)?;
-        let mut viewport_size = viewport
-            .map(|viewport| viewport.for_target(size))
-            .transpose()?
-            .unwrap_or(size);
+        let mut viewport_size = size;
         let mut viewport_origin = SignedOrigin2d::ZERO;
         for (index, target) in targets.iter().enumerate() {
             let (rtv, target_size, target_format, pass_size, origin) = match target {
@@ -208,6 +205,10 @@ impl Dx11Device {
             }
             rtvs.push(rtv);
         }
+        let scissor_extent = viewport
+            .map(|viewport| viewport.mapped_scissor_extent(size))
+            .transpose()?
+            .unwrap_or(viewport_size);
         let depth_view = depth
             .map(|depth| self.views.get(depth.target))
             .transpose()?;
@@ -329,7 +330,7 @@ impl Dx11Device {
                 device.draw_step(
                     command,
                     scissor,
-                    viewport_size,
+                    scissor_extent,
                     &pass.color_attachments,
                     dsv.is_some(),
                     &mut state,

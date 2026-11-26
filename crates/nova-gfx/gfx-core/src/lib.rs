@@ -3451,15 +3451,13 @@ impl Viewport {
 
     /// Returns the target-local scissor extent for this mapping.
     ///
-    /// Scaled viewports keep the source extent's scissor behavior. Pixel-exact viewports may
-    /// span beyond a tile, so their scissor is clipped to the physical attachment.
+    /// Scaled viewports keep the source extent's scissor behavior. Pixel-exact scissors
+    /// are expressed in attachment coordinates, not relative to the viewport origin.
+    /// The native viewport clips rasterization independently of the scissor.
     pub fn mapped_scissor_extent(self, target_extent: Extent2d) -> Result<Extent2d> {
         let viewport_extent = self.for_target(target_extent)?;
         if self.mapping == ViewportMapping::PixelExact {
-            Extent2d::new(
-                viewport_extent.width().min(target_extent.width()),
-                viewport_extent.height().min(target_extent.height()),
-            )
+            Ok(target_extent)
         } else {
             Ok(viewport_extent)
         }
@@ -3837,6 +3835,38 @@ mod tests {
                 width: 20,
                 height: 32,
             },
+        );
+    }
+
+    #[test]
+    fn pixel_exact_scissor_extent_is_attachment_relative() {
+        let source = Extent2d::new(64, 48).expect("source extent");
+        let target = Extent2d::new(128, 96).expect("target extent");
+        let viewport = Viewport {
+            origin: SignedOrigin2d { x: 40, y: 32 },
+            extent: source,
+            reference_extent: source,
+            mapping: ViewportMapping::PixelExact,
+        };
+        assert_eq!(viewport.for_target(target).unwrap(), source);
+        assert_eq!(viewport.mapped_scissor_extent(target).unwrap(), target);
+        assert_eq!(
+            viewport.map_scissor(ScissorRect {
+                x: 48, y: 32, width: 16, height: 16,
+            }, target).unwrap(),
+            ScissorRect { x: 88, y: 64, width: 16, height: 16 },
+        );
+        let tile = Extent2d::new(16, 16).expect("tile extent");
+        let viewport = Viewport {
+            origin: SignedOrigin2d { x: -48, y: -32 },
+            ..viewport
+        };
+        assert_eq!(viewport.mapped_scissor_extent(tile).unwrap(), tile);
+        assert_eq!(
+            viewport.map_scissor(ScissorRect {
+                x: 48, y: 32, width: 16, height: 16,
+            }, tile).unwrap(),
+            ScissorRect { x: 0, y: 0, width: 16, height: 16 },
         );
     }
 
