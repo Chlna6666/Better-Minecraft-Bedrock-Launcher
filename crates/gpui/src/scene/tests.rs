@@ -1762,3 +1762,20 @@ fn retained_bounds_proof_excludes_captures_but_accepts_independent_layers() {
     assert_eq!(current.len() - target, end - start);
     assert_eq!(current.bounds_for_range(target..current.len()), previous.bounds_for_range(start..end));
 }
+
+#[test]
+fn retained_prefix_uses_animation_ordering_footprint() {
+    let clip = bounds(point(px(0.), px(0.)), size(px(100.), px(100.))).scale(1.);
+    let quad = Quad {
+        bounds: bounds(point(px(10.), px(10.)), size(px(10.), px(10.))).scale(1.),
+        content_mask: ContentMask::new(clip),
+        ..Default::default()
+    };
+    let mut previous = crate::scene::Painter::default();
+    previous.insert_primitive(quad.clone());
+    previous.insert_primitive(quad.clone());
+    let mut current = crate::scene::Painter::default();
+    current.insert_animated_primitive(quad, SceneAnimationId(1));
+    current.replay(1..previous.len(), &previous, []);
+    assert!(current.retained_prefix_invalid);
+}

@@ -210,3 +210,33 @@ fn scope_boundaries_follow_append_share_compact_edit_and_clear() {
     target.share(&source, 15..17);
     check_ranges(&target);
 }
+
+#[test]
+fn range_comparison_skips_shared_runs_even_with_pending_tails() {
+    let source = operations(128);
+    let mut current = Operations::default();
+    current.share(&source, 0..64);
+    current.push(PaintOperation::EndLayer);
+    current.share(&source, 65..120);
+    current.extend((0..8).map(|_| PaintOperation::Primitive(Primitive::Quad(Quad::default()))));
+
+    for start in 0..=128 {
+        for end in start..=128 {
+            let mut compared = 0;
+            assert!(current.range(start..end).matches_by(source.range(start..end), |_, _| {
+                compared += 1;
+                true
+            }));
+            let expected = (start..end).filter(|i| *i == 64 || *i >= 120).count();
+            assert_eq!(compared, expected, "{start}..{end}");
+        }
+    }
+    assert!(!current.range(63..66).matches_by(source.range(63..66), |_, _| false));
+    assert!(!current.range(0..1).matches_by(source.range(0..2), |_, _| true));
+    let mut compared = 0;
+    assert!(current.range(1..32).matches_by(source.range(0..31), |_, _| {
+        compared += 1;
+        true
+    }));
+    assert_eq!(compared, 31);
+}

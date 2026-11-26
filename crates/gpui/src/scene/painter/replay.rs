@@ -377,18 +377,14 @@ impl Painter {
             return false;
         };
 
-        current_prefix
-            .iter()
-            .zip(previous_prefix.iter())
-            .all(|(current, previous)| ordering_operations_match(current, previous))
+        current_prefix.matches_by(previous_prefix, ordering_operations_match)
     }
 }
 fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
     match (current, previous) {
         (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
             current.order() == previous.order()
-                && current.bounds().intersect(&current.content_mask().bounds)
-                    == previous.bounds().intersect(&previous.content_mask().bounds)
+                && Painter::ordering_bounds(current) == Painter::ordering_bounds(previous)
         }
         (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
             current == previous

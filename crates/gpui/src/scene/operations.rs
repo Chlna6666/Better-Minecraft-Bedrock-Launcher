@@ -247,60 +247,9 @@ impl Operations {
     fn for_each_unshared_pair(
         &self,
         other: &Self,
-        mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
     ) -> bool {
-        if self.len != other.len {
-            return false;
-        }
-
-        // Published Scenes call `finish` before comparison. Keep the general pending-operation
-        // case correct for scratch callers, while avoiding indexed lookup on the normal path.
-        if !self.pending.is_empty() || !other.pending.is_empty() {
-            return self
-                .iter()
-                .zip(other.iter())
-                .all(|(left, right)| compare(left, right));
-        }
-
-        let mut left_segment_index = 0;
-        let mut right_segment_index = 0;
-        let mut left_offset = 0;
-        let mut right_offset = 0;
-
-        while left_segment_index < self.segments.len() && right_segment_index < other.segments.len()
-        {
-            let left = &self.segments[left_segment_index];
-            let right = &other.segments[right_segment_index];
-            let count = (left.range.len() - left_offset).min(right.range.len() - right_offset);
-            let same_storage_range = Arc::ptr_eq(&left.owner, &right.owner)
-                && left.range.start + left_offset == right.range.start + right_offset;
-
-            if !same_storage_range {
-                let left_operations = left.slice();
-                let right_operations = right.slice();
-                for offset in 0..count {
-                    if !compare(
-                        &left_operations[left_offset + offset],
-                        &right_operations[right_offset + offset],
-                    ) {
-                        return false;
-                    }
-                }
-            }
-
-            left_offset += count;
-            right_offset += count;
-            if left_offset == left.range.len() {
-                left_segment_index += 1;
-                left_offset = 0;
-            }
-            if right_offset == right.range.len() {
-                right_segment_index += 1;
-                right_offset = 0;
-            }
-        }
-
-        left_segment_index == self.segments.len() && right_segment_index == other.segments.len()
+        self.all().matches_by(other.all(), compare)
     }
 
     /// Freeze newly appended operations without rewriting any existing immutable ranges.
@@ -464,6 +413,51 @@ impl<'a> OperationRange<'a> {
             end: self.start + range.end,
         }
     }
+    /// Compare logical ranges using their immutable backing slices as an
+    /// exact proof. Pending tails are compared without freezing the builder.
+    pub(crate) fn matches_by(
+        self,
+        other: OperationRange<'_>,
+        mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    ) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        fn runs<'a>(range: OperationRange<'a>) -> impl Iterator<Item = &'a [PaintOperation]> {
+            let ops = range.operations;
+            let first = ops.segments.partition_point(|segment| segment.end <= range.start);
+            let end = ops.segments.partition_point(|segment| segment.start() < range.end);
+            let pending_start = ops.len - ops.pending.len();
+            let pending = if range.end > pending_start && range.start < range.end {
+                &ops.pending[range.start.saturating_sub(pending_start)..range.end - pending_start]
+            } else {
+                &[]
+            };
+            ops.segments[first..end].iter().map(move |segment| {
+                let start = range.start.saturating_sub(segment.start());
+                let end = range.end.min(segment.end) - segment.start();
+                &segment.slice()[start..end]
+            }).chain(std::iter::once(pending)).filter(|slice| !slice.is_empty())
+        }
+        let mut left_runs = runs(self);
+        let mut right_runs = runs(other);
+        let mut left = left_runs.next().unwrap_or(&[]);
+        let mut right = right_runs.next().unwrap_or(&[]);
+        while !left.is_empty() && !right.is_empty() {
+            let count = left.len().min(right.len());
+            let (a, left_tail) = left.split_at(count);
+            let (b, right_tail) = right.split_at(count);
+            // Both slices are live and nonempty, so equal addresses prove
+            // identical storage, including the source offset.
+            if !std::ptr::eq(a, b) && !a.iter().zip(b).all(|(a, b)| compare(a, b)) {
+                return false;
+            }
+            left = if left_tail.is_empty() { left_runs.next().unwrap_or(&[]) } else { left_tail };
+            right = if right_tail.is_empty() { right_runs.next().unwrap_or(&[]) } else { right_tail };
+        }
+        left.is_empty() && right.is_empty()
+    }
+
     pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = &'a PaintOperation> + Clone {
         let first = self
             .operations
