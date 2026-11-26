@@ -124,6 +124,21 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) layout_state_range: StateAccessBlocks,
 }
 
+impl RetainedViewRecord {
+    fn own_scene_segment<'a>(
+        &self,
+        owner: EntityId,
+        segments: &'a [RetainedSceneSegment],
+    ) -> Option<&'a RetainedSceneSegment> {
+        let range = self.paint_range.start.scene_index..self.paint_range.end.scene_index;
+        if range.is_empty() {
+            return None;
+        }
+        segments.get(self.scene_segments.end)
+            .filter(|segment| segment.entity_id == owner && segment.scene_range == range)
+    }
+}
+
 /// Prepaint order is also record order. A reservation without a paint commit
 /// remains a hole, and cannot be selected as a rebuild/replay source.
 pub(crate) struct ViewRecordSlot {
@@ -254,6 +269,38 @@ impl Window {
         (slot, nested)
     }
 
+    /// Replay an admitted view and carry its authoritative fragment bounds
+    /// into the active paint scope. The replay may rebind draw order, but
+    /// plain primitives preserve visual geometry as long as none were dropped.
+    pub(crate) fn replay_retained_view_paint(
+        &mut self,
+        owner: EntityId,
+        source: &RetainedViewRecord,
+    ) {
+        let range = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
+        let start = self.next_frame.painter.len();
+        let bounds = if !self.view_bounds_stack.is_empty()
+            && !self.next_frame.painter.is_capturing_blur()
+            && self.rendered_frame.scene().can_reuse_range_bounds(range.clone())
+        {
+            source.own_scene_segment(owner, &self.rendered_frame.retained_scene_segments)
+                .map(|segment| segment.bounds)
+        } else {
+            None
+        };
+        self.replay_validated_paint(source.paint_range.clone());
+        let end = self.next_frame.painter.len();
+        if let Some(bounds) = bounds
+            && end - start == range.len()
+        {
+            // In test builds compare the carried geometry with the reference
+            // scanner; release replay pays no additional primitive traversal.
+            #[cfg(test)]
+            assert_eq!(self.next_frame.scene().bounds_for_range(start..end), Some(bounds));
+            self.fold_view_bounds(start..end, Some(bounds));
+        }
+    }
+
     /// A clean subtree's own damage entry is emitted after its descendant
     /// record is committed. Unlike ordinary view replay, no wrapper is painted
     /// here, so the original own entry must also be carried.
@@ -266,9 +313,7 @@ impl Window {
         let owner = source.rebuild.as_ref().expect("admitted clean subtree").view.entity_id();
         let old_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
         let new_scene = paint.start.scene_index..paint.end.scene_index;
-        let own = self.rendered_frame.retained_scene_segments.get(source.scene_segments.end)
-            .filter(|entry| entry.entity_id == owner && entry.scene_range == old_scene)
-            .cloned();
+        let own = source.own_scene_segment(owner, &self.rendered_frame.retained_scene_segments).cloned();
         let scene_segments_start = self.next_frame.retained_scene_segments.len();
         self.commit_view_retention(slot, RetainedViewRecord {
             layout_root: source.layout_root, layout_claims: claims,

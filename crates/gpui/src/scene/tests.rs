@@ -1714,3 +1714,51 @@ fn completed_capture_groups_match_legacy_scan_after_replay_and_clear() {
     replayed.clear();
     assert!(replayed.capture_groups.is_empty());
 }
+
+#[test]
+fn retained_bounds_proof_excludes_captures_but_accepts_independent_layers() {
+    let viewport = bounds(point(ScaledPixels(0.), ScaledPixels(0.)), size(ScaledPixels(500.), ScaledPixels(400.)));
+    let inner = bounds(point(ScaledPixels(50.), ScaledPixels(60.)), size(ScaledPixels(80.), ScaledPixels(90.)));
+    let quad = Quad { bounds: inner, content_mask: ContentMask::new(viewport), ..Default::default() };
+    let capture = BlurCapture {
+        animation_id: None, layer_id: None, bounds: inner,
+        content_mask: ContentMask::new(viewport), radius: ScaledPixels(3.), opacity: 1.,
+    };
+    let mut previous = crate::scene::Painter::default();
+    previous.insert_primitive(quad.clone());
+    previous.begin_blur(capture.clone());
+    previous.begin_blur(capture);
+    previous.insert_primitive(quad.clone());
+    previous.end_blur();
+    previous.end_blur();
+    let start = previous.len();
+    previous.push_layer(viewport);
+    previous.insert_primitive(quad.clone());
+    previous.pop_layer();
+    let end = previous.len();
+    previous.finish();
+
+    assert!(previous.can_reuse_range_bounds(0..1));
+    assert!(!previous.can_reuse_range_bounds(1..start));
+    assert!(previous.can_reuse_range_bounds(start..end));
+    assert!(!previous.can_reuse_range_bounds(start + 1..end - 1));
+    for left in 0..=end {
+        for right in left..=end {
+            let range = left..right;
+            let expected = previous.paint_operations.range_is_replayable(range.clone())
+                && (range.is_empty() || !previous.capture_groups.iter().any(|group| {
+                    group.range.start < right && left < group.range.end
+                }));
+            assert_eq!(previous.can_reuse_range_bounds(range.clone()), expected, "{range:?}");
+        }
+    }
+    // A different destination prefix changes draw-order identity without
+    // changing the replayed fragment's visual extent.
+    let mut current = crate::scene::Painter::default();
+    current.insert_primitive(quad.clone());
+    current.insert_primitive(quad);
+    let target = current.len();
+    current.replay(start..end, &previous, []);
+    assert_eq!(current.len() - target, end - start);
+    assert_eq!(current.bounds_for_range(target..current.len()), previous.bounds_for_range(start..end));
+}

@@ -101,6 +101,22 @@ impl Scene {
         self.paint_operations.len()
     }
 
+    /// An independent fragment with no isolated capture can carry its old
+    /// visual bounds across replay. Draw-order and path-id rebinding do not
+    /// change those bounds. Captures may regenerate geometry when closed.
+    pub(crate) fn can_reuse_range_bounds(&self, range: Range<usize>) -> bool {
+        if !self.paint_operations.range_is_replayable(range.clone()) {
+            return false;
+        }
+        if range.is_empty() {
+            return true;
+        }
+        // Groups are ordered by their closing boundary. Independence rules
+        // out a capture crossing either endpoint, including nested captures.
+        let first = self.capture_groups.partition_point(|group| group.range.end <= range.start);
+        self.capture_groups.get(first).is_none_or(|group| group.range.start >= range.end)
+    }
+
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
         for operation in self.paint_operations.get_range(range.clone())?.iter() {

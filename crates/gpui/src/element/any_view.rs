@@ -447,7 +447,7 @@ impl Element for ViewElement {
                     return;
                 };
                 let start = window.paint_index();
-                window.replay_validated_paint(admission.paint_range.clone());
+                window.replay_retained_view_paint(entity_id, admission);
                 window.record_debug_view_cache_status(bounds, crate::window::debug_visualization::ViewCacheDebugStatus::Hit, cx);
                 let end = window.paint_index();
                 window.commit_view_retention(

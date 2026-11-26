@@ -637,30 +637,8 @@ impl Window {
                     None => tail_bounds,
                 });
             }
-            // Fold this view's result into the parent frame, covering any of the
-            // parent's own operations painted since its previous merge point.
-            if let Some(parent_scanned_until) = self
-                .view_bounds_stack
-                .last()
-                .map(|parent| parent.scanned_until)
-            {
-                let gap_bounds = if parent_scanned_until < scene_range.start {
-                    self.next_frame
-                        .scene()
-                        .bounds_for_range(parent_scanned_until..scene_range.start)
-                } else {
-                    None
-                };
-                if let Some(parent) = self.view_bounds_stack.last_mut() {
-                    for bounds in gap_bounds.iter().chain(view_bounds.iter()) {
-                        parent.bounds = Some(match parent.bounds {
-                            Some(existing) => existing.union(bounds),
-                            None => *bounds,
-                        });
-                    }
-                    parent.scanned_until = scene_range.end;
-                }
-            }
+            // Fold this view's result into the parent, scanning only its gap.
+            self.fold_view_bounds(scene_range.clone(), view_bounds);
             if scene_range.start != scene_range.end
                 && let Some(bounds) = view_bounds
             {
@@ -670,6 +648,37 @@ impl Window {
         }
         self.rendered_entity_stack.pop();
         result
+    }
+
+    /// Advance the active view's bounds through a completed child or a
+    /// geometry-preserving replay. Any preceding freshly painted gap still
+    /// belongs to this view and must be scanned exactly once.
+    pub(super) fn fold_view_bounds(
+        &mut self,
+        range: Range<usize>,
+        bounds: Option<Bounds<ScaledPixels>>,
+    ) {
+        let Some(scanned_until) = self.view_bounds_stack.last().map(|frame| frame.scanned_until)
+        else {
+            return;
+        };
+        if scanned_until > range.start {
+            // Never advance across an overlapping or already consumed span.
+            return;
+        }
+        let gap = if scanned_until < range.start {
+            self.next_frame.scene().bounds_for_range(scanned_until..range.start)
+        } else {
+            None
+        };
+        let frame = self.view_bounds_stack.last_mut().expect("active view bounds");
+        for bounds in gap.iter().chain(bounds.iter()) {
+            frame.bounds = Some(match frame.bounds {
+                Some(existing) => existing.union(bounds),
+                None => *bounds,
+            });
+        }
+        frame.scanned_until = range.end;
     }
 
     /// Executes the provided function with the specified image cache.

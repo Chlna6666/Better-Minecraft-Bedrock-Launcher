@@ -538,7 +538,8 @@ impl Window {
             match part {
                 SplicePart::Clean(clean) => {
                     let start = self.paint_index();
-                    self.replay_validated_paint(clean.old.paint_range.clone());
+                    let owner = clean.old.rebuild.as_ref().expect("validated clean subtree").view.entity_id();
+                    self.replay_retained_view_paint(owner, &clean.old);
                     let paint = start..self.paint_index();
                     let (slot, nested) = clean.reservation.take().expect("prepainted clean subtree");
                     self.commit_spliced_clean(&slot, nested, &clean.old, std::mem::take(&mut clean.claims),
