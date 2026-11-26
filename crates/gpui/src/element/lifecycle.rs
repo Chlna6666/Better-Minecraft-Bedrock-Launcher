@@ -1,6 +1,6 @@
 use crate::window::{RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus};
 use crate::{
-    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, EntityId, InspectorElementId, LayoutId,
+    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
     PaintIndex, Pixels, Point, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
     WrappedLineLayout,
 };
@@ -286,7 +286,6 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         plain_text_key: Option<RetainedPlainTextKey>,
     },
     Retained {
-        view_owner: Option<EntityId>,
         translation: Point<Pixels>,
         bounds: Bounds<Pixels>,
         source_prepaint_range: Range<PrepaintStateIndex>,
@@ -546,7 +545,6 @@ fn record_retained_painted_element(
     plain_text_key: Option<RetainedPlainTextKey>,
     identity_stable: bool,
     outer_replay_safe: bool,
-    explicit_cached_view: bool,
     unstable_identity_start: usize,
     window: &mut Window,
 ) {
@@ -564,8 +562,6 @@ fn record_retained_painted_element(
         plain_text_key,
         identity_stable,
         subtree_stable,
-        !outer_replay_safe,
-        explicit_cached_view,
     );
 
     // Reuse the existing O(1) subtree-stability propagation counter for explicit replay barriers
@@ -724,30 +720,6 @@ impl<E: Element> Drawable<E> {
                     &request_layout as &dyn Any,
                     window,
                 );
-                if identity_stable {
-                    let explicit_owner = (&self.element as &dyn Any)
-                        .downcast_ref::<super::ViewElement>()
-                        .and_then(super::ViewElement::explicitly_cached_owner);
-                    let retained_view = explicit_owner.and_then(|owner| {
-                        window.explicit_cached_view_replay(owner, &retained_id, bounds, layout_fingerprint, cx)
-                            .map(|(ranges, delta)| (owner, ranges, delta))
-                    });
-                    if let Some((owner, retained, translation)) = retained_view {
-                        let prepaint_start = window.prepaint_index();
-                        if window.reuse_cached_view_prepaint(&retained_id, retained.prepaint_range.clone(), translation) {
-                            self.phase = ElementDrawPhase::Retained {
-                                view_owner: Some(owner),
-                                translation,
-                                bounds,
-                                source_prepaint_range: retained.prepaint_range,
-                                source_paint_range: retained.paint_range,
-                                source_metadata_range: retained.metadata_range,
-                                prepaint_range: prepaint_start..window.prepaint_index(),
-                            };
-                            return;
-                        }
-                    }
-                }
                 if let Some((
                     source_prepaint_range,
                     source_paint_range,
@@ -765,7 +737,6 @@ impl<E: Element> Drawable<E> {
                     window,
                 ) {
                     self.phase = ElementDrawPhase::Retained {
-                        view_owner: None,
                         translation,
                         bounds,
                         source_prepaint_range,
@@ -886,8 +857,6 @@ impl<E: Element> Drawable<E> {
                     plain_text_key,
                     identity_stable,
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
-                    (&self.element as &dyn Any).downcast_ref::<super::ViewElement>()
-                        .is_some_and(|view| view.explicitly_cached_owner().is_some()),
                     paint_run.unstable_identity_start,
                     window,
                 );
@@ -902,7 +871,6 @@ impl<E: Element> Drawable<E> {
                 }
             }
             ElementDrawPhase::Retained {
-                view_owner,
                 translation,
                 bounds,
                 source_prepaint_range,
@@ -910,26 +878,16 @@ impl<E: Element> Drawable<E> {
                 source_metadata_range,
                 prepaint_range,
             } => {
-                let replay = |window: &mut Window| {
-                    paint_retained_element(
-                        bounds,
-                        translation,
-                        source_prepaint_range,
-                        source_paint_range,
-                        source_metadata_range,
-                        prepaint_range,
-                        window,
-                        cx,
-                    );
-                };
-                if let Some(owner) = view_owner {
-                    window.with_rendered_view(owner, replay);
-                    // Preserve the normal View boundary barrier for outer replay.
-                    window.next_frame.retained_unstable_identity_count =
-                        window.next_frame.retained_unstable_identity_count.saturating_add(1);
-                } else {
-                    replay(window);
-                }
+                paint_retained_element(
+                    bounds,
+                    translation,
+                    source_prepaint_range,
+                    source_paint_range,
+                    source_metadata_range,
+                    prepaint_range,
+                    window,
+                    cx,
+                );
                 self.phase = ElementDrawPhase::Painted;
             }
             _ => panic!("must call prepaint before paint"),

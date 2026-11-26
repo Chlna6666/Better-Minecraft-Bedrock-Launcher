@@ -3817,40 +3817,37 @@ fn ordinary_view_is_drawn_again_when_nothing_it_read_changed(cx: &mut TestAppCon
     .unwrap();
 }
 
-struct ExplicitCachedTestView {
+struct AutoRetainedDependencyTestView {
     model: Entity<u32>,
     renders: Rc<Cell<usize>>,
 }
 
-impl Render for ExplicitCachedTestView {
+impl Render for AutoRetainedDependencyTestView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        eprintln!("CHILD-RENDER count={}", self.renders.get() + 1);
         self.renders.set(self.renders.get() + 1);
         let value = *self.model.read(cx);
         crate::div().w_full().h_full().child(format!("{value}"))
     }
 }
 
-struct ExplicitCachedTestRoot {
-    child: Entity<ExplicitCachedTestView>,
+struct AutoRetainedDependencyTestRoot {
+    child: Entity<AutoRetainedDependencyTestView>,
 }
 
-impl Render for ExplicitCachedTestRoot {
+impl Render for AutoRetainedDependencyTestRoot {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        crate::div().child(self.child.clone().cached(
-            crate::StyleRefinement::default().w(px(100.)).h(px(30.)),
-        ))
+        crate::div().w(px(100.)).h(px(30.)).child(self.child.clone())
     }
 }
 
 #[gpui::test]
-fn explicit_cached_view_reuses_lifecycle_and_rebuilds_on_dependency_notify(cx: &mut TestAppContext) {
+fn automatic_view_retention_rebuilds_on_dependency_notify(cx: &mut TestAppContext) {
     let renders = Rc::new(Cell::new(0));
     let (model, root, window) = cx.update(|cx| {
         let model = cx.new(|_| 1u32);
-        let child = cx.new(|_| ExplicitCachedTestView { model: model.clone(), renders: renders.clone() });
+        let child = cx.new(|_| AutoRetainedDependencyTestView { model: model.clone(), renders: renders.clone() });
         let window = cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|_| ExplicitCachedTestRoot { child: child.clone() })
+            cx.new(|_| AutoRetainedDependencyTestRoot { child: child.clone() })
         }).unwrap();
         let root = cx.read_window(&window, |root, _| root).unwrap();
         (model, root, AnyWindowHandle::from(window))
@@ -3861,11 +3858,10 @@ fn explicit_cached_view_reuses_lifecycle_and_rebuilds_on_dependency_notify(cx: &
         assert!(baseline > 0);
         root.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear();
-        eprintln!("AFTER-A renders={} baseline={}", renders.get(), baseline);
         assert_eq!(renders.get(), baseline);
         root.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear();
-        assert_eq!(renders.get(), baseline, "dependency must survive repeated cached replay");
+        assert_eq!(renders.get(), baseline, "dependency must survive repeated automatic replay");
         model.update(cx, |value, cx| { *value = 2; cx.notify(); });
         window.draw(cx).clear();
         assert_eq!(renders.get(), baseline + 1);

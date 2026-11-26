@@ -552,7 +552,6 @@ impl Window {
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
             direct_dirty_views: FxHashSet::default(),
-            cached_views_laid_out: 0,
             focus_listeners: SingleSubscriberSet::new(),
             focus_lost_listeners: SingleSubscriberSet::new(),
             default_prevented: true,

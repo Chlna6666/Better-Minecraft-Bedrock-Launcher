@@ -165,7 +165,9 @@ impl Window {
     pub(crate) fn record_scroll_reads(&mut self, owner: EntityId, reads: Vec<ScrollRead>) {
         // Even an empty set is a new Render result. Keeping the previous
         // getters in that case resurrects dependencies Render stopped reading.
-        merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
+        if !reads.is_empty() || self.scroll_reads.contains_key(&owner) {
+            merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
+        }
     }
 
     pub(in crate::window) fn commit_scroll_reads(&mut self) {
@@ -246,6 +248,27 @@ mod tests {
         assert_eq!((reads[0].probe)(), Probe::Changed);
         drop(state);
         assert_eq!((reads[0].probe)(), Probe::Dead);
+    }
+
+    #[test]
+    fn mounted_scroll_sources_follow_replayed_listener_spans() {
+        let state = Rc::new(RefCell::new(1u32));
+        let owner = EntityId::from(1);
+        let source = vec![
+            MountedScrollSource::new(2, owner, &state, |value| *value),
+            MountedScrollSource::new(5, owner, &state, |value| *value),
+            MountedScrollSource::new(9, owner, &state, |value| *value),
+        ];
+        let mut target = Vec::new();
+        carry_scroll_sources(&source, &mut target, 3..9, 11);
+        assert_eq!(target.len(), 1);
+        assert_eq!(target[0].listener_index, 13);
+        assert_eq!((target[0].probe)(), Probe::Unchanged);
+        *state.borrow_mut() = 2;
+        assert_eq!((target[0].probe)(), Probe::Changed);
+        assert_eq!((source[1].probe)(), Probe::Changed);
+        drop(state);
+        assert_eq!((target[0].probe)(), Probe::Dead);
     }
 
     #[test]

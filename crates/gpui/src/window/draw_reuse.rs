@@ -765,8 +765,6 @@ impl Window {
         plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
         subtree_stable: bool,
-        replay_barrier: bool,
-        explicit_cached_view: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = match self.next_frame.last_retained_paint_context.as_ref() {
@@ -809,8 +807,6 @@ impl Window {
                 plain_text_key,
                 identity_stable,
                 subtree_stable,
-                replay_barrier,
-                explicit_cached_view,
             },
         );
         if !identity_stable {
@@ -984,24 +980,6 @@ fn retained_range_has_frame_interactivity(retained: &RetainedElementRange) -> bo
     retained.prepaint_range.start.dispatch_tree_index != retained.prepaint_range.end.dispatch_tree_index
         || retained.prepaint_range.start.hitboxes_index != retained.prepaint_range.end.hitboxes_index
         || retained_range_has_stateful_effects(retained)
-}
-
-// Dispatch nodes and inert hitboxes alone do not capture old coordinates.
-// All other stateful/interactive side effects are a translation barrier.
-pub(super) fn retained_range_has_stateful_effects(retained: &RetainedElementRange) -> bool {
-    let prepaint = &retained.prepaint_range;
-    let paint = &retained.paint_range;
-
-    prepaint.start.tooltips_index != prepaint.end.tooltips_index
-        || prepaint.start.deferred_draws_index != prepaint.end.deferred_draws_index
-        || prepaint.start.accessed_element_states_index
-            != prepaint.end.accessed_element_states_index
-        || paint.start.mouse_listeners_index != paint.end.mouse_listeners_index
-        || paint.start.input_handlers_index != paint.end.input_handlers_index
-        || paint.start.cursor_styles_index != paint.end.cursor_styles_index
-        || paint.start.window_control_hitboxes_index != paint.end.window_control_hitboxes_index
-        || paint.start.accessed_element_states_index != paint.end.accessed_element_states_index
-        || paint.start.tab_handle_index != paint.end.tab_handle_index
 }
 
 pub(crate) fn rebase_prepaint_range(

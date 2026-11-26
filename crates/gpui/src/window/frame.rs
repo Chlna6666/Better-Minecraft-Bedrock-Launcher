@@ -114,10 +114,6 @@ pub(crate) struct RetainedElementRange {
     pub(crate) identity_stable: bool,
     /// Whether this element and every retained descendant have unambiguous identities.
     pub(crate) subtree_stable: bool,
-    /// An element owns frame-local state that outer replay must not bypass.
-    pub(crate) replay_barrier: bool,
-    /// Parent supplied an explicit layout slot through Entity::cached.
-    pub(crate) explicit_cached_view: bool,
 }
 
 /// Minimal replay handle returned after a retained element has passed all semantic, layout and
@@ -159,8 +155,6 @@ pub(crate) struct Frame {
     retained_scene_index_spill_capacity: usize,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
-    // Only explicit cached views record native layout claims. Do not enlarge every element range.
-    pub(crate) cached_view_layout_claims: FxHashMap<GlobalElementId, Rc<[crate::layout::LayoutClaim]>>,
     /// Whole-view retained records. One entry per view drawn into this frame, keyed by its
     /// element path. A view that is drawn again from the committed frame is copied from here
     /// without running `Render` or walking its subtree.
@@ -376,7 +370,6 @@ impl Frame {
             retained_scene_index_spill_capacity: 0,
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
-            cached_view_layout_claims: FxHashMap::default(),
             view_retentions: FxHashMap::default(),
             view_retention_order: Vec::new(),
             last_retained_paint_context: None,
@@ -431,7 +424,6 @@ impl Frame {
         self.retained_scene_index_spill_capacity = 0;
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
-        self.cached_view_layout_claims.clear();
         self.view_retentions.clear();
         self.view_retention_order.clear();
         self.last_retained_paint_context = None;
@@ -594,7 +586,6 @@ impl Frame {
             + self.retained_scene_index_spill_capacity
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
-            + self.cached_view_layout_claims.capacity()
             + self.view_retentions.capacity()
             + self.view_retention_order.capacity()
             + self.tab_stops.retained_capacity()
@@ -685,9 +676,6 @@ impl Frame {
             self.retained_element_ranges
                 .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_element_ranges.len()));
         }
-        if self.cached_view_layout_claims.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
-            self.cached_view_layout_claims.shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()));
-        }
         let view_target = FRAME_MIN_RETAINED_CAPACITY.max(self.view_retentions.len());
         if self.view_retentions.capacity() > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
             self.view_retentions.shrink_to(view_target);
@@ -751,10 +739,6 @@ impl Frame {
         {
             self.retained_element_ranges.shrink_to(ranges_target);
         }
-        let claims_target = FRAME_MIN_RETAINED_CAPACITY.max(current.cached_view_layout_claims.len());
-        if self.cached_view_layout_claims.capacity() > claims_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
-            self.cached_view_layout_claims.shrink_to(claims_target);
-        }
         trim_vec_against!(view_retention_order);
         let view_target = FRAME_MIN_RETAINED_CAPACITY.max(current.view_retentions.len());
         if self.view_retentions.capacity()
@@ -772,8 +756,6 @@ impl Frame {
             .saturating_mul(std::mem::size_of::<(ReconcileKey, RetainedElementRange)>())
             .saturating_add(self.retained_element_order.capacity()
                 .saturating_mul(std::mem::size_of::<ReconcileKey>()))
-            .saturating_add(self.cached_view_layout_claims.capacity()
-                .saturating_mul(std::mem::size_of::<(GlobalElementId, Rc<[crate::layout::LayoutClaim]>)>()))
             .saturating_add(self.view_retentions.capacity()
                 .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>()))
             .saturating_add(self.view_retention_order.capacity()
@@ -810,7 +792,6 @@ impl Frame {
                 self.retained_element_ranges
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);
-                self.cached_view_layout_claims.shrink_to(floor.max(self.cached_view_layout_claims.len()));
                 self.view_retentions.shrink_to(floor.max(self.view_retentions.len()));
                 self.view_retention_order.shrink_to(floor.max(self.view_retention_order.len()));
                 self.tab_stops

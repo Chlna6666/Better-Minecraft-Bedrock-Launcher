@@ -241,42 +241,6 @@ impl Window {
         bounds
     }
 
-    /// Record only the native nodes requested by an explicit cached view's
-    /// inner layout. Nested recordings include their descendants.
-    pub(crate) fn record_cached_view_layout<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let Some(key) = self.current_retained_element_id() else {
-            return f(self);
-        };
-        let start = self.layout_engine.as_mut().unwrap().record_claimed_keys();
-        let result = f(self);
-        let claims = self.layout_engine.as_mut().unwrap().finish_recording_claimed_keys(start);
-        self.next_frame.cached_view_layout_claims.insert(key, Rc::from(claims));
-        result
-    }
-
-    /// Acquire the previous inner layout before replaying the frame ranges.
-    /// A stale/evicted/claimed native slot forces a normal View rebuild.
-    pub(crate) fn reuse_cached_view_prepaint(
-        &mut self,
-        key: &GlobalElementId,
-        range: Range<PrepaintStateIndex>,
-        delta: Point<Pixels>,
-    ) -> bool {
-        let Some(claims) = self.rendered_frame.cached_view_layout_claims.get(key).cloned() else {
-            return false;
-        };
-        if !self.layout_engine.as_mut().unwrap().try_keep_retained(&claims) {
-            return false;
-        }
-        if !self.reuse_prepaint_at(range, delta) {
-            self.layout_engine.as_mut().unwrap().release_kept(&claims);
-            return false;
-        }
-        // The prior frame remains authoritative if the candidate is aborted.
-        self.next_frame.cached_view_layout_claims.insert(key.clone(), claims);
-        true
-    }
-
     /// Returns the recursive layout fingerprint built during `request_layout` for the current frame.
     /// `None` means at least one node in the subtree cannot prove stable layout semantics.
     pub(crate) fn retained_layout_fingerprint(&self, layout_id: LayoutId) -> Option<u64> {

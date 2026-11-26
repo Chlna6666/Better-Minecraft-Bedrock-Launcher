@@ -29,9 +29,6 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) nested: SmallVec<[GlobalElementId; 4]>,
     /// Element states the subtree took while its layout was requested and prepainted.
     pub(crate) element_state_range: Range<usize>,
-    /// The subtree contains an explicit cached view, whose replay keeps its own committed
-    /// element metadata. Such a view is not drawn again as a whole.
-    pub(crate) contains_cached_view: bool,
 }
 
 /// Where the view's own record is inserted once it has painted.
@@ -45,7 +42,6 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) context: Rc<RetainedPaintContext>,
     pub(crate) element_state_range: Range<usize>,
-    pub(crate) contains_cached_view: bool,
     /// The retained source this frame copied, when the view was reused.
     pub(crate) reused: Option<RetainedViewRecord>,
 }
@@ -57,7 +53,8 @@ impl Window {
     /// that read an entity whose generation moved, and a traversal ancestor on the path to either
     /// are all in it.
     pub(crate) fn view_retention_eligible(&self, view_id: EntityId, cx: &App) -> bool {
-        !self.force_view_cache_refresh
+        !cfg!(gpui_hot_reload)
+            && !self.force_view_cache_refresh
             && !cx.has_active_drag()
             && !self.is_inspector_picking(cx)
             && self.view_dirty_scope(view_id).is_none()
@@ -78,9 +75,7 @@ impl Window {
             return None;
         }
         let record = self.rendered_frame.view_retentions.get(key)?.clone();
-        if record.contains_cached_view
-            || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
-        {
+        if !record.layout_claims.iter().any(|claim| claim.id == record.layout_root) {
             return None;
         }
         if !self
@@ -143,20 +138,6 @@ impl Window {
         // finish collecting their descendant order before paint begins.
         self.next_frame.view_retention_order.extend(record.nested.iter().cloned());
         Some(start..end)
-    }
-
-    /// Monotonic count of explicit cached views laid out so far.
-    pub(crate) fn cached_view_mark(&self) -> u64 {
-        self.cached_views_laid_out
-    }
-
-    /// Whether an explicit cached view was laid out since `mark`.
-    pub(crate) fn cached_view_seen_since(&self, mark: u64) -> bool {
-        self.cached_views_laid_out != mark
-    }
-
-    pub(crate) fn note_cached_view_layout(&mut self) {
-        self.cached_views_laid_out = self.cached_views_laid_out.wrapping_add(1);
     }
 
     /// Marks where this view's element-state accesses start.
@@ -272,7 +253,6 @@ impl Window {
                 context: commit.context,
                 nested,
                 element_state_range,
-                contains_cached_view: commit.contains_cached_view,
             },
         );
     }

@@ -293,7 +293,7 @@ fn gpu_counted_icb_without_texture_array() {
             color_attachments: &[target_view], render_pass, commands: std::slice::from_ref(draw),
             color_load_op: clear, clear_region: None, depth_attachment: None, viewport: None, resolve_target: None,
         };
-        let count = |word| IndirectCountBinding {
+        let count = |word: u64| IndirectCountBinding {
             command_index: 0, count_buffer: counted_args, count_offset: word * 4,
             max_draw_count: 2, argument_stride: stride,
         };

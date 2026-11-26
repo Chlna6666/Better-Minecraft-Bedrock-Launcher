@@ -320,7 +320,7 @@ impl Interactivity {
                 // Render may have selected virtual rows using the previous viewport. A notify
                 // during prepaint is consumed by this draw, so invalidate after it commits.
                 let view = window.current_view();
-                window.defer(cx, move |_, cx| cx.notify(view));
+                window.defer(cx, move |window, _| window.invalidate_native_scroll(view));
             }
             resolved_offset
         } else {

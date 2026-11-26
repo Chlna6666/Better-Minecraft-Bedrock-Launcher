@@ -568,9 +568,6 @@ pub struct Window {
     pub(super) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     pub(crate) direct_dirty_views: FxHashSet<EntityId>,
-    /// Monotonic count of explicit cached views laid out, used to keep enclosing views from being
-    /// drawn again as a whole while one of them still depends on its own element-level replay.
-    pub(crate) cached_views_laid_out: u64,
     pub(super) focus_listeners: SingleSubscriberSet<AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SingleSubscriberSet<AnyObserver>,
     pub(super) default_prevented: bool,
