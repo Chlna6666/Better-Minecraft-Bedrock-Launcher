@@ -303,14 +303,14 @@ fn native_taffy_keeps_claimed_subtrees_and_releases_unclaimed_nodes(cx: &mut Tes
     });
     window.update(cx, |_, window, cx| {
         let mut engine = TaffyLayoutEngine::new();
-        let recording = engine.record_claimed_keys();
+        let recording = engine.claim_log_len();
         let child = engine.request_layout(layout_identity("child"), Style::default(), px(16.), 1., &[]);
         let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[child]);
         engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-        let claims = engine.finish_recording_claimed_keys(recording);
+        let claims = [recording..engine.claim_log_len(), 0..0];
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 2);
-        assert!(engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, root).is_some());
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 2);
         assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
@@ -328,14 +328,14 @@ fn native_taffy_abort_discards_native_claims_without_reusing_ids(cx: &mut TestAp
     });
     window.update(cx, |_, _, _| {
         let mut engine = TaffyLayoutEngine::new();
-        let recording = engine.record_claimed_keys();
+        let recording = engine.claim_log_len();
         let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
-        let claims = engine.finish_recording_claimed_keys(recording);
+        let claims = [recording..engine.claim_log_len(), 0..0];
         engine.clear();
-        assert!(engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, root).is_some());
         engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
-        assert!(!engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, root).is_none());
         let replacement = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
         assert_ne!(root, replacement);
     }).unwrap();
