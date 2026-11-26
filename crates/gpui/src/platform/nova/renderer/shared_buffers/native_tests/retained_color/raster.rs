@@ -86,7 +86,7 @@ fn page(renderer: &NovaRenderer, isolated: bool) -> Arc<crate::window::Paint> {
         let area = bounds(80., 80., 16., 16.);
         painter.begin_blur(crate::BlurCapture {
             animation_id: None,
-            layer_id: Some(crate::NativeElementId::from_path(&["glyph".into()])),
+            layer_id: Some(u64::from_path(&["glyph".into()])),
             bounds: area,
             content_mask: crate::ContentMask::new(viewport),
             radius: crate::ScaledPixels(0.),

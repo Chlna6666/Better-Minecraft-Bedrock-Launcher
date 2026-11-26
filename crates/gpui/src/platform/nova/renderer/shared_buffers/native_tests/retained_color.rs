@@ -73,7 +73,7 @@ fn popup(scene: &mut crate::scene::Painter, viewport: crate::Bounds<crate::Scale
     let popup_bounds = bounds(20., 20., 16., 16.);
     scene.begin_blur(crate::BlurCapture {
         animation_id: Some(crate::SceneAnimationId(1)),
-        layer_id: Some(crate::NativeElementId::from_path(&["popup".into()])),
+        layer_id: Some(u64::from_path(&["popup".into()])),
         bounds: popup_bounds,
         content_mask: crate::ContentMask::new(viewport),
         radius: crate::ScaledPixels(0.),
@@ -126,7 +126,7 @@ fn page_with_source(
     let panel_bounds = bounds(0., 0., size.width as f32 * 0.75, size.height as f32);
     scene.begin_blur(crate::BlurCapture {
         animation_id: Some(crate::SceneAnimationId(2)),
-        layer_id: Some(crate::NativeElementId::from_path(
+        layer_id: Some(u64::from_path(
             &["settings-panel".into()],
         )),
         bounds: panel_bounds,
