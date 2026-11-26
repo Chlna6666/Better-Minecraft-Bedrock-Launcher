@@ -1,5 +1,5 @@
 use crate::{
-    App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId, LayoutStyle,
+    App, Bounds, DispatchPhase, Global, GlobalElementId, Hitbox, HitboxId,
     MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Style, Window, record_style_refine,
 };
 use collections::HashMap;
@@ -93,47 +93,8 @@ impl Interactivity {
         key
     }
 
-    /// Returns true when one of this element's state-driven style refinements can alter the
-    /// layout or inherited paint context of descendants.
-    ///
-    /// Paint-only changes such as background, shadow, border color (without clipping), and cursor
-    /// remain element-local. Dynamic drag-over builders stay conservative because their returned
-    /// refinement depends on runtime payload data and cannot be classified ahead of the event.
-    pub(crate) fn interaction_affects_descendants(&self) -> bool {
-        if !self.drag_over_styles.is_empty() || !self.group_drag_over_styles.is_empty() {
-            return true;
-        }
-
-        let mut base = Style::default();
-        base.refine(&self.base_style);
-
-        let refinements = [
-            self.focus_style.as_deref(),
-            self.in_focus_style.as_deref(),
-            self.hover_style.as_deref(),
-            self.active_style.as_deref(),
-        ];
-        if refinements.into_iter().flatten().any(|refinement| {
-            let mut variant = base.clone();
-            variant.refine(refinement);
-            style_change_affects_descendants(&base, &variant)
-        }) {
-            return true;
-        }
-
-        self.group_hover_style
-            .iter()
-            .chain(self.group_active_style.iter())
-            .any(|group_style| {
-                let mut variant = base.clone();
-                variant.refine(&group_style.style);
-                style_change_affects_descendants(&base, &variant)
-            })
-    }
-
     pub(crate) fn paint_hover_group_handler(
         &self,
-        _global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
@@ -165,21 +126,21 @@ impl Interactivity {
         }
 
         let current_view = window.rendered_entity_stack.last().copied();
-        let descendants_dirty = self.interaction_affects_descendants();
+
         for group_hitbox in group_hitboxes {
             let was_hovered = group_hitbox.is_hovered(window);
-            let retained_path = window.current_retained_element_id();
+
 
             if was_hovered {
-                let exit_retained_path = retained_path.clone();
+
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         if let Some(current_view) = current_view {
-                            window.notify_interactive_region_scoped(
+                            window.notify_interactive_region(
                                 current_view,
-                                exit_retained_path.as_ref(),
+
                                 bounds,
-                                descendants_dirty,
+
                                 cx,
                             );
                         } else {
@@ -193,11 +154,11 @@ impl Interactivity {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
                     if let Some(current_view) = current_view {
-                        window.notify_interactive_region_scoped(
+                        window.notify_interactive_region(
                             current_view,
-                            retained_path.as_ref(),
+
                             bounds,
-                            descendants_dirty,
+
                             cx,
                         );
                     } else {
@@ -307,26 +268,6 @@ impl Interactivity {
 
         style
     }
-}
-
-fn style_change_affects_descendants(before: &Style, after: &Style) -> bool {
-    if LayoutStyle::from(before) != LayoutStyle::from(after)
-        || before.visibility != after.visibility
-        || before.text != after.text
-        || before.opacity != after.opacity
-        || before.scale != after.scale
-        || before.transform_origin != after.transform_origin
-        || before.filter_blur != after.filter_blur
-    {
-        return true;
-    }
-
-    let clips_descendants = before.overflow.x != crate::Overflow::Visible
-        || before.overflow.y != crate::Overflow::Visible
-        || after.overflow.x != crate::Overflow::Visible
-        || after.overflow.y != crate::Overflow::Visible;
-    clips_descendants
-        && (before.corner_radii != after.corner_radii || before.border_color != after.border_color)
 }
 
 #[cfg(test)]

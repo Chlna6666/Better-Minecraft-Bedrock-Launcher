@@ -67,76 +67,32 @@ impl Window {
             .reset_dirty_to_present_epoch(restart_if_dirty);
     }
 
-    /// Invalidates an interactive element without turning an element-local state change into a
-    /// general application notification or a forced refresh of every cached view.
-    ///
-    /// This conservative entry point keeps the changed element's descendants dirty. Call
-    /// [`Self::notify_interactive_region_scoped`] when the caller knows the interaction only
-    /// changes the element's own paint and descendants can retain their previous ranges.
+    /// Invalidate the owning view and its previous visual damage region.
     pub(crate) fn notify_interactive_region(
         &mut self,
         view_id: EntityId,
-        global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
-        cx: &mut App,
-    ) {
-        self.notify_interactive_region_scoped(view_id, global_id, bounds, true, cx);
-    }
-
-    /// Invalidates one stable interactive path with an explicit descendant-damage scope.
-    ///
-    /// `descendants_dirty == false` means only the changed element and its structural ancestors
-    /// must execute normally. Descendants remain eligible for retained prepaint/paint replay. This
-    /// is correct for state styles that only change the element's own pixels (for example a
-    /// background or shadow). Set it to `true` whenever the interaction can change layout,
-    /// inherited text, clipping, opacity, transforms, or another subtree paint context.
-    pub(crate) fn notify_interactive_region_scoped(
-        &mut self,
-        view_id: EntityId,
-        global_id: Option<&GlobalElementId>,
-        bounds: Bounds<Pixels>,
-        descendants_dirty: bool,
         _cx: &mut App,
     ) {
-        self.invalidate_interactive_region_scoped(
-            view_id,
-            global_id,
-            bounds,
-            descendants_dirty,
-            true,
-        );
+        self.invalidate_interactive_region(view_id, bounds, true);
     }
 
-    /// Invalidates one retained interactive path while a platform frame is already running.
-    ///
-    /// `run_platform_frame` executes next-frame callbacks before it decides whether the current
-    /// frame must draw. Scheduling another platform frame from such a callback creates an extra
-    /// cadence source and can queue stale animation work. This variant therefore marks the target
-    /// dirty for the current frame without issuing a second platform-frame request.
+    /// An animation callback already running inside a platform frame does
+    /// not need to enqueue another frame to commit its UI changes.
     pub(crate) fn notify_frame_interactive_region(
         &mut self,
         view_id: EntityId,
-        global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
-        descendants_dirty: bool,
         _cx: &mut App,
     ) {
         self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-        self.invalidate_interactive_region_scoped(
-            view_id,
-            global_id,
-            bounds,
-            descendants_dirty,
-            false,
-        );
+        self.invalidate_interactive_region(view_id, bounds, false);
     }
 
-    fn invalidate_interactive_region_scoped(
+    fn invalidate_interactive_region(
         &mut self,
         view_id: EntityId,
-        _global_id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
-        _descendants_dirty: bool,
         schedule_frame: bool,
     ) {
         if !bounds.is_empty() {

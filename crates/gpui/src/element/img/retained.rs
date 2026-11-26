@@ -84,7 +84,6 @@ impl SizedImageRequestLease {
         self.pin.use_by(
             window.any_window_handle(),
             window.current_view(),
-            window.current_retained_element_id(),
         )
     }
 

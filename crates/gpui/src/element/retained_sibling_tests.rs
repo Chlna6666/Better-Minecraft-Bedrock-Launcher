@@ -268,16 +268,15 @@ fn targeted_child_change_keeps_unrelated_same_parent_siblings_retained(cx: &mut 
     assert!(left_baseline > 0 && right_baseline > 0);
 
     root.update(cx, |root, _cx| root.dirty_width = 48.0);
-    let path = dirty_path
+    let _path = dirty_path
         .borrow()
         .clone()
         .expect("dirty child should publish retained path");
     cx.update_window(window, |_, window, cx| {
-        window.notify_interactive_region_scoped(
+        window.notify_interactive_region(
             root.entity_id(),
-            Some(&path),
+
             Bounds::new(point(px(80.0), px(0.0)), size(px(48.0), px(20.0))),
-            false,
             cx,
         );
         window.draw(cx).clear();
@@ -320,16 +319,15 @@ fn inherited_clip_change_repaints_only_the_dependent_descendant(cx: &mut TestApp
     assert!(baseline > 0);
 
     root.update(cx, |root, _cx| root.clip_width = 30.0);
-    let path = clip_path
+    let _path = clip_path
         .borrow()
         .clone()
         .expect("clip parent should publish retained path");
     cx.update_window(window, |_, window, cx| {
-        window.notify_interactive_region_scoped(
+        window.notify_interactive_region(
             root.entity_id(),
-            Some(&path),
+
             Bounds::new(point(px(0.0), px(0.0)), size(px(60.0), px(20.0))),
-            false,
             cx,
         );
         window.draw(cx).clear();

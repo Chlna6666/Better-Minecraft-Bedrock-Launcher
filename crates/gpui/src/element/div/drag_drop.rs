@@ -1,5 +1,5 @@
 use crate::{
-    AnyDrag, App, Bounds, DispatchPhase, GlobalElementId, Hitbox, MouseButton, MouseDownEvent,
+    AnyDrag, App, Bounds, DispatchPhase, Hitbox, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Style, StyleRefinement,
     Window, record_style_refine,
 };
@@ -241,11 +241,11 @@ pub(crate) fn bind_drop_listeners(
 
 pub(crate) fn bind_drag_start_listeners(
     hitbox: &Hitbox,
-    global_id: Option<GlobalElementId>,
+
     pending_mouse_down: Rc<RefCell<Option<MouseDownEvent>>>,
     clicked_state: Rc<RefCell<ElementClickedState>>,
     has_active_style: bool,
-    active_style_affects_descendants: bool,
+
     drag_cursor_style: Option<crate::CursorStyle>,
     mut drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     window: &mut Window,
@@ -254,7 +254,7 @@ pub(crate) fn bind_drag_start_listeners(
     window.on_mouse_event({
         let pending_mouse_down = pending_mouse_down.clone();
         let hitbox = hitbox.clone();
-        let global_id = global_id.clone();
+
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
                 && event.button == MouseButton::Left
@@ -262,11 +262,11 @@ pub(crate) fn bind_drag_start_listeners(
             {
                 *pending_mouse_down.borrow_mut() = Some(event.clone());
                 if has_active_style {
-                    window.notify_interactive_region_scoped(
+                    window.notify_interactive_region(
                         current_view,
-                        global_id.as_ref(),
+
                         hitbox.bounds,
-                        active_style_affects_descendants,
+
                         cx,
                     );
                 }
@@ -301,7 +301,7 @@ pub(crate) fn bind_drag_start_listeners(
                 // this transition conservative even when the pressed style itself is local.
                 window.notify_interactive_region(
                     current_view,
-                    global_id.as_ref(),
+
                     hitbox.bounds,
                     cx,
                 );

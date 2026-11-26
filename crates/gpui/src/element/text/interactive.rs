@@ -156,7 +156,7 @@ impl Element for InteractiveText {
         cx: &mut App,
     ) {
         let current_view = window.current_view();
-        let retained_path = window.current_retained_element_id();
+
         let text_layout = self.text.layout().clone();
         window.with_element_state::<InteractiveTextState, _>(
             global_id.unwrap(),
@@ -178,7 +178,7 @@ impl Element for InteractiveText {
                     if let Some(mouse_down_index) = mouse_down.get() {
                         let hitbox = hitbox.clone();
                         let clickable_ranges = mem::take(&mut self.clickable_ranges);
-                        let retained_path = retained_path.clone();
+
                         window.on_mouse_event(
                             move |event: &MouseUpEvent, phase, window: &mut Window, cx| {
                                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
@@ -199,7 +199,7 @@ impl Element for InteractiveText {
                                     mouse_down.take();
                                     window.notify_interactive_region(
                                         current_view,
-                                        retained_path.as_ref(),
+
                                         hitbox.bounds,
                                         cx,
                                     );
@@ -208,7 +208,7 @@ impl Element for InteractiveText {
                         );
                     } else {
                         let hitbox = hitbox.clone();
-                        let retained_path = retained_path.clone();
+
                         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                             if phase == DispatchPhase::Bubble
                                 && hitbox.is_hovered(window)
@@ -218,7 +218,7 @@ impl Element for InteractiveText {
                                 mouse_down.set(Some(mouse_down_index));
                                 window.notify_interactive_region(
                                     current_view,
-                                    retained_path.as_ref(),
+
                                     hitbox.bounds,
                                     cx,
                                 );
@@ -232,7 +232,7 @@ impl Element for InteractiveText {
                     let hitbox = hitbox.clone();
                     let text_layout = text_layout.clone();
                     let hovered_index = interactive_state.hovered_index.clone();
-                    let retained_path = retained_path.clone();
+
                     move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                             let current = hovered_index.get();
@@ -244,7 +244,7 @@ impl Element for InteractiveText {
                                 }
                                 window.notify_interactive_region(
                                     current_view,
-                                    retained_path.as_ref(),
+
                                     hitbox.bounds,
                                     cx,
                                 );

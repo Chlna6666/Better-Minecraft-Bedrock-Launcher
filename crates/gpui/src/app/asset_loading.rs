@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
-    CompressedImagePreload, CompressedImageSource, EntityId, GlobalElementId, ImageCacheError,
+    CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError,
     ImageMemoryTrimLevel, ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage,
     Size, SizedImagePreload, Window, drop_image_asset_retained, hash,
 };
@@ -111,9 +111,9 @@ where
         &self,
         window: AnyWindowHandle,
         view: EntityId,
-        retained_id: Option<GlobalElementId>,
+
     ) -> Option<T> {
-        self.lease.use_by(window, view, retained_id)
+        self.lease.use_by(window, view)
     }
 }
 
@@ -163,11 +163,11 @@ impl App {
         source: &A::Source,
         window: AnyWindowHandle,
         view: EntityId,
-        retained_id: Option<GlobalElementId>,
+
     ) -> Option<A::Output> {
         let result = self
             .asset_entry::<A>(source)
-            .use_by(window, view, retained_id);
+            .use_by(window, view);
         if residency::is_image_asset(TypeId::of::<A>()) {
             self.enforce_image_cache_budget(Some((TypeId::of::<A>(), hash(source))));
         }

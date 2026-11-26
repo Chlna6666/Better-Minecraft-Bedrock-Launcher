@@ -1,5 +1,5 @@
 use crate::{
-    AnyWindowHandle, App, EntityId, GlobalElementId, SharedString, SharedUri, Task, WindowId,
+    AnyWindowHandle, App, EntityId, SharedString, SharedUri, Task, WindowId,
 };
 use futures::{
     Future, FutureExt, TryFutureExt,
@@ -74,7 +74,7 @@ enum AssetLeaseState<T> {
 
 struct AssetLeaseWindowObservers {
     window: AnyWindowHandle,
-    targets: FxHashSet<(EntityId, Option<GlobalElementId>)>,
+    targets: FxHashSet<EntityId>,
 }
 
 struct AssetLoadOwner {
@@ -173,9 +173,9 @@ where
         &self,
         window: AnyWindowHandle,
         view: EntityId,
-        retained_id: Option<GlobalElementId>,
+
     ) -> Option<T> {
-        self.lease.use_by(window, view, retained_id)
+        self.lease.use_by(window, view)
     }
 
     pub(crate) fn shares_load(&self, lease: &AssetLease<T>) -> bool {
@@ -305,7 +305,7 @@ where
         &self,
         window: AnyWindowHandle,
         view: EntityId,
-        retained_id: Option<GlobalElementId>,
+
     ) -> Option<T> {
         let mut state = self.state.lock();
         match &mut *state {
@@ -317,7 +317,7 @@ where
                         targets: FxHashSet::default(),
                     })
                     .targets
-                    .insert((view, retained_id));
+                    .insert(view);
                 None
             }
             AssetLeaseState::Ready { value, .. } => Some(value.clone()),

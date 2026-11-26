@@ -1199,9 +1199,6 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         if self.animating && !state.frame_pending.replace(true) {
             let frame_pending = state.frame_pending.clone();
             let view_id = window.current_view();
-            let retained_id = window
-                .current_retained_element_id()
-                .expect("stable sampled animation must have a retained identity");
             let dirty_bounds = if self.property.property == TransitionProperty::FilterBlur {
                 self.property.dirty_bounds_with_visual_scale(
                     window.visual_bounds(bounds),
@@ -1214,9 +1211,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
                 frame_pending.set(false);
                 window.notify_frame_interactive_region(
                     view_id,
-                    Some(&retained_id),
                     dirty_bounds,
-                    false,
                     cx,
                 );
             });

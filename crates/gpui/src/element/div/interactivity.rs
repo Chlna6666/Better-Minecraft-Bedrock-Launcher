@@ -319,7 +319,7 @@ impl Interactivity {
                         .record_debug_bounds(debug_selector.clone(), window.visual_bounds(bounds));
                 }
 
-                self.paint_hover_group_handler(global_id, bounds, window, cx);
+                self.paint_hover_group_handler(bounds, window, cx);
 
                 if style.visibility == Visibility::Hidden {
                     return (style, element_state);
@@ -370,7 +370,6 @@ impl Interactivity {
                                                 }
 
                                                 self.paint_mouse_listeners(
-                                                    global_id,
                                                     hitbox,
                                                     element_state.as_mut(),
                                                     window,

@@ -1,5 +1,5 @@
 use crate::{
-    App, ClickEvent, DispatchPhase, GlobalElementId, Hitbox, KeyDownEvent, KeyUpEvent,
+    App, ClickEvent, DispatchPhase, Hitbox, KeyDownEvent, KeyUpEvent,
     KeyboardButton, KeyboardClickEvent, ModifiersChangedEvent, MouseClickEvent, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window,
 };
@@ -16,14 +16,12 @@ use super::{
 impl Interactivity {
     pub(crate) fn paint_mouse_listeners(
         &mut self,
-        _global_id: Option<&GlobalElementId>,
         hitbox: &Hitbox,
         element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let interaction_path = window.current_retained_element_id();
-        let descendants_dirty = self.interaction_affects_descendants();
+
         let is_focused = self
             .tracked_focus_handle
             .as_ref()
@@ -77,7 +75,7 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let was_hovered = hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let interaction_path = interaction_path.clone();
+
 
             // The platform reports window leave separately from pointer motion. The old global
             // Window::refresh path hid this gap by repainting every view. Instead, clear the
@@ -85,14 +83,14 @@ impl Interactivity {
             // boundary that was actually active.
             if was_hovered {
                 let exit_hitbox = hitbox.clone();
-                let exit_interaction_path = interaction_path.clone();
+
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
-                        window.notify_interactive_region_scoped(
+                        window.notify_interactive_region(
                             current_view,
-                            exit_interaction_path.as_ref(),
+
                             exit_hitbox.bounds,
-                            descendants_dirty,
+
                             cx,
                         );
                     }
@@ -102,11 +100,11 @@ impl Interactivity {
             window.on_mouse_hit_test_transition(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.notify_interactive_region_scoped(
+                    window.notify_interactive_region(
                         current_view,
-                        interaction_path.as_ref(),
+
                         hitbox.bounds,
-                        descendants_dirty,
+
                         cx,
                     );
                 }
@@ -129,11 +127,11 @@ impl Interactivity {
 
                 bind_drag_start_listeners(
                     hitbox,
-                    interaction_path.clone(),
+
                     pending_mouse_down.clone(),
                     clicked_state,
                     has_active_style,
-                    descendants_dirty,
+
                     drag_cursor_style,
                     drag_listener,
                     window,
@@ -175,29 +173,29 @@ impl Interactivity {
                     let mut captured_mouse_down = None;
                     let hitbox = hitbox.clone();
                     let current_view = window.current_view();
-                    let interaction_path = interaction_path.clone();
+
                     move |event: &MouseUpEvent, phase, window, cx| match phase {
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
                             if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
                                 captured_mouse_down = pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region_scoped(
+                                    window.notify_interactive_region(
                                         current_view,
-                                        interaction_path.as_ref(),
+
                                         hitbox.bounds,
-                                        descendants_dirty,
+
                                         cx,
                                     );
                                 }
                             } else if pending_mouse_down.is_some() {
                                 pending_mouse_down.take();
                                 if has_active_style {
-                                    window.notify_interactive_region_scoped(
+                                    window.notify_interactive_region(
                                         current_view,
-                                        interaction_path.as_ref(),
+
                                         hitbox.bounds,
-                                        descendants_dirty,
+
                                         cx,
                                     );
                                 }
@@ -309,18 +307,18 @@ impl Interactivity {
             if has_active_style && active_state.borrow().is_clicked() {
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
-                let interaction_path = interaction_path.clone();
+
                 let exit_active_state = active_state.clone();
                 let exit_hitbox = hitbox.clone();
-                let exit_interaction_path = interaction_path.clone();
+
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture {
                         *active_state.borrow_mut() = ElementClickedState::default();
-                        window.notify_interactive_region_scoped(
+                        window.notify_interactive_region(
                             current_view,
-                            interaction_path.as_ref(),
+
                             hitbox.bounds,
-                            descendants_dirty,
+
                             cx,
                         );
                     }
@@ -328,11 +326,11 @@ impl Interactivity {
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
                     if phase == DispatchPhase::Capture && exit_active_state.borrow().is_clicked() {
                         *exit_active_state.borrow_mut() = ElementClickedState::default();
-                        window.notify_interactive_region_scoped(
+                        window.notify_interactive_region(
                             current_view,
-                            exit_interaction_path.as_ref(),
+
                             exit_hitbox.bounds,
-                            descendants_dirty,
+
                             cx,
                         );
                     }
@@ -344,7 +342,7 @@ impl Interactivity {
                     .and_then(|group_active| GroupHitboxes::get(&group_active.group, cx));
                 let hitbox = hitbox.clone();
                 let current_view = window.current_view();
-                let interaction_path = interaction_path.clone();
+
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble && !window.default_prevented() {
                         let group_hovered = active_group_hitbox
@@ -355,11 +353,11 @@ impl Interactivity {
                                 group: group_hovered,
                                 element: element_hovered,
                             };
-                            window.notify_interactive_region_scoped(
+                            window.notify_interactive_region(
                                 current_view,
-                                interaction_path.as_ref(),
+
                                 hitbox.bounds,
-                                descendants_dirty,
+
                                 cx,
                             );
                         }

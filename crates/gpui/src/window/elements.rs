@@ -1,18 +1,14 @@
 use super::*;
 
 impl Window {
-    /// Invalidates the exact retained subtrees waiting for an asset and immediately asks the
-    /// platform for a presentation-capable frame.
-    ///
-    /// This bypasses the App-level entity -> window lookup deliberately: an asset may finish during
-    /// a window's first frame before that lookup has been published. Retained targets keep
-    /// unrelated elements in the same view eligible for replay.
+    /// Invalidate views waiting for an asset, including before the app has
+    /// published its entity-to-window subscriptions after the first frame.
     pub(crate) fn schedule_asset_ready_targets(
         &mut self,
-        targets: impl IntoIterator<Item = (EntityId, Option<GlobalElementId>)>,
+        targets: impl IntoIterator<Item = EntityId>,
     ) {
         let mut any = false;
-        for (entity_id, _) in targets {
+        for entity_id in targets {
             any = true;
             let _ = self.invalidator.invalidate_owned_view(entity_id);
         }
@@ -26,14 +22,12 @@ impl Window {
     ///
     /// Note that the multiple calls to this method will only result in one `Asset::load` call at a
     /// time. While a shared load is pending, wakeups are coalesced per asset, observing window,
-    /// view, and retained element so animation or scroll frames cannot accumulate duplicate
-    /// completion tasks.
+    /// and view so animation or scroll frames cannot accumulate duplicate completion tasks.
     pub fn use_asset<A: Asset>(&mut self, source: &A::Source, cx: &mut App) -> Option<A::Output> {
         cx.use_asset_in_window::<A>(
             source,
             self.any_window_handle(),
             self.current_view(),
-            self.current_retained_element_id(),
         )
     }
 
