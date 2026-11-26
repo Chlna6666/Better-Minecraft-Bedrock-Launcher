@@ -1146,6 +1146,7 @@ impl TaffyLayoutEngine {
     fn request_measured_node(
         &mut self,
         owner: Option<u64>,
+        lingers: bool,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1215,6 +1216,7 @@ impl TaffyLayoutEngine {
     fn request_native_measured_node(
         &mut self,
         owner: Option<u64>,
+        lingers: bool,
         layout_style: LayoutStyle,
         taffy_style: taffy::Style,
         style_fingerprint: u64,

@@ -362,9 +362,7 @@ impl Element for UniformList {
                                 } else {
                                     ix
                                 };
-                                window.with_retained_child_key(
-                                    ElementId::named_usize(RETAINED_UNIFORM_ROW_KEY, row_index),
-                                    |window| {
+                                window.with_list_item_layout_key(row_index, |window| {
                                         item.layout_as_root(available_space, window, cx);
                                         item.prepaint_at(item_origin, window, cx);
                                     },

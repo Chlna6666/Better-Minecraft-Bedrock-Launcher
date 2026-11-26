@@ -308,7 +308,7 @@ impl Element for ViewElement {
         let prepaint_start = window.prepaint_index();
         let mut retention = Some(RetentionDraft {
             slot: window
-                .current_retained_element_key()
+                 .current_retained_element_key()
                 .map(|key| window.reserve_view_retention(key, entity_id)),
             nested: 0..0,
         });
@@ -344,7 +344,7 @@ impl Element for ViewElement {
                         window.record_rendered_view(entity_id, type_name);
                         self.view.render_element(window, cx)
                     };
-                    let rebuilt_root = window.with_retained_child_scope(|window| {
+                    let rebuilt_root = window.with_layout_key_of_prepainting_element(|window| {
                         let rebuilt_root = element.request_layout(window, cx);
                         element.prepaint_as_root(
                             bounds.origin,
