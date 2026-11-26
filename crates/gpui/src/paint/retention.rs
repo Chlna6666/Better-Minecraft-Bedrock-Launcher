@@ -214,42 +214,7 @@ pub(crate) fn retained_order_range_is_exclusive(
 /// Proves a Paint range does not inherit a Layer or Capture from outside the range.
 /// Invalid ranges and unmatched closing scopes reject reuse; an empty valid range is independent.
 pub(crate) fn range_is_replayable(scene: &Scene, range: Range<usize>) -> bool {
-    if range.start > range.end || range.end > scene.len() {
-        return false;
-    }
-    if range.is_empty() {
-        return true;
-    }
-    let mut blur_depth = 0usize;
-    let mut layer_depth = 0usize;
-    for (index, operation) in scene
-        .paint_operations
-        .range(0..range.end)
-        .iter()
-        .enumerate()
-    {
-        if index == range.start && (blur_depth != 0 || layer_depth != 0) {
-            return false;
-        }
-        match operation {
-            PaintOperation::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
-            PaintOperation::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
-            PaintOperation::EndBlur => {
-                let Some(depth) = blur_depth.checked_sub(1) else {
-                    return false;
-                };
-                blur_depth = depth;
-            }
-            PaintOperation::EndLayer => {
-                let Some(depth) = layer_depth.checked_sub(1) else {
-                    return false;
-                };
-                layer_depth = depth;
-            }
-            PaintOperation::Primitive(_) => {}
-        }
-    }
-    blur_depth == 0 && layer_depth == 0
+    scene.paint_operations.range_is_replayable(range)
 }
 
 /// Exact source-cache proof for an isolated element filter.

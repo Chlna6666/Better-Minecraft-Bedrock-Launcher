@@ -1,7 +1,4 @@
 //! Window-owned Paint retention metadata derived from the authoritative display list.
-mod replay;
-pub(crate) use replay::ReplayStructureIndex;
-
 mod chunks;
 pub(crate) use chunks::PreparedRetainedMonochromeSpriteChunk;
 pub(crate) use chunks::PreparedRetainedQuadChunk;
@@ -27,7 +24,6 @@ pub(crate) struct RetainedPaint {
     finished: bool,
     revision: u64,
     sources: collections::FxHashMap<u64, std::sync::Arc<PreparedRetainedChunks>>,
-    replay_structure: std::sync::OnceLock<ReplayStructureIndex>,
 }
 
 #[cfg(test)]

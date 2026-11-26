@@ -408,9 +408,9 @@ impl Frame {
     }
 
     /// Validates retained Fragment structure against this frame's immutable Paint generation.
-    /// Scratch/mutable data never reuses the completed-generation sparse index.
+    /// Structure is recorded with the authoritative operation stream.
     pub(crate) fn range_is_replayable(&self, range: Range<usize>) -> bool {
-        self.retained_paint.range_is_replayable(self.scene(), range)
+        crate::paint::retention::range_is_replayable(self.scene(), range)
     }
 
     pub(crate) fn finish(&mut self, prev_frame: &mut Self) {

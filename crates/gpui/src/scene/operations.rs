@@ -28,6 +28,8 @@ pub(crate) struct Operations {
     segments: Vec<Segment>,
     pending: Vec<PaintOperation>,
     len: usize,
+    // Sparse prefix states belong to the authoritative operation sequence.
+    boundaries: Vec<ReplayBoundary>,
 }
 
 /// A bounded logical view that can cross allocation boundaries.
@@ -38,7 +40,95 @@ pub(crate) struct OperationRange<'a> {
     end: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ReplayBoundary {
+    after: usize,
+    blur_depth: usize,
+    layer_depth: usize,
+    invalid: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeChange {
+    None,
+    StartBlur,
+    EndBlur,
+    StartLayer,
+    EndLayer,
+}
+
+impl ScopeChange {
+    fn of(operation: &PaintOperation) -> Self {
+        match operation {
+            PaintOperation::Primitive(_) => Self::None,
+            PaintOperation::StartBlur(_) => Self::StartBlur,
+            PaintOperation::EndBlur => Self::EndBlur,
+            PaintOperation::StartLayer(_) => Self::StartLayer,
+            PaintOperation::EndLayer => Self::EndLayer,
+        }
+    }
+}
+
+impl ReplayBoundary {
+    fn advance(mut self, after: usize, change: ScopeChange) -> Self {
+        self.after = after;
+        match change {
+            ScopeChange::StartBlur => self.blur_depth += 1,
+            ScopeChange::StartLayer => self.layer_depth += 1,
+            ScopeChange::EndBlur => match self.blur_depth.checked_sub(1) {
+                Some(depth) => self.blur_depth = depth,
+                None => self.invalid = true,
+            },
+            ScopeChange::EndLayer => match self.layer_depth.checked_sub(1) {
+                Some(depth) => self.layer_depth = depth,
+                None => self.invalid = true,
+            },
+            ScopeChange::None => {}
+        }
+        self
+    }
+
+    fn independent(self) -> bool {
+        !self.invalid && self.blur_depth == 0 && self.layer_depth == 0
+    }
+}
+
 impl Operations {
+    fn record_boundary(&mut self, after: usize, change: ScopeChange) {
+        if change != ScopeChange::None {
+            let state = self.boundaries.last().copied().unwrap_or_default();
+            self.boundaries.push(state.advance(after, change));
+        }
+    }
+
+    fn boundary_at(&self, index: usize) -> ReplayBoundary {
+        let end = self.boundaries.partition_point(|boundary| boundary.after <= index);
+        end.checked_sub(1).map_or(ReplayBoundary::default(), |i| self.boundaries[i])
+    }
+
+    /// A fragment is replayable when neither endpoint inherits an external
+    /// layer or capture, and no unmatched close has poisoned its prefix.
+    pub(crate) fn range_is_replayable(&self, range: Range<usize>) -> bool {
+        range.start <= range.end && range.end <= self.len
+            && (range.is_empty()
+                || (self.boundary_at(range.start).independent()
+                    && self.boundary_at(range.end).independent()))
+    }
+
+    fn rebuild_boundaries(&mut self) {
+        let mut boundaries = std::mem::take(&mut self.boundaries);
+        boundaries.clear();
+        let mut state = ReplayBoundary::default();
+        for (index, operation) in self.iter().enumerate() {
+            let change = ScopeChange::of(operation);
+            if change != ScopeChange::None {
+                state = state.advance(index + 1, change);
+                boundaries.push(state);
+            }
+        }
+        self.boundaries = boundaries;
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -48,13 +138,16 @@ impl Operations {
     pub(crate) fn shrink_to(&mut self, floor: usize) {
         self.pending.shrink_to(floor);
         self.segments.shrink_to(self.segments.len());
+        self.boundaries.shrink_to_fit();
     }
     pub(crate) fn push(&mut self, operation: PaintOperation) {
-        self.pending.push(operation);
         self.len += 1;
+        self.record_boundary(self.len, ScopeChange::of(&operation));
+        self.pending.push(operation);
     }
     pub(crate) fn clear(&mut self) {
         self.pending.clear();
+        self.boundaries.clear();
         for segment in self.segments.drain(..) {
             if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
                 && owner.capacity() > self.pending.capacity()
@@ -266,6 +359,11 @@ impl Operations {
         assert!(previous.pending.is_empty(), "shared Paint must be finished");
         assert!(range.start <= range.end && range.end <= previous.len);
         self.finish();
+        let destination = self.len;
+        let first_boundary = previous.boundaries.partition_point(|b| b.after <= range.start);
+        for boundary in previous.boundaries[first_boundary..].iter().take_while(|b| b.after <= range.end) {
+            self.record_boundary(destination + boundary.after - range.start, ScopeChange::of(&previous[boundary.after - 1]));
+        }
         let first = previous
             .segments
             .partition_point(|segment| segment.end <= range.start);
@@ -288,6 +386,12 @@ impl Operations {
         if range.is_empty() {
             return;
         }
+        let mut structure_changed = false;
+        let mut edit = |operation: &mut PaintOperation| {
+            let before = ScopeChange::of(operation);
+            edit(operation);
+            structure_changed |= before != ScopeChange::of(operation);
+        };
         let pending_start = self.len - self.pending.len();
         if range.start < pending_start {
             let segments = std::mem::take(&mut self.segments);
@@ -304,6 +408,9 @@ impl Operations {
             {
                 edit(operation);
             }
+        }
+        if structure_changed {
+            self.rebuild_boundaries();
         }
     }
 

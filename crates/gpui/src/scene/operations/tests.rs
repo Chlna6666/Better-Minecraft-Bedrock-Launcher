@@ -126,3 +126,87 @@ fn edits_and_ranges_follow_logical_order_across_shared_and_pending_runs() {
     assert!(current.get_range(9..11).is_none());
     assert!(current.get_range(2..1).is_none());
 }
+
+fn scan_range(operations: &Operations, range: Range<usize>) -> bool {
+    if range.start > range.end || range.end > operations.len() {
+        return false;
+    }
+    if range.is_empty() {
+        return true;
+    }
+    let mut blur_depth = 0usize;
+    let mut layer_depth = 0usize;
+    for (index, operation) in operations
+        .range(0..range.end)
+        .iter()
+        .enumerate()
+    {
+        if index == range.start && (blur_depth != 0 || layer_depth != 0) {
+            return false;
+        }
+        match operation {
+            PaintOperation::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
+            PaintOperation::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
+            PaintOperation::EndBlur => {
+                let Some(depth) = blur_depth.checked_sub(1) else {
+                    return false;
+                };
+                blur_depth = depth;
+            }
+            PaintOperation::EndLayer => {
+                let Some(depth) = layer_depth.checked_sub(1) else {
+                    return false;
+                };
+                layer_depth = depth;
+            }
+            PaintOperation::Primitive(_) => {}
+        }
+    }
+    blur_depth == 0 && layer_depth == 0
+}
+
+fn check_ranges(operations: &Operations) {
+    for start in 0..=operations.len() {
+        for end in start..=operations.len() {
+            assert_eq!(operations.range_is_replayable(start..end), scan_range(operations, start..end),
+                "range {start}..{end}");
+        }
+    }
+    assert!(!operations.range_is_replayable(operations.len()+1..operations.len()+1));
+}
+
+#[test]
+fn scope_boundaries_follow_append_share_compact_edit_and_clear() {
+    let mut source = operations(12);
+    source.push(PaintOperation::StartLayer(Bounds::default()));
+    source.push(PaintOperation::StartBlur(crate::BlurCapture {
+        animation_id: None, layer_id: None, bounds: Bounds::default(),
+        content_mask: crate::ContentMask::default(), radius: crate::ScaledPixels(2.),
+        opacity: 1.,
+    }));
+    source.push(PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+    source.push(PaintOperation::EndBlur);
+    source.push(PaintOperation::EndLayer);
+    source.extend((0..16).map(|_| PaintOperation::Primitive(Primitive::Quad(Quad::default()))));
+    check_ranges(&source);
+    source.finish();
+    let mut target = Operations::default();
+    target.push(PaintOperation::StartLayer(Bounds::default()));
+    target.share(&source, 12..17);
+    target.push(PaintOperation::EndLayer);
+    target.share(&source, 17..20);
+    target.finish();
+    check_ranges(&target);
+    target.compact();
+    check_ranges(&target);
+    target.edit(3..4, |op| *op = PaintOperation::EndLayer);
+    check_ranges(&target);
+    target.edit(3..4, |op| *op = PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+    check_ranges(&target);
+    target.clear();
+    target.share(&source, 12..17);
+    check_ranges(&target);
+    target.clear();
+    target.share(&source, 15..17);
+    check_ranges(&target);
+}

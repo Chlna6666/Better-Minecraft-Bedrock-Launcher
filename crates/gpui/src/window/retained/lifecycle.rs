@@ -10,7 +10,6 @@ impl RetainedPaint {
         self.finished = false;
         self.revision = 0;
         self.sources.clear();
-        self.replay_structure.take();
     }
 
     pub(crate) fn retained_capacity(&self) -> usize {
@@ -19,10 +18,6 @@ impl RetainedPaint {
             + self.prepared_retained_monochrome_sprite_chunks.capacity()
             + self.replay_quad_indices.capacity()
             + self.sources.capacity()
-            + self
-                .replay_structure
-                .get()
-                .map_or(0, |index| index.retained_capacity())
     }
 
     /// Adapts empty scratch allocations to the current frame without touching shared snapshots.
