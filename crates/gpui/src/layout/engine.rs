@@ -920,6 +920,15 @@ impl TaffyLayoutEngine {
                 && style_fingerprint.is_some()
                 && node.style_fingerprint == style_fingerprint
             {
+                // Same invariant as GPUI Fast: a fingerprint hit must mean
+                // exactly the native style Taffy holds. Debug builds catch
+                // missing fields in the hash without slowing release builds.
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(
+                    self.taffy.style(id.into()).expect(EXPECT_MESSAGE),
+                    &build_style(),
+                    "layout fingerprint omitted a native style input",
+                );
                 None
             } else {
                 let style = build_style();
@@ -1088,14 +1097,13 @@ impl TaffyLayoutEngine {
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
-        let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
             lingers,
             children,
             None::<MeasureRequest<fn() -> Option<NodeMeasureFn>>>,
             Some(style_fingerprint),
-            move || pending_style.to_taffy(rem_size, scale_factor),
+            || layout_style.to_taffy(rem_size, scale_factor),
         );
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
@@ -1174,14 +1182,13 @@ impl TaffyLayoutEngine {
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
-        let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
             lingers,
             &[],
             Some(request),
             Some(style_fingerprint),
-            move || pending_style.to_taffy(rem_size, scale_factor),
+            || layout_style.to_taffy(rem_size, scale_factor),
         );
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
@@ -1620,15 +1627,12 @@ impl TaffyLayoutEngine {
         hash_display(style.display, hasher);
         hash_overflow_point(&style.overflow, hasher);
         hash_absolute_length(style.scrollbar_width, hasher);
-        style.allow_concurrent_scroll.hash(hasher);
-        style.restrict_scroll_to_axis.hash(hasher);
         hash_position(style.position, hasher);
         hash_edges_length(&style.inset, hasher);
         hash_size_length(&style.size, hasher);
         hash_size_length(&style.min_size, hasher);
         hash_size_length(&style.max_size, hasher);
         style.aspect_ratio.map(f32::to_bits).hash(hasher);
-        style.percentage_passthrough.hash(hasher);
         hash_edges_length(&style.margin, hasher);
         hash_edges_definite_length(&style.padding, hasher);
         hash_edges_absolute_length(&style.border_widths, hasher);
@@ -1751,6 +1755,23 @@ mod tests {
         engine.robbed_parents.insert(id);
         assert!(engine.try_keep_retained(&claims, id).is_none());
         assert_eq!(engine.claimed_this_frame, 0);
+    }
+
+    #[test]
+    fn interaction_flags_do_not_change_native_style_fingerprint() {
+        let engine = TaffyLayoutEngine::new();
+        let original = Style::default();
+        let mut changed = original.clone();
+        changed.allow_concurrent_scroll = !original.allow_concurrent_scroll;
+        changed.restrict_scroll_to_axis = !original.restrict_scroll_to_axis;
+        changed.percentage_passthrough = !original.percentage_passthrough;
+        let fingerprint = |style: &Style| {
+            let mut hasher = FxHasher::default();
+            engine.hash_layout_style(&LayoutStyle::from(style), crate::px(16.), 1., &mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(fingerprint(&original), fingerprint(&changed));
+        assert_eq!(original.to_taffy(crate::px(16.), 1.), changed.to_taffy(crate::px(16.), 1.));
     }
 
     #[test]
