@@ -265,6 +265,17 @@ impl Window {
             .flat_map(|(_, _, old, _, _)| old.layout_state_range.iter().cloned())
             .collect();
         dirty_state_spans.sort_unstable_by_key(|span| span.start);
+        let mut count = 0;
+        for index in 0..dirty_state_spans.len() {
+            let span = dirty_state_spans[index].clone();
+            if count > 0 && dirty_state_spans[count - 1].end >= span.start {
+                dirty_state_spans[count - 1].end = dirty_state_spans[count - 1].end.max(span.end);
+            } else {
+                dirty_state_spans[count] = span;
+                count += 1;
+            }
+        }
+        dirty_state_spans.truncate(count);
         let in_gaps: FxHashSet<_> = dirty_state_spans.iter()
             .flat_map(|span| source_states[span.clone()].iter().flatten())
             .collect();
@@ -272,7 +283,8 @@ impl Window {
             for span in anchor.layout_state_range.iter() {
                 for index in span.clone() {
                     if source_states[index].as_ref().is_some_and(|state| in_gaps.contains(state))
-                        && !dirty_state_spans.iter().any(|gap| gap.contains(&index))
+                        && !dirty_state_spans.get(dirty_state_spans.partition_point(|gap| gap.end <= index))
+                            .is_some_and(|gap| gap.contains(&index))
                     {
                         return None;
                     }
@@ -299,15 +311,19 @@ impl Window {
         let mut state_map = crate::layout::ClaimBlockMap::default();
         let target_states = &mut self.next_frame.accessed_element_states;
         for span in anchor.layout_state_range.iter() {
+            // The preceding key check proved that no gap key occurs outside
+            // its recorded spans. Copy contiguous stretches, as in Fast's
+            // kept_keys, instead of hashing every retained state again.
             let mut cursor = span.start;
-            for index in span.clone() {
-                if source_states[index].as_ref().is_some_and(|state| in_gaps.contains(state)) {
-                    if cursor < index {
-                        state_map.record(cursor..index, target_states.len());
-                        target_states.extend_from_slice(&source_states[cursor..index]);
-                    }
-                    cursor = index + 1;
+            let first = dirty_state_spans.partition_point(|gap| gap.end <= cursor);
+            for gap in &dirty_state_spans[first..] {
+                if gap.start >= span.end { break; }
+                let end = gap.start.min(span.end);
+                if cursor < end {
+                    state_map.record(cursor..end, target_states.len());
+                    target_states.extend_from_slice(&source_states[cursor..end]);
                 }
+                cursor = cursor.max(gap.end.min(span.end));
             }
             if cursor < span.end {
                 state_map.record(cursor..span.end, target_states.len());

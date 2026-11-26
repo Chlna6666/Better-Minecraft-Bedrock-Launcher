@@ -328,6 +328,10 @@ impl StateRead {
 
 /// The first read of each state, in order, as in Fast's unique_states.
 fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
+    // A single scroll handle is common; avoid allocating a hash table for it.
+    if states.len() <= 1 {
+        return Rc::from(states);
+    }
     let mut seen = FxHashSet::with_capacity_and_hasher(states.len(), Default::default());
     states.iter().filter(|state| seen.insert(state.id())).cloned().collect()
 }

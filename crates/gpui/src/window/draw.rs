@@ -110,7 +110,12 @@ impl Window {
         let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
         let force_full_redraw = self.force_full_redraw.get() || debug_force_full_redraw;
         let (restored_input_handler_index, directly_dirty_views) = self.begin_draw_cycle(cx);
-        let mut phase_metrics = self.draw_roots(cx);
+        let mut phase_metrics = {
+            // One recording scope covers all phases, including state reads
+            // in measurement, prepaint and paint outside View::render.
+            let _state_reads = cx.entities.begin_state_reads();
+            self.draw_roots(cx)
+        };
         self.next_frame.window_active = self.active.get();
 
         if self.draw_was_degraded && self.has_completed_rendered_frame {
