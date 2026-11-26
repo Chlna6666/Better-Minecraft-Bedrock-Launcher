@@ -734,10 +734,10 @@ impl Window {
             });
             if !diffed {
                 if let Some(previous) = previous {
-                    dirty_region.push(previous.bounds);
+                    dirty_region.push(previous.bounds(&self.rendered_frame.retained_scene_segments));
                 }
                 if let Some(current) = current {
-                    dirty_region.push(current.bounds);
+                    dirty_region.push(current.bounds(&self.next_frame.retained_scene_segments));
                 }
             }
         };
@@ -1184,11 +1184,7 @@ mod fragment_count_damage_tests {
             content_mask: crate::ContentMask::new(bounds),
             ..Quad::default()
         });
-        RetainedSceneSegment {
-            entity_id: EntityId::from(1_u64),
-            bounds,
-            scene_range: start..scene.len(),
-        }
+        RetainedSceneSegment::new(EntityId::from(1_u64), bounds, start..scene.len())
     }
 
     #[test]

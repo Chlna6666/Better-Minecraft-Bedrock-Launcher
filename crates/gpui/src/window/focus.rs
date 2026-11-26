@@ -121,8 +121,9 @@ impl Window {
         // Use the same committed visual damage index as ordinary view
         // invalidation; no retained path scan or coordinate reconversion.
         if let Some(entry) = self.rendered_frame.retained_scene_index.get(&view_id) {
-            if !entry.bounds.is_empty() {
-                self.animation_dirty_region.push(entry.bounds);
+            let bounds = entry.bounds(&self.rendered_frame.retained_scene_segments);
+            if !bounds.is_empty() {
+                self.animation_dirty_region.push(bounds);
             }
         } else {
             self.force_full_redraw.set(true);

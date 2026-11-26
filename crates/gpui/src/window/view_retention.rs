@@ -446,10 +446,9 @@ impl Window {
             let target_scene = record.paint_range.start.scene_index..record.paint_range.end.scene_index;
             for segment in &self.rendered_frame.retained_scene_segments[source.scene_segments.clone()] {
                 if let Some(scene_range) = rebase_span(&segment.scene_range, &source_scene, &target_scene) {
-                    self.next_frame.push_retained_scene_segment(RetainedSceneSegment {
-                        scene_range,
-                        ..segment.clone()
-                    });
+                    self.next_frame.push_retained_scene_segment(RetainedSceneSegment::new(
+                        segment.entity_id, segment.bounds, scene_range,
+                    ));
                 }
             }
             let scene_segments = record.scene_segments.start..self.next_frame.retained_scene_segments.len();

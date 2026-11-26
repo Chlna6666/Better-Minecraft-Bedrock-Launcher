@@ -26,6 +26,13 @@ pub(crate) struct RetainedSceneSegment {
     pub(crate) bounds: Bounds<ScaledPixels>,
     pub(crate) scene_range: Range<usize>,
     pub(crate) entity_id: EntityId,
+    next_for_entity: Option<std::num::NonZeroUsize>,
+}
+
+impl RetainedSceneSegment {
+    pub(crate) fn new(entity_id: EntityId, bounds: Bounds<ScaledPixels>, scene_range: Range<usize>) -> Self {
+        Self { entity_id, bounds, scene_range, next_for_entity: None }
+    }
 }
 
 /// Inherited state that changes either lifecycle side effects or the pixels produced by an
@@ -74,7 +81,6 @@ pub(crate) struct Frame {
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
-    retained_scene_index_spill_capacity: usize,
     /// Native key lookup; ambiguous keys use usize::MAX and cannot be admitted.
     /// The actual records remain in prepaint order.
     pub(crate) view_retentions: FxHashMap<u64, usize>,
@@ -278,7 +284,6 @@ impl Frame {
             cursor_styles: Vec::new(),
             retained_scene_segments: Vec::new(),
             retained_scene_index: FxHashMap::default(),
-            retained_scene_index_spill_capacity: 0,
             view_retentions: FxHashMap::default(),
             view_retention_records: Vec::new(),
 
@@ -328,7 +333,6 @@ impl Frame {
         self.cursor_styles.clear();
         self.retained_scene_segments.clear();
         self.retained_scene_index.clear();
-        self.retained_scene_index_spill_capacity = 0;
         self.view_retentions.clear();
         self.view_retention_records.clear();
         self.hitboxes.clear();
@@ -487,7 +491,6 @@ impl Frame {
             + self.cursor_styles.capacity()
             + self.retained_scene_segments.capacity()
             + self.retained_scene_index.capacity()
-            + self.retained_scene_index_spill_capacity
             + self.view_retentions.capacity()
             + self.view_retention_records.capacity()
             + self.tab_stops.retained_capacity()
@@ -661,7 +664,7 @@ impl Frame {
                 self.tooltip_requests.shrink_to(floor);
                 self.cursor_styles.shrink_to(floor);
                 self.retained_scene_segments.shrink_to(floor);
-                self.trim_retained_scene_index(floor);
+                self.retained_scene_index.shrink_to(floor.max(self.retained_scene_index.len()));
                 self.view_retentions.shrink_to(floor.max(self.view_retentions.len()));
                 self.view_retention_records.shrink_to(floor.max(self.view_retention_records.len()));
                 self.tab_stops

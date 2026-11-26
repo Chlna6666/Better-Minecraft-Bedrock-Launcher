@@ -665,11 +665,7 @@ impl Window {
                 && let Some(bounds) = view_bounds
             {
                 self.next_frame
-                    .push_retained_scene_segment(RetainedSceneSegment {
-                        bounds,
-                        scene_range,
-                        entity_id: id,
-                    });
+                    .push_retained_scene_segment(RetainedSceneSegment::new(id, bounds, scene_range));
             }
         }
         self.rendered_entity_stack.pop();
