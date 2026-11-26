@@ -149,35 +149,6 @@ impl Primitive {
         }
     }
 
-    /// Translate only primitives whose sampled pixels are position-independent
-    /// under an integral device-pixel movement. The caller must separately
-    /// prove unchanged clipping, inherited state and lifecycle safety.
-    pub(crate) fn translated_static(&self, delta: crate::Point<ScaledPixels>) -> Option<Self> {
-        if self.animation_id().is_some() {
-            return None;
-        }
-        match self {
-            Self::Quad(quad) => {
-                let mut quad = *quad;
-                quad.bounds.origin += delta;
-                Some(Self::Quad(quad))
-            }
-            Self::MonochromeSprite(sprite)
-                if sprite.transformation == crate::TransformationMatrix::unit() =>
-            {
-                let mut sprite = *sprite;
-                sprite.bounds.origin += delta;
-                Some(Self::MonochromeSprite(sprite))
-            }
-            Self::Underline(underline) if underline.wavy == 0 => {
-                let mut underline = *underline;
-                underline.bounds.origin += delta;
-                Some(Self::Underline(underline))
-            }
-            _ => None,
-        }
-    }
-
     pub(crate) fn set_order(&mut self, order: DrawOrder) {
         match self {
             Primitive::Shadow(shadow) => shadow.order = order,

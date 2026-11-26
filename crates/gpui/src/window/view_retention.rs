@@ -29,8 +29,6 @@ impl StateAccessBlocks {
         if !range.is_empty() { self.0.push(range); }
     }
 
-    pub(crate) fn is_empty(&self) -> bool { self.0.is_empty() }
-
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Range<usize>> { self.0.iter() }
 
     pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {

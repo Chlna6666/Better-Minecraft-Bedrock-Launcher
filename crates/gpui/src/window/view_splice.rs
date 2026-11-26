@@ -212,8 +212,7 @@ impl Window {
             let gap_rebuild = old.rebuild.as_ref()?;
             let dirty = scope == Some(ViewDirtyScope::Direct);
             let ancestor = scope == Some(ViewDirtyScope::TraversalAncestor);
-            if (dirty && !old.layout_state_range.is_empty())
-                || !anchor.layout_state_range.covers(&old.layout_state_range)
+            if !anchor.layout_state_range.covers(&old.layout_state_range)
                 || open.iter().any(|ancestor| !ancestor.layout_state_range.covers(&old.layout_state_range))
                 || (scope.is_some() && !old.splice_safe)
                 || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context
@@ -257,6 +256,29 @@ impl Window {
         {
             return None;
         }
+        // If a dirty gap accessed a state also read outside its request span,
+        // rebuilding just that gap cannot establish the retained owner's
+        // state lifetime. Leave that unusual shared-state case to traversal.
+        let source_states = &self.rendered_frame.accessed_element_states;
+        let mut dirty_state_spans: SmallVec<[Range<usize>; 4]> = plan.iter()
+            .filter(|(_, _, _, _, view)| view.is_some())
+            .flat_map(|(_, _, old, _, _)| old.layout_state_range.iter().cloned())
+            .collect();
+        dirty_state_spans.sort_unstable_by_key(|span| span.start);
+        let in_gaps: FxHashSet<_> = dirty_state_spans.iter()
+            .flat_map(|span| source_states[span.clone()].iter().flatten())
+            .collect();
+        if !in_gaps.is_empty() {
+            for span in anchor.layout_state_range.iter() {
+                for index in span.clone() {
+                    if source_states[index].as_ref().is_some_and(|state| in_gaps.contains(state))
+                        && !dirty_state_spans.iter().any(|gap| gap.contains(&index))
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
         let engine = self.layout_engine.as_mut()?;
         let start = engine.claim_log_len();
         let (kept, claim_map) = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
@@ -270,14 +292,30 @@ impl Window {
         let transient_count = engine.transient_count();
         let new_request_start = self.claim_log_len();
         let states_start = self.begin_view_element_states();
+        // Fast kept_element_states excludes states accessed by rebuilt gaps.
+        // Adapt the source's key set to the current frame-log representation:
+        // keep the actual keys, and map contiguous surviving runs so that
+        // clean nested records continue pointing into the new frame.
         let mut state_map = crate::layout::ClaimBlockMap::default();
-        let mut target = states_start;
+        let target_states = &mut self.next_frame.accessed_element_states;
         for span in anchor.layout_state_range.iter() {
-            state_map.record(span.clone(), target);
-            target += span.len();
+            let mut cursor = span.start;
+            for index in span.clone() {
+                if source_states[index].as_ref().is_some_and(|state| in_gaps.contains(state)) {
+                    if cursor < index {
+                        state_map.record(cursor..index, target_states.len());
+                        target_states.extend_from_slice(&source_states[cursor..index]);
+                    }
+                    cursor = index + 1;
+                }
+            }
+            if cursor < span.end {
+                state_map.record(cursor..span.end, target_states.len());
+                target_states.extend_from_slice(&source_states[cursor..span.end]);
+            }
         }
         state_map.sort_by_source();
-        let kept_states = self.replay_view_layout_states(&anchor.layout_state_range);
+        let kept_states = self.view_layout_state_range(states_start);
         // The engine's block map is the only source of retained claim relocation.
         let mut parts: Vec<SplicePart> = Vec::with_capacity(plan.len());
         let mut open = smallvec::SmallVec::<[usize; 8]>::new();
@@ -292,7 +330,7 @@ impl Window {
                     self.stash_prebuilt_gaps(parts);
                     return None;
                 };
-                let Some(states) = old.layout_state_range.project(&state_map, true) else {
+                let Some(states) = old.layout_state_range.project(&state_map, !ancestor) else {
                     self.release_retained_view(&kept);
                     self.cancel_view_layout_states(&kept_states);
                     self.stash_prebuilt_gaps(parts);
@@ -324,11 +362,14 @@ impl Window {
             self.splice_building = false;
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
-                && !self.force_view_cache_refresh && states.is_empty();
+                && !self.force_view_cache_refresh;
             let gap_claims = gap_start..self.claim_log_len();
             for index in &open {
                 let SplicePart::Ancestor(ancestor) = &mut parts[*index] else { unreachable!() };
                 ancestor.claims.push_request(gap_claims.clone());
+                for span in states.iter() {
+                    ancestor.states.push(span.clone());
+                }
             }
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
