@@ -39,7 +39,7 @@ impl RetainedPaint {
                     .start
                     .cmp(&right.scene_range.start)
                     .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
-                    .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
+                    .then_with(|| left.id.depth.cmp(&right.id.depth))
             });
         // Validate the once-per-finish ordering contract here, not on every
         // retained replay. A debug-build full candidate scan per fragment
@@ -144,7 +144,7 @@ impl RetainedPaint {
             let start = replay_start + chunk.scene_range.start - range.start;
             let end = replay_start + chunk.scene_range.end - range.start;
             self.retained_chunk_candidates.push(RetainedChunkCandidate {
-                id: chunk.id.clone(),
+                id: chunk.id,
                 scene_range: start..end,
                 replayed: true,
             });
@@ -156,7 +156,7 @@ impl RetainedPaint {
     pub(crate) fn record(
         &mut self,
         identity: GlobalElementId,
-        generation: u64,
+        _generation: u64,
         scene_range: Range<usize>,
     ) {
         if scene_range.len() < MIN_RETAINED_OPERATIONS {
@@ -164,7 +164,7 @@ impl RetainedPaint {
         }
         self.finished = false;
         self.retained_chunk_candidates.push(RetainedChunkCandidate {
-            id: RetainedChunkId::new(identity, generation),
+            id: RetainedChunkId::fresh(identity.0.len()),
             scene_range,
             replayed: false,
         });
@@ -188,7 +188,7 @@ impl RetainedPaint {
                 Some(RetainedChunkProof::Quad(proof)) => {
                     qualified_until = candidate.scene_range.end;
                     quads.push(PreparedRetainedQuadChunk {
-                    id: candidate.id.clone(),
+                    id: candidate.id,
                     quad_range: proof.range,
                     paint_range: candidate.scene_range.clone(),
                     replayed: candidate.replayed,
@@ -198,7 +198,7 @@ impl RetainedPaint {
                 Some(RetainedChunkProof::MonochromeSprite(proof)) => {
                     qualified_until = candidate.scene_range.end;
                     sprites.push(PreparedRetainedMonochromeSpriteChunk {
-                        id: candidate.id.clone(),
+                        id: candidate.id,
                         sprite_range: proof.range,
                         replayed: candidate.replayed,
                         texture_id: proof.texture_id,
@@ -214,7 +214,7 @@ impl RetainedPaint {
                 .start
                 .cmp(&right.quad_range.start)
                 .then_with(|| right.quad_range.end.cmp(&left.quad_range.end))
-                .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
+                .then_with(|| left.id.depth.cmp(&right.id.depth))
         });
         let mut retained_end = 0usize;
         quads.retain(|chunk| {
@@ -230,7 +230,7 @@ impl RetainedPaint {
                 .start
                 .cmp(&right.sprite_range.start)
                 .then_with(|| right.sprite_range.end.cmp(&left.sprite_range.end))
-                .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
+                .then_with(|| left.id.depth.cmp(&right.id.depth))
         });
         retained_end = 0;
         sprites.retain(|chunk| {

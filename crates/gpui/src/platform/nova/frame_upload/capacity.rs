@@ -104,7 +104,7 @@ impl FrameUpload {
             self.path_paint_key_scratch.capacity(),
             self.path_rasterization_encode_scratch.capacity(),
             cache.layer_scene_encodings.capacity()
-                * std::mem::size_of::<(crate::GlobalElementId, CachedLayerSceneEncoding)>(),
+                * std::mem::size_of::<(u64, CachedLayerSceneEncoding)>(),
             cache
                 .layer_scene_encodings
                 .values()

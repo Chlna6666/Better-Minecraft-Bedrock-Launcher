@@ -64,7 +64,7 @@ pub(in crate::platform::nova) enum CachedLayerBatch {
 
 pub(in crate::platform::nova) struct CachedLayerSceneEncoding {
     pub(in crate::platform::nova) source: Arc<crate::Scene>,
-    pub(in crate::platform::nova) scene_revision: u64,
+    pub(in crate::platform::nova) id: RetainedChunkId,
     pub(in crate::platform::nova) atlas_placement_generation: u64,
     pub(in crate::platform::nova) quads: Option<Arc<Vec<u8>>>,
     pub(in crate::platform::nova) quad_hash: u64,
@@ -86,9 +86,9 @@ pub(in crate::platform::nova) struct RetainedChunkCache {
     pub(in crate::platform::nova) retained_monochrome_sprite_chunks:
         FxHashMap<RetainedChunkId, PackedRetainedMonochromeSpriteChunk>,
     pub(in crate::platform::nova) layer_scene_encodings:
-        FxHashMap<crate::GlobalElementId, CachedLayerSceneEncoding>,
+        FxHashMap<u64, CachedLayerSceneEncoding>,
     /// Monotonic successful encode epoch; replaces a second HashSet of copied
-    /// GlobalElementIds just to track liveness across one recursive encode.
+    /// keys just to track liveness across one recursive encode.
     pub(in crate::platform::nova) frame_epoch: u64,
     /// Consecutive encode epochs with allocation misses but no reuse.
     pub(in crate::platform::nova) cold_chunk_streak: u8,

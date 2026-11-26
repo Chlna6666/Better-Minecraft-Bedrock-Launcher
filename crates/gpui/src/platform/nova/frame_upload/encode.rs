@@ -471,32 +471,26 @@ impl FrameUpload {
                         // Fill all preceding structural slots (including End/Composite
                         // from a sibling blur) before entering the next child.
                         self.batch_visual_bounds.resize(self.batches.len(), None);
-                        let can_reuse_layer = blur.layer_id.as_ref().is_some_and(|layer_id| {
-                            cache
-                                .layer_scene_encodings
-                                .get(layer_id)
-                                .is_some_and(|cached| {
-                                    Arc::ptr_eq(&cached.source, &blur.content)
-                                        && cached.scene_revision == blur.content.revision
-                                        && cached.atlas_placement_generation
-                                            == cache.atlas_placement_generation
-                                        && self.cached_layer_scene_fits(cached)
-                                })
-                        });
-                        let cached_summary = if can_reuse_layer {
-                            blur.layer_id.as_ref().and_then(|layer_id| {
-                                let epoch = cache.frame_epoch;
-                                if let Some(cached) = cache.layer_scene_encodings.get_mut(layer_id)
+                        // Encoded bytes belong to immutable captured content, not
+                        // its UI layer path. A shared revision is only a lookup;
+                        // the exact Arc and atlas generation still prove reuse.
+                        let revision = blur.content.revision;
+                        let atlas_generation = cache.atlas_placement_generation;
+                        let epoch = cache.frame_epoch;
+                        let cached_summary = if revision != 0 {
+                            cache.layer_scene_encodings.get_mut(&revision).and_then(|cached| {
+                                if !Arc::ptr_eq(&cached.source, &blur.content)
+                                    || cached.atlas_placement_generation != atlas_generation
+                                    || !self.cached_layer_scene_fits(cached)
                                 {
-                                    cached.last_used_epoch = epoch;
+                                    return None;
                                 }
-                                cache.layer_scene_encodings.get(layer_id).map(|cached| {
-                                    self.append_cached_layer_scene(layer_id, cached, &mut summary);
-                                    FrameUploadSummary {
-                                        quad_count: cached.quad_count,
-                                        mono_sprite_count: cached.mono_sprite_count,
-                                        ..Default::default()
-                                    }
+                                cached.last_used_epoch = epoch;
+                                self.append_cached_layer_scene(cached, &mut summary);
+                                Some(FrameUploadSummary {
+                                    quad_count: cached.quad_count,
+                                    mono_sprite_count: cached.mono_sprite_count,
+                                    ..Default::default()
                                 })
                             })
                         } else {
@@ -512,7 +506,7 @@ impl FrameUpload {
                             let child_quad_span_start = self.resident_quad_spans.len();
                             let child_mono_sprite_span_start =
                                 self.resident_monochrome_sprite_spans.len();
-                            let child_scene_reusable = blur.layer_id.is_some()
+                            let child_scene_reusable = revision != 0
                                 && Self::layer_scene_encoding_is_reusable(&blur.content);
                             let child_summary = self.encode_scene(
                                 cache,
@@ -532,54 +526,45 @@ impl FrameUpload {
                                     child_summary,
                                 )
                             {
-                                if let Some(layer_id) = blur.layer_id.as_ref() {
-                                    Self::retain_layer_scene_encoding(
-                                        cache,
-                                        layer_id,
-                                        &blur.content,
-                                        quad_byte_start..self.quads.len(),
-                                        mono_sprite_byte_start..self.mono_sprites.len(),
-                                        mono_atlas_start..self.mono_atlas_tiles.len(),
-                                        child_batch_start..self.batches.len(),
-                                        self,
-                                        child_summary,
-                                    );
-                                    for span in
-                                        self.resident_quad_spans.drain(child_quad_span_start..)
-                                    {
-                                        cache.quad_payloads.remove(&span.id);
+                                Self::retain_layer_scene_encoding(
+                                    cache,
+                                    &blur.content,
+                                    quad_byte_start..self.quads.len(),
+                                    mono_sprite_byte_start..self.mono_sprites.len(),
+                                    mono_atlas_start..self.mono_atlas_tiles.len(),
+                                    child_batch_start..self.batches.len(),
+                                    self,
+                                    child_summary,
+                                );
+                                for span in
+                                    self.resident_quad_spans.drain(child_quad_span_start..)
+                                {
+                                    cache.quad_payloads.remove(&span.id);
+                                }
+                                for span in self
+                                    .resident_monochrome_sprite_spans
+                                    .drain(child_mono_sprite_span_start..)
+                                {
+                                    cache.retained_monochrome_sprite_chunks.remove(&span.id);
+                                }
+                                if let Some(cached) = cache.layer_scene_encodings.get(&revision)
+                                {
+                                    if cached.quads.is_some() {
+                                        self.resident_quad_spans.push(RetainedResidentSpan {
+                                            id: cached.id,
+                                            range: quad_byte_start..self.quads.len(),
+                                            byte_hash: cached.quad_hash,
+                                        });
                                     }
-                                    for span in self
-                                        .resident_monochrome_sprite_spans
-                                        .drain(child_mono_sprite_span_start..)
-                                    {
-                                        cache.retained_monochrome_sprite_chunks.remove(&span.id);
-                                    }
-                                    if let Some(cached) = cache.layer_scene_encodings.get(layer_id)
-                                    {
-                                        if cached.quads.is_some() {
-                                            self.resident_quad_spans.push(RetainedResidentSpan {
-                                                id: RetainedChunkId::new(
-                                                    layer_id.clone(),
-                                                    cached.scene_revision,
-                                                ),
-                                                range: quad_byte_start..self.quads.len(),
-                                                byte_hash: cached.quad_hash,
-                                            });
-                                        }
-                                        if cached.mono_sprites.is_some() {
-                                            self.resident_monochrome_sprite_spans.push(
-                                                RetainedResidentSpan {
-                                                    id: RetainedChunkId::new(
-                                                        layer_id.clone(),
-                                                        cached.scene_revision,
-                                                    ),
-                                                    range: mono_sprite_byte_start
-                                                        ..self.mono_sprites.len(),
-                                                    byte_hash: cached.mono_sprite_hash,
-                                                },
-                                            );
-                                        }
+                                    if cached.mono_sprites.is_some() {
+                                        self.resident_monochrome_sprite_spans.push(
+                                            RetainedResidentSpan {
+                                                id: cached.id,
+                                                range: mono_sprite_byte_start
+                                                    ..self.mono_sprites.len(),
+                                                byte_hash: cached.mono_sprite_hash,
+                                            },
+                                        );
                                     }
                                 }
                             }

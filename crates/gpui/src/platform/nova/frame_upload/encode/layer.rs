@@ -47,7 +47,6 @@ impl FrameUpload {
 
     pub(super) fn append_cached_layer_scene(
         &mut self,
-        layer_id: &crate::GlobalElementId,
         cached: &CachedLayerSceneEncoding,
         summary: &mut FrameUploadSummary,
     ) {
@@ -58,7 +57,7 @@ impl FrameUpload {
             self.quads
                 .append_shared(Arc::clone(bytes), cached.quad_hash);
             self.resident_quad_spans.push(RetainedResidentSpan {
-                id: RetainedChunkId::new(layer_id.clone(), cached.scene_revision),
+                id: cached.id,
                 range: start..self.quads.len(),
                 byte_hash: cached.quad_hash,
             });
@@ -69,7 +68,7 @@ impl FrameUpload {
                 .append_shared(Arc::clone(bytes), cached.mono_sprite_hash);
             self.resident_monochrome_sprite_spans
                 .push(RetainedResidentSpan {
-                    id: RetainedChunkId::new(layer_id.clone(), cached.scene_revision),
+                    id: cached.id,
                     range: start..self.mono_sprites.len(),
                     byte_hash: cached.mono_sprite_hash,
                 });
@@ -113,10 +112,6 @@ impl FrameUpload {
             });
         }
 
-        summary.quad_count = summary.quad_count.saturating_add(cached.quad_count);
-        summary.mono_sprite_count = summary
-            .mono_sprite_count
-            .saturating_add(cached.mono_sprite_count);
         summary.retained_chunk_hits = summary.retained_chunk_hits.saturating_add(1);
         summary.retained_chunk_reused_bytes = summary
             .retained_chunk_reused_bytes
@@ -157,7 +152,6 @@ impl FrameUpload {
 
     pub(super) fn retain_layer_scene_encoding(
         cache: &mut RetainedChunkCache,
-        layer_id: &crate::GlobalElementId,
         scene: &Arc<crate::Scene>,
         quad_range: Range<usize>,
         mono_sprite_range: Range<usize>,
@@ -226,10 +220,10 @@ impl FrameUpload {
             mono_hasher.write(bytes);
         }
         cache.layer_scene_encodings.insert(
-            layer_id.clone(),
+            scene.revision,
             CachedLayerSceneEncoding {
                 source: Arc::clone(scene),
-                scene_revision: scene.revision,
+                id: RetainedChunkId::fresh(0),
                 atlas_placement_generation: cache.atlas_placement_generation,
                 quads,
                 quad_hash: quad_hasher.finish(),
