@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{Element, IntoElement, ViewElement, ViewRequestLayout};
-use crate::layout::{LayoutClaimBlocks, NativePlacementDelta, NativePlacementProof};
+use crate::layout::{HeldLayout, LayoutClaimBlocks};
 
 pub(super) struct PrebuiltGap {
     key: u64,
@@ -23,7 +23,9 @@ pub(crate) struct ViewSplice {
     pub(crate) states: StateAccessBlocks,
     kept: LayoutClaimBlocks,
     kept_states: StateAccessBlocks,
-    placement: NativePlacementProof,
+    held: Vec<HeldLayout>,
+    gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]>,
+    transient_count: usize,
     parts: Vec<SplicePart>,
 }
 
@@ -73,10 +75,8 @@ impl Window {
         let application = mem::replace(
             &mut self.element_id_stack, ElementIdStack::from_prefix(application_id.clone()),
         );
-        let native = self.native_element_scope.replace(scope);
-        let result = f(self);
+        let result = self.with_native_element_scope(scope, f);
         self.element_id_stack = application;
-        self.native_element_scope = native;
         result
     }
 
@@ -260,10 +260,14 @@ impl Window {
         let engine = self.layout_engine.as_mut()?;
         let start = engine.claim_log_len();
         let (kept, claim_map) = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
-        let Some(placement) = engine.capture_splice_placement(&kept, &claims) else {
+        let Some(held) = engine.retained_layouts(&kept) else {
             engine.release_kept(&kept);
             return None;
         };
+        let gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]> = claims.iter()
+            .map(|(_, id)| (*id, engine.layout_parent(*id)))
+            .collect();
+        let transient_count = engine.transient_count();
         let new_request_start = self.claim_log_len();
         let states_start = self.begin_view_element_states();
         let mut state_map = crate::layout::ClaimBlockMap::default();
@@ -283,14 +287,12 @@ impl Window {
             }
             let Some(mut view) = view else {
                 let Some(claims) = claim_map.project(&old.layout_claims, !ancestor) else {
-                    self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
                     self.cancel_view_layout_states(&kept_states);
                     self.stash_prebuilt_gaps(parts);
                     return None;
                 };
                 let Some(states) = old.layout_state_range.project(&state_map, true) else {
-                    self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
                     self.cancel_view_layout_states(&kept_states);
                     self.stash_prebuilt_gaps(parts);
@@ -333,7 +335,6 @@ impl Window {
                 claims: LayoutClaimBlocks::request(gap_claims), states, node: None,
             }));
             if !compatible {
-                self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                 self.release_retained_view(&kept);
                 self.cancel_view_layout_states(&kept_states);
                 self.stash_prebuilt_gaps(parts);
@@ -341,8 +342,11 @@ impl Window {
             }
         }
         while let Some(index) = open.pop() { close_ancestor(&mut parts, index); }
-        if !self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(placement) {
-            self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
+        let engine = self.layout_engine.as_ref().expect("layout engine");
+        if engine.transient_count() != transient_count
+            || !engine.retained_topology_matches(&held)
+            || !gap_parents.iter().all(|(id, parent)| engine.layout_parent(*id) == *parent)
+        {
             self.release_retained_view(&kept);
             self.cancel_view_layout_states(&kept_states);
             self.stash_prebuilt_gaps(parts);
@@ -357,18 +361,20 @@ impl Window {
             claims
         };
         Some(ViewSplice {
-            anchor, kept, kept_states, placement, parts, claims,
+            anchor, kept, kept_states, held, gap_parents, transient_count, parts, claims,
             states: self.view_layout_state_range(states_start),
         })
     }
 
     pub(crate) fn can_prepaint_view_splice(&mut self, splice: &ViewSplice, bounds: Bounds<Pixels>) -> bool {
-        let placement = self.layout_engine.as_mut()
-            .and_then(|engine| engine.finish_splice_placement(splice.placement));
-        // Retained event closures and clipping are not yet relocatable. A
-        // native translation is classified precisely, but not replayed blindly.
-        if placement != Some(NativePlacementDelta::Unchanged) {
-            log::trace!(target: "gpui::diagnostics", "native splice placement rejected: {placement:?}");
+        // Fast splice_layout_holds: compare the actual native layouts after
+        // computing the enclosing root. Event closures and clipping are not
+        // relocatable yet, so any change still takes ordinary traversal.
+        if !self.layout_engine.as_ref().is_some_and(|engine| {
+            engine.transient_count() == splice.transient_count
+                && engine.layouts_unchanged(&splice.held)
+                && splice.gap_parents.iter().all(|(id, parent)| engine.layout_parent(*id) == *parent)
+        }) {
             return false;
         }
         if self.force_view_cache_refresh || !self.splice_context_supported()

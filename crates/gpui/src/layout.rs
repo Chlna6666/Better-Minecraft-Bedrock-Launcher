@@ -18,7 +18,7 @@ mod placement_tests;
 pub use builders::{absolute_fill, center, h_stack, relative_fill, v_stack};
 pub(crate) use convert::snap_logical_to_device_pixel;
 pub use engine::TaffyLayoutEngine;
-pub(crate) use engine::{MeasurementKey, NativePlacementDelta, NativePlacementProof, SizeMeasurement};
+pub(crate) use engine::{HeldLayout, MeasurementKey, SizeMeasurement};
 use std::ops::Range;
 
 /// References into the double-buffered native claim log, not copies of nodes.
