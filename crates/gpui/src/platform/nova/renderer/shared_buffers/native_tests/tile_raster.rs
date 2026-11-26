@@ -66,6 +66,10 @@ fn verify(backend: RendererBackend) {
     assert!(source.width() >= 32 && source.height() >= 40);
     let tile = Extent2d::new(16, 16).expect("tile extent");
     let original_buffers = renderer.frame_resources[0].buffers;
+    let mut tile_cache = RasterTileCache::new(64 * 1024 * 1024);
+    tile_cache.begin_frame();
+    let resident_key = RasterTileKey { layer: 1, x: 0, y: 0 };
+    let resident_raster = RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } };
     let (reference, resident) = device!(renderer, device, {
         let mut results = Vec::new();
         let mut resident = None;
@@ -75,23 +79,33 @@ fn verify(backend: RendererBackend) {
             RasterTile { extent: tile, origin: SignedOrigin2d { x: 65552, y: -65512 } },
         ] {
             let extent = raster.extent;
-            let color = device.create_texture(&TextureDescriptor {
-                label: Some("pixel-exact raster color".into()),
-                size: extent,
-                mip_level_count: 1,
-                format: Format::Bgra8Unorm,
-                usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
-                memory_location: MemoryLocation::GpuOnly,
-                dimension: TextureDimension::D2,
-                sample_count: 1,
-            }).expect("color");
-            let color_view = device.create_texture_view(&TextureViewDescriptor {
-                label: None,
-                texture: color,
-                format: Format::Bgra8Unorm,
-                base_mip_level: 0,
-                mip_level_count: 1,
-            }).expect("color view");
+            let write = if raster == resident_raster {
+                Some(tile_cache.prepare(device, resident_key, 1, raster, Format::Bgra8Unorm)
+                    .expect("resident allocation").expect("cache capacity"))
+            } else { None };
+            let (color, color_view) = if let Some(write) = &write {
+                let texture = write.texture();
+                (texture.texture, texture.view)
+            } else {
+                let color = device.create_texture(&TextureDescriptor {
+                    label: Some("pixel-exact raster color".into()),
+                    size: extent,
+                    mip_level_count: 1,
+                    format: Format::Bgra8Unorm,
+                    usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
+                    memory_location: MemoryLocation::GpuOnly,
+                    dimension: TextureDimension::D2,
+                    sample_count: 1,
+                }).expect("color");
+                let color_view = device.create_texture_view(&TextureViewDescriptor {
+                    label: None,
+                    texture: color,
+                    format: Format::Bgra8Unorm,
+                    base_mip_level: 0,
+                    mip_level_count: 1,
+                }).expect("color view");
+                (color, color_view)
+            };
             let depth = create_depth_texture(device, "pixel-exact raster", extent)
                 .expect("depth");
             let depth_view = device.create_texture_view(&TextureViewDescriptor {
@@ -144,7 +158,8 @@ fn verify(backend: RendererBackend) {
             device.destroy_buffer(global_buffer).expect("retire globals");
             device.destroy_texture_view(depth_view).expect("retire depth view");
             device.destroy_texture(depth).expect("retire depth");
-            if raster.origin == (SignedOrigin2d { x: 16, y: 24 }) {
+            if let Some(write) = write {
+                tile_cache.finish_write(write, None).expect("publish completed tile");
                 resident = Some((color, color_view));
             } else {
                 device.destroy_texture_view(color_view).expect("retire color view");
@@ -164,6 +179,13 @@ fn verify(backend: RendererBackend) {
     assert_ne!(&cropped[..4], &cropped[(8 * 16 + 8) * 4..][..4]);
     assert!(cropped.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
 
+    tile_cache.begin_frame();
+    tile_cache.advance_layer(1, 2, |_| false);
+    let cached = tile_cache.lookup(resident_key, 2, resident_raster, Format::Bgra8Unorm)
+        .expect("clean generation retains physical tile");
+    assert_eq!((cached.texture, cached.view), resident);
+    assert_eq!(tile_cache.bytes(), 16 * 16 * 4);
+
     // Reuse the actual render-target texture twice, changing only the sprite
     // placement. No readback bytes are uploaded to the GPU.
     let mut composite = crate::scene::Painter::default();
@@ -172,7 +194,7 @@ fn verify(backend: RendererBackend) {
             index: u32::MAX - 1,
             kind: AtlasTextureKind::Bgra,
         },
-        tile_id: TileId(u32::MAX - 1),
+        tile_id: crate::TileId(u32::MAX - 1),
         padding: 0,
         bounds: crate::bounds(crate::point(DevicePixels(0), DevicePixels(0)),
             crate::size(DevicePixels(16), DevicePixels(16))),
@@ -250,8 +272,8 @@ fn verify(backend: RendererBackend) {
         device.destroy_buffer(global_buffer).expect("retire composite globals");
         device.destroy_texture_view(target_view).expect("retire target view");
         device.destroy_texture(target).expect("retire target");
-        device.destroy_texture_view(resident.1).expect("retire resident view");
-        device.destroy_texture(resident.0).expect("retire resident tile");
+        tile_cache.clear(device).expect("retire completed resident tile");
+        assert_eq!(tile_cache.bytes(), 0);
     });
     renderer.destroy();
 }

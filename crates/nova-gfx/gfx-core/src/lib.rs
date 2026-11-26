@@ -33,6 +33,8 @@ mod gpu_timestamps;
 pub mod conformance;
 mod memory;
 mod render_graph;
+mod raster_tile_cache;
+pub use raster_tile_cache::{RasterTileCache, RasterTileKey, RasterTileTexture, RasterTileWrite};
 mod sampled_texture_slots;
 pub use sampled_texture_slots::{SampledMaterialLease, SampledTextureBanks, SampledTextureSlot, SampledTextureSlots};
 mod texture_array;
