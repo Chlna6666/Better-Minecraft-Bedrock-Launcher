@@ -222,30 +222,26 @@ impl Window {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) -> bool {
+        if !self.can_reuse_prepaint(&range) {
+            return false;
+        }
+        self.replay_validated_prepaint(range);
+        true
+    }
+
+    /// The view admission already validated both phase ranges.
+    pub(crate) fn replay_validated_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
         let _work = super::element_work::begin_named(
             "reuse_prepaint_range",
             super::element_work::ElementWorkPhase::Replay,
         );
-        if !self.can_reuse_prepaint(&range) {
-            log::debug!(
-                "gpui retained prepaint range invalid: window={}",
-                self.handle.window_id().as_u64()
-            );
-            return false;
-        }
 
-        self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
-                .iter()
-                .cloned(),
+        self.next_frame.hitboxes.extend_from_slice(
+            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
-        self.next_frame.tooltip_requests.extend(
-            self.rendered_frame.tooltip_requests
-                [range.start.tooltips_index..range.end.tooltips_index]
-                .iter_mut()
-                .map(|request| request.take()),
-        );
+        // Tooltip ranges are excluded at admission; there are no owners to move.
         self.next_frame.accessed_element_states.extend(
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
@@ -265,7 +261,6 @@ impl Window {
             self.next_frame.focus = self.focus;
         }
 
-        true
     }
 
     pub(crate) fn paint_index(&self) -> PaintIndex {

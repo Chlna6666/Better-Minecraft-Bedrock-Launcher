@@ -9,6 +9,11 @@ use std::{
     rc::{Rc, Weak},
 };
 
+thread_local! {
+    // All scroll state is Rc-owned and mutated on the UI thread.
+    static SCROLL_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
 #[derive(Clone, Default, Debug)]
 pub(crate) struct StateVersion(Rc<Cell<u64>>);
 
@@ -17,6 +22,7 @@ impl StateVersion {
     pub(crate) fn bump_if(&self, changed: bool) {
         if changed {
             self.0.set(self.0.get().wrapping_add(1));
+            SCROLL_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
         }
     }
 
@@ -192,6 +198,9 @@ impl Window {
         self.next_scroll_reads.retain(|_, reads| !reads.is_empty());
         std::mem::swap(&mut self.scroll_reads, &mut self.next_scroll_reads);
         self.next_scroll_reads.clear();
+        // A frame can read a version and then change it during layout.
+        // Validate the newly published reads once even without another mutation.
+        self.checked_scroll_generation = None;
     }
 
     /// Register immediately before the native wheel listener is appended.
@@ -217,6 +226,11 @@ impl Window {
         if !self.invalidator.not_drawing() {
             return;
         }
+        let generation = SCROLL_GENERATION.with(Cell::get);
+        if self.checked_scroll_generation == Some(generation) {
+            return;
+        }
+        self.checked_scroll_generation = Some(generation);
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         for source in &self.rendered_frame.mounted_scroll_sources {
             if source.read.status() == ReadStatus::Changed && !changed.contains(&source.owner) {

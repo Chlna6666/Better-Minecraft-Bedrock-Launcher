@@ -1258,6 +1258,19 @@ mod tests {
     }
 
     #[test]
+    fn measure_log_requires_one_consistent_constraint() {
+        let mut log = MeasureLog::default();
+        let known = Size::default();
+        let available = crate::size(AvailableSpace::MinContent, AvailableSpace::MinContent);
+        let measured = crate::size(crate::px(20.), crate::px(10.));
+        log.record(known, available, measured);
+        log.record(known, available, measured);
+        assert!(matches!(log, MeasureLog::Single(..)));
+        log.record(known, available, crate::size(crate::px(20.), crate::px(12.)));
+        assert!(matches!(log, MeasureLog::Multiple));
+    }
+
+    #[test]
     fn subtree_claims_nest_and_rollback_atomically() {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();

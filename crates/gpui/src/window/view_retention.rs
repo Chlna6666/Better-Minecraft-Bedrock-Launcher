@@ -120,9 +120,7 @@ impl Window {
             return None;
         }
         let start = self.prepaint_index();
-        if !self.reuse_prepaint(record.prepaint_range.clone()) {
-            return None;
-        }
+        self.replay_validated_prepaint(record.prepaint_range.clone());
         let end = self.prepaint_index();
         if record
             .prepaint_range
