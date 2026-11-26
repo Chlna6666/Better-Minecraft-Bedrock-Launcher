@@ -4,12 +4,13 @@ use crate::{
     ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
-use sum_tree::SumTree;
+use sum_tree::{Bias, SumTree};
 
 use super::{
     configuration::{ListSizingBehavior, RenderItemFn},
     layout::ListPrepaintLayout,
-    state::{ListItem, ListState},
+    state::{ListItem, ListItemSummary, ListState},
+    tree::Count,
 };
 
 /// Construct a new list element
@@ -169,9 +170,28 @@ impl Element for List {
         let owner = window.current_view();
         let device_scale = window.scale_factor();
         let visual_scale = window.visual_scale();
+        // The logical list offset is not a pixel offset until all preceding
+        // row heights are known. Focus-only rows can also be appended after
+        // the visible run; do not assign a false content origin to them.
+        let pixel_offset = if layout.item_layouts.front().is_some_and(|item| item.index == layout.scroll_top.item_ix)
+            && layout.item_layouts.back().is_some_and(|item| {
+                layout.scroll_top.item_ix.checked_add(layout.item_layouts.len() - 1) == Some(item.index)
+            })
+        {
+            let mut cursor = state.items.cursor::<ListItemSummary>(());
+            cursor.seek(&Count(layout.scroll_top.item_ix), Bias::Right);
+            let prefix = cursor.start();
+            (prefix.count == layout.scroll_top.item_ix && prefix.unrendered_count == 0)
+                .then_some(-(prefix.height + layout.scroll_top.offset_in_item))
+        } else {
+            None
+        };
         window.next_frame.record_layer_prepaint(
             hitbox.id, owner, layer_key, viewport,
-            crate::window::LayerScrollPosition::List(layout.scroll_top),
+            crate::window::LayerScrollPosition::List {
+                logical: layout.scroll_top,
+                pixel_offset,
+            },
             visual_scale, device_scale, &state.version, prepaint,
         );
         ListPrepaintLayout { hitbox, layout }

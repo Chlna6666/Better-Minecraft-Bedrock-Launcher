@@ -153,13 +153,17 @@ impl LayerContent {
 
 // GPU raster coordinates are stable content pixels, with an integral
 // device-pixel translation into the original captured window coordinates.
-// Fractional/variable-height logical positions have no translation proof.
+// Fractional positions and lists with unknown row heights have no proof.
 pub(super) fn integral_translation(
     offset: LayerScrollPosition,
     visual_scale: f32,
     device_scale: f32,
 ) -> Option<[i32; 2]> {
-    let LayerScrollPosition::Pixels(offset) = offset else { return None; };
+    let offset = match offset {
+        LayerScrollPosition::Pixels(offset) => offset,
+        LayerScrollPosition::List { pixel_offset: Some(y), .. } => point(crate::px(0.), y),
+        LayerScrollPosition::List { pixel_offset: None, .. } => return None,
+    };
     if visual_scale != 1. || !device_scale.is_finite() || device_scale <= 0. {
         return None;
     }
@@ -442,6 +446,15 @@ mod tests {
         assert_eq!(common.bottom(), ScaledPixels(1024.));
         assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.))), 1., 2.), Some([0, -128]));
         assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.25))), 1., 2.), None);
+    }
+
+    #[test]
+    fn list_translation_requires_a_measured_pixel_offset() {
+        let logical = crate::ListOffset { item_ix: 12, offset_in_item: crate::px(4.) };
+        let position = |pixel_offset| LayerScrollPosition::List { logical, pixel_offset };
+        assert_eq!(integral_translation(position(None), 1., 2.), None);
+        assert_eq!(integral_translation(position(Some(crate::px(-124.))), 1., 2.), Some([0, -248]));
+        assert_eq!(integral_translation(position(Some(crate::px(-124.25))), 1., 2.), None);
     }
 
     #[test]

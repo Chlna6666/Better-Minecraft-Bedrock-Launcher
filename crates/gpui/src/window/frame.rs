@@ -74,12 +74,15 @@ struct ScrollInputGeometry {
     viewport: ContentMask<Pixels>,
 }
 
-/// A variable-height list has a stable logical position, not a stable
-/// absolute pixel offset when item measurements change.
+/// A variable-height list retains its logical position. A content-space
+/// pixel offset is only available when the measured prefix is complete.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum LayerScrollPosition {
     Pixels(Point<Pixels>),
-    List(crate::ListOffset),
+    List {
+        logical: crate::ListOffset,
+        pixel_offset: Option<Pixels>,
+    },
 }
 
 /// Scroll content ranges refer only to the frame that owns them. A record
@@ -464,7 +467,7 @@ impl Frame {
     ) {
         let finite = match offset {
             LayerScrollPosition::Pixels(offset) => offset.x.0.is_finite() && offset.y.0.is_finite(),
-            LayerScrollPosition::List(offset) => offset.offset_in_item.0.is_finite(),
+            LayerScrollPosition::List { logical, .. } => logical.offset_in_item.0.is_finite(),
         };
         if !finite {
             return;
