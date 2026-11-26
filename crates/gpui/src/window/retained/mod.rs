@@ -3,6 +3,7 @@ mod chunks;
 pub(crate) use chunks::PreparedRetainedMonochromeSpriteChunk;
 pub(crate) use chunks::PreparedRetainedQuadChunk;
 use chunks::RetainedChunkCandidate;
+use std::sync::Arc;
 mod identity;
 pub(crate) use identity::RetainedChunkId;
 mod lifecycle;
@@ -12,12 +13,28 @@ mod lifecycle;
 #[derive(Default)]
 pub(crate) struct RetainedPaint {
     retained_chunk_candidates: Vec<RetainedChunkCandidate>,
-    prepared_retained_quad_chunks: Vec<PreparedRetainedQuadChunk>,
-    prepared_retained_monochrome_sprite_chunks: Vec<PreparedRetainedMonochromeSpriteChunk>,
-    /// Sparse operation-order index into the sole prepared Chunk table.
-    replay_quad_indices: Vec<usize>,
+    prepared: Option<Arc<PreparedChunks>>,
     finished: bool,
     revision: u64,
+}
+
+/// Immutable qualification results and their operation-order index have a
+/// single owner. Consecutive replay-only publications can share the table.
+#[derive(Default)]
+struct PreparedChunks {
+    quads: Vec<PreparedRetainedQuadChunk>,
+    sprites: Vec<PreparedRetainedMonochromeSpriteChunk>,
+    replay_quad_indices: Vec<usize>,
+    all_replayed: bool,
+}
+
+impl RetainedPaint {
+    fn prepared_mut(&mut self) -> &mut PreparedChunks {
+        if self.prepared.as_mut().and_then(Arc::get_mut).is_none() {
+            self.prepared = Some(Arc::default());
+        }
+        Arc::get_mut(self.prepared.as_mut().expect("prepared table")).expect("unique table")
+    }
 }
 
 #[cfg(test)]

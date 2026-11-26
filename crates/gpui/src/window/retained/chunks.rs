@@ -1,7 +1,7 @@
-use super::{RetainedChunkId, RetainedPaint};
+use super::{PreparedChunks, RetainedChunkId, RetainedPaint};
 use crate::paint::retention::{MIN_RETAINED_OPERATIONS, RetainedChunkPlanner, RetainedChunkProof};
 use crate::{GlobalElementId, Scene};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub(super) struct RetainedChunkCandidate {
@@ -60,12 +60,6 @@ impl RetainedPaint {
         );
         if !previous.is_some_and(|previous| self.reuse_prepared_chunks(scene, previous)) {
             self.prepare_retained_chunks(scene);
-            self.replay_quad_indices.clear();
-            self.replay_quad_indices
-                .extend(0..self.prepared_retained_quad_chunks.len());
-            self.replay_quad_indices.sort_unstable_by_key(|index| {
-                self.prepared_retained_quad_chunks[*index].paint_range.start
-            });
         }
         scene.quads.compact();
         scene.paint_operations.compact();
@@ -91,16 +85,27 @@ impl RetainedPaint {
             return false;
         }
 
-        self.prepared_retained_quad_chunks.clone_from(&previous.prepared_retained_quad_chunks);
-        for chunk in &mut self.prepared_retained_quad_chunks {
-            chunk.replayed = true;
+        let Some(old) = previous.prepared.as_ref() else {
+            self.prepared = None;
+            return true;
+        };
+        if old.all_replayed {
+            self.prepared = Some(Arc::clone(old));
+        } else {
+            // GPU upload consumers distinguish freshly painted chunks from
+            // replayed ones. Promote once, then share this immutable table.
+            let table = self.prepared_mut();
+            table.quads.clone_from(&old.quads);
+            for chunk in &mut table.quads {
+                chunk.replayed = true;
+            }
+            table.sprites.clone_from(&old.sprites);
+            for chunk in &mut table.sprites {
+                chunk.replayed = true;
+            }
+            table.replay_quad_indices.clone_from(&old.replay_quad_indices);
+            table.all_replayed = true;
         }
-        self.prepared_retained_monochrome_sprite_chunks
-            .clone_from(&previous.prepared_retained_monochrome_sprite_chunks);
-        for chunk in &mut self.prepared_retained_monochrome_sprite_chunks {
-            chunk.replayed = true;
-        }
-        self.replay_quad_indices.clone_from(&previous.replay_quad_indices);
         true
     }
 
@@ -108,7 +113,7 @@ impl RetainedPaint {
     /// Independently captured or unpaired scenes use ordinary drawing.
     pub(crate) fn chunks_for(&self, scene: &Scene) -> &[PreparedRetainedQuadChunk] {
         if self.finished && self.revision == scene.revision {
-            &self.prepared_retained_quad_chunks
+            self.prepared.as_deref().map_or(&[], |table| table.quads.as_slice())
         } else {
             &[]
         }
@@ -119,7 +124,7 @@ impl RetainedPaint {
         scene: &Scene,
     ) -> &[PreparedRetainedMonochromeSpriteChunk] {
         if self.finished && self.revision == scene.revision {
-            &self.prepared_retained_monochrome_sprite_chunks
+            self.prepared.as_deref().map_or(&[], |table| table.sprites.as_slice())
         } else {
             &[]
         }
@@ -131,19 +136,20 @@ impl RetainedPaint {
         scene: &Scene,
         range: Range<usize>,
     ) -> impl Iterator<Item = crate::scene::QuadReplay> + '_ {
-        let chunks = &self.prepared_retained_quad_chunks;
+        let chunks = self.prepared.as_deref().map_or(&[][..], |table| table.quads.as_slice());
+        let indices = self.prepared.as_deref().map_or(&[][..], |table| table.replay_quad_indices.as_slice());
         let (first, end) = if self.finished && self.revision == scene.revision {
             (
-                self.replay_quad_indices
+                indices
                     .partition_point(|index| chunks[*index].paint_range.start < range.start),
-                self.replay_quad_indices
+                indices
                     .partition_point(|index| chunks[*index].paint_range.start < range.end),
             )
         } else {
             (0, 0)
         };
         let source_revision = scene.revision;
-        self.replay_quad_indices[first..end]
+        indices[first..end]
             .iter()
             .map(move |index| &chunks[*index])
             .filter(move |chunk| chunk.paint_range.end <= range.end)
@@ -204,9 +210,14 @@ impl RetainedPaint {
     }
 
     fn prepare_retained_chunks(&mut self, scene: &Scene) {
-        let mut quads = std::mem::take(&mut self.prepared_retained_quad_chunks);
+        if self.retained_chunk_candidates.is_empty() {
+            self.prepared = None;
+            return;
+        }
+        let table = self.prepared_mut();
+        let mut quads = std::mem::take(&mut table.quads);
         quads.clear();
-        let mut sprites = std::mem::take(&mut self.prepared_retained_monochrome_sprite_chunks);
+        let mut sprites = std::mem::take(&mut table.sprites);
         sprites.clear();
         // Candidates below the minimum are rejected before recording. A
         // single qualified enclosing run owns its exclusive primitive-order
@@ -273,8 +284,14 @@ impl RetainedPaint {
             retained_end = chunk.sprite_range.end;
             true
         });
-        self.prepared_retained_quad_chunks = quads;
-        self.prepared_retained_monochrome_sprite_chunks = sprites;
+        let table: &mut PreparedChunks = self.prepared_mut();
+        table.all_replayed = quads.iter().all(|chunk| chunk.replayed)
+            && sprites.iter().all(|chunk| chunk.replayed);
+        table.quads = quads;
+        table.sprites = sprites;
+        table.replay_quad_indices.clear();
+        table.replay_quad_indices.extend(0..table.quads.len());
+        table.replay_quad_indices.sort_unstable_by_key(|index| table.quads[*index].paint_range.start);
     }
 }
 
@@ -338,10 +355,20 @@ mod tests {
         current.replay(0..32, &previous);
         assert!(current.paint.finish_against(&previous.paint));
         assert!(current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
-        assert_eq!(current.retention.prepared_retained_quad_chunks[0].id, previous.chunks()[0].id);
-        assert!(current.retention.prepared_retained_quad_chunks[0].replayed);
-        assert_eq!(current.retention.replay_quad_indices, previous.retention.replay_quad_indices);
+        let prepared = current.retention.prepared.as_deref().unwrap();
+        assert_eq!(prepared.quads[0].id, previous.chunks()[0].id);
+        assert!(prepared.quads[0].replayed);
+        assert_eq!(prepared.replay_quad_indices, previous.retention.prepared.as_deref().unwrap().replay_quad_indices);
         current.retention.finish_against(&mut current.paint.scene, &previous.retention);
+        assert_eq!(current.chunks().len(), 1);
+
+        let mut next = crate::window::retained::PaintFixture::default();
+        next.replay(0..32, &current);
+        assert!(next.paint.finish_against(&current.paint));
+        next.retention.finish_against(&mut next.paint.scene, &current.retention);
+        assert!(Arc::ptr_eq(next.retention.prepared.as_ref().unwrap(), current.retention.prepared.as_ref().unwrap()));
+        assert!(!previous.chunks()[0].replayed);
+        next.retention.clear();
         assert_eq!(current.chunks().len(), 1);
 
         // An identical Scene with a different owner or candidate split must
