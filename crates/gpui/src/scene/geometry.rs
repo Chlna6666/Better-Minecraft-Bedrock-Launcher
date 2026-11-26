@@ -46,8 +46,16 @@ impl CaptureGroup {
         for group in &scene.capture_groups[first..] {
             bounds = bounds.union(&group.bounds);
         }
+        Self::from_source_bounds(start..end + 1, config, bounds)
+    }
+
+    pub(super) fn from_source_bounds(
+        range: Range<usize>,
+        config: &BlurCapture,
+        bounds: Bounds<ScaledPixels>,
+    ) -> Self {
         Self {
-            range: start..end + 1,
+            range,
             bounds: bounds.dilate(blur_influence_radius(config.radius))
                 .intersect(&config.content_mask.bounds),
         }

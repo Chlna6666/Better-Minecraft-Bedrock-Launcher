@@ -1779,3 +1779,37 @@ fn retained_prefix_uses_animation_ordering_footprint() {
     current.replay(1..previous.len(), &previous, []);
     assert!(current.retained_prefix_invalid);
 }
+
+#[test]
+fn leaf_capture_extent_matches_raw_source_fold_during_replay() {
+    let viewport = bounds(point(px(0.), px(0.)), size(px(500.), px(400.))).scale(1.);
+    let capture = BlurCapture {
+        animation_id: None, layer_id: None,
+        bounds: bounds(point(px(80.3), px(90.1)), size(px(20.7), px(30.2))).scale(1.),
+        content_mask: ContentMask::new(viewport), radius: ScaledPixels(3.5), opacity: 1.,
+    };
+    let mut painter = crate::scene::Painter::default();
+    painter.begin_blur(capture.clone());
+    painter.push_layer(viewport);
+    for x in [1.25, 53.75, 99.9, 170.1] {
+        painter.insert_primitive(Quad {
+            bounds: bounds(point(px(x), px(x + 0.3)), size(px(17.7), px(22.2))).scale(1.),
+            content_mask: ContentMask::new(viewport),
+            ..Default::default()
+        });
+    }
+    painter.pop_layer();
+    painter.end_blur();
+    painter.begin_blur(capture);
+    painter.end_blur();
+    painter.finish();
+    let mut replay = crate::scene::Painter::default();
+    replay.replay(0..painter.len(), &painter, []);
+    for scene in [&*painter, &*replay] {
+        let mut expected = Vec::new();
+        geometry::scan_capture_groups(scene, |range, bounds| expected.push((range, bounds)));
+        let actual: Vec<_> = scene.capture_groups.iter()
+            .map(|group| (group.range.clone(), group.bounds)).collect();
+        assert_eq!(actual, expected);
+    }
+}

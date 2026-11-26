@@ -177,8 +177,27 @@ impl Painter {
 
         let start = capture.operation_start;
         let mut content = *capture.scene;
-        let Some(content_bounds) = content.bounds_for_range(0..content.len()) else {
-            self.close_capture_group(start, &capture.config);
+        // A leaf capture mirrors exactly the primitives accepted by its
+        // content painter. For nonzero filters the capture seed is final, so
+        // compute both extents from one traversal, in their original fold
+        // order. Nested groups and identity filters need the general path.
+        let (content_bounds, group_source_bounds) = if capture.config.radius.0 != 0.0
+            && content.capture_groups.is_empty()
+            && self.scene.capture_groups.last().is_none_or(|group| group.range.end <= start)
+            && self.scene.len() - start - 1 == content.len()
+        {
+            let mut content_bounds: Option<Bounds<ScaledPixels>> = None;
+            let mut group_bounds = capture.config.bounds;
+            for bounds in content.paint_operations.iter().filter_map(PaintOperation::visual_bounds) {
+                content_bounds = Some(content_bounds.map_or(bounds, |old| old.union(&bounds)));
+                group_bounds = group_bounds.union(&bounds);
+            }
+            (content_bounds, Some(group_bounds))
+        } else {
+            (content.bounds_for_range(0..content.len()), None)
+        };
+        let Some(content_bounds) = content_bounds else {
+            self.close_capture_group(start, &capture.config, group_source_bounds);
             return;
         };
         let mut config = capture.config;
@@ -237,16 +256,32 @@ impl Painter {
         } else {
             let primitive = Primitive::from(blur);
             let Some(order) = self.order_for_primitive(&primitive) else {
-                self.close_capture_group(start, &config);
+                self.close_capture_group(start, &config, group_source_bounds);
                 return;
             };
             self.push_ordered_primitive(primitive, order, false);
         }
-        self.close_capture_group(start, &config);
+        self.close_capture_group(start, &config, group_source_bounds);
     }
 
-    fn close_capture_group(&mut self, start: usize, config: &BlurCapture) {
-        let group = super::geometry::CaptureGroup::close(&self.scene, start, config);
+    fn close_capture_group(
+        &mut self,
+        start: usize,
+        config: &BlurCapture,
+        source_bounds: Option<Bounds<ScaledPixels>>,
+    ) {
+        let group = match source_bounds {
+            Some(bounds) => super::geometry::CaptureGroup::from_source_bounds(
+                start..self.scene.len() + 1, config, bounds,
+            ),
+            None => super::geometry::CaptureGroup::close(&self.scene, start, config),
+        };
+        #[cfg(test)]
+        {
+            let reference = super::geometry::CaptureGroup::close(&self.scene, start, config);
+            assert_eq!(group.range, reference.range);
+            assert_eq!(group.bounds, reference.bounds);
+        }
         self.scene.capture_groups.push(group);
         self.scene.paint_operations.push(PaintOperation::EndBlur);
     }
