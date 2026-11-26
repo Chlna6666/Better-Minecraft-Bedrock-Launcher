@@ -23,7 +23,7 @@ fn interaction_flags_preserve_native_size_measure_cache(cx: &mut TestAppContext)
                 let mut style = Style::default();
                 style.allow_concurrent_scroll = allow_scroll;
                 engine.request_size_layout(
-                    Some(owner_pair),
+                    Some(owner_pair), false,
                     style,
                     px(16.),
                     scale_factor,

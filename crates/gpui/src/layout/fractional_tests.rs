@@ -62,13 +62,13 @@ fn persistent_layout_restores_child_style_after_passthrough_is_removed() {
     child_style.display = Display::Flex;
     child_style.size = size(relative(0.75).into(), px(120.).into());
 
-    let child = engine.request_layout(owner("child"), child_style.clone(), px(16.), 1.0, &[]);
+    let child = engine.request_layout(owner("child"), false, child_style.clone(), px(16.), 1.0, &[]);
     let mut wrapper_style = Style::default();
     wrapper_style.percentage_passthrough = true;
-    engine.request_layout(owner("wrapper"), wrapper_style, px(16.), 1.0, &[child]);
+    engine.request_layout(owner("wrapper"), false, wrapper_style, px(16.), 1.0, &[child]);
     engine.clear();
 
-    let same_child = engine.request_layout(owner("child"), child_style.clone(), px(16.), 1.0, &[]);
+    let same_child = engine.request_layout(owner("child"), false, child_style.clone(), px(16.), 1.0, &[]);
     assert_eq!(child, same_child);
     let expected_style = super::convert::ToTaffy::to_taffy(
         &crate::LayoutStyle::from(&child_style),

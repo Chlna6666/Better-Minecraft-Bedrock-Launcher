@@ -77,14 +77,14 @@ fn native_taffy_reuses_stable_element_nodes_and_updates_dirty_geometry(cx: &mut 
                 let mut moving = Style::default();
                 moving.size.width = px(width).into();
                 moving.size.height = px(20.).into();
-                let left = engine.request_layout(layout_identity("left"), moving, px(16.), 1., &[]);
+                let left = engine.request_layout(layout_identity("left"), false, moving, px(16.), 1., &[]);
                 let mut fixed = Style::default();
                 fixed.size.width = px(45.).into();
                 fixed.size.height = px(20.).into();
                 let right =
-                    engine.request_layout(layout_identity("right"), fixed, px(16.), 1., &[]);
+                    engine.request_layout(layout_identity("right"), false, fixed, px(16.), 1., &[]);
                 let root = engine.request_layout(
-                    layout_identity("root"),
+                    layout_identity("root"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -125,7 +125,7 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
             let mut engine = TaffyLayoutEngine::new();
             let build = |engine: &mut TaffyLayoutEngine, middle: bool| {
                 let left = engine.request_layout(
-                    layout_identity("left"),
+                    layout_identity("left"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -133,7 +133,7 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
                 );
                 let center = middle.then(|| {
                     engine.request_layout(
-                        layout_identity("center"),
+                        layout_identity("center"), false,
                         Style::default(),
                         px(16.),
                         1.,
@@ -141,7 +141,7 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
                     )
                 });
                 let right = engine.request_layout(
-                    layout_identity("right"),
+                    layout_identity("right"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -152,7 +152,7 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
                     .flatten()
                     .collect::<Vec<_>>();
                 let root = engine.request_layout(
-                    layout_identity("root"),
+                    layout_identity("root"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -192,14 +192,14 @@ fn native_taffy_compares_stable_child_order_without_allocating_a_child_vector(
             let mut engine = TaffyLayoutEngine::new();
             let build = |engine: &mut TaffyLayoutEngine, reverse: bool| {
                 let left = engine.request_layout(
-                    layout_identity("left"),
+                    layout_identity("left"), false,
                     Style::default(),
                     px(16.),
                     1.,
                     &[],
                 );
                 let right = engine.request_layout(
-                    layout_identity("right"),
+                    layout_identity("right"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -211,7 +211,7 @@ fn native_taffy_compares_stable_child_order_without_allocating_a_child_vector(
                     [left, right]
                 };
                 let root = engine.request_layout(
-                    layout_identity("root"),
+                    layout_identity("root"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -255,7 +255,7 @@ fn native_taffy_keeps_unchanged_size_measure_when_absolute_sibling_changes(
             let mut engine = TaffyLayoutEngine::new();
             let build = |engine: &mut TaffyLayoutEngine, sibling_height: f32| {
                 let leaf = engine.request_size_layout(
-                    layout_identity("leaf"),
+                    layout_identity("leaf"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -265,9 +265,9 @@ fn native_taffy_keeps_unchanged_size_measure_when_absolute_sibling_changes(
                 style.position = crate::Position::Absolute;
                 style.size.height = px(sibling_height).into();
                 let sibling =
-                    engine.request_layout(layout_identity("overlay"), style, px(16.), 1., &[]);
+                    engine.request_layout(layout_identity("overlay"), false, style, px(16.), 1., &[]);
                 let root = engine.request_layout(
-                    layout_identity("root"),
+                    layout_identity("root"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -298,8 +298,8 @@ fn native_taffy_keeps_claimed_subtrees_and_releases_unclaimed_nodes(cx: &mut Tes
     window.update(cx, |_, window, cx| {
         let mut engine = TaffyLayoutEngine::new();
         let recording = engine.claim_log_len();
-        let child = engine.request_layout(layout_identity("child"), Style::default(), px(16.), 1., &[]);
-        let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[child]);
+        let child = engine.request_layout(layout_identity("child"), false, Style::default(), px(16.), 1., &[]);
+        let root = engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[child]);
         engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
         let claims = super::LayoutClaimBlocks::request(recording..engine.claim_log_len());
         engine.clear();
@@ -308,7 +308,7 @@ fn native_taffy_keeps_claimed_subtrees_and_releases_unclaimed_nodes(cx: &mut Tes
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 2);
         assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
-        assert_eq!(engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]), root);
+        assert_eq!(engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[]), root);
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 1);
     }).unwrap();
@@ -323,14 +323,14 @@ fn native_taffy_abort_discards_native_claims_without_reusing_ids(cx: &mut TestAp
     window.update(cx, |_, _, _| {
         let mut engine = TaffyLayoutEngine::new();
         let recording = engine.claim_log_len();
-        let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+        let root = engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[]);
         let claims = super::LayoutClaimBlocks::request(recording..engine.claim_log_len());
         engine.clear();
         assert!(engine.try_keep_retained(&claims, root).is_some());
         engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
         assert!(engine.try_keep_retained(&claims, root).is_none());
-        let replacement = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+        let replacement = engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[]);
         assert_ne!(root, replacement);
     }).unwrap();
 }
@@ -346,7 +346,7 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(cx: &mut
             let mut engine = TaffyLayoutEngine::new();
             let scale_factor = window.scale_factor();
             let first = engine.request_size_layout(
-                layout_identity("slot"),
+                layout_identity("slot"), false,
                 Style::default(),
                 px(16.),
                 scale_factor,
@@ -363,7 +363,7 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(cx: &mut
             style.size.width = px(80.).into();
             style.size.height = px(30.).into();
             let reused =
-                engine.request_layout(layout_identity("slot"), style, px(16.), scale_factor, &[]);
+                engine.request_layout(layout_identity("slot"), false, style, px(16.), scale_factor, &[]);
             assert_eq!(first, reused);
             assert!(engine.taffy.get_node_context(reused.into()).is_none());
             assert!(engine.taffy.dirty(reused.into()).unwrap());
@@ -375,7 +375,7 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(cx: &mut
             engine.clear();
 
             let restored = engine.request_size_layout(
-                layout_identity("slot"),
+                layout_identity("slot"), false,
                 Style::default(),
                 px(16.),
                 scale_factor,
@@ -405,7 +405,7 @@ fn native_taffy_marks_impure_measure_dirty_on_every_commit(cx: &mut TestAppConte
             let build = |engine: &mut TaffyLayoutEngine| {
                 let counter = count.clone();
                 engine.request_measured_layout(
-                    layout_identity("impure"),
+                    layout_identity("impure"), false,
                     Style::default(),
                     px(16.),
                     1.,
@@ -439,7 +439,7 @@ fn native_taffy_recomputes_when_root_constraints_change(cx: &mut TestAppContext)
         .update(cx, |_, window, cx| {
             let mut engine = TaffyLayoutEngine::new();
             let id =
-                engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+                engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[]);
             engine.compute_layout(
                 id,
                 size(
@@ -451,7 +451,7 @@ fn native_taffy_recomputes_when_root_constraints_change(cx: &mut TestAppContext)
             );
             engine.clear();
             let reused =
-                engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+                engine.request_layout(layout_identity("root"), false, Style::default(), px(16.), 1., &[]);
             assert_eq!(id, reused);
             engine.compute_layout(
                 reused,
