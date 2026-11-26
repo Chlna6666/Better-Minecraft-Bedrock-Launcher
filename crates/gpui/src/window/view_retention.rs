@@ -75,7 +75,10 @@ impl Window {
             return None;
         }
         let record = self.rendered_frame.view_retentions.get(key)?.clone();
-        if !record.layout_claims.iter().any(|claim| claim.id == record.layout_root) {
+        if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
+            || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
+            || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
+        {
             return None;
         }
         if !self
@@ -232,7 +235,6 @@ impl Window {
     ) {
         let index = slot.0;
         let element_state_range = if let Some(source) = commit.reused.as_ref() {
-            self.copy_reused_element_metadata(index, source, &commit.prepaint_range, &commit.paint_range);
             let start = self.next_frame.accessed_element_states.len();
             self.keep_reused_view_element_states(&source.element_state_range);
             let states = start..self.next_frame.accessed_element_states.len();
@@ -255,41 +257,6 @@ impl Window {
                 element_state_range,
             },
         );
-    }
-
-    /// Carries the element-level records of a view drawn again into the new frame.
-    ///
-    /// A reused view still has to leave the committed frame in a state where a later rebuild of
-    /// one of its ancestors can replay the nested views inside it. Those records live in the
-    /// view's own post-order metadata span, which is copied and rebased as one unit.
-    fn copy_reused_element_metadata(
-        &mut self,
-        index: usize,
-        admission: &RetainedViewRecord,
-        target_prepaint: &Range<PrepaintStateIndex>,
-        target_paint: &Range<PaintIndex>,
-    ) {
-        let key = &self.next_frame.view_retention_order[index];
-        let Some(source) = self.rendered_frame.retained_element_ranges.get(key) else {
-            return;
-        };
-        // The enclosing Drawable records its own metadata after View::paint.
-        // Only its descendants belong to the copied inner prepaint/paint ranges.
-        let mut source_metadata = source.metadata_range.clone();
-        if source_metadata.is_empty() {
-            return;
-        }
-        source_metadata.end -= 1;
-        if !self.replay_retained_element_metadata(
-            &admission.prepaint_range,
-            &admission.paint_range,
-            &source_metadata,
-            target_prepaint,
-            target_paint,
-        ) {
-            self.force_view_cache_refresh = true;
-            self.degrade_current_draw();
-        }
     }
 
     fn copy_nested_view_records(

@@ -118,20 +118,41 @@ impl Window {
             return false;
         };
 
-        if let Some(retained) = self
-            .rendered_frame
-            .retained_element_ranges
-            .get(&target.retained_id)
-            && !retained.bounds.is_empty()
-        {
-            self.animation_dirty_region
-                .push(retained.bounds.scale(self.scale_factor));
+        // Damage the nearest retained view instead of maintaining a second
+        // per-element bounds map. Unknown owners conservatively redraw the window.
+        let bounds = self.rendered_frame.view_retentions.iter()
+            .filter(|(key, _)| target.retained_id.0.starts_with(key.0.as_ref()))
+            .max_by_key(|(key, _)| key.0.len())
+            .map(|(_, record)| record.bounds);
+        if let Some(bounds) = bounds {
+            if !bounds.is_empty() {
+                self.animation_dirty_region.push(bounds.scale(self.scale_factor));
+            }
+        } else {
+            self.force_full_redraw.set(true);
         }
 
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
         self.invalidator
             .invalidate_retained_path(target.view_id, Some(&target.retained_id), false)
+    }
+
+    /// Bound the persistent focus-target lookup when applications create and discard many unique
+    /// focus handles over time. The common path pays only one length comparison; pruning happens
+    /// only after the table becomes unusually large.
+    pub(crate) fn prune_focus_retained_targets(&mut self) {
+        const PRUNE_THRESHOLD: usize = 1_024;
+        if self.focus_retained_targets.len() <= PRUNE_THRESHOLD {
+            return;
+        }
+
+        let rendered = &self.rendered_frame.dispatch_tree;
+        let next = &self.next_frame.dispatch_tree;
+        self.focus_retained_targets.retain(|focus_id, _| {
+            rendered.focusable_node_id(*focus_id).is_some()
+                || next.focusable_node_id(*focus_id).is_some()
+        });
     }
 
     fn invalidate_focus_transition(&mut self, previous: Option<FocusId>, current: Option<FocusId>) {

@@ -1082,11 +1082,6 @@ impl<E: IntoElement + 'static> IntoElement for StableSampledAnimationElement<E> 
 impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = Option<StableSampledAnimationState>;
-    // This wrapper must emit this commit's sample even when its descendants replay.
-    // Its stable binding lets the descendants reuse their ranges without a paint barrier.
-    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
-        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
-
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
     }
@@ -1271,11 +1266,6 @@ pub struct SceneAnimationState {
 }
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
-    // Visual targets are not part of the child's layout fingerprint. Fresh declarations
-    // must reach prepaint so an unchanged layout cannot replay an obsolete timeline.
-    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
-        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
-
     type RequestLayoutState = AnyElement;
     type PrepaintState = Option<SmallVec<[SceneAnimationState; 3]>>;
 

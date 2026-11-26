@@ -1,8 +1,7 @@
-use crate::window::{RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus};
+use crate::window::RetainedElementIdentity;
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
-    PaintIndex, Pixels, Point, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
-    WrappedLineLayout,
+    Pixels, Size, Window,
 };
 use derive_more::Deref;
 use smallvec::SmallVec;
@@ -11,7 +10,6 @@ use std::{
     fmt::{self, Display},
     hash::{Hash, Hasher},
     mem,
-    ops::Range,
     sync::Arc,
 };
 
@@ -185,33 +183,6 @@ impl Display for GlobalElementId {
     }
 }
 
-/// Exact output identity for side-effect-free plain text elements on a generic dirty frame.
-///
-/// The shaped/wrapped line layout Arcs come directly from the text-system cache. Pointer equality
-/// therefore proves that the previous scene references the exact same glyph geometry and wrap
-/// boundaries; a cache miss conservatively causes repaint rather than relying on a hash collision.
-#[derive(Clone, Debug)]
-pub(crate) struct RetainedPlainTextKey {
-    pub(crate) text: SharedString,
-    pub(crate) text_style: TextStyle,
-    pub(crate) rem_size: Pixels,
-    pub(crate) line_layouts: SmallVec<[Arc<WrappedLineLayout>; 1]>,
-}
-
-impl PartialEq for RetainedPlainTextKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.text == other.text
-            && self.text_style == other.text_style
-            && self.rem_size == other.rem_size
-            && self.line_layouts.len() == other.line_layouts.len()
-            && self
-                .line_layouts
-                .iter()
-                .zip(&other.line_layouts)
-                .all(|(left, right)| Arc::ptr_eq(left, right))
-    }
-}
-
 pub(super) trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
@@ -256,8 +227,6 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
-        retained_id: GlobalElementId,
-        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
@@ -265,8 +234,6 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
-        retained_id: GlobalElementId,
-        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
         request_layout: RequestLayoutState,
@@ -275,23 +242,10 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         node_id: DispatchNodeId,
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
-        retained_id: GlobalElementId,
-        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
-        layout_fingerprint: Option<u64>,
         request_layout: RequestLayoutState,
         prepaint: PrepaintState,
-        prepaint_range: Range<PrepaintStateIndex>,
-        plain_text_key: Option<RetainedPlainTextKey>,
-    },
-    Retained {
-        translation: Point<Pixels>,
-        bounds: Bounds<Pixels>,
-        source_prepaint_range: Range<PrepaintStateIndex>,
-        source_paint_range: Range<PaintIndex>,
-        source_metadata_range: Range<usize>,
-        prepaint_range: Range<PrepaintStateIndex>,
     },
     Painted,
 }
@@ -315,34 +269,9 @@ fn prepare_inspector_id(
     window.build_inspector_element_id(path)
 }
 
-#[inline(never)]
-fn retained_plain_text_key(
-    element: &dyn Any,
-    request_layout: &dyn Any,
-    window: &Window,
-) -> Option<RetainedPlainTextKey> {
-    let text = if let Some(text) = element.downcast_ref::<SharedString>() {
-        text.clone()
-    } else if let Some(text) = element.downcast_ref::<&'static str>() {
-        SharedString::from(*text)
-    } else {
-        return None;
-    };
-
-    let text_layout = request_layout.downcast_ref::<TextLayout>()?;
-    Some(RetainedPlainTextKey {
-        text,
-        text_style: window.text_style(),
-        rem_size: window.rem_size(),
-        line_layouts: text_layout.retained_line_layouts(),
-    })
-}
-
 struct RetainedElementMount {
     global_id: Option<GlobalElementId>,
     retained_segment: ElementId,
-    retained_id: GlobalElementId,
-    retained_identity_stable: bool,
     inspector_id: Option<InspectorElementId>,
 }
 
@@ -371,7 +300,7 @@ fn begin_retained_element_mount(
     } else {
         RetainedElementIdentity::Positional
     };
-    let (retained_segment, retained_id, retained_identity_stable) =
+    let (retained_segment, _, _) =
         window.begin_retained_element(retained_identity);
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
@@ -392,55 +321,8 @@ fn begin_retained_element_mount(
     RetainedElementMount {
         global_id,
         retained_segment,
-        retained_id,
-        retained_identity_stable,
         inspector_id,
     }
-}
-
-#[inline(never)]
-fn try_reuse_retained_element(
-    outer_replay_safe: bool,
-    retained_segment: &ElementId,
-    retained_id: &GlobalElementId,
-    bounds: Bounds<Pixels>,
-    layout_fingerprint: Option<u64>,
-    plain_text_key: Option<&RetainedPlainTextKey>,
-    window: &mut Window,
-) -> Option<(
-    Range<PrepaintStateIndex>,
-    Range<PaintIndex>,
-    Range<usize>,
-    Range<PrepaintStateIndex>,
-    Point<Pixels>,
-)> {
-    if !outer_replay_safe || plain_text_key.is_none() {
-        return None;
-    }
-
-    let (retained, translation) = window.with_retained_element_segment(retained_segment, |window| {
-        window.reusable_retained_element(
-            retained_id,
-            bounds,
-            layout_fingerprint,
-            plain_text_key,
-        )
-    })?;
-
-    let source_prepaint_range = retained.prepaint_range.clone();
-    let prepaint_start = window.prepaint_index();
-    if !window.reuse_prepaint_at(source_prepaint_range.clone(), translation) {
-        return None;
-    }
-    let prepaint_end = window.prepaint_index();
-
-    Some((
-        source_prepaint_range,
-        retained.paint_range,
-        retained.metadata_range,
-        prepaint_start..prepaint_end,
-        translation,
-    ))
 }
 
 #[inline(never)]
@@ -450,7 +332,7 @@ fn run_element_prepaint(
     retained_segment: &ElementId,
     window: &mut Window,
     callback: &mut dyn FnMut(&mut Window),
-) -> (DispatchNodeId, Range<PrepaintStateIndex>) {
+) -> DispatchNodeId {
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
         debug_assert_eq!(
@@ -462,22 +344,15 @@ fn run_element_prepaint(
         );
     }
 
-    let prepaint_start = window.prepaint_index();
     let node_id = window.next_frame.dispatch_tree.push_node();
     window.with_retained_element_segment(retained_segment, |window| callback(window));
     window.next_frame.dispatch_tree.pop_node();
-    let prepaint_end = window.prepaint_index();
 
     if global_id.is_some() {
         window.element_id_stack.pop();
     }
 
-    (node_id, prepaint_start..prepaint_end)
-}
-
-struct RetainedPaintRun {
-    metadata_start: usize,
-    paint_range: Range<PaintIndex>,
+    node_id
 }
 
 #[inline(never)]
@@ -490,7 +365,7 @@ fn run_element_paint(
     window: &mut Window,
     cx: &mut App,
     callback: &mut dyn FnMut(&mut Window, &mut App),
-) -> RetainedPaintRun {
+) {
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
         debug_assert_eq!(
@@ -502,81 +377,15 @@ fn run_element_paint(
         );
     }
 
-    let metadata_start = window.retained_element_metadata_len();
-    let paint_start = window.paint_index();
     window.record_debug_element_paint(bounds, cx);
     window.next_frame.dispatch_tree.set_active_node(node_id);
     window.with_retained_element_segment(retained_segment, |window| callback(window, cx));
-    let paint_end = window.paint_index();
-
-    RetainedPaintRun {
-        metadata_start,
-        paint_range: paint_start..paint_end,
-    }
 }
 
 #[inline(never)]
 fn finish_element_paint(global_id: Option<&GlobalElementId>, window: &mut Window) {
     if global_id.is_some() {
         window.element_id_stack.pop();
-    }
-}
-
-#[inline(never)]
-fn record_retained_painted_element(
-    retained_id: GlobalElementId,
-    bounds: Bounds<Pixels>,
-    layout_fingerprint: Option<u64>,
-    prepaint_range: Range<PrepaintStateIndex>,
-    paint_range: Range<PaintIndex>,
-    metadata_start: usize,
-    plain_text_key: Option<RetainedPlainTextKey>,
-    identity_stable: bool,
-    window: &mut Window,
-) {
-    window.record_retained_element_range(
-        retained_id,
-        bounds,
-        layout_fingerprint,
-        prepaint_range,
-        paint_range,
-        metadata_start,
-        plain_text_key,
-        identity_stable,
-    );
-
-}
-
-#[inline(never)]
-fn paint_retained_element(
-    bounds: Bounds<Pixels>,
-    translation: Point<Pixels>,
-    source_prepaint_range: Range<PrepaintStateIndex>,
-    source_paint_range: Range<PaintIndex>,
-    source_metadata_range: Range<usize>,
-    prepaint_range: Range<PrepaintStateIndex>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let paint_start = window.paint_index();
-    let metadata_start = window.retained_element_metadata_len();
-    if window.reuse_paint_at(source_paint_range.clone(), translation) {
-        let paint_end = window.paint_index();
-        let paint_range = paint_start..paint_end;
-        if window.replay_retained_element_metadata(
-            &source_prepaint_range,
-            &source_paint_range,
-            &source_metadata_range,
-            &prepaint_range,
-            &paint_range,
-        ) {
-            window.translate_replayed_metadata(metadata_start, translation);
-            window.record_debug_view_cache_status(bounds, ViewCacheDebugStatus::Hit, cx);
-        } else {
-            window.degrade_current_draw();
-        }
-    } else {
-        window.degrade_current_draw();
     }
 }
 
@@ -650,8 +459,6 @@ impl<E: Element> Drawable<E> {
                     layout_id,
                     global_id: mount.global_id,
                     retained_segment: mount.retained_segment,
-                    retained_id: mount.retained_id,
-                    retained_identity_stable: mount.retained_identity_stable,
                     inspector_id: mount.inspector_id,
                     request_layout,
                 };
@@ -667,8 +474,6 @@ impl<E: Element> Drawable<E> {
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 mut request_layout,
             }
@@ -676,51 +481,16 @@ impl<E: Element> Drawable<E> {
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 mut request_layout,
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
-                // Text replay needs exact shaped output; other elements use view retention.
-                let plain_text_key = retained_plain_text_key(
-                    &self.element as &dyn Any,
-                    &request_layout as &dyn Any,
-                    window,
-                );
-                let layout_fingerprint = plain_text_key.as_ref().and_then(|_| window.retained_layout_fingerprint(layout_id));
-                if let Some((
-                    source_prepaint_range,
-                    source_paint_range,
-                    source_metadata_range,
-                    prepaint_range,
-                    translation,
-                )) = try_reuse_retained_element(
-                    E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
-                    &retained_segment,
-                    &retained_id,
-                    bounds,
-                    layout_fingerprint,
-                    plain_text_key.as_ref(),
-                    window,
-                ) {
-                    self.phase = ElementDrawPhase::Retained {
-                        translation,
-                        bounds,
-                        source_prepaint_range,
-                        source_paint_range,
-                        source_metadata_range,
-                        prepaint_range,
-                    };
-                    return;
-                }
-
                 let mut prepaint = None;
                 let element_type = std::any::type_name::<E>();
                 let prepaint_element_id = self.element.id();
                 let element = &mut self.element;
-                let (node_id, prepaint_range) = run_element_prepaint(
+                let node_id = run_element_prepaint(
                     prepaint_element_id,
                     global_id.as_ref(),
                     &retained_segment,
@@ -751,15 +521,10 @@ impl<E: Element> Drawable<E> {
                     node_id,
                     global_id,
                     retained_segment,
-                    retained_id,
-                    retained_identity_stable,
                     inspector_id,
                     bounds,
-                    layout_fingerprint,
                     request_layout,
                     prepaint,
-                    prepaint_range,
-                    plain_text_key,
                 };
             }
             _ => panic!("must call request_layout before prepaint"),
@@ -772,20 +537,15 @@ impl<E: Element> Drawable<E> {
                 node_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 bounds,
-                layout_fingerprint,
                 mut request_layout,
                 mut prepaint,
-                prepaint_range,
-                plain_text_key,
             } => {
                 let paint_element_type = std::any::type_name::<E>();
                 let paint_element_id = self.element.id();
                 let element = &mut self.element;
-                let paint_run = run_element_paint(
+                run_element_paint(
                     paint_element_id,
                     global_id.as_ref(),
                     node_id,
@@ -813,18 +573,6 @@ impl<E: Element> Drawable<E> {
                         );
                     },
                 );
-                let identity_stable = retained_identity_stable;
-                record_retained_painted_element(
-                    retained_id,
-                    bounds,
-                    layout_fingerprint,
-                    prepaint_range,
-                    paint_run.paint_range,
-                    paint_run.metadata_start,
-                    plain_text_key,
-                    identity_stable,
-                    window,
-                );
                 finish_element_paint(global_id.as_ref(), window);
 
                 self.phase = ElementDrawPhase::Painted;
@@ -834,26 +582,6 @@ impl<E: Element> Drawable<E> {
                         self.painted_state = Some((request_layout, prepaint));
                     }
                 }
-            }
-            ElementDrawPhase::Retained {
-                translation,
-                bounds,
-                source_prepaint_range,
-                source_paint_range,
-                source_metadata_range,
-                prepaint_range,
-            } => {
-                paint_retained_element(
-                    bounds,
-                    translation,
-                    source_prepaint_range,
-                    source_paint_range,
-                    source_metadata_range,
-                    prepaint_range,
-                    window,
-                    cx,
-                );
-                self.phase = ElementDrawPhase::Painted;
             }
             _ => panic!("must call prepaint before paint"),
         }
@@ -873,8 +601,6 @@ impl<E: Element> Drawable<E> {
             layout_id,
             global_id,
             retained_segment,
-            retained_id,
-            retained_identity_stable,
             inspector_id,
             previous_available_space,
             request_layout,
@@ -883,16 +609,12 @@ impl<E: Element> Drawable<E> {
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 request_layout,
             } => (
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 None,
                 request_layout,
@@ -901,8 +623,6 @@ impl<E: Element> Drawable<E> {
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 available_space: previous_available_space,
                 request_layout,
@@ -910,8 +630,6 @@ impl<E: Element> Drawable<E> {
                 layout_id,
                 global_id,
                 retained_segment,
-                retained_id,
-                retained_identity_stable,
                 inspector_id,
                 Some(previous_available_space),
                 request_layout,
@@ -931,8 +649,6 @@ impl<E: Element> Drawable<E> {
             layout_id,
             global_id,
             retained_segment,
-            retained_id,
-            retained_identity_stable,
             inspector_id,
             available_space,
             request_layout,

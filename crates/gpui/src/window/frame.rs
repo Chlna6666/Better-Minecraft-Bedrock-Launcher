@@ -1,6 +1,5 @@
 use super::state::ElementVisualTransform;
 use super::*;
-use crate::element::RetainedPlainTextKey;
 
 mod paint;
 mod retained_scene_index;
@@ -21,25 +20,6 @@ pub(crate) struct DeferredDraw {
     pub(super) absolute_offset: Point<Pixels>,
     pub(super) prepaint_range: Range<PrepaintStateIndex>,
     pub(super) paint_range: Range<PaintIndex>,
-}
-
-/// Source ranges required to rebase one retained deferred subtree into the next frame.
-#[derive(Clone)]
-pub(crate) struct DeferredRetainedReplay {
-    pub(super) prepaint_range: Range<PrepaintStateIndex>,
-    pub(super) paint_range: Range<PaintIndex>,
-    pub(super) metadata_range: Range<usize>,
-}
-
-/// Reconciliation metadata kept in a parallel vector indexed exactly like `Frame::deferred_draws`.
-///
-/// Keeping this outside [`DeferredDraw`] avoids growing the hot deferred draw descriptor used by
-/// normal non-replayed overlays. Slots are materialized lazily before retained extension/deferred
-/// processing, so ordinary `defer_draw` calls do not perform extra initialization work.
-#[derive(Clone, Default)]
-pub(crate) struct DeferredRetainedMetadata {
-    pub(super) metadata_range: Range<usize>,
-    pub(super) replay_source: Option<DeferredRetainedReplay>,
 }
 
 #[derive(Clone)]
@@ -69,37 +49,6 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) rem_size: Pixels,
 }
 
-/// Retained lifecycle ranges for one stable rendering identity path.
-///
-/// `metadata_range` points into `Frame::retained_element_order`. Entries are emitted in post-order,
-/// so one subtree occupies one contiguous span ending in its own [`GlobalElementId`]. This lets a
-/// replayed subtree carry all descendant reconciliation metadata into the next frame without a
-/// full-map prefix scan.
-#[derive(Clone)]
-pub(crate) struct RetainedElementRange {
-    pub(crate) bounds: Bounds<Pixels>,
-    /// Recursive layout proof captured from the Taffy subtree that produced this element.
-    pub(crate) layout_fingerprint: Option<u64>,
-    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
-    pub(crate) paint_range: Range<PaintIndex>,
-    pub(crate) metadata_range: Range<usize>,
-    /// Inherited paint context under which this range was originally emitted.
-    pub(crate) paint_context: Rc<RetainedPaintContext>,
-    /// Exact side-effect-free plain-text output identity used for generic dirty reconciliation.
-    pub(crate) plain_text_key: Option<Rc<RetainedPlainTextKey>>,
-    /// Whether this element's retained address is unambiguous in the frame that produced it.
-    pub(crate) identity_stable: bool,
-}
-
-/// Minimal replay handle returned after a retained element has passed all semantic, layout and
-/// interaction safety checks. Keeping this separate from RetainedElementRange avoids cloning the
-/// retained paint payload on the fast path.
-pub(crate) struct RetainedReplayRanges {
-    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
-    pub(crate) paint_range: Range<PaintIndex>,
-    pub(crate) metadata_range: Range<usize>,
-}
-
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -118,7 +67,6 @@ pub(crate) struct Frame {
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
-    pub(crate) deferred_retained_metadata: Vec<DeferredRetainedMetadata>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     /// Non-cloneable IME owners moved during speculative Paint replay.
     /// Records exist only for non-empty source slots.
@@ -128,17 +76,12 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
     retained_scene_index_spill_capacity: usize,
-    pub(crate) retained_element_ranges: FxHashMap<GlobalElementId, RetainedElementRange>,
-    pub(crate) retained_element_order: Vec<GlobalElementId>,
     /// Whole-view retained records. One entry per view drawn into this frame, keyed by its
     /// element path. A view that is drawn again from the committed frame is copied from here
     /// without running `Render` or walking its subtree.
     pub(crate) view_retentions: FxHashMap<GlobalElementId, super::view_retention::RetainedViewRecord>,
     /// Post-order keys of [`Self::view_retentions`], so one view's nested records form one span.
     pub(crate) view_retention_order: Vec<GlobalElementId>,
-    /// Consecutive records typically inherit identical clip/text/transform state.
-    /// Share that immutable context instead of storing a full copy in each record.
-    pub(crate) last_retained_paint_context: Option<Rc<RetainedPaintContext>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -332,7 +275,6 @@ impl Frame {
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
-            deferred_retained_metadata: Vec::new(),
             input_handlers: Vec::new(),
             replayed_input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
@@ -340,11 +282,8 @@ impl Frame {
             retained_scene_segments: Vec::new(),
             retained_scene_index: FxHashMap::default(),
             retained_scene_index_spill_capacity: 0,
-            retained_element_ranges: FxHashMap::default(),
-            retained_element_order: Vec::new(),
             view_retentions: FxHashMap::default(),
             view_retention_order: Vec::new(),
-            last_retained_paint_context: None,
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
@@ -393,15 +332,11 @@ impl Frame {
         self.retained_scene_segments.clear();
         self.retained_scene_index.clear();
         self.retained_scene_index_spill_capacity = 0;
-        self.retained_element_ranges.clear();
-        self.retained_element_order.clear();
         self.view_retentions.clear();
         self.view_retention_order.clear();
-        self.last_retained_paint_context = None;
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
-        self.deferred_retained_metadata.clear();
         self.tab_stops.clear();
         self.focus = None;
 
@@ -547,15 +482,12 @@ impl Frame {
             + self.hitboxes.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
-            + self.deferred_retained_metadata.capacity()
             + self.input_handlers.capacity()
             + self.tooltip_requests.capacity()
             + self.cursor_styles.capacity()
             + self.retained_scene_segments.capacity()
             + self.retained_scene_index.capacity()
             + self.retained_scene_index_spill_capacity
-            + self.retained_element_ranges.capacity()
-            + self.retained_element_order.capacity()
             + self.view_retentions.capacity()
             + self.view_retention_order.capacity()
             + self.tab_stops.retained_capacity()
@@ -602,11 +534,6 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_frame_vec_capacity(
-            &mut self.deferred_retained_metadata,
-            FRAME_MIN_RETAINED_CAPACITY,
-            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
         let input_handler_target = FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len());
         trim_frame_vec_capacity(
             &mut self.input_handlers,
@@ -634,17 +561,6 @@ impl Frame {
             > index_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
         {
             self.retained_scene_index.shrink_to(index_target);
-        }
-        trim_frame_vec_capacity(
-            &mut self.retained_element_order,
-            FRAME_MIN_RETAINED_CAPACITY,
-            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
-        if self.retained_element_ranges.capacity()
-            > FRAME_MIN_RETAINED_CAPACITY.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.retained_element_ranges
-                .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_element_ranges.len()));
         }
         let view_target = FRAME_MIN_RETAINED_CAPACITY.max(self.view_retentions.len());
         if self.view_retentions.capacity() > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
@@ -690,7 +606,6 @@ impl Frame {
         trim_vec_against!(hitboxes);
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
-        trim_vec_against!(deferred_retained_metadata);
         trim_vec_against!(input_handlers);
         trim_vec_against!(tooltip_requests);
         trim_vec_against!(cursor_styles);
@@ -701,14 +616,7 @@ impl Frame {
         {
             self.retained_scene_index.shrink_to(index_target);
         }
-        trim_vec_against!(retained_element_order);
 
-        let ranges_target = FRAME_MIN_RETAINED_CAPACITY.max(current.retained_element_ranges.len());
-        if self.retained_element_ranges.capacity()
-            > ranges_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.retained_element_ranges.shrink_to(ranges_target);
-        }
         trim_vec_against!(view_retention_order);
         let view_target = FRAME_MIN_RETAINED_CAPACITY.max(current.view_retentions.len());
         if self.view_retentions.capacity()
@@ -722,12 +630,8 @@ impl Frame {
     /// Lower bound on retained metadata backing storage; excludes hash control
     /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
     pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
-        self.retained_element_ranges.capacity()
-            .saturating_mul(std::mem::size_of::<(GlobalElementId, RetainedElementRange)>())
-            .saturating_add(self.retained_element_order.capacity()
-                .saturating_mul(std::mem::size_of::<GlobalElementId>()))
-            .saturating_add(self.view_retentions.capacity()
-                .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>()))
+        self.view_retentions.capacity()
+            .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>())
             .saturating_add(self.view_retention_order.capacity()
                 .saturating_mul(std::mem::size_of::<GlobalElementId>()))
 
@@ -753,15 +657,11 @@ impl Frame {
                 self.hitboxes.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);
-                self.deferred_retained_metadata.shrink_to(floor);
                 self.input_handlers.shrink_to(floor);
                 self.tooltip_requests.shrink_to(floor);
                 self.cursor_styles.shrink_to(floor);
                 self.retained_scene_segments.shrink_to(floor);
                 self.trim_retained_scene_index(floor);
-                self.retained_element_ranges
-                    .shrink_to(floor.max(self.retained_element_ranges.len()));
-                self.retained_element_order.shrink_to(floor);
                 self.view_retentions.shrink_to(floor.max(self.view_retentions.len()));
                 self.view_retention_order.shrink_to(floor.max(self.view_retention_order.len()));
                 self.tab_stops

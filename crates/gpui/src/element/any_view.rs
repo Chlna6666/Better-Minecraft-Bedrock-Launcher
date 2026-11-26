@@ -170,12 +170,6 @@ struct ReusedView {
 impl Element for ViewElement {
     type RequestLayoutState = ViewRequestLayout;
     type PrepaintState = ();
-    // A view's content changes are reported through entity notifications, not through element
-    // semantics. An ancestor retained replay must therefore never skip this lifecycle: the view
-    // decides for itself, through its own committed record, whether it can be drawn again.
-    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
-        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
-
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::View(self.view.entity_id()))
     }
@@ -373,7 +367,8 @@ impl Element for ViewElement {
                     return;
                 };
                 let start = window.paint_index();
-                window.replay_validated_paint(admission.paint_range.clone(), crate::Point::default());
+                window.replay_validated_paint(admission.paint_range.clone());
+                window.record_debug_view_cache_status(bounds, crate::window::debug_visualization::ViewCacheDebugStatus::Hit, cx);
                 let end = window.paint_index();
                 window.commit_view_retention(
                     slot,

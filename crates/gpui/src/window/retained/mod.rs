@@ -8,7 +8,6 @@ pub(crate) use chunks::PreparedRetainedQuadChunk;
 use chunks::RetainedChunkCandidate;
 mod identity;
 pub(crate) use identity::RetainedChunkId;
-mod fragments;
 mod lifecycle;
 
 struct PreparedRetainedChunks {
