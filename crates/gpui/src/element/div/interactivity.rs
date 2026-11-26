@@ -239,10 +239,14 @@ impl Interactivity {
                                     if let (Some(start), Some(hitbox)) = (layer_start, layer_hitbox) {
                                         let prepaint = start..window.prepaint_index();
                                         let owner = window.current_view();
+                                        let device_scale = window.scale_factor();
+                                        // A callback that changes scroll state may have
+                                        // laid out using a different offset; decline proof.
+                                        let placement_scale = if final_offset == scroll_offset { visual_scale } else { f32::NAN };
                                         window.next_frame.record_layer_prepaint(
                                             hitbox, owner, layer_key, viewport,
                                             crate::window::LayerScrollPosition::Pixels(final_offset),
-                                            &offset.version, prepaint,
+                                            placement_scale, device_scale, &offset.version, prepaint,
                                         );
                                     }
                                 }

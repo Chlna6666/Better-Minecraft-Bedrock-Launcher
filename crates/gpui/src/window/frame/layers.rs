@@ -1,11 +1,10 @@
 //! Immutable scroll content publication, adapted from GPUI Fast's LayerContent/LayerPart.
 //!
-//! The current painter still culls to the viewport. These fragments therefore
-//! certify only their original placement, not overscan or scroll translation.
-//! Keep the ordinary drawing stream until the renderer can consume a complete
-//! content-space capture.
+//! The painter still culls to the viewport. Only the intersection of two
+//! certified content-space captures can inherit translated pixels; newly
+//! exposed regions and rounded clips must use the ordinary drawing stream.
 use super::{LayerRecord, LayerScrollPosition};
-use crate::{Bounds, ContentMask, Pixels, ScaledPixels, TransformationMatrix, scene::{Operations, PaintOperation, Primitive, Scene}};
+use crate::{Bounds, ContentMask, Pixels, Point, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperation, Primitive, Scene}};
 use collections::{FxHashMap, FxHashSet};
 use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
@@ -90,14 +89,105 @@ impl LayerContent {
         }
     }
 
+    /// Fast's content-space translation, but do not mutate or copy the
+    /// authoritative scene. Compare the two captures in one coordinate
+    /// system. Any difference declines translation reuse for this version.
+    fn matches_translated(
+        &self,
+        previous: &Self,
+        delta: Point<ScaledPixels>,
+        viewport: ContentMask<ScaledPixels>,
+    ) -> bool {
+        if self.parts != previous.parts || self.operations.len() != previous.operations.len() {
+            return false;
+        }
+        // Pointer equality alone cannot prove equality after translation.
+        self.operations.iter().zip(previous.operations.iter()).all(|(current, old)| {
+            match (current, old) {
+                (PaintOperation::Primitive(current), PaintOperation::Primitive(old)) => {
+                    translated_primitive_matches(current, old, delta, viewport)
+                }
+                (PaintOperation::StartLayer(current), PaintOperation::StartLayer(old)) => {
+                    // A layer is ordering metadata. Require matching translated
+                    // geometry or the same fixed viewport on both sides.
+                    *current == translated_bounds(*old, delta)
+                        || (*current == viewport.bounds && *old == viewport.bounds)
+                }
+                (PaintOperation::EndLayer, PaintOperation::EndLayer) => true,
+                _ => false,
+            }
+        })
+    }
+
     fn matches(&self, other: &Self) -> bool {
         self.parts == other.parts
             && self.operations.matches_by(&other.operations, PaintOperation::same_paint)
     }
 }
 
-// This proof currently applies only to window-space source pixels at the
-// same placement. Scroll/viewport changes cannot inherit clipped edge tiles.
+// GPU raster coordinates are stable content pixels, with an integral
+// device-pixel translation into the original captured window coordinates.
+// Fractional/variable-height logical positions have no translation proof.
+pub(super) fn integral_translation(
+    offset: LayerScrollPosition,
+    visual_scale: f32,
+    device_scale: f32,
+) -> Option<[i32; 2]> {
+    let LayerScrollPosition::Pixels(offset) = offset else { return None; };
+    if visual_scale != 1. || !device_scale.is_finite() || device_scale <= 0. {
+        return None;
+    }
+    let coordinate = |p: Pixels| {
+        let value = p.0 * device_scale;
+        // Keep exact f32 pixel arithmetic; no rounding of logical state.
+        (value.is_finite() && value.fract() == 0. && value.abs() <= 1_048_576.)
+            .then_some(value as i32)
+    };
+    Some([coordinate(offset.x)?, coordinate(offset.y)?])
+}
+
+fn translation_point(translation: [i32; 2]) -> Point<ScaledPixels> {
+    point(ScaledPixels(translation[0] as f32), ScaledPixels(translation[1] as f32))
+}
+
+fn translated_bounds(mut bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels>) -> Bounds<ScaledPixels> {
+    bounds.origin = bounds.origin + delta;
+    bounds
+}
+
+// GPUI Fast translates primitive coordinates and local masks together.
+// Here the only admitted mask is the exact fixed rectangular viewport.
+// Its pixels agree inside the intersection, so preserve it rather than
+// translating the ancestor clip. Rounded and nested masks are not admitted.
+fn translated_primitive_matches(
+    current: &Primitive,
+    old: &Primitive,
+    delta: Point<ScaledPixels>,
+    viewport: ContentMask<ScaledPixels>,
+) -> bool {
+    if static_raster_bounds(current).is_none() || static_raster_bounds(old).is_none()
+        || *current.content_mask() != viewport || *old.content_mask() != viewport
+    {
+        return false;
+    }
+    macro_rules! compare {
+        ($a:ident, $b:ident) => {{
+            let mut moved = *$b;
+            moved.bounds = translated_bounds(moved.bounds, delta);
+            *$a == moved
+        }};
+    }
+    match (current, old) {
+        (Primitive::Quad(a), Primitive::Quad(b)) => compare!(a, b),
+        (Primitive::Shadow(a), Primitive::Shadow(b)) => compare!(a, b),
+        (Primitive::Underline(a), Primitive::Underline(b)) => compare!(a, b),
+        (Primitive::MonochromeSprite(a), Primitive::MonochromeSprite(b)) => compare!(a, b),
+        (Primitive::PolychromeSprite(a), Primitive::PolychromeSprite(b)) => compare!(a, b),
+        _ => false,
+    }
+}
+
+// The source still covers only a viewport, not an overscan region.
 #[derive(Clone, Copy)]
 enum LayerDamage {
     Full,
@@ -110,8 +200,8 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
         return None;
     }
     match primitive {
-        Primitive::Quad(_) | Primitive::Shadow(_) | Primitive::Underline(_)
-        | Primitive::PolychromeSprite(_) => {}
+        Primitive::Quad(_) | Primitive::Shadow(_) | Primitive::Underline(_) => {}
+        Primitive::PolychromeSprite(sprite) if sprite.sampling != 2 => {}
         Primitive::MonochromeSprite(sprite)
             if sprite.transformation == TransformationMatrix::unit()
                 && sprite.tile.texture_id.kind != crate::AtlasTextureKind::Subpixel => {}
@@ -130,28 +220,70 @@ pub(crate) struct LayerFrame {
     pub(crate) id: u64,
     pub(crate) generation: u64,
     damage: LayerDamage,
-    /// Source clip/placement at capture. No offscreen coverage is implied.
+    /// Certified coverage shared with the immediately previous generation,
+    /// in stable content-space device pixels.
+    previous_coverage: Option<Bounds<ScaledPixels>>,
+    translation: Option<[i32; 2]>,
+    source_viewport: ContentMask<ScaledPixels>,
     viewport: ContentMask<Pixels>,
     offset: LayerScrollPosition,
     pub(crate) content: Arc<LayerContent>,
 }
 
 impl LayerFrame {
-    /// Only adjacent generations can inherit an exact unchanged tile.
-    /// Rectangles are signed device pixels in the original source space.
+    fn coverage(viewport: ContentMask<ScaledPixels>, translation: Option<[i32; 2]>) -> Bounds<ScaledPixels> {
+        let [x, y] = translation.unwrap_or([0, 0]);
+        translated_bounds(viewport.bounds, translation_point([-x, -y]))
+    }
+
+    fn transition(&self, record: &LayerRecord, content: &LayerContent) -> (LayerDamage, Option<Bounds<ScaledPixels>>) {
+        if self.viewport != record.viewport || self.source_viewport != record.source_viewport
+            || self.source_viewport.corner_radii != Default::default()
+        {
+            return (LayerDamage::Full, None);
+        }
+        let current_coverage = Self::coverage(record.source_viewport, record.translation);
+        let old_coverage = Self::coverage(self.source_viewport, self.translation);
+        let common = current_coverage.intersect(&old_coverage);
+        if common.is_empty() {
+            return (LayerDamage::Full, None);
+        }
+        let damage = if self.offset == record.offset && self.translation == record.translation {
+            match content.damage_from(&self.content) {
+                LayerDamage::Bounds(bounds) => {
+                    let [x, y] = record.translation.unwrap_or([0, 0]);
+                    LayerDamage::Bounds(translated_bounds(bounds, translation_point([-x, -y])))
+                }
+                damage => damage,
+            }
+        } else if let (Some(old), Some(current)) = (self.translation, record.translation) {
+            let delta = translation_point([current[0] - old[0], current[1] - old[1]]);
+            if content.matches_translated(&self.content, delta, record.source_viewport) {
+                LayerDamage::Clean
+            } else {
+                LayerDamage::Full
+            }
+        } else {
+            LayerDamage::Full
+        };
+        (damage, Some(common))
+    }
+
+    /// Only adjacent generations can inherit a tile. Its coordinates are
+    /// stable content pixels, NOT the current viewport placement.
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {
         if generation == self.generation {
             return Some(generation);
         }
-        if generation.checked_add(1) != Some(self.generation) || !scale.is_finite() || scale <= 0. {
+        if generation.checked_add(1) != Some(self.generation) || !scale.is_finite() || scale <= 0.
+            || self.viewport.scale(scale) != self.source_viewport
+        {
             return None;
         }
-        let viewport = self.viewport.scale(scale);
-        let bounds = viewport.bounds;
+        let bounds = self.previous_coverage?;
         let [left, top, right, bottom] = rect;
-        // Partial tiles at a viewport edge do not prove unpainted pixels.
-        if viewport.corner_radii != Default::default()
-            || (left as f64) < f64::from(bounds.left().0)
+        // Whole tile coverage in BOTH captures, including the boundary.
+        if (left as f64) < f64::from(bounds.left().0)
             || (top as f64) < f64::from(bounds.top().0)
             || right as f64 > f64::from(bounds.right().0)
             || bottom as f64 > f64::from(bounds.bottom().0)
@@ -200,8 +332,10 @@ impl SceneLayers {
             let range = paint.start.scene_index..paint.end.scene_index;
             let Some(content) = LayerContent::capture(scene, range, &record.rows) else { continue; };
             let previous = old.get(&key).copied();
-            let (id, generation, content, damage) = if let Some(previous) = previous {
+            let (id, generation, content, damage, previous_coverage) = if let Some(previous) = previous {
                 if previous.viewport == record.viewport && previous.offset == record.offset
+                    && previous.source_viewport == record.source_viewport
+                    && previous.translation == record.translation
                     && previous.content.matches(&content)
                 {
                     // Equal pixels need not share their backing pages. Do
@@ -210,23 +344,20 @@ impl SceneLayers {
                     let content = if shared { Arc::clone(&previous.content) } else { Arc::new(content) };
                     // Preserve the last transition proof if the GPU owner
                     // has not yet consumed it.
-                    (previous.id, previous.generation, content, previous.damage)
+                    (previous.id, previous.generation, content, previous.damage, previous.previous_coverage)
                 } else if let Some(next) = previous.generation.checked_add(1) {
-                    let damage = if previous.viewport == record.viewport && previous.offset == record.offset {
-                        content.damage_from(&previous.content)
-                    } else {
-                        LayerDamage::Full
-                    };
-                    (previous.id, next, Arc::new(content), damage)
+                    let (damage, coverage) = previous.transition(record, &content);
+                    (previous.id, next, Arc::new(content), damage, coverage)
                 } else {
-                    (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full)
+                    (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
                 }
             } else {
-                (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full)
+                (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, damage, viewport: record.viewport,
-                offset: record.offset, content,
+                layout_key: key, id, generation, damage, previous_coverage,
+                translation: record.translation, source_viewport: record.source_viewport,
+                viewport: record.viewport, offset: record.offset, content,
             });
         }
         Self { frames }
@@ -251,6 +382,9 @@ mod tests {
                 size(ScaledPixels(10.), ScaledPixels(10.)),
             )),
             viewport,
+            source_viewport: viewport.scale(1.),
+            translation: Some([0, 0]),
+            previous_coverage: Some(viewport.scale(1.).bounds),
             offset: LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(0.))),
             content: Arc::new(LayerContent { operations: Operations::default(), parts: Box::new([]) }),
         };
@@ -258,6 +392,31 @@ mod tests {
         assert_eq!(frame.adopt_tile(3, [512, 0, 1024, 512], 1.), None);
         assert_eq!(frame.adopt_tile(3, [-1, 0, 511, 512], 1.), None);
         assert_eq!(frame.adopt_tile(2, [0, 0, 512, 512], 1.), None);
+    }
+
+    #[test]
+    fn integral_scroll_translation_keeps_fixed_clip_and_glyph_phase() {
+        let viewport = ContentMask::new(Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(1024.), ScaledPixels(1024.)),
+        ));
+        let delta = translation_point([0, -128]);
+        let old = Quad {
+            bounds: Bounds::new(point(ScaledPixels(20.), ScaledPixels(300.)),
+                size(ScaledPixels(100.), ScaledPixels(80.))),
+            content_mask: viewport,
+            ..Default::default()
+        };
+        let current = Quad { bounds: translated_bounds(old.bounds, delta), ..old };
+        assert!(translated_primitive_matches(&Primitive::Quad(current), &Primitive::Quad(old), delta, viewport));
+        let wrong_clip = Quad { content_mask: ContentMask::new(current.bounds), ..current };
+        assert!(!translated_primitive_matches(&Primitive::Quad(wrong_clip), &Primitive::Quad(old), delta, viewport));
+        let common = LayerFrame::coverage(viewport, Some([0, -128]))
+            .intersect(&LayerFrame::coverage(viewport, Some([0, 0])));
+        assert_eq!(common.top(), ScaledPixels(128.));
+        assert_eq!(common.bottom(), ScaledPixels(1024.));
+        assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.))), 1., 2.), Some([0, -128]));
+        assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.25))), 1., 2.), None);
     }
 
     #[test]

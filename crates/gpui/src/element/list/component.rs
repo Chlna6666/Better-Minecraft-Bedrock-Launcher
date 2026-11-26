@@ -167,10 +167,12 @@ impl Element for List {
         state.last_padding = Some(padding);
         let prepaint = layer_start..window.prepaint_index();
         let owner = window.current_view();
+        let device_scale = window.scale_factor();
+        let visual_scale = window.visual_scale();
         window.next_frame.record_layer_prepaint(
             hitbox.id, owner, layer_key, viewport,
             crate::window::LayerScrollPosition::List(layout.scroll_top),
-            &state.version, prepaint,
+            visual_scale, device_scale, &state.version, prepaint,
         );
         ListPrepaintLayout { hitbox, layout }
     }

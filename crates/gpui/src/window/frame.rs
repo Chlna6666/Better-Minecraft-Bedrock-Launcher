@@ -90,6 +90,8 @@ pub(super) struct LayerRecord {
     layout_key: Option<u64>,
     viewport: ContentMask<Pixels>,
     offset: LayerScrollPosition,
+    translation: Option<[i32; 2]>,
+    source_viewport: ContentMask<ScaledPixels>,
     offset_read: crate::StateRead,
     prepaint: Range<PrepaintStateIndex>,
     paint: Option<Range<PaintIndex>>,
@@ -455,6 +457,8 @@ impl Frame {
         layout_key: Option<u64>,
         viewport: ContentMask<Pixels>,
         offset: LayerScrollPosition,
+        visual_scale: f32,
+        device_scale: f32,
         version: &crate::StateVersion,
         prepaint: Range<PrepaintStateIndex>,
     ) {
@@ -467,6 +471,8 @@ impl Frame {
         }
         self.push_layer_record(LayerRecord {
             hitbox, owner, layout_key, viewport, offset,
+            translation: layers::integral_translation(offset, visual_scale, device_scale),
+            source_viewport: viewport.scale(device_scale),
             offset_read: crate::StateRead::new(version),
             prepaint, paint: None, rows: Vec::new(), replayed: false,
         });
@@ -537,6 +543,7 @@ impl Frame {
             self.push_layer_record(LayerRecord {
                 hitbox: record.hitbox, owner: record.owner, layout_key: record.layout_key,
                 viewport: record.viewport, offset: record.offset,
+                translation: record.translation, source_viewport: record.source_viewport,
                 offset_read: record.offset_read.clone(),
                 prepaint, paint: None, rows: Vec::new(), replayed: true,
             });
