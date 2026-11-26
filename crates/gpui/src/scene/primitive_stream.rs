@@ -29,6 +29,7 @@ use std::{
 /// A caller-proven static Quad span in one source Paint generation.
 /// Scene still validates its current ordering context before sharing any payload.
 pub(crate) struct QuadReplay {
+    pub(crate) source_revision: u64,
     pub(crate) paint_range: Range<usize>,
     pub(crate) quad_range: Range<usize>,
 }

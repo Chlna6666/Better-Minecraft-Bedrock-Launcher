@@ -278,7 +278,11 @@ impl Painter {
 
     fn replay_quad_span(&mut self, previous: &Scene, span: &super::QuadReplay) -> bool {
         if !self.blur_captures.is_empty()
+            || span.source_revision == 0
+            || span.source_revision != previous.revision
             || span.paint_range.is_empty()
+            || span.quad_range.start > span.quad_range.end
+            || span.quad_range.end > previous.quads.len()
             || span.paint_range.len() != span.quad_range.len()
         {
             return false;
@@ -289,19 +293,32 @@ impl Painter {
         else {
             return false;
         };
-        if !operations.iter().all(|operation| matches!(operation,
-            PaintOperation::Primitive(Primitive::Quad(quad))
-                if quad.animation_id.is_none() && self.layer_stack.last().is_none_or(|order| *order == quad.order)
-        )) { return false; }
-        for operation in operations.iter() {
-            let PaintOperation::Primitive(primitive) = operation else {
-                unreachable!()
-            };
-            if self.layer_stack.is_empty() {
+        // The paired, finished chunk planner already proved static Quad
+        // types, animation absence and exclusive sorted order coverage.
+        // Only the destination ordering context remains to be checked.
+        if let Some(&order) = self.layer_stack.last() {
+            if previous.quads[span.quad_range.start].order != order
+                || previous.quads[span.quad_range.end - 1].order != order
+            {
+                return false;
+            }
+        } else {
+            // Outside a layer, rebuild the order tree in original paint
+            // order. Do not scan the range separately for type validation.
+            for operation in operations.iter() {
+                let PaintOperation::Primitive(primitive) = operation else {
+                    unreachable!("qualified static Quad operation")
+                };
                 self.primitive_bounds
                     .insert_ordered(Self::ordering_bounds(primitive), primitive.order());
             }
         }
+        #[cfg(test)]
+        assert!(operations.iter().all(|operation| matches!(operation,
+            PaintOperation::Primitive(Primitive::Quad(quad))
+                if quad.animation_id.is_none()
+                    && self.layer_stack.last().is_none_or(|order| *order == quad.order)
+        )));
         self.scene
             .paint_operations
             .share(&previous.paint_operations, span.paint_range.clone());

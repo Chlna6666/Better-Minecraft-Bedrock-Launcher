@@ -1813,3 +1813,22 @@ fn leaf_capture_extent_matches_raw_source_fold_during_replay() {
         assert_eq!(actual, expected);
     }
 }
+
+#[test]
+fn retained_quad_replay_rejects_a_proof_from_another_scene_revision() {
+    let mut source = crate::window::retained::PaintFixture::default();
+    let range = append_retained_test_quads(&mut source, 32);
+    source.record(GlobalElementId::from_path(&["proof".into()]), 1, range.clone());
+    source.finish();
+    assert_eq!(source.chunks().len(), 1);
+
+    let mut other = crate::scene::Painter::default();
+    append_retained_test_quads(&mut other, 32);
+    other.finish();
+    assert_ne!(source.revision, other.revision);
+    let mut current = crate::scene::Painter::default();
+    let spans = source.retention.replay_quads(&source.paint, range.clone());
+    assert!(current.replay(range, &other, spans));
+    assert_eq!(current.len(), other.len());
+    assert!(!std::ptr::eq(&current.paint_operations[0], &other.paint_operations[0]));
+}

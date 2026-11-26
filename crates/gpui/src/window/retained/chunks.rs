@@ -105,11 +105,13 @@ impl RetainedPaint {
         } else {
             (0, 0)
         };
+        let source_revision = scene.revision;
         self.replay_quad_indices[first..end]
             .iter()
             .map(move |index| &chunks[*index])
             .filter(move |chunk| chunk.paint_range.end <= range.end)
-            .map(|chunk| crate::scene::QuadReplay {
+            .map(move |chunk| crate::scene::QuadReplay {
+                source_revision,
                 paint_range: chunk.paint_range.clone(),
                 quad_range: chunk.quad_range.clone(),
             })
