@@ -308,21 +308,28 @@ impl Element for Div {
             *handle.last_origin.borrow_mut() = bounds.origin - window.element_offset();
         }
         let content_size = if request_layout.child_layout_ids.is_empty() {
+            if let Some(handle) = self.interactivity.tracked_scroll_handle.as_ref() {
+                let mut state = handle.0.borrow_mut();
+                state.version.bump_if(!state.child_bounds.is_empty());
+                state.child_bounds.clear();
+            }
             bounds.size
         } else if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {
             let mut state = scroll_handle.0.borrow_mut();
-            state.child_bounds.clear();
-            if state.child_bounds.capacity() < request_layout.child_layout_ids.len() {
-                state
-                    .child_bounds
-                    .reserve(request_layout.child_layout_ids.len());
-            }
-            for child_layout_id in &request_layout.child_layout_ids {
+            let mut changed = state.child_bounds.len() != request_layout.child_layout_ids.len();
+            state.child_bounds.truncate(request_layout.child_layout_ids.len());
+            for (index, child_layout_id) in request_layout.child_layout_ids.iter().enumerate() {
                 let child_bounds = window.layout_bounds(*child_layout_id);
                 child_min = child_min.min(&child_bounds.origin);
                 child_max = child_max.max(&child_bounds.bottom_right());
-                state.child_bounds.push(child_bounds);
+                if let Some(previous) = state.child_bounds.get_mut(index) {
+                    changed |= *previous != child_bounds;
+                    *previous = child_bounds;
+                } else {
+                    state.child_bounds.push(child_bounds);
+                }
             }
+            state.version.bump_if(changed);
             (child_max - child_min).into()
         } else {
             for child_layout_id in &request_layout.child_layout_ids {

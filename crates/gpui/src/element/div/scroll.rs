@@ -3,7 +3,7 @@ use crate::{
     Window, px, size,
 };
 use std::{cell::RefCell, cmp::Ordering, mem, rc::Rc};
-use crate::window::scroll_dependencies::{ScrollReadKind, observe};
+use crate::window::scroll_dependencies::{ScrollOffset, StateVersion};
 
 use super::interactivity::Interactivity;
 use super::state::InteractiveElementState;
@@ -40,7 +40,8 @@ impl ScrollAnchor {
 
 #[derive(Default, Debug)]
 pub(crate) struct ScrollHandleState {
-    pub(crate) offset: Rc<RefCell<Point<Pixels>>>,
+    pub(crate) offset: Rc<ScrollOffset>,
+    pub(crate) version: StateVersion,
     pub(crate) ongoing_scroll: Rc<RefCell<crate::OngoingScroll>>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) max_offset: Size<Pixels>,
@@ -96,7 +97,10 @@ fn logical_scroll_position(state: &ScrollHandleState, use_bottom_edge: bool) -> 
 
 impl ScrollHandle {
     fn set_active_item(&self, index: usize, strategy: ScrollStrategy) {
-        self.0.borrow_mut().active_item = Some(ScrollActiveItem { index, strategy });
+        let mut state = self.0.borrow_mut();
+        let next = Some(ScrollActiveItem { index, strategy });
+        state.version.bump_if(state.active_item != next);
+        state.active_item = next;
     }
 
     /// Construct a new scroll handle.
@@ -108,13 +112,15 @@ impl ScrollHandle {
     pub fn offset(&self) -> Point<Pixels> {
         let state = self.0.borrow();
         let value = *state.offset.borrow();
-        observe(&state.offset, ScrollReadKind::Offset, 0, value, |offset| *offset)
+        state.offset.version.read();
+        value
     }
 
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Size<Pixels> {
-        let value = self.0.borrow().max_offset;
-        observe(&self.0, ScrollReadKind::MaxOffset, 0, value, |state| state.max_offset)
+        let state = self.0.borrow();
+        state.version.read();
+        state.max_offset
     }
 
     /// Get the top child that's scrolled into view.
@@ -122,8 +128,10 @@ impl ScrollHandle {
         let read = |state: &ScrollHandleState| {
             visible_item_index(state, state.bounds.top() - state.offset.borrow().y)
         };
-        let value = read(&self.0.borrow());
-        observe(&self.0, ScrollReadKind::TopItem, 0, value, read)
+        let state = self.0.borrow();
+        state.version.read();
+        state.offset.version.read();
+        read(&state)
     }
 
     /// Get the bottom child that's scrolled into view.
@@ -131,20 +139,24 @@ impl ScrollHandle {
         let read = |state: &ScrollHandleState| {
             visible_item_index(state, state.bounds.bottom() - state.offset.borrow().y)
         };
-        let value = read(&self.0.borrow());
-        observe(&self.0, ScrollReadKind::BottomItem, 0, value, read)
+        let state = self.0.borrow();
+        state.version.read();
+        state.offset.version.read();
+        read(&state)
     }
 
     /// Return the bounds into which this child is painted.
     pub fn bounds(&self) -> Bounds<Pixels> {
-        let value = self.0.borrow().bounds;
-        observe(&self.0, ScrollReadKind::Bounds, 0, value, |state| state.bounds)
+        let state = self.0.borrow();
+        state.version.read();
+        state.bounds
     }
 
     /// Get the bounds for a specific child.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
-        let value = self.0.borrow().child_bounds.get(ix).copied();
-        observe(&self.0, ScrollReadKind::ItemBounds, ix, value, move |state| state.child_bounds.get(ix).copied())
+        let state = self.0.borrow();
+        state.version.read();
+        state.child_bounds.get(ix).copied()
     }
 
     /// Update the active item for scrolling to during prepaint.
@@ -201,6 +213,7 @@ impl ScrollHandle {
     /// Scrolls to the bottom.
     pub fn scroll_to_bottom(&self) {
         let mut state = self.0.borrow_mut();
+        state.version.bump_if(!state.scroll_to_bottom);
         state.scroll_to_bottom = true;
     }
 
@@ -213,21 +226,26 @@ impl ScrollHandle {
     /// Get the logical scroll top, based on a child index and a pixel offset.
     pub fn logical_scroll_top(&self) -> (usize, Pixels) {
         let read = |state: &ScrollHandleState| logical_scroll_position(state, false);
-        let value = read(&self.0.borrow());
-        observe(&self.0, ScrollReadKind::LogicalTop, 0, value, read)
+        let state = self.0.borrow();
+        state.version.read();
+        state.offset.version.read();
+        read(&state)
     }
 
     /// Get the logical scroll bottom, based on a child index and a pixel offset.
     pub fn logical_scroll_bottom(&self) -> (usize, Pixels) {
         let read = |state: &ScrollHandleState| logical_scroll_position(state, true);
-        let value = read(&self.0.borrow());
-        observe(&self.0, ScrollReadKind::LogicalBottom, 0, value, read)
+        let state = self.0.borrow();
+        state.version.read();
+        state.offset.version.read();
+        read(&state)
     }
 
     /// Get the number of tracked scrollable children.
     pub fn children_count(&self) -> usize {
-        let value = self.0.borrow().child_bounds.len();
-        observe(&self.0, ScrollReadKind::ChildCount, 0, value, |state| state.child_bounds.len())
+        let state = self.0.borrow();
+        state.version.read();
+        state.child_bounds.len()
     }
 }
 
@@ -310,6 +328,7 @@ impl Interactivity {
             let mut viewport_size_changed = false;
             if let Some(mut scroll_handle_state) = tracked_scroll_handle {
                 viewport_size_changed = scroll_handle_state.bounds.size != bounds.size;
+                scroll_handle_state.version.bump_if(scroll_handle_state.max_offset != scroll_max || scroll_handle_state.bounds != bounds);
                 scroll_handle_state.max_offset = scroll_max;
                 scroll_handle_state.bounds = bounds;
             }
@@ -347,12 +366,9 @@ impl Interactivity {
                 .unwrap_or_else(|| self.scroll_max(bounds, style, window));
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
+            window.watch_mounted_scroll(current_view, &scroll_offset.version);
             if let Some(handle) = self.tracked_scroll_handle.as_ref() {
-                window.watch_mounted_scroll(current_view, &handle.0, |state| {
-                    (*state.offset.borrow(), state.scroll_to_bottom, state.active_item)
-                });
-            } else {
-                window.watch_mounted_scroll(current_view, &scroll_offset, |offset| *offset);
+                window.watch_mounted_scroll(current_view, &handle.0.borrow().version);
             }
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, _cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {

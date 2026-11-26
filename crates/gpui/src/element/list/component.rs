@@ -156,6 +156,7 @@ impl Element for List {
                 }),
                 (),
             );
+            state.version.bump();
             state.items = new_items;
         }
 
@@ -166,6 +167,7 @@ impl Element for List {
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
                 Ok(layout) => layout,
                 Err(autoscroll_request) => {
+                    state.version.bump_if(state.logical_scroll_top != Some(autoscroll_request));
                     state.logical_scroll_top = Some(autoscroll_request);
                     state
                         .prepaint_items(bounds, padding, false, &mut self.render_item, window, cx)
@@ -173,6 +175,7 @@ impl Element for List {
                 }
             };
 
+        state.version.bump_if(state.last_layout_bounds != Some(bounds) || state.last_padding != Some(padding));
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
         ListPrepaintLayout { hitbox, layout }
@@ -211,10 +214,7 @@ impl Element for List {
         self.state.0.borrow_mut().recycle_item_layouts(item_layouts);
 
         let list_state = self.state.clone();
-        window.watch_mounted_scroll(current_view, &list_state.0, |state| {
-            let top = state.logical_scroll_top();
-            (top.item_ix, top.offset_in_item, state.reset, state.items.summary().count)
-        });
+        window.watch_mounted_scroll(current_view, &list_state.0.borrow().version);
         let mut accumulated_scroll_delta = ScrollDelta::default();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {

@@ -3,7 +3,7 @@ mod layout;
 
 use crate::{App, Bounds, Edges, EntityId, FocusHandle, Pixels, Point, Size, Window, point, px};
 use collections::VecDeque;
-use crate::window::scroll_dependencies::{ScrollReadKind, observe};
+use crate::window::scroll_dependencies::StateVersion;
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use sum_tree::{Bias, Dimensions, SumTree};
 
@@ -26,6 +26,7 @@ impl std::fmt::Debug for ListState {
 }
 
 pub(super) struct StateInner {
+    pub(super) version: StateVersion,
     pub(super) last_layout_bounds: Option<Bounds<Pixels>>,
     pub(super) last_padding: Option<Edges<Pixels>>,
     pub(super) items: SumTree<ListItem>,
@@ -51,6 +52,7 @@ impl ListState {
     /// the eager behavior of [Self::measure_all].
     pub fn new(item_count: usize, alignment: ListAlignment, overdraw: Pixels) -> Self {
         let this = Self(Rc::new(RefCell::new(StateInner {
+            version: StateVersion::default(),
             last_layout_bounds: None,
             last_padding: None,
             items: SumTree::default(),
@@ -82,6 +84,7 @@ impl ListState {
     pub fn reset(&self, element_count: usize) {
         let old_count = {
             let state = &mut *self.0.borrow_mut();
+            state.version.bump();
             state.reset = true;
             state.measuring_behavior.reset();
             state.logical_scroll_top = None;
@@ -94,8 +97,9 @@ impl ListState {
 
     /// The number of items in this list.
     pub fn item_count(&self) -> usize {
-        let value = self.0.borrow().items.summary().count;
-        observe(&self.0, ScrollReadKind::ListCount, 0, value, |state| state.items.summary().count)
+        let state = self.0.borrow();
+        state.version.read();
+        state.items.summary().count
     }
 
     /// Inform the list state that the items in `old_range` have been replaced
@@ -129,6 +133,7 @@ impl ListState {
         );
         new_items.append(old_items.suffix(), ());
         drop(old_items);
+        state.version.bump_if(!old_range.is_empty() || spliced_count != 0);
         state.items = new_items;
 
         if let Some(ListOffset {
@@ -155,12 +160,9 @@ impl ListState {
 
     /// Get the current scroll offset, in terms of the list's items.
     pub fn logical_scroll_top(&self) -> ListOffset {
-        let top = self.0.borrow().logical_scroll_top();
-        observe(&self.0, ScrollReadKind::ListTop, 0, (top.item_ix, top.offset_in_item), |state| {
-            let top = state.logical_scroll_top();
-            (top.item_ix, top.offset_in_item)
-        });
-        top
+        let state = self.0.borrow();
+        state.version.read();
+        state.logical_scroll_top()
     }
 
     /// Scroll the list by the given offset
@@ -169,8 +171,8 @@ impl ListState {
             return;
         }
 
-        let current_offset = self.logical_scroll_top();
         let state = &mut *self.0.borrow_mut();
+        let current_offset = state.logical_scroll_top();
         let mut cursor = state.items.cursor::<ListItemSummary>(());
         cursor.seek(&Count(current_offset.item_ix), Bias::Right);
 
@@ -182,10 +184,12 @@ impl ListState {
             cursor.seek(&Height(new_pixel_offset), Bias::Right);
         }
 
-        state.logical_scroll_top = Some(ListOffset {
+        let next = Some(ListOffset {
             item_ix: cursor.start().count,
             offset_in_item: new_pixel_offset - cursor.start().height,
         });
+        state.version.bump_if(state.logical_scroll_top != next);
+        state.logical_scroll_top = next;
     }
 
     /// Scroll the list to the given offset
@@ -197,6 +201,7 @@ impl ListState {
             scroll_top.offset_in_item = px(0.);
         }
 
+        state.version.bump_if(state.logical_scroll_top != Some(scroll_top));
         state.logical_scroll_top = Some(scroll_top);
     }
 
@@ -229,14 +234,16 @@ impl ListState {
             }
         }
 
+        state.version.bump_if(state.logical_scroll_top != Some(scroll_top));
         state.logical_scroll_top = Some(scroll_top);
     }
 
     /// Get the bounds for the given item in window coordinates, if it's
     /// been rendered.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
-        let value = self.0.borrow().bounds_for_item(ix);
-        observe(&self.0, ScrollReadKind::ListItemBounds, ix, value, move |state| state.bounds_for_item(ix))
+        let state = self.0.borrow();
+        state.version.read();
+        state.bounds_for_item(ix)
     }
 
     /// Call this method when the user starts dragging the scrollbar.
@@ -245,14 +252,18 @@ impl ListState {
     /// as items in the overdraw get measured, and help offset scroll position changes accordingly.
     pub fn scrollbar_drag_started(&self) {
         let mut state = self.0.borrow_mut();
-        state.scrollbar_drag_start_height = Some(state.items.summary().height);
+        let next = Some(state.items.summary().height);
+        state.version.bump_if(state.scrollbar_drag_start_height != next);
+        state.scrollbar_drag_start_height = next;
     }
 
     /// Called when the user stops dragging the scrollbar.
     ///
     /// See `scrollbar_drag_started`.
     pub fn scrollbar_drag_ended(&self) {
-        self.0.borrow_mut().scrollbar_drag_start_height.take();
+        let mut state = self.0.borrow_mut();
+        let changed = state.scrollbar_drag_start_height.take().is_some();
+        state.version.bump_if(changed);
     }
 
     /// Set the offset from the scrollbar
@@ -263,20 +274,23 @@ impl ListState {
     /// Returns the maximum scroll offset according to the items we have measured.
     /// This value remains constant while dragging to prevent the scrollbar from moving away unexpectedly.
     pub fn scrollbar_max_offset(&self) -> Size<Pixels> {
-        let value = self.0.borrow().scrollbar_max_offset();
-        observe(&self.0, ScrollReadKind::ListScrollbarMaxOffset, 0, value, |state| state.scrollbar_max_offset())
+        let state = self.0.borrow();
+        state.version.read();
+        state.scrollbar_max_offset()
     }
 
     /// Returns the current scroll offset adjusted for the scrollbar
     pub fn scrollbar_offset(&self) -> Point<Pixels> {
-        let value = self.0.borrow().scrollbar_offset();
-        observe(&self.0, ScrollReadKind::ListScrollbarOffset, 0, value, |state| state.scrollbar_offset())
+        let state = self.0.borrow();
+        state.version.read();
+        state.scrollbar_offset()
     }
 
     /// Return the bounds of the viewport in pixels.
     pub fn viewport_bounds(&self) -> Bounds<Pixels> {
-        let value = self.0.borrow().last_layout_bounds.unwrap_or_default();
-        observe(&self.0, ScrollReadKind::ListViewport, 0, value, |state| state.last_layout_bounds.unwrap_or_default())
+        let state = self.0.borrow();
+        state.version.read();
+        state.last_layout_bounds.unwrap_or_default()
     }
 }
 
@@ -419,11 +433,9 @@ impl StateInner {
             item_ix: start.count,
             offset_in_item: new_scroll_top - start.height,
         };
-        if self.alignment == ListAlignment::Bottom && new_scroll_top == scroll_max {
-            self.logical_scroll_top = None;
-        } else {
-            self.logical_scroll_top = Some(event_scroll_top);
-        }
+        let next = if self.alignment == ListAlignment::Bottom && new_scroll_top == scroll_max { None } else { Some(event_scroll_top) };
+        self.version.bump_if(self.logical_scroll_top != next);
+        self.logical_scroll_top = next;
 
         let visible_range = self.visible_range(height, &event_scroll_top);
         Some(ListScrollEvent {
@@ -471,6 +483,7 @@ impl StateInner {
             // if dragging the scrollbar, we want to offset the point if the height changed
             content_height - self.scrollbar_drag_start_height.unwrap_or(content_height);
         let new_scroll_top = (point.y - drag_offset).abs().max(px(0.)).min(scroll_max);
+        let previous = self.logical_scroll_top;
 
         if self.alignment == ListAlignment::Bottom && new_scroll_top == scroll_max {
             self.logical_scroll_top = None;
@@ -486,5 +499,6 @@ impl StateInner {
                 offset_in_item,
             });
         }
+        self.version.bump_if(previous != self.logical_scroll_top);
     }
 }

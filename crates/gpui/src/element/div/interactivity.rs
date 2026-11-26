@@ -125,7 +125,7 @@ pub struct Interactivity {
     pub(crate) tracked_focus_handle: Option<FocusHandle>,
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
-    pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_offset: Option<Rc<crate::window::scroll_dependencies::ScrollOffset>>,
     pub(crate) ongoing_scroll: Option<Rc<RefCell<crate::OngoingScroll>>>,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied by focus, active, etc.

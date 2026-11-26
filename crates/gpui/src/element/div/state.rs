@@ -1,4 +1,5 @@
-use crate::{FocusHandle, MouseDownEvent, Pixels, Point};
+use crate::{FocusHandle, MouseDownEvent};
+use crate::window::scroll_dependencies::ScrollOffset;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -14,7 +15,7 @@ pub struct InteractiveElementState {
     pub(crate) clicked_state: Option<Rc<RefCell<ElementClickedState>>>,
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
-    pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_offset: Option<Rc<ScrollOffset>>,
     pub(crate) ongoing_scroll: Option<Rc<RefCell<crate::OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     pub(crate) long_press_tooltip_active: Option<Rc<Cell<bool>>>,
@@ -56,8 +57,8 @@ impl InteractiveElementState {
         ensure_default(&mut self.pending_mouse_down)
     }
 
-    pub(crate) fn ensure_scroll_offset(&mut self) -> Rc<RefCell<Point<Pixels>>> {
-        ensure_default(&mut self.scroll_offset)
+    pub(crate) fn ensure_scroll_offset(&mut self) -> Rc<ScrollOffset> {
+        self.scroll_offset.get_or_insert_with(Default::default).clone()
     }
 
     pub(crate) fn ensure_ongoing_scroll(&mut self) -> Rc<RefCell<crate::OngoingScroll>> {

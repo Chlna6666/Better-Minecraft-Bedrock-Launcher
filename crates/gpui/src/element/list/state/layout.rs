@@ -73,6 +73,7 @@ impl StateInner {
         }
 
         window.record_list_measured_items(measured_item_count);
+        self.version.bump_if(measured_item_count != 0);
         self.items = SumTree::from_iter(measured_items, ());
     }
 
@@ -86,6 +87,8 @@ impl StateInner {
         cx: &mut App,
     ) -> LayoutItemsResponse {
         let old_items = self.items.clone();
+        let previous_top = self.logical_scroll_top;
+        let mut geometry_changed = false;
         let mut measured_items = std::mem::take(&mut self.measured_items_scratch);
         measured_items.clear();
         let mut item_layouts = std::mem::take(&mut self.item_layouts_scratch);
@@ -155,6 +158,7 @@ impl StateInner {
             }
 
             let item_size = item_size.unwrap();
+            geometry_changed |= item.size() != Some(item_size);
             rendered_height += item_size.height;
             max_item_width = max_item_width.max(item_size.width);
             measured_items.push_back(ListItem::Measured {
@@ -182,6 +186,7 @@ impl StateInner {
                                 element.layout_as_root(available_item_space, window, cx);
                             (element, element_size)
                         });
+                    geometry_changed |= item.size() != Some(element_size);
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
                     measured_items.push_front(ListItem::Measured {
@@ -244,6 +249,7 @@ impl StateInner {
                     })
                 };
 
+                geometry_changed |= item.size() != Some(item_size);
                 measured_start = item_index;
                 leading_overdraw += item_size.height;
                 measured_items.push_front(ListItem::Measured {
@@ -261,6 +267,7 @@ impl StateInner {
         new_items.extend(measured_items.drain(..), ());
         cursor.seek(&Count(measured_range.end), Bias::Right);
         new_items.append(cursor.suffix(), ());
+        self.version.bump_if(geometry_changed || previous_top != self.logical_scroll_top);
         self.items = new_items;
         self.measured_items_scratch = measured_items;
 

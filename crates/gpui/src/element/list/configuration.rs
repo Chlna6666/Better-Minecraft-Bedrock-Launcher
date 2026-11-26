@@ -66,7 +66,7 @@ pub enum ListHorizontalSizingBehavior {
 
 /// An offset into the list's items, in terms of the item index and the number
 /// of pixels off the top left of the item.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ListOffset {
     /// The index of an item in the list
     pub item_ix: usize,
