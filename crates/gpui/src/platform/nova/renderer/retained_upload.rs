@@ -1244,7 +1244,7 @@ mod tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
         );
-        let id = crate::GlobalElementId::from_path(&["popup".into()]);
+        let id = crate::NativeElementId::from_path(&["popup".into()]);
         let mut scene = crate::scene::Painter::default();
         for _ in 0..24 {
             scene.insert_primitive(crate::Quad {
@@ -1324,7 +1324,7 @@ mod tests {
             }
             scene.begin_blur(crate::BlurCapture {
                 animation_id: Some(crate::SceneAnimationId(7)),
-                layer_id: Some(crate::GlobalElementId::from_path(&["popup".into()])),
+                layer_id: Some(crate::NativeElementId::from_path(&["popup".into()])),
                 bounds: rect,
                 content_mask: crate::ContentMask::new(rect),
                 radius: crate::ScaledPixels(radius),
@@ -1343,7 +1343,7 @@ mod tests {
         let mut interleaved = crate::scene::Painter::default();
         interleaved.begin_blur(crate::BlurCapture {
             animation_id: None,
-            layer_id: Some(crate::GlobalElementId::from_path(&["panel".into()])),
+            layer_id: Some(crate::NativeElementId::from_path(&["panel".into()])),
             bounds: rect,
             content_mask: crate::ContentMask::new(rect),
             radius: crate::ScaledPixels(0.0),

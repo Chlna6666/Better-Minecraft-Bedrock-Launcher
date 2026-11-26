@@ -599,7 +599,7 @@ mod tests {
             FilterSource::Element(crate::PaintBlur {
                 order: 0,
                 animation_id: None,
-                layer_id: Some(crate::GlobalElementId::from_path(&[name.into()])),
+                layer_id: Some(crate::NativeElementId::from_path(&[name.into()])),
                 bounds: crate::Bounds::default(),
                 content_mask: crate::ContentMask::default(),
                 radius: crate::ScaledPixels(0.0),
@@ -667,7 +667,7 @@ mod tests {
         let mut blur = crate::PaintBlur {
             order: 0,
             animation_id: None,
-            layer_id: Some(crate::GlobalElementId::from_path(&["stable".into()])),
+            layer_id: Some(crate::NativeElementId::from_path(&["stable".into()])),
             bounds: crate::Bounds::default(),
             content_mask: crate::ContentMask::default(),
             radius: crate::ScaledPixels(0.0),
@@ -1089,7 +1089,7 @@ mod tests {
         let mut registry = FilterRegistry::new(None);
         let mut source = crate::PaintBlur {
             order: 0,
-            layer_id: Some(crate::GlobalElementId::from_path(&["page-one".into()])),
+            layer_id: Some(crate::NativeElementId::from_path(&["page-one".into()])),
             animation_id: None,
             bounds: crate::Bounds::default(),
             content_mask: crate::ContentMask::default(),
@@ -1104,7 +1104,7 @@ mod tests {
         );
         let previous_version = registry.layer_content_version(4).expect("resident source");
         assert!(registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
-        source.layer_id = Some(crate::GlobalElementId::from_path(&["page-two".into()]));
+        source.layer_id = Some(crate::NativeElementId::from_path(&["page-two".into()]));
         assert!(!registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
         // A reused flattened index must never imply that the old GPU texture
         // already holds the new layer's pixels.

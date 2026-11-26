@@ -1,5 +1,33 @@
 use super::*;
 use crate::TransformOrigin;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+/// Running layout key plus a separately hashed structural witness. The key
+/// retains the existing native layout identity; the witness protects retained
+/// view/layer admission without keeping an ElementId path alive.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct NativeElementId {
+    pub(crate) key: u64,
+    witness: u64,
+}
+
+impl NativeElementId {
+    #[inline]
+    fn child(parent: Option<Self>, segment: &ElementId) -> Self {
+        let mut primary = collections::FxHasher::with_seed(parent.map_or(0, |id| id.key) as usize);
+        segment.hash(&mut primary);
+        let mut witness = DefaultHasher::new();
+        parent.map_or(0, |id| id.witness).hash(&mut witness);
+        segment.hash(&mut witness);
+        Self { key: primary.finish(), witness: witness.finish() }
+    }
+
+    pub(crate) fn from_path(path: &[ElementId]) -> Self {
+        path.iter().fold(None, |parent, segment| Some(Self::child(parent, segment)))
+            .expect("native identity requires a nonempty path")
+    }
+}
+
 
 // Adapt the identified/positional key rules of longbridge/gpui-fast
 // 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout_key.rs (Apache-2.0).
@@ -124,6 +152,10 @@ impl Window {
             return None;
         }
         Some(self.global_ids.borrow_mut().get(path))
+    }
+
+    pub(crate) fn current_native_element_id(&self) -> Option<NativeElementId> {
+        self.current_retained_element_id().map(|path| NativeElementId::from_path(&path.0))
     }
 
     /// Verify a native-key candidate without materializing or interning the active path.

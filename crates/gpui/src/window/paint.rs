@@ -198,7 +198,7 @@ impl Window {
         });
         let blur_bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
-        let layer_id = self.current_retained_element_id();
+        let layer_id = self.current_native_element_id();
         let previous_content = layer_id
             .as_ref()
             .and_then(|layer_id| self.rendered_frame.scene().blur_content_for(layer_id));
