@@ -104,6 +104,14 @@ impl Window {
     }
 }
 
+/// One owner record, with its last resolved dispatch route. `keep` is
+/// scratch for publication, not an additional owner index.
+struct CommittedReads {
+    reads: crate::RenderDependencies,
+    route: Option<EntityId>,
+    keep: bool,
+}
+
 struct WindowInvalidatorInner {
     pub dirty: bool,
     /// First pending dirty edge that has not yet been assigned to a draw cycle.
@@ -112,7 +120,7 @@ struct WindowInvalidatorInner {
     pub dirty_views: FxHashSet<EntityId>,
     // Last successfully committed Render read owners. An unknown owner
     // requires the conservative window-wide fallback.
-    view_reads: FxHashMap<Option<EntityId>, crate::RenderDependencies>,
+    view_reads: FxHashMap<Option<EntityId>, CommittedReads>,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -240,8 +248,9 @@ impl WindowInvalidator {
         self.invalidate_entity(entity, cx, false)
     }
 
-    /// Publish the current read log and only the owners whose lifecycle was replayed.
-    /// The reverse indexes are derived here, not merged with the previous indexes.
+    /// Publish the current read log and the owners whose lifecycle was replayed.
+    /// Like Fast's tracked-entity reconciliation, unchanged read edges keep
+    /// their committed reverse routes. Rebuild only after a real change.
     pub(in crate::window) fn commit_frame_dependencies(
         &self,
         log: &mut crate::AppDependencies,
@@ -249,37 +258,71 @@ impl WindowInvalidator {
         replayed: &FxHashSet<EntityId>,
         mut is_live: impl FnMut(EntityId) -> bool,
         mut has_route: impl FnMut(EntityId) -> bool,
-    ) {
+    ) -> bool {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
-        // Unknown reads cannot be assigned to a replayed view. Preserve them
-        // conservatively until a complete traversal replaces the snapshot.
-        inner.view_reads.retain(|owner, _| match *owner {
-            Some(owner) => replayed.contains(&owner) && has_route(owner),
-            None => !replayed.is_empty(),
+        let mut changed = false;
+        for (owner, entry) in &mut inner.view_reads {
+            let route = owner.filter(|owner| has_route(*owner));
+            changed |= route != entry.route;
+            entry.route = route;
+            entry.keep = match *owner {
+                Some(owner) => replayed.contains(&owner) && route.is_some(),
+                None => !replayed.is_empty(),
+            };
+        }
+
+        log.finish(|owner, mut reads| {
+            if let Some(entry) = inner.view_reads.get_mut(&owner) {
+                if entry.keep {
+                    reads.merge_replayed(&entry.reads);
+                }
+                changed |= !entry.reads.same_routes(&reads);
+                entry.reads = reads;
+                entry.keep = true;
+            } else {
+                changed |= !reads.entities.is_empty() || !reads.globals.is_empty();
+                inner.view_reads.insert(owner, CommittedReads {
+                    reads,
+                    route: owner.filter(|owner| has_route(*owner)),
+                    keep: true,
+                });
+            }
         });
-        log.append_to(&mut inner.view_reads);
-        inner.render_dependencies.clear();
-        inner.global_read_dependencies.clear();
-        for (owner, reads) in &mut inner.view_reads {
-            // The read log publishes sorted, unique owner sets, including mixed replay.
+
+        inner.view_reads.retain(|_, entry| {
+            if !entry.keep {
+                changed |= !entry.reads.entities.is_empty() || !entry.reads.globals.is_empty();
+                return false;
+            }
+            let reads = &mut entry.reads;
             if !reads.entities.iter().all(|entity| is_live(*entity)) {
                 reads.entities = reads.entities.iter().copied().filter(|entity| is_live(*entity)).collect();
+                changed = true;
             }
-            let owner = owner.filter(|owner| has_route(*owner));
-            for &entity in reads.entities.iter() {
-                entities.insert(entity);
-                insert_dependency_owner(&mut inner.render_dependencies, entity, owner);
-            }
-            for &key in reads.globals.iter() {
-                insert_dependency_owner(&mut inner.global_read_dependencies, key, owner);
+            true
+        });
+
+        if changed {
+            inner.render_dependencies.clear();
+            inner.global_read_dependencies.clear();
+            for entry in inner.view_reads.values() {
+                for &entity in entry.reads.entities.iter() {
+                    insert_dependency_owner(&mut inner.render_dependencies, entity, entry.route);
+                }
+                for &key in entry.reads.globals.iter() {
+                    insert_dependency_owner(&mut inner.global_read_dependencies, key, entry.route);
+                }
             }
         }
+        entities.extend(inner.render_dependencies.keys().copied());
+        changed
     }
 
     pub(in crate::window) fn changed_state_owners(&self, changed: &mut SmallVec<[EntityId; 4]>) {
         let mut inner = self.inner.borrow_mut();
-        for (owner, reads) in &mut inner.view_reads {
+        for (owner, entry) in &mut inner.view_reads {
+            let reads = &mut entry.reads;
             if reads.states.iter().any(|read| read.status() == crate::StateReadStatus::Changed)
                 && let Some(owner) = *owner
                 && !changed.contains(&owner)
@@ -598,6 +641,32 @@ mod view_invalidation_tests {
         assert_eq!(inner.render_dependencies[&new_model].as_ref().unwrap().as_slice(), &[rebuilt]);
         assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[replayed]);
         assert!(!inner.view_reads.contains_key(&Some(removed)));
+    }
+
+    #[test]
+    fn identical_rebuilt_reads_keep_reverse_routes_and_route_loss_invalidates() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let model = EntityId::from(2);
+        let global = TypeId::of::<u32>();
+        let mut log = crate::AppDependencies::default();
+        let mut entities = FxHashSet::default();
+        for frame in 0..3 {
+            log.entity(Some(owner), model);
+            log.global(Some(owner), (global, None));
+            entities.clear();
+            let changed = invalidator.commit_frame_dependencies(
+                &mut log, &mut entities, &FxHashSet::default(), |_| true, |_| frame != 2,
+            );
+            assert_eq!(changed, frame != 1);
+            assert_eq!(entities, FxHashSet::from_iter([model]));
+        }
+        assert_eq!(invalidator.inner.borrow().render_dependencies[&model], None);
+        assert_eq!(invalidator.inner.borrow().global_read_dependencies[&(global, None)], None);
+        assert!(invalidator.commit_frame_dependencies(
+            &mut log, &mut entities, &FxHashSet::default(), |_| true, |_| false,
+        ));
+        assert!(invalidator.inner.borrow().render_dependencies.is_empty());
     }
 
     #[test]

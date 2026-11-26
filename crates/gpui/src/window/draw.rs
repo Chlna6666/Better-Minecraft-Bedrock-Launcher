@@ -830,7 +830,7 @@ impl Window {
             &mut entities,
             &self.replayed_view_owners,
             |entity| live_entities.contains_key(entity),
-            |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
+            |owner| self.rendered_frame.dispatch_tree.has_view_route(owner),
         );
         let handle = self.handle;
         cx.record_entities_accessed(

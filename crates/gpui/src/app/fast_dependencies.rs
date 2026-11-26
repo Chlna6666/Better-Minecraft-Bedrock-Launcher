@@ -116,6 +116,7 @@ pub(crate) struct AppDependencies {
     scratch_states: Vec<StateRead>,
     interned_entities: Interned<EntityId>,
     interned_globals: Interned<(TypeId, Option<bool>)>,
+    no_states: Option<Rc<[StateRead]>>,
 }
 
 #[derive(Default)]
@@ -140,6 +141,28 @@ pub(crate) struct RenderDependencies {
     pub(crate) entities: Rc<[EntityId]>,
     pub(crate) globals: Rc<[(TypeId, Option<bool>)]>,
     pub(crate) states: Rc<[StateRead]>,
+}
+
+impl RenderDependencies {
+    /// Union the reads of a rebuilt fragment with a replayed sibling of the
+    /// same owner. Keep the original first-read ordering of the new log.
+    pub(crate) fn merge_replayed(&mut self, previous: &Self) {
+        self.entities = merge_sorted(&self.entities, &previous.entities);
+        self.globals = merge_sorted(&self.globals, &previous.globals);
+        if self.states.is_empty() {
+            self.states = previous.states.clone();
+        } else if !previous.states.is_empty() {
+            let mut states = Vec::with_capacity(self.states.len() + previous.states.len());
+            states.extend_from_slice(&self.states);
+            states.extend_from_slice(&previous.states);
+            self.states = unique_states(&states);
+        }
+    }
+
+    pub(crate) fn same_routes(&self, other: &Self) -> bool {
+        (Rc::ptr_eq(&self.entities, &other.entities) || self.entities == other.entities)
+            && (Rc::ptr_eq(&self.globals, &other.globals) || self.globals == other.globals)
+    }
 }
 
 impl AppDependencies {
@@ -199,16 +222,13 @@ impl AppDependencies {
         self.recording = DependencyRecording::default();
     }
 
-    /// Finish each owner's disjoint ranges with the upstream scratch,
-    /// sort_unique, intern and merge_sorted path. Sort recording boundaries,
-    /// not the full frame of (owner, read) tuples.
-    pub(crate) fn append_to(
-        &mut self,
-        reads: &mut FxHashMap<Option<EntityId>, RenderDependencies>,
-    ) {
+    /// Finish each owner's disjoint read ranges once. Publish the interned
+    /// lists directly, without constructing temporary empty owner sets.
+    pub(crate) fn finish(&mut self, mut publish: impl FnMut(Option<EntityId>, RenderDependencies)) {
         self.close_recording();
         self.ranges.sort_unstable_by_key(|range| (range.owner, range.states.start));
         let states_log = self.state_read_log.borrow();
+        let no_states = self.no_states.get_or_insert_with(|| Rc::from([])).clone();
         for group in self.ranges.chunk_by(|a, b| a.owner == b.owner) {
             self.scratch_entities.clear();
             self.scratch_globals.clear();
@@ -220,15 +240,15 @@ impl AppDependencies {
             }
             sort_unique(&mut self.scratch_entities);
             sort_unique(&mut self.scratch_globals);
-            let entities = self.interned_entities.get(&self.scratch_entities);
-            let globals = self.interned_globals.get(&self.scratch_globals);
-            let target = reads.entry(group[0].owner).or_default();
-            target.entities = merge_sorted(&target.entities, &entities);
-            target.globals = merge_sorted(&target.globals, &globals);
-            if !self.scratch_states.is_empty() {
-                self.scratch_states.extend_from_slice(&target.states);
-                target.states = unique_states(&self.scratch_states);
-            }
+            publish(group[0].owner, RenderDependencies {
+                entities: self.interned_entities.get(&self.scratch_entities),
+                globals: self.interned_globals.get(&self.scratch_globals),
+                states: if self.scratch_states.is_empty() {
+                    no_states.clone()
+                } else {
+                    unique_states(&self.scratch_states)
+                },
+            });
         }
         drop(states_log);
         self.scratch_states.clear();
@@ -254,7 +274,7 @@ impl AppDependencies {
     #[cfg(test)]
     pub(crate) fn into_sets(&mut self) -> FxHashMap<Option<EntityId>, RenderDependencies> {
         let mut sets = FxHashMap::default();
-        self.append_to(&mut sets);
+        self.finish(|owner, reads| { sets.insert(owner, reads); });
         sets
     }
 }

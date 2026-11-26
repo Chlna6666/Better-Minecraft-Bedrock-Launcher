@@ -409,6 +409,11 @@ impl DispatchTree {
         focus_path
     }
 
+    /// A retained owner has a route iff its view node is in this frame.
+    pub(crate) fn has_view_route(&self, view_id: EntityId) -> bool {
+        self.view_node_ids.contains_key(&view_id)
+    }
+
     /// Iterates the view path from the requested view toward the root without allocating.
     pub fn view_path_reversed(&self, view_id: EntityId) -> impl Iterator<Item = EntityId> + '_ {
         let current_node_id = self.view_node_ids.get(&view_id).copied();
