@@ -66,10 +66,10 @@ impl SplicePart {
 }
 
 impl Window {
-    /// Re-enter a retained view using Fast's parent key and the view's own element id.
+    /// Restore application state identity; layout, prepaint and paint own their
+    /// respective Fast key scopes.
     fn with_gap_scope<R>(
         &mut self,
-        parent_layout_key: Option<u64>,
         application_id: &GlobalElementId,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
@@ -77,13 +77,7 @@ impl Window {
             &mut self.element_id_stack,
             ElementIdStack::from_prefix(application_id.clone()),
         );
-        let element_id = application_id.last().expect("retained view element id");
-        let result = self.with_parent_layout_key(parent_layout_key, |window| {
-            crate::fast::layout_key::push_layout_key(window, Some(element_id));
-            let result = f(window);
-            crate::fast::layout_key::pop_layout_key(window);
-            result
-        });
+        let result = f(self);
         self.element_id_stack = application;
         result
     }
@@ -378,11 +372,16 @@ impl Window {
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
             let rebuild = old.rebuild.as_ref().expect("validated gap");
-            let (layout_id, state) = self.with_gap_scope(
-                rebuild.parent_layout_key,
-                &rebuild.application_id,
-                |window| view.request_layout(Some(&rebuild.application_id), None, window, cx),
-            );
+            let (layout_id, state) = self.with_gap_scope(&rebuild.application_id, |window| {
+                window.with_parent_layout_key(rebuild.parent_layout_key, |window| {
+                    let element_id = rebuild.application_id.last().expect("retained view element id");
+                    let key = crate::fast::layout_key::push_layout_key(window, Some(element_id));
+                    debug_assert_eq!(key, gap_key);
+                    let result = view.request_layout(Some(&rebuild.application_id), None, window, cx);
+                    crate::fast::layout_key::pop_layout_key(window);
+                    result
+                })
+            });
             self.splice_building = false;
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
@@ -495,8 +494,10 @@ impl Window {
                     let node = relocate_dispatch(Some(wrapper), parent, relocated).expect("validated gap wrapper");
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(rebuild.parent_layout_key, &rebuild.application_id, |window| {
+                    self.with_gap_scope(&rebuild.application_id, |window| {
+                        let scope = crate::fast::layout_key::enter_prepaint_scope(window, gap.key);
                         gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
+                        crate::fast::layout_key::exit_prepaint_scope(window, scope);
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
                     gap.node = Some(node);
@@ -548,9 +549,11 @@ impl Window {
                     let old = &gap.old;
                     self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(rebuild.parent_layout_key, &rebuild.application_id, |window| {
+                    self.with_gap_scope(&rebuild.application_id, |window| {
+                        let previous = window.paint_layout_key.replace(gap.key);
                         window.record_debug_element_paint(old.bounds, cx);
                         gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
+                        window.paint_layout_key = previous;
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
                     cursor = old.paint_range.end.clone();

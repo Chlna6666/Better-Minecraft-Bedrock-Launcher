@@ -1,4 +1,7 @@
 //! Stable layout-node identity, ported from Longbridge GPUI Fast.
+//! Adapted from longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
+//! Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
+//! SPDX-License-Identifier: Apache-2.0
 use crate::{ElementId, SharedString, Window};
 use collections::FxHasher;
 use smallvec::SmallVec;
@@ -68,8 +71,15 @@ pub(crate) fn layout_key(window: &Window) -> Option<u64> {
 
 #[inline(always)]
 pub(crate) fn parent_layout_key(window: &Window) -> Option<u64> {
-    let stack = &window.fast_layout.key_stack;
-    stack.len().checked_sub(2).map(|parent| stack[parent].key)
+    let layout = &window.fast_layout;
+    let stack = &layout.key_stack;
+    if stack.is_empty() {
+        return None;
+    }
+    Some(stack.len().checked_sub(2).map_or_else(
+        || mix(layout.prepaint_scope, LAYOUT_PREPAINT_SALT),
+        |parent| stack[parent].key,
+    ))
 }
 
 #[inline(always)]
@@ -172,7 +182,13 @@ impl Window {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let key = self.fast_layout.prepaint_scope;
-        self.with_parent_layout_key(Some(key), f)
+        self.fast_layout.key_stack.push(LayoutKeyFrame {
+            key,
+            next_unidentified_child: 0,
+        });
+        let result = f(self);
+        self.fast_layout.key_stack.pop();
+        result
     }
 
     pub(crate) fn with_list_item_layout_key<R>(
