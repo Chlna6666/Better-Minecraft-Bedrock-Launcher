@@ -412,7 +412,7 @@ fn native_taffy_marks_impure_measure_dirty_on_every_commit(cx: &mut TestAppConte
             let mut engine = TaffyLayoutEngine::new();
             let build = |engine: &mut TaffyLayoutEngine| {
                 let counter = count.clone();
-                engine.request_impure_measured_layout(
+                engine.request_measured_layout(
                     layout_identity("impure"),
                     Style::default(),
                     px(16.),

@@ -119,6 +119,7 @@ impl Window {
             + 'static,
     >(
         &mut self,
+        key: Option<crate::layout::MeasurementKey>,
         replayable: bool,
         mut measure: F,
     ) -> LayoutId {
@@ -134,45 +135,8 @@ impl Window {
                 owner,
                 rem_size,
                 scale_factor,
+                key,
                 replayable,
-                move |known, available, window, cx| {
-                    snap_measured_size_to_device_pixels(
-                        measure(known, available, window, cx),
-                        scale_factor,
-                    )
-                },
-            )
-    }
-
-    /// Requests a measured leaf whose result is a pure function of its fingerprint seed and
-    /// the constraints Taffy supplies.
-    ///
-    /// The caller must be able to show that: equal seed and equal constraints always produce
-    /// the same size. Under that proof an unchanged node keeps its Taffy cache instead of
-    /// being dirtied every frame, which is what stops one wrapped label from forcing a
-    /// whole-root recompute.
-    pub(crate) fn request_pure_measured_layout<
-        F: FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
-            + 'static,
-    >(
-        &mut self,
-        fingerprint_seed: u64,
-        mut measure: F,
-    ) -> LayoutId {
-        self.invalidator.debug_assert_prepaint();
-
-        let rem_size = self.rem_size();
-        let scale_factor = self.scale_factor();
-        let owner = self.current_stable_layout_owner();
-        self.layout_engine
-            .as_mut()
-            .unwrap()
-            .request_fingerprinted_layout(
-                owner,
-                Style::default(),
-                rem_size,
-                scale_factor,
-                Some(fingerprint_seed),
                 move |known, available, window, cx| {
                     snap_measured_size_to_device_pixels(
                         measure(known, available, window, cx),

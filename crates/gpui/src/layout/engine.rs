@@ -47,9 +47,40 @@ struct DefaultMeasuredStyle {
     fingerprint: u64,
 }
 
+/// Native measurement identity. Text already computed its geometry and paint
+/// keys; do not hash them again or conflate a fresh mutable text state with an
+/// adopted state. The previous closure owns the state behind the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MeasurementKey {
+    Value(u64),
+    Text {
+        state: usize,
+        geometry: u64,
+        paint: u64,
+        geometry_only: bool,
+    },
+}
+
+impl MeasurementKey {
+    pub(crate) fn compatible(self, previous: Self) -> bool {
+        match (self, previous) {
+            (
+                Self::Text { state, geometry, paint, geometry_only },
+                Self::Text { state: old_state, geometry: old_geometry, paint: old_paint, geometry_only: old_geometry_only },
+            ) => state == old_state && geometry == old_geometry
+                && (paint == old_paint || (geometry_only && old_geometry_only)),
+            _ => self == previous,
+        }
+    }
+
+    fn adopts(self, previous: Self) -> bool {
+        matches!(self, Self::Text { geometry_only: true, .. }) && self == previous
+    }
+}
+
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
-    pub(super) is_pure: bool,
+    key: Option<MeasurementKey>,
     replayable: bool,
     measure_log: MeasureLog,
     replay_pending: bool,
@@ -100,7 +131,6 @@ struct PersistentLayoutNode {
     id: LayoutId,
     /// Structural equality guards key collisions; no frame metadata lookup.
     element: GlobalElementId,
-    measure_fingerprint: Option<u64>,
     measured: bool,
     claimed_in_frame: u64,
     lingers: bool,
@@ -262,12 +292,11 @@ impl TaffyLayoutEngine {
             }
             // Offscreen row caches must not pin a frame-local measuring closure.
             if node.measured && taffy.get_node_context_mut(node.id.into())
-                .is_some_and(|context| !context.is_pure)
+                .is_some_and(|context| context.key.is_none())
             {
                 taffy.set_node_context(node.id.into(), None).expect(EXPECT_MESSAGE);
                 taffy.mark_dirty(node.id.into()).expect(EXPECT_MESSAGE);
                 node.measured = false;
-                node.measure_fingerprint = None;
             }
             node.offscreen = true;
             true
@@ -499,7 +528,6 @@ impl TaffyLayoutEngine {
         owner: Option<(u64, GlobalElementId)>,
         children: &[LayoutId],
         measure: Option<NodeContext>,
-        measure_fingerprint: Option<u64>,
         style_fingerprint: Option<u64>,
         build_style: impl FnOnce() -> taffy::Style,
     ) -> LayoutId {
@@ -584,21 +612,22 @@ impl TaffyLayoutEngine {
                 self.layout_changes = self.layout_changes.wrapping_add(1);
             }
             if let Some(mut context) = measure {
-                // A pure measure declares that its result depends only on the fingerprint, so
-                // an equal fingerprint with an unchanged style means the node can keep Taffy's
-                // cache. An impure measure may close over mutable state the fingerprint does
-                // not cover, so it keeps being marked dirty every frame; its own cache is what
-                // keeps that cheap.
-                let unchanged_pure = node.measured
-                    && context.is_pure
-                    && node.measure_fingerprint == measure_fingerprint
-                    && !requires_style;
                 if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
-                    let reusable = unchanged_pure && old_context.is_pure;
-                    let replay = same_style && !requires_style && child_order_unchanged
+                    let reusable = same_style && !requires_style && child_order_unchanged
+                        && context.key.zip(old_context.key).is_some_and(|(new, old)| new.compatible(old));
+                    if reusable && context.key.zip(old_context.key).is_some_and(|(new, old)| new.adopts(old)) {
+                        // Same live text state and unchanged non-truncated inputs: the
+                        // existing closure and native cache can both be adopted.
+                        self.persistent_layout_reuses += 1;
+                        return id;
+                    }
+                    let replay = !reusable && same_style && !requires_style && child_order_unchanged
                         && context.replayable && old_context.replayable
                         && !old_context.replay_pending
                         && matches!(old_context.measure_log, MeasureLog::Single(..));
+                    if reusable {
+                        context.measure_log = old_context.measure_log;
+                    }
                     if replay {
                         context.measure_log = old_context.measure_log;
                         context.replay_pending = true;
@@ -619,7 +648,6 @@ impl TaffyLayoutEngine {
                     self.remeasures = self.remeasures.wrapping_add(1);
                 }
             }
-            node.measure_fingerprint = measure_fingerprint;
             node.measured = is_measured;
             self.persistent_layout_reuses += 1;
             id
@@ -634,7 +662,6 @@ impl TaffyLayoutEngine {
                     id,
                     lingers: is_list_row(&element.0),
                     element,
-                    measure_fingerprint,
                     measured: is_measured,
                     claimed_in_frame: self.request_frame,
                     offscreen: false,
@@ -720,7 +747,6 @@ impl TaffyLayoutEngine {
             owner,
             children,
             None,
-            None,
             Some(style_fingerprint),
             move || pending_style.to_taffy(rem_size, scale_factor),
         );
@@ -779,12 +805,11 @@ impl TaffyLayoutEngine {
             &[],
             Some(NodeContext {
                 measure,
-                is_pure: fingerprint_seed.is_some(),
+                key: fingerprint_seed.map(MeasurementKey::Value),
                 replayable: false,
                 measure_log: MeasureLog::Empty,
                 replay_pending: false,
             }),
-            fingerprint_seed,
             Some(style_fingerprint),
             move || taffy_style,
         );
@@ -792,36 +817,12 @@ impl TaffyLayoutEngine {
         layout_id
     }
 
-    pub fn request_impure_measured_layout(
-        &mut self,
-        owner: Option<(u64, GlobalElementId)>,
-        style: Style,
-        rem_size: Pixels,
-        scale_factor: f32,
-        measure: impl FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>
-        + 'static,
-    ) -> LayoutId {
-        let layout_style = LayoutStyle::from(&style);
-        let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
-        let style_fingerprint = style_hasher.finish();
-        let native = layout_style.to_taffy(rem_size, scale_factor);
-        self.request_impure_measured_node(
-            owner, layout_style, native, style_fingerprint, rem_size,
-            scale_factor, false, measure,
-        )
-    }
-
     pub(crate) fn request_default_measured_layout(
         &mut self,
         owner: Option<(u64, GlobalElementId)>,
         rem_size: Pixels,
         scale_factor: f32,
+        key: Option<MeasurementKey>,
         replayable: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
@@ -848,7 +849,7 @@ impl TaffyLayoutEngine {
         let cached = self.default_measured_style.as_ref().expect("default measured style");
         self.request_impure_measured_node(
             owner, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
-            rem_size, scale_factor, replayable, measure,
+            rem_size, scale_factor, key, replayable, measure,
         )
     }
 
@@ -860,6 +861,7 @@ impl TaffyLayoutEngine {
         style_fingerprint: u64,
         rem_size: Pixels,
         scale_factor: f32,
+        key: Option<MeasurementKey>,
         replayable: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
@@ -882,12 +884,11 @@ impl TaffyLayoutEngine {
             &[],
             Some(NodeContext {
                 measure,
-                is_pure: false,
+                key,
                 replayable,
                 measure_log: MeasureLog::Empty,
                 replay_pending: false,
             }),
-            None,
             Some(style_fingerprint),
             move || taffy_style,
         );
