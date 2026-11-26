@@ -66,7 +66,20 @@ impl LayoutClaimBlocks {
         self.blocks.push(range);
     }
 
+    /// Committed blocks are phase-local, sorted and disjoint. Validate
+    /// containment before an intermediate ancestor inherits a rebuilt gap.
+    pub(crate) fn covers_request(&self, child: &Self) -> bool {
+        let parent = self.request_blocks();
+        child.request_blocks().iter().all(|span| {
+            let index = parent.partition_point(|block| block.end <= span.start);
+            parent.get(index).is_some_and(|block| block.start <= span.start && block.end >= span.end)
+        })
+    }
+
     pub(crate) fn normalize(&mut self) {
+        if self.request_blocks().len() <= 1 && self.prepaint_blocks().len() <= 1 {
+            return;
+        }
         let mut result = Self::default();
         for (prepaint, spans) in [(false, self.request_blocks()), (true, self.prepaint_blocks())] {
             let mut ordered: smallvec::SmallVec<[Range<usize>; 4]> = spans.iter().cloned().collect();

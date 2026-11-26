@@ -456,9 +456,10 @@ impl Window {
             let Some(descendants) = rebase_span(&nested.nested, &source.nested, target_nested) else {
                 continue;
             };
-            let Some(layout_claims) = claim_map.project(&nested.layout_claims, true) else {
+            let Some(mut layout_claims) = claim_map.project(&nested.layout_claims, true) else {
                 continue;
             };
+            layout_claims.normalize();
             let Some(scene_segments) = rebase_span(&nested.scene_segments, &source.scene_segments, target_scene_segments) else {
                 continue;
             };
