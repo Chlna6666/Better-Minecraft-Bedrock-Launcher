@@ -175,7 +175,7 @@ impl Window {
             return None;
         }
         let index = *self.rendered_frame.view_retentions.get(key)?;
-        let anchor = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?.clone();
+        let anchor = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = anchor.rebuild.as_ref()?;
         if !anchor.splice_safe || !rebuild.splice_supported
             || rebuild.view.entity_id() != owner || id != Some(&rebuild.application_id)
@@ -186,7 +186,8 @@ impl Window {
         {
             return None;
         }
-        let indices = self.splice_subtrees(&anchor)?;
+        let indices = self.splice_subtrees(anchor)?;
+        let anchor = anchor.clone();
         let mut plan = Vec::with_capacity(indices.len());
         let mut claims = smallvec::SmallVec::<[(LayoutClaimBlocks, LayoutId); 4]>::new();
         let mut dispatch = smallvec::SmallVec::<[(Range<usize>, EntityId); 4]>::new();

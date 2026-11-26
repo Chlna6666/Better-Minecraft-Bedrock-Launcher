@@ -305,7 +305,7 @@ impl Window {
             return None;
         }
         let index = *self.rendered_frame.view_retentions.get(key)?;
-        let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?.clone();
+        let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = record.rebuild.as_ref()?;
         if rebuild.view.entity_id() != view_id
             || Some(&rebuild.application_id) != application_id
@@ -326,7 +326,7 @@ impl Window {
             .as_mut()
             .expect("layout engine is installed while a frame is drawn")
             .try_keep_retained(&record.layout_claims, record.layout_root)?;
-        Some((record, claims))
+        Some((record.clone(), claims))
     }
 
     /// Gives the admitted layout back so the view can be built normally.
