@@ -124,6 +124,7 @@ impl Element for List {
         let mut style = Style::default();
         style.refine(&self.style);
 
+        let layer_start = window.prepaint_index();
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         if state
@@ -144,8 +145,8 @@ impl Element for List {
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
         let input_start = window.next_frame.hitboxes.len();
-        let viewport = window.visual_bounds(bounds)
-            .intersect(&window.visual_content_mask().bounds);
+        let viewport = ContentMask::new(window.visual_bounds(bounds))
+            .intersect(&window.visual_content_mask());
         let layout =
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
                 Ok(layout) => layout,
@@ -159,10 +160,17 @@ impl Element for List {
             };
 
         // Only the successful prepaint transaction contributes input records.
-        window.next_frame.record_layer_input(input_start, viewport);
+        window.next_frame.record_layer_input(input_start, viewport.bounds);
         state.version.bump_if(state.last_layout_bounds != Some(bounds) || state.last_padding != Some(padding));
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
+        let prepaint = layer_start..window.prepaint_index();
+        let owner = window.current_view();
+        window.next_frame.record_layer_prepaint(
+            hitbox.id, owner, viewport,
+            crate::window::LayerScrollPosition::List(layout.scroll_top),
+            &state.version, prepaint,
+        );
         ListPrepaintLayout { hitbox, layout }
     }
 
@@ -177,6 +185,7 @@ impl Element for List {
         cx: &mut App,
     ) {
         let current_view = window.current_view();
+        let layer_start = window.paint_index();
         window.with_content_mask(
             Some(ContentMask {
                 bounds,
@@ -189,6 +198,8 @@ impl Element for List {
             },
         );
 
+        let paint = layer_start..window.paint_index();
+        window.next_frame.record_layer_paint(prepaint.hitbox.id, paint);
         let height = bounds.size.height;
         let scroll_top = prepaint.layout.scroll_top;
         let hitbox_id = prepaint.hitbox.id;

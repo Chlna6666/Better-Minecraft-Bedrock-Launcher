@@ -269,10 +269,12 @@ impl Window {
             range.start.hitboxes_index..range.end.hitboxes_index,
             None,
         ), "validated input range");
-        self.replay_prepaint_records(range.clone(), external_parent);
         if let Some(start) = layer_start {
+            self.replay_prepaint_records(range.clone(), external_parent);
             let target = start..self.prepaint_index();
             self.next_frame.carry_layer_prepaint(&self.rendered_frame, &range, &target);
+        } else {
+            self.replay_prepaint_records(range, external_parent);
         }
     }
 

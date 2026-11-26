@@ -239,7 +239,9 @@ impl Interactivity {
                                         let prepaint = start..window.prepaint_index();
                                         let owner = window.current_view();
                                         window.next_frame.record_layer_prepaint(
-                                            hitbox, owner, viewport, final_offset, &offset.version, prepaint,
+                                            hitbox, owner, viewport,
+                                            crate::window::LayerScrollPosition::Pixels(final_offset),
+                                            &offset.version, prepaint,
                                         );
                                     }
                                 }
