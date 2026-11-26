@@ -225,6 +225,14 @@ pub(crate) struct LayoutClaim {
     pub(crate) id: LayoutId,
 }
 
+/// Candidate-only placement evidence. Native Layout includes overflow,
+/// padding, border, margin and order as well as location and size.
+pub(crate) struct NativePlacementProof {
+    clean: Vec<(LayoutId, Option<LayoutId>, taffy::tree::Layout)>,
+    gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]>,
+    transient_count: usize,
+}
+
 struct PersistentLayoutNode {
     id: LayoutId,
     /// Structural equality guards key collisions; no frame metadata lookup.
@@ -632,9 +640,57 @@ impl TaffyLayoutEngine {
         false
     }
 
-    /// Layout compatibility proof for a speculative gap. Pending measurement
-    /// replays are counted as uncertainty, not as equal measured results.
-    pub(crate) fn splice_layout_stamp(&self) -> (u64, u64, usize, usize) {
+    /// Capture native geometry before mutating any dirty subtree. Keep the
+    /// proof only for this candidate, never as another persistent layout cache.
+    pub(crate) fn capture_splice_placement(
+        &self, kept: &LayoutClaimSpans, gaps: &[(LayoutClaimSpans, LayoutId)],
+    ) -> Option<NativePlacementProof> {
+        if !self.pending_replays.is_empty() {
+            return None;
+        }
+        let mut clean = Vec::with_capacity(kept.iter().map(|span| span.len()).sum());
+        for span in kept {
+            for claim in self.claimed_key_log.get(span.clone())?.iter().flatten() {
+                let id = claim.id;
+                if self.taffy.dirty(id.into()).ok()? {
+                    return None;
+                }
+                clean.push((id, self.taffy.parent(id.into()).map(LayoutId::from), *self.taffy.layout(id.into()).ok()?));
+            }
+        }
+        let gap_parents = gaps.iter().map(|(_, id)| {
+            (*id, self.taffy.parent((*id).into()).map(LayoutId::from))
+        }).collect();
+        Some(NativePlacementProof { clean, gap_parents, transient_count: self.anonymous_nodes.len() })
+    }
+
+    /// RequestLayout may dirty the original native root, but must not detach
+    /// an existing retained subtree or introduce untracked transient nodes.
+    pub(crate) fn splice_topology_matches(&self, proof: &NativePlacementProof) -> bool {
+        self.anonymous_nodes.len() == proof.transient_count
+            && proof.clean.iter().all(|(id, parent, _)| {
+                !self.robbed_parents.contains(id)
+                    && !self.stale_style_fingerprints.contains(id)
+                    && self.taffy.parent((*id).into()).map(LayoutId::from) == *parent
+            })
+            && proof.gap_parents.iter().all(|(id, parent)| {
+                self.taffy.parent((*id).into()).map(LayoutId::from) == *parent
+            })
+    }
+
+    /// After the real containing root has been laid out, a dirty gap is
+    /// permitted only if every clean native placement is exactly unchanged.
+    pub(crate) fn splice_placement_matches(&self, proof: &NativePlacementProof) -> bool {
+        self.pending_replays.is_empty()
+            && self.splice_topology_matches(proof)
+            && proof.clean.iter().all(|(id, _, layout)| {
+                self.taffy.dirty((*id).into()).is_ok_and(|dirty| !dirty)
+                    && self.taffy.layout((*id).into()).is_ok_and(|current| current == layout)
+            })
+    }
+
+    #[cfg(test)]
+    fn splice_layout_stamp(&self) -> (u64, u64, usize, usize) {
         (self.layout_changes, self.remeasures, self.anonymous_nodes.len(), self.pending_replays.len())
     }
 

@@ -1,10 +1,10 @@
 //! Multi-gap frame splicing, adapted from GPUI Fast's layout/gap transaction
-//! (Apache-2.0; Zed Industries and Longbridge). A native layout change is a
-//! fallback, not permission to retain stale ancestor geometry.
+//! (Apache-2.0; Zed Industries and Longbridge). Recompute native layout when
+//! needed and prove clean placement before replaying the retained fragments.
 
 use super::*;
 use crate::{Element, IntoElement, ViewElement, ViewRequestLayout};
-use crate::layout::LayoutClaimSpans;
+use crate::layout::{LayoutClaimSpans, NativePlacementProof};
 
 pub(super) struct PrebuiltGap {
     key: GlobalElementId,
@@ -22,6 +22,7 @@ pub(crate) struct ViewSplice {
     pub(crate) claims: LayoutClaimSpans,
     pub(crate) states: Range<usize>,
     kept: LayoutClaimSpans,
+    placement: NativePlacementProof,
     gaps: Vec<PrebuiltGap>,
 }
 
@@ -166,12 +167,12 @@ impl Window {
             return None;
         }
         let engine = self.layout_engine.as_mut()?;
-        let stamp = engine.splice_layout_stamp();
-        if stamp.3 != 0 {
-            return None;
-        }
         let start = engine.claim_log_len();
         let kept = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
+        let Some(placement) = engine.capture_splice_placement(&kept, &claims) else {
+            engine.release_kept(&kept);
+            return None;
+        };
         let states_start = self.begin_view_element_states();
         let mut gaps = Vec::with_capacity(plan.len());
         self.splice_building = true;
@@ -186,7 +187,7 @@ impl Window {
             });
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
-                && self.layout_engine.as_ref().expect("layout engine").splice_layout_stamp() == stamp
+                && self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(&placement)
                 && !self.force_view_cache_refresh && states.is_empty();
             gaps.push(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
@@ -201,7 +202,7 @@ impl Window {
         }
         self.splice_building = false;
         Some(ViewSplice {
-            anchor, kept, gaps, claims: [start..self.claim_log_len(), 0..0],
+            anchor, kept, placement, gaps, claims: [start..self.claim_log_len(), 0..0],
             states: self.view_layout_state_range(states_start),
         })
     }
@@ -209,6 +210,7 @@ impl Window {
     pub(crate) fn can_prepaint_view_splice(&mut self, splice: &ViewSplice, bounds: Bounds<Pixels>) -> bool {
         !self.force_view_cache_refresh && self.splice_context_supported()
             && self.retained_view_context_matches(&splice.anchor, bounds)
+            && self.layout_engine.as_ref().is_some_and(|engine| engine.splice_placement_matches(&splice.placement))
             && splice.gaps.iter().all(|gap| self.layout_bounds(gap.layout_id) == gap.old.bounds)
     }
 
