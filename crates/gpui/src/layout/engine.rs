@@ -1,5 +1,5 @@
 use crate::{
-    App, Bounds, DefiniteLength, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
+    App, Bounds, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
     Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
@@ -33,19 +33,11 @@ type MeasureFn =
     dyn FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>;
 pub(super) type NodeMeasureFn = StackSafe<Box<MeasureFn>>;
 
-#[derive(Clone)]
-struct NodeLayoutMetadata {
-    style: LayoutStyle,
-    rem_size: Pixels,
-    scale_factor: f32,
-}
-
 // The common text leaf always requests the default layout style. Its
 // native style and fingerprint depend only on rem size and device scale.
 struct DefaultMeasuredStyle {
     rem_size: Pixels,
     scale_bits: u32,
-    layout: LayoutStyle,
     native: taffy::Style,
     fingerprint: u64,
 }
@@ -298,7 +290,6 @@ pub struct TaffyLayoutEngine {
     pub(super) absolute_layout_bounds: LayoutIdMap<Bounds<Pixels>>,
     unrounded_layout_origins: LayoutIdMap<(f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
-    node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     // Taffy stores device-pixel geometry; equal logical constraints at a new
     // DPI must not reuse the previous physical layout.
     root_constraints: FxHashMap<LayoutId, (Size<AvailableSpaceKey>, u32)>,
@@ -315,20 +306,17 @@ pub struct TaffyLayoutEngine {
     layout_time: Duration,
 }
 
-fn promote_percentage_axis(wrapper: &mut Length, child: &mut Length) -> bool {
+fn promote_percentage_axis(wrapper: &mut Length, child: taffy::style::Dimension) -> bool {
     if !matches!(wrapper, Length::Auto) {
         return false;
     }
-
-    let Length::Definite(DefiniteLength::Fraction(fraction)) = *child else {
+    let taffy::style::ExpandedDimension::Percent(fraction) = child.expand() else {
         return false;
     };
     if !fraction.is_finite() || fraction < 0.0 {
         return false;
     }
-
     *wrapper = relative(fraction).into();
-    *child = relative(1.0).into();
     true
 }
 
@@ -367,7 +355,6 @@ impl TaffyLayoutEngine {
             absolute_layout_bounds: LayoutIdMap::default(),
             unrounded_layout_origins: LayoutIdMap::default(),
             computed_layouts: FxHashSet::default(),
-            node_layout_metadata: FxHashMap::default(),
             root_constraints: FxHashMap::default(),
             layout_bounds_scratch_space: Vec::new(),
             bounds_mutations: Vec::new(),
@@ -473,7 +460,6 @@ impl TaffyLayoutEngine {
         // disturbing stable large pages.
         let bounds_were_empty = self.absolute_layout_bounds.is_empty() && self.unrounded_layout_origins.is_empty();
         let computed_layout_count = self.computed_layouts.len();
-        let metadata_count = self.node_layout_metadata.len();
         let node_working_set = self.nodes_requested;
 
         if log::log_enabled!(log::Level::Trace) {
@@ -510,7 +496,6 @@ impl TaffyLayoutEngine {
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
-        self.node_layout_metadata.clear();
 
         macro_rules! trim_to_working_set {
             ($collection:expr, $count:expr) => {{
@@ -526,7 +511,6 @@ impl TaffyLayoutEngine {
             self.unrounded_layout_origins.trim_empty(Self::MIN_RETAINED_CAPACITY);
         }
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
-        trim_to_working_set!(self.node_layout_metadata, metadata_count);
         trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
         trim_to_working_set!(self.claimed_key_log, self.committed_claim_log.len());
         let claim_count = self.committed_claim_log.len();
@@ -554,8 +538,6 @@ impl TaffyLayoutEngine {
         self.unrounded_layout_origins.trim_empty(floor);
         self.computed_layouts
             .shrink_to(floor.max(self.computed_layouts.len()));
-        self.node_layout_metadata
-            .shrink_to(floor.max(self.node_layout_metadata.len()));
         self.layout_bounds_scratch_space
             .shrink_to(floor.max(self.layout_bounds_scratch_space.len()));
         self.bounds_mutations.shrink_to(floor.max(self.bounds_mutations.len()));
@@ -1105,7 +1087,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             || layout_style.to_taffy(rem_size, scale_factor),
         );
-        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -1190,7 +1171,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             || layout_style.to_taffy(rem_size, scale_factor),
         );
-        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -1221,14 +1201,13 @@ impl TaffyLayoutEngine {
                 rem_size,
                 scale_bits: scale_factor.to_bits(),
                 native: layout.to_taffy(rem_size, scale_factor),
-                layout,
                 fingerprint: hasher.finish(),
             });
         }
         let cached = self.default_measured_style.as_ref().expect("default measured style");
         self.request_native_measured_node(
-            owner, lingers, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
-            rem_size, scale_factor, key, replayable, state_ready, measure,
+            owner, lingers, cached.native.clone(), cached.fingerprint,
+            key, replayable, state_ready, measure,
         )
     }
 
@@ -1236,11 +1215,8 @@ impl TaffyLayoutEngine {
         &mut self,
         owner: Option<u64>,
         lingers: bool,
-        layout_style: LayoutStyle,
         taffy_style: taffy::Style,
         style_fingerprint: u64,
-        rem_size: Pixels,
-        scale_factor: f32,
         key: Option<MeasurementKey>,
         replayable: bool,
         state_ready: bool,
@@ -1270,7 +1246,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             move || taffy_style,
         );
-        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -1546,40 +1521,9 @@ impl TaffyLayoutEngine {
         origin
     }
 
-    /// Resolve the one safe and common percentage cycle produced by paint-only wrappers:
-    /// an auto-sized wrapper with one percentage-sized child.
-    ///
-    /// Example: `center -> animation wrapper(auto) -> modal(width: 80%)`. The wrapper's width
-    /// depends on the modal while the modal's percentage depends on the wrapper. For an explicitly
-    /// marked passthrough wrapper, forwarding `80%` to the wrapper and making the child `100%` is
-    /// layout-equivalent, gives Taffy a definite containing block, and preserves centering.
-    #[inline]
-    fn record_layout_metadata(
-        &mut self,
-        id: LayoutId,
-        style: LayoutStyle,
-        rem_size: Pixels,
-        scale_factor: f32,
-    ) {
-        // The full logical style is not needed to compute a native layout or
-        // after the request. Only percentage-passthrough parents consume it.
-        // Most text and fixed-size
-        // nodes therefore need no second style copy in a frame-local map.
-        let percentage_axis = |length: Length| {
-            matches!(length, Length::Definite(DefiniteLength::Fraction(fraction))
-                if fraction.is_finite() && fraction >= 0.0)
-        };
-        if percentage_axis(style.size.width) || percentage_axis(style.size.height)
-        {
-            self.node_layout_metadata.insert(id, NodeLayoutMetadata {
-                style, rem_size, scale_factor,
-            });
-        } else if !self.node_layout_metadata.is_empty() {
-            // A persistent slot can be requested again in the same frame.
-            self.node_layout_metadata.remove(&id);
-        }
-    }
-
+    /// Forward percentage sizing through an explicitly marked auto-sized
+    /// wrapper. The child style is already owned by Taffy: inspect its native
+    /// dimensions directly instead of recording a second logical style per node.
     fn normalize_percentage_passthrough(
         &mut self,
         wrapper: &mut LayoutStyle,
@@ -1590,31 +1534,27 @@ impl TaffyLayoutEngine {
         }
 
         let child_id = children[0];
-        let Some(mut child) = self.node_layout_metadata.get(&child_id).cloned() else {
-            return;
-        };
-
-        let mut changed = false;
-        changed |= promote_percentage_axis(&mut wrapper.size.width, &mut child.style.size.width);
-        changed |= promote_percentage_axis(&mut wrapper.size.height, &mut child.style.size.height);
-
-        if !changed {
+        let child = self.taffy.style(child_id.into()).expect(EXPECT_MESSAGE);
+        let width = promote_percentage_axis(&mut wrapper.size.width, child.size.width);
+        let height = promote_percentage_axis(&mut wrapper.size.height, child.size.height);
+        if !width && !height {
             return;
         }
 
-        let taffy_style = child.style.to_taffy(child.rem_size, child.scale_factor);
-        if self.taffy.style(child_id.into()).expect(EXPECT_MESSAGE) != &taffy_style {
-            self.taffy
-                .set_style(child_id.into(), taffy_style)
-                .expect(EXPECT_MESSAGE);
+        let mut native = child.clone();
+        if width {
+            native.size.width = taffy::style::Dimension::percent(1.0);
+        }
+        if height {
+            native.size.height = taffy::style::Dimension::percent(1.0);
+        }
+        if child != &native {
+            self.taffy.set_style(child_id.into(), native).expect(EXPECT_MESSAGE);
             self.layout_changes = self.layout_changes.wrapping_add(1);
+            // Rewritten child styles must be restored on their next request;
+            // never allow a retained claim to bypass that restoration.
+            self.stale_style_fingerprints.insert(child_id);
         }
-        // This rewrote the child's native style behind its back. The child's stored
-        // fingerprint still describes the style it asked for, so it must not be trusted to
-        // mean "the node already holds this": marking it stale forces the next request to
-        // compare, and to restore the child's own style once the passthrough parent is gone.
-        self.stale_style_fingerprints.insert(child_id);
-        self.node_layout_metadata.insert(child_id, child);
     }
 
     fn hash_layout_style(
