@@ -475,10 +475,11 @@ impl Window {
             .rendered_frame
             .retained_paint
             .replay_quads(self.rendered_frame.scene(), old_scene_range.clone());
-        if self.next_frame.painter.replay(
+        if self.next_frame.painter.replay_with_ordering(
             old_scene_range.clone(),
             self.rendered_frame.scene(),
             spans,
+            Some(&self.rendered_frame.painter),
         ) {
             Arc::get_mut(&mut self.next_frame.retained_paint)
                 .expect("unpublished paint retention")

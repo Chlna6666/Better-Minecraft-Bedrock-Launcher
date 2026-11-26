@@ -2,7 +2,8 @@ use crate::{Bounds, Half};
 use std::{
     cmp,
     fmt::Debug,
-    ops::{Add, Sub},
+    ops::{Add, Range, Sub},
+    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -13,6 +14,9 @@ where
     root: Option<usize>,
     nodes: Vec<Node<U>>,
     stack: Vec<usize>,
+    // Exact source Paint ranges index the native shared nodes in this tree.
+    // No duplicate geometry or previous tree ownership is retained.
+    ordered_runs: Vec<(Range<usize>, usize)>,
 }
 
 impl<U> BoundsTree<U>
@@ -30,10 +34,11 @@ where
         self.root = None;
         self.nodes.clear();
         self.stack.clear();
+        self.ordered_runs.clear();
     }
 
     pub(crate) fn retained_capacity(&self) -> usize {
-        self.nodes.capacity() + self.stack.capacity()
+        self.nodes.capacity() + self.stack.capacity() + self.ordered_runs.capacity()
     }
 
     pub(crate) fn trim_for_reuse(&mut self, current: &Self, floor: usize, multiplier: usize) {
@@ -41,6 +46,10 @@ where
         let node_target = floor.max(current.nodes.len());
         if self.nodes.capacity() > node_target.saturating_mul(multiplier) {
             self.nodes.shrink_to(node_target);
+        }
+        let run_target = floor.min(8).max(current.ordered_runs.len());
+        if self.ordered_runs.capacity() > run_target.saturating_mul(multiplier) {
+            self.ordered_runs.shrink_to(run_target);
         }
         let stack_target = floor.min(8).max(current.stack.len());
         if self.stack.capacity() > stack_target.saturating_mul(multiplier) {
@@ -56,14 +65,16 @@ where
         self.insert_internal(new_bounds, Some(order))
     }
 
-    /// Import already proven orders as a balanced subtree. Future order
-    /// queries depend on leaf bounds and maximum orders, not insertion shape.
-    /// Only the subtree root needs to descend through the existing tree.
+    /// Import a proven static range as one immutable contiguous node page.
+    /// Matching source runs share the page; only local connecting nodes are
+    /// built again. The page contains no references to earlier trees.
     pub(crate) fn extend_ordered(
         &mut self,
-        count: usize,
+        range: Range<usize>,
+        previous: Option<&Self>,
         mut leaves: impl Iterator<Item = (Bounds<U>, u32)>,
     ) {
+        let count = range.len();
         if count == 0 {
             return;
         }
@@ -72,9 +83,26 @@ where
             self.insert_ordered(bounds, order);
             return;
         }
-        self.nodes.reserve(count.saturating_mul(2));
-        let subtree = self.build_ordered_subtree(count, &mut leaves);
-        debug_assert!(leaves.next().is_none());
+        let page = previous.and_then(|old| {
+            let i = old.ordered_runs.partition_point(|(run, _)| run.start < range.start);
+            let (old_range, node) = old.ordered_runs.get(i)?;
+            if *old_range != range {
+                return None;
+            }
+            match &old.nodes[*node] {
+                Node::Shared { page } => Some(Arc::clone(page)),
+                _ => None,
+            }
+        }).unwrap_or_else(|| {
+            let mut nodes = Vec::with_capacity(count.saturating_mul(2).saturating_sub(1));
+            Self::build_ordered_subtree(&mut nodes, count, &mut leaves);
+            debug_assert!(leaves.next().is_none());
+            Arc::new(nodes)
+        });
+        let subtree = self.nodes.len();
+        self.nodes.push(Node::Shared { page });
+        debug_assert!(self.ordered_runs.last().is_none_or(|(old, _)| old.end <= range.start));
+        self.ordered_runs.push((range, subtree));
         let Some(mut index) = self.root else {
             self.root = Some(subtree);
             return;
@@ -94,18 +122,22 @@ where
     }
 
     fn build_ordered_subtree(
-        &mut self,
+        nodes: &mut Vec<Node<U>>,
         count: usize,
         leaves: &mut impl Iterator<Item = (Bounds<U>, u32)>,
     ) -> usize {
         if count == 1 {
             let (bounds, order) = leaves.next().expect("qualified ordering leaf");
-            return self.push_leaf(bounds, order);
+            nodes.push(Node::Leaf { bounds, order });
+        } else {
+            let left_count = count / 2;
+            let left = Self::build_ordered_subtree(nodes, left_count, leaves);
+            let right = Self::build_ordered_subtree(nodes, count - left_count, leaves);
+            let bounds = nodes[left].bounds().union(nodes[right].bounds());
+            let max_order = cmp::max(nodes[left].max_ordering(), nodes[right].max_ordering());
+            nodes.push(Node::Internal { left, right, bounds, max_order });
         }
-        let left_count = count / 2;
-        let left = self.build_ordered_subtree(left_count, leaves);
-        let right = self.build_ordered_subtree(count - left_count, leaves);
-        self.push_internal(left, right)
+        nodes.len() - 1
     }
 
     fn insert_internal(&mut self, new_bounds: Bounds<U>, retained_order: Option<u32>) -> u32 {
@@ -159,17 +191,10 @@ where
         // We'll insert a new parent node above the leaf and attach our new leaf to it.
         let sibling = index;
 
-        // Check for collision with the located leaf node
-        let Node::Leaf {
-            bounds: sibling_bounds,
-            order: sibling_ordering,
-            ..
-        } = &self.nodes[index]
-        else {
-            unreachable!();
-        };
-        if retained_order.is_none() && sibling_bounds.intersects(&new_bounds) {
-            max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
+        // A terminal may be a local leaf or a whole immutable subtree.
+        if retained_order.is_none() {
+            max_intersecting_ordering =
+                self.find_max_ordering(index, &new_bounds, max_intersecting_ordering);
         }
 
         let ordering = retained_order.unwrap_or(max_intersecting_ordering + 1);
@@ -212,8 +237,16 @@ where
         }
     }
 
-    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
-        match &self.nodes[index] {
+    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, max_ordering: u32) -> u32 {
+        Self::find_in_nodes(&self.nodes, index, bounds, max_ordering)
+    }
+
+    fn find_in_nodes(nodes: &[Node<U>], index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
+        match &nodes[index] {
+            Node::Shared { page } => {
+                let root = page.len() - 1;
+                max_ordering = Self::find_in_nodes(page, root, bounds, max_ordering);
+            }
             Node::Leaf {
                 bounds: node_bounds,
                 order: ordering,
@@ -231,14 +264,14 @@ where
                 ..
             } => {
                 if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
-                    let left_max_ordering = self.nodes[*left].max_ordering();
-                    let right_max_ordering = self.nodes[*right].max_ordering();
+                    let left_max_ordering = nodes[*left].max_ordering();
+                    let right_max_ordering = nodes[*right].max_ordering();
                     if left_max_ordering > right_max_ordering {
-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                        max_ordering = Self::find_in_nodes(nodes, *left, bounds, max_ordering);
+                        max_ordering = Self::find_in_nodes(nodes, *right, bounds, max_ordering);
                     } else {
-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                        max_ordering = Self::find_in_nodes(nodes, *right, bounds, max_ordering);
+                        max_ordering = Self::find_in_nodes(nodes, *left, bounds, max_ordering);
                     }
                 }
             }
@@ -275,6 +308,7 @@ where
             root: None,
             nodes: Vec::new(),
             stack: Vec::new(),
+            ordered_runs: Vec::new(),
         }
     }
 }
@@ -287,6 +321,9 @@ where
     Leaf {
         bounds: Bounds<U>,
         order: u32,
+    },
+    Shared {
+        page: Arc<Vec<Node<U>>>,
     },
     Internal {
         left: usize,
@@ -303,6 +340,7 @@ where
     fn bounds(&self) -> &Bounds<U> {
         match self {
             Node::Leaf { bounds, .. } => bounds,
+            Node::Shared { page } => page.last().expect("nonempty page").bounds(),
             Node::Internal { bounds, .. } => bounds,
         }
     }
@@ -312,6 +350,7 @@ where
             Node::Leaf {
                 order: ordering, ..
             } => *ordering,
+            Node::Shared { page } => page.last().expect("nonempty page").max_ordering(),
             Node::Internal {
                 max_order: max_ordering,
                 ..
@@ -440,7 +479,8 @@ mod tests {
                     reference.push((bounds, order));
                     batch.push((bounds, order));
                 }
-                tree.extend_ordered(batch.len(), batch.into_iter());
+                let end = reference.len();
+                tree.extend_ordered(end - batch.len()..end, None, batch.into_iter());
                 for _ in 0..8 {
                     let bounds = random_bounds();
                     let expected = reference.iter()
@@ -452,6 +492,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn retained_order_pages_share_without_retaining_old_connections() {
+        let bounds = |x: f32| Bounds::new(
+            Point { x, y: 0.0 },
+            Size { width: 10.0, height: 10.0 },
+        );
+        let mut previous = BoundsTree::default();
+        previous.extend_ordered(0..32, None, (0..32).map(|i| (bounds(i as f32), i + 1)));
+        previous.insert(bounds(100.0));
+        let mut current = BoundsTree::default();
+        current.extend_ordered(0..32, Some(&previous), std::iter::empty());
+        let Node::Shared { page: old } = &previous.nodes[previous.ordered_runs[0].1] else { panic!("page") };
+        let Node::Shared { page: new } = &current.nodes[current.ordered_runs[0].1] else { panic!("page") };
+        assert!(Arc::ptr_eq(old, new));
+        previous.clear();
+        assert_eq!(current.insert(bounds(30.0)), 33);
+        assert_eq!(current.insert(bounds(100.0)), 1);
+        assert_eq!(current.insert(bounds(30.0)), 34);
     }
 
     #[test]

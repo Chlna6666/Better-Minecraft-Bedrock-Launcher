@@ -32,7 +32,7 @@ impl PaintFixture {
         let spans = previous
             .retention
             .replay_quads(&previous.paint, range.clone());
-        if self.paint.replay(range.clone(), &previous.paint, spans) {
+        if self.paint.replay_with_ordering(range.clone(), &previous.paint, spans, Some(&previous.paint)) {
             self.retention.replay(range, &previous.retention, start);
         }
     }

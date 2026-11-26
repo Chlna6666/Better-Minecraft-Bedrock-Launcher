@@ -189,6 +189,18 @@ impl Painter {
         prev_scene: &Scene,
         quad_spans: impl IntoIterator<Item = super::QuadReplay>,
     ) -> bool {
+        self.replay_with_ordering(range, prev_scene, quad_spans, None)
+    }
+
+    /// The source Painter belongs to the exact committed Scene being replayed.
+    pub(crate) fn replay_with_ordering(
+        &mut self,
+        range: Range<usize>,
+        prev_scene: &Scene,
+        quad_spans: impl IntoIterator<Item = super::QuadReplay>,
+        previous_painter: Option<&Painter>,
+    ) -> bool {
+        let previous_tree = previous_painter.map(|painter| &painter.primitive_bounds);
         let mut animation_references = ReplayAnimationReferences::new(prev_scene);
         self.scene.revision = 0;
         let range_end = range.end;
@@ -217,7 +229,7 @@ impl Painter {
                 && !self.retained_prefix_invalid
                 && matches!(operation, PaintOperation::Primitive(Primitive::Shadow(_)))
             {
-                match self.replay_shadows(prev_scene, index..range.end) {
+                match self.replay_shadows(prev_scene, index..range.end, previous_tree) {
                     ShadowReplay::Shared(end) => {
                         index = end;
                         continue;
@@ -236,7 +248,7 @@ impl Painter {
                 && span.paint_range.end <= range.end
                 && retain_order
                 && !self.retained_prefix_invalid
-                && self.replay_quad_span(prev_scene, span)
+                && self.replay_quad_span(prev_scene, span, previous_tree)
             {
                 index = span.paint_range.end;
                 spans.next();
@@ -316,7 +328,12 @@ impl Painter {
         }
     }
 
-    fn replay_quad_span(&mut self, previous: &Scene, span: &super::QuadReplay) -> bool {
+    fn replay_quad_span(
+        &mut self,
+        previous: &Scene,
+        span: &super::QuadReplay,
+        previous_tree: Option<&BoundsTree<ScaledPixels>>,
+    ) -> bool {
         if !self.blur_captures.is_empty()
             || span.source_revision == 0
             || span.source_revision != previous.revision
@@ -347,7 +364,8 @@ impl Painter {
             // operation range. Build a balanced subtree without per-leaf
             // searches through the destination's existing ordering tree.
             self.primitive_bounds.extend_ordered(
-                operations.len(),
+                span.paint_range.clone(),
+                previous_tree,
                 previous.quads.slices(span.quad_range.clone()).flatten().map(|quad| {
                     (quad.bounds.intersect(&quad.content_mask.bounds), quad.order)
                 }),
@@ -372,7 +390,12 @@ impl Painter {
     /// Basic drawing-data replay, independent of GPU Chunk/cache eligibility.
     /// Only an unchanged ordering prefix and a complete static typed range may
     /// share storage; changed layers/captures take the ordinary rebinding path.
-    fn replay_shadows(&mut self, previous: &Scene, range: Range<usize>) -> ShadowReplay {
+    fn replay_shadows(
+        &mut self,
+        previous: &Scene,
+        range: Range<usize>,
+        previous_tree: Option<&BoundsTree<ScaledPixels>>,
+    ) -> ShadowReplay {
         if !self.blur_captures.is_empty() {
             return ShadowReplay::Rebind(range.start + 1);
         }
@@ -412,7 +435,8 @@ impl Painter {
         let paint_range = range.start..range.start + count;
         if self.layer_stack.is_empty() {
             self.primitive_bounds.extend_ordered(
-                count,
+                paint_range.clone(),
+                previous_tree,
                 previous.shadows.slices(start..end).flatten().map(|shadow| {
                     (shadow.bounds.intersect(&shadow.content_mask.bounds), shadow.order)
                 }),
