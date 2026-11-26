@@ -744,8 +744,9 @@ impl TaffyLayoutEngine {
         (self.layout_changes, self.remeasures, self.anonymous_nodes.len(), self.pending_replays.len())
     }
 
-    /// Atomically claim the complement of disjoint dirty layout intervals.
-    /// Dirty roots must still belong to the anchor's native tree. Lazy
+    /// Atomically claim the complement of disjoint dirty layout intervals,
+    /// ordered by their native claim start. Dirty roots must still belong to
+    /// the anchor's native tree. Lazy
     /// prepaint claims are excluded until their separate phase can be spliced.
     pub(crate) fn try_keep_around_gaps(
         &mut self,
@@ -756,10 +757,11 @@ impl TaffyLayoutEngine {
         if !anchor[1].is_empty() || gaps.is_empty() {
             return None;
         }
-        let mut excluded = smallvec::SmallVec::<[Range<usize>; 4]>::new();
+        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
+        let mut cursor = anchor[0].start;
         for (gap, gap_root) in gaps {
             if !gap[1].is_empty() || gap[0].is_empty()
-                || gap[0].start < anchor[0].start || gap[0].end > anchor[0].end
+                || gap[0].start < cursor || gap[0].end > anchor[0].end
                 || !self.layout_reaches(root, *gap_root)
             {
                 return None;
@@ -770,17 +772,8 @@ impl TaffyLayoutEngine {
             {
                 return None;
             }
-            excluded.push(gap[0].clone());
-        }
-        excluded.sort_unstable_by_key(|range| range.start);
-        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
-        let mut cursor = anchor[0].start;
-        for range in excluded {
-            if range.start < cursor {
-                return None;
-            }
-            kept.push(cursor..range.start);
-            cursor = range.end;
+            kept.push(cursor..gap[0].start);
+            cursor = gap[0].end;
         }
         kept.push(cursor..anchor[0].end);
         let kept = self.try_keep_intervals(&kept, root)?;

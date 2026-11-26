@@ -214,6 +214,8 @@ impl Window {
         {
             return None;
         }
+        // Native claim order may differ from prepaint order after an earlier splice.
+        claims.sort_unstable_by_key(|(spans, _)| spans[0].start);
         let engine = self.layout_engine.as_mut()?;
         let start = engine.claim_log_len();
         let kept = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
@@ -224,8 +226,11 @@ impl Window {
         let states_start = self.begin_view_element_states();
         // The kept claims are compacted in original claim order. Map clean
         // subtree spans through the same interval subtraction before building gaps.
-        let mut exclusions: Vec<_> = claims.iter().map(|(spans, _)| spans[0].clone()).collect();
-        exclusions.sort_unstable_by_key(|span| span.start);
+        let mut removed = 0;
+        let exclusions: SmallVec<[(Range<usize>, usize); 4]> = claims.iter().map(|(spans, _)| {
+            removed += spans[0].len();
+            (spans[0].clone(), removed)
+        }).collect();
         let mut parts = Vec::with_capacity(plan.len());
         for (gap_key, old, view) in plan {
             let Some(mut view) = view else {
@@ -368,22 +373,17 @@ fn replay_prepaint(
 }
 
 fn relocate_clean_claims(
-    claims: &LayoutClaimSpans, anchor: &Range<usize>, excluded: &[Range<usize>], target: &Range<usize>,
+    claims: &LayoutClaimSpans, anchor: &Range<usize>, excluded: &[(Range<usize>, usize)], target: &Range<usize>,
 ) -> Option<LayoutClaimSpans> {
     let span = &claims[0];
     if !claims[1].is_empty() || span.is_empty() || span.start < anchor.start || span.end > anchor.end {
         return None;
     }
-    let mut removed = 0;
-    for gap in excluded {
-        if gap.end <= span.start {
-            removed += gap.len();
-        } else if gap.start < span.end {
-            return None;
-        } else {
-            break;
-        }
+    let index = excluded.partition_point(|(gap, _)| gap.end <= span.start);
+    if excluded.get(index).is_some_and(|(gap, _)| gap.start < span.end) {
+        return None;
     }
+    let removed = index.checked_sub(1).map_or(0, |i| excluded[i].1);
     let start = target.start.checked_add(span.start.checked_sub(anchor.start)?.checked_sub(removed)?)?;
     let end = start.checked_add(span.len())?;
     (end <= target.end).then_some([start..end, 0..0])
