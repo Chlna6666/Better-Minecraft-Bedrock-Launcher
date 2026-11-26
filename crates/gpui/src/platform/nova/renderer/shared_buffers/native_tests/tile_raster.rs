@@ -42,6 +42,17 @@ fn verify(backend: RendererBackend) {
         background: crate::rgb(0x40e080).into(),
         ..Default::default()
     });
+    let distant = crate::Bounds::new(
+        bounds.origin + crate::point(crate::ScaledPixels(65536.), crate::ScaledPixels(-65536.)),
+        bounds.size,
+    );
+    painter.insert_primitive(Quad {
+        bounds: distant,
+        content_mask: crate::ContentMask::new(distant),
+        corner_radii: crate::Corners::all(crate::ScaledPixels(6.)),
+        background: crate::rgb(0x40e080).into(),
+        ..Default::default()
+    });
     painter.finish();
     upload(
         &mut renderer,
@@ -55,12 +66,12 @@ fn verify(backend: RendererBackend) {
     assert!(source.width() >= 32 && source.height() >= 40);
     let tile = Extent2d::new(16, 16).expect("tile extent");
     let original_buffers = renderer.frame_resources[0].buffers;
-    let scissor = ScissorRect { x: 16, y: 24, width: 16, height: 16 };
     let reference = device!(renderer, device, {
         let mut results = Vec::new();
         for raster in [
             RasterTile { extent: source, origin: SignedOrigin2d::ZERO },
             RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } },
+            RasterTile { extent: tile, origin: SignedOrigin2d { x: 65552, y: -65512 } },
         ] {
             let extent = raster.extent;
             let color = device.create_texture(&TextureDescriptor {
@@ -101,18 +112,17 @@ fn verify(backend: RendererBackend) {
             let bind_group = create_quad_bind_group(
                 device, "pixel-exact raster", renderer.quad_bind_group_layout, &buffers,
             ).expect("target quad bind group");
-            let step = RenderCommand::Draw(DrawCommand {
-                bind_groups: bind_group_list([bind_group]),
-                scissor: raster.intersection_scissor(RasterTile {
-                    origin: SignedOrigin2d { x: scissor.x as i32, y: scissor.y as i32 },
-                    extent: Extent2d::new(scissor.width, scissor.height).unwrap(),
-                }),
-                ..quad_step(&renderer)
-            });
+            let mut steps = Vec::new();
+            assert!(encode_tile_draw_commands(
+                &renderer.frame_upload, &renderer.pipelines, raster,
+                0..renderer.frame_upload.batches.len(),
+                bind_group, bind_group, bind_group, |_| None, &mut steps,
+            ), "static quads must be tile-rasterizable");
+            assert!(!steps.is_empty());
             device.render_to_textures(&[RenderPassCommands {
                 color_attachments: std::slice::from_ref(&color_view),
                 render_pass: renderer.render_pass,
-                commands: std::slice::from_ref(&step),
+                commands: &steps,
                 color_load_op: LoadOp::Clear(clear_color()),
                 clear_region: None,
                 depth_attachment: Some(DepthAttachment {
@@ -145,6 +155,7 @@ fn verify(backend: RendererBackend) {
         .collect::<Vec<_>>();
     assert_eq!(reference[1].len(), 16 * 16 * 4);
     assert_eq!(reference[1], cropped, "tile must match full content raster");
+    assert_eq!(reference[2], cropped, "far signed tile must match the same geometry");
     assert_ne!(&cropped[..4], &cropped[(8 * 16 + 8) * 4..][..4]);
     renderer.destroy();
 }

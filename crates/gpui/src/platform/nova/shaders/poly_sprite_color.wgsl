@@ -19,18 +19,12 @@ fn fs_poly_sprite_color(input: PolySpriteVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    var sample: vec4<f32>;
-    if (input.sampling == 1u || input.texture_kind == 2u) {
-        let atlas_size = max(vec2<i32>(1), vec2<i32>(textureDimensions(t_sprite, 0)));
-        let requested_texel = vec2<i32>(floor(input.tile_position * vec2<f32>(atlas_size)));
-        let tile_max = input.tile_origin + input.tile_size - vec2<i32>(1);
-        let texel = clamp(requested_texel, input.tile_origin, tile_max);
-        sample = textureLoad(t_sprite, texel, 0);
-    } else {
-        sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0);
-    }
+    let sample = sample_poly_sprite(input);
     if (sample.a <= 0.0) {
         return vec4<f32>(0.0);
+    }
+    if (input.sampling == RESIDENT_TILE_SAMPLING) {
+        return blend_resident_tile(sample, input.opacity * coverage * clip_coverage);
     }
 
     return blend_color(sample, input.opacity * coverage * clip_coverage);

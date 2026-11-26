@@ -15,6 +15,13 @@ pub(super) enum DrawMode {
         batch_start: usize,
         batch_end: usize,
     },
+    /// Raster a signed content-space tile from the shared packed streams.
+    /// Admission is checked by encode_tile_draw_commands before encoding.
+    TileContent {
+        batch_start: usize,
+        batch_end: usize,
+        tile: gfx_core::RasterTile,
+    },
 }
 
 impl DrawMode {
@@ -22,7 +29,8 @@ impl DrawMode {
         match self {
             Self::Present => 0..len,
             Self::BackdropSegment { batch_start, batch_end }
-            | Self::BlurContent { batch_start, batch_end } => {
+            | Self::BlurContent { batch_start, batch_end }
+            | Self::TileContent { batch_start, batch_end, .. } => {
                 let end = batch_end.min(len);
                 batch_start.min(end)..end
             }
@@ -115,20 +123,23 @@ pub(super) fn encode_clipped_draw_commands(
         },
         _ => mode,
     };
+    let tile = match mode {
+        DrawMode::TileContent { tile, .. } => Some(tile),
+        _ => None,
+    };
     let range = mode.batch_range(upload.batches.len());
     steps.reserve(range.len().saturating_add(1));
     let first = range.start;
     let mut blur_depth = 0usize;
     for (local_index, batch) in upload.batches[range].iter().enumerate() {
         let batch_index = first + local_index;
-        if source_scissor.is_some_and(|scissor| {
-            upload
-                .batch_visual_bounds
-                .get(batch_index)
-                .copied()
-                .flatten()
-                .is_some_and(|bounds| static_batch_misses_scissor(bounds, scissor))
-        }) {
+        if (source_scissor.is_some() || tile.is_some())
+            && upload.batch_visual_bounds.get(batch_index).copied().flatten()
+                .is_some_and(|bounds| {
+                    source_scissor.is_some_and(|scissor| static_batch_misses_scissor(bounds, scissor))
+                        || tile.is_some_and(|tile| static_batch_misses_tile(bounds, tile))
+                })
+        {
             continue;
         }
         match *batch {
@@ -304,7 +315,7 @@ pub(super) fn encode_clipped_draw_commands(
             }
         }
     }
-    if steps.is_empty() && source_scissor.is_none() {
+    if steps.is_empty() && source_scissor.is_none() && tile.is_none() {
         steps.push(RenderCommand::Draw(DrawCommand {
             pipeline: blend_pipelines.solid_quads,
             bind_groups: bind_group_list([quad_bind_group]),
@@ -315,6 +326,70 @@ pub(super) fn encode_clipped_draw_commands(
             scissor: None,
         }));
     }
+}
+
+/// Tile inputs are encoded once in content coordinates. Bind groups point
+/// to the same instance buffers as the enclosing frame, with tile globals.
+/// Never silently produce a partial cache when a source is unsupported or
+/// when an atlas binding is unavailable. Paths, LCD coverage and effects
+/// stay on their ordinary overlay/rendering path, as in GPUI Fast.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn encode_tile_draw_commands(
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
+    tile: gfx_core::RasterTile,
+    range: std::ops::Range<usize>,
+    quad_bind_group: BindGroupId,
+    shadow_bind_group: BindGroupId,
+    underline_bind_group: BindGroupId,
+    mut sprite_bind_group: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    steps: &mut Vec<RenderCommand>,
+) -> bool {
+    steps.clear();
+    let Some(batches) = upload.batches.get(range.clone()) else { return false; };
+    let Some(bounds) = upload.batch_visual_bounds.get(range.clone()) else { return false; };
+    // A finite static AABB is also proof that the batch contains no
+    // renderer-owned geometry animation or unbounded sprite transform.
+    if !batches.iter().zip(bounds).all(|(batch, bounds)| {
+        bounds.is_some() && match *batch {
+            UploadedBatch::SolidQuads { .. }
+            | UploadedBatch::Quads { .. }
+            | UploadedBatch::Shadows { .. }
+            | UploadedBatch::Underlines { .. } => true,
+            UploadedBatch::MonoSprites { texture_id, .. } => texture_id.kind != AtlasTextureKind::Subpixel,
+            UploadedBatch::PolySprites { .. } => true,
+            _ => false,
+        }
+    }) {
+        return false;
+    }
+    let mut missing_binding = false;
+    encode_clipped_draw_commands(
+        upload, pipelines, pipelines.premultiplied,
+        quad_bind_group, shadow_bind_group, quad_bind_group,
+        |texture_id| {
+            let binding = sprite_bind_group(texture_id);
+            missing_binding |= binding.is_none();
+            binding
+        },
+        underline_bind_group, |_| None,
+        DrawMode::TileContent { batch_start: range.start, batch_end: range.end, tile },
+        None, steps,
+    );
+    if missing_binding {
+        steps.clear();
+        return false;
+    }
+    true
+}
+
+fn static_batch_misses_tile(bounds: crate::Bounds<crate::ScaledPixels>, tile: gfx_core::RasterTile) -> bool {
+    let left = f64::from(tile.origin.x);
+    let top = f64::from(tile.origin.y);
+    f64::from(bounds.right().0) <= left
+        || f64::from(bounds.bottom().0) <= top
+        || f64::from(bounds.origin.x.0) >= left + f64::from(tile.extent.width())
+        || f64::from(bounds.origin.y.0) >= top + f64::from(tile.extent.height())
 }
 
 /// Bounds are in drawable/device pixels, as are the render-pass scissors.
@@ -654,6 +729,21 @@ fn path_commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {
 #[cfg(test)]
 mod static_batch_culling_tests {
     use super::*;
+
+    #[test]
+    fn tile_culling_preserves_signed_content_coordinates() {
+        let tile = gfx_core::RasterTile {
+            origin: gfx_core::SignedOrigin2d { x: -512, y: 65536 },
+            extent: gfx_core::Extent2d::new(512, 512).unwrap(),
+        };
+        let rect = |x, y| crate::bounds(
+            crate::point(crate::ScaledPixels(x), crate::ScaledPixels(y)),
+            crate::size(crate::ScaledPixels(10.), crate::ScaledPixels(10.)),
+        );
+        assert!(!static_batch_misses_tile(rect(-500., 65540.), tile));
+        assert!(static_batch_misses_tile(rect(0., 65540.), tile));
+        assert!(static_batch_misses_tile(rect(-500., 65000.), tile));
+    }
 
     #[test]
     fn fully_disjoint_static_quad_batch_can_be_skipped() {

@@ -59,6 +59,29 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     return out;
 }
 
+// A GPU raster tile stores premultiplied color, unlike ordinary image atlas
+// texels. Sample exact texels at integer device-pixel placements, and never
+// multiply cached RGB by its alpha again.
+const RESIDENT_TILE_SAMPLING: u32 = 2u;
+
+fn blend_resident_tile(sample: vec4<f32>, coverage: f32) -> vec4<f32> {
+    if (globals.premultiplied_alpha != 0u) {
+        return sample * coverage;
+    }
+    return vec4<f32>(sample.rgb / max(sample.a, SHADER_EPSILON), sample.a * coverage);
+}
+
+fn sample_poly_sprite(input: PolySpriteVarying) -> vec4<f32> {
+    if (input.sampling == 1u || input.sampling == RESIDENT_TILE_SAMPLING || input.texture_kind == 2u) {
+        let atlas_size = max(vec2<i32>(1), vec2<i32>(textureDimensions(t_sprite, 0)));
+        let requested_texel = vec2<i32>(floor(input.tile_position * vec2<f32>(atlas_size)));
+        let tile_max = input.tile_origin + input.tile_size - vec2<i32>(1);
+        let texel = clamp(requested_texel, input.tile_origin, tile_max);
+        return textureLoad(t_sprite, texel, 0);
+    }
+    return textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0);
+}
+
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_bounds, input.content_mask_radii);
@@ -78,18 +101,12 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    var sample: vec4<f32>;
-    if (input.sampling == 1u || input.texture_kind == 2u) {
-        let atlas_size = max(vec2<i32>(1), vec2<i32>(textureDimensions(t_sprite, 0)));
-        let requested_texel = vec2<i32>(floor(input.tile_position * vec2<f32>(atlas_size)));
-        let tile_max = input.tile_origin + input.tile_size - vec2<i32>(1);
-        let texel = clamp(requested_texel, input.tile_origin, tile_max);
-        sample = textureLoad(t_sprite, texel, 0);
-    } else {
-        sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0);
-    }
+    let sample = sample_poly_sprite(input);
     if (sample.a <= 0.0) {
         return vec4<f32>(0.0);
+    }
+    if (input.sampling == RESIDENT_TILE_SAMPLING) {
+        return blend_resident_tile(sample, input.opacity * coverage * clip_coverage);
     }
 
     let grayscale = dot(sample.rgb, GRAYSCALE_FACTORS);

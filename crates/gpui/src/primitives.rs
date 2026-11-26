@@ -132,7 +132,7 @@ impl MonochromeSprite {
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
-    /// Image sampling mode; 1 selects the nearest source texel.
+    /// Sampling mode: 0 linear, 1 nearest, 2 resident premultiplied GPU tile.
     pub sampling: u32,
     pub grayscale: bool,
     pub opacity: f32,
