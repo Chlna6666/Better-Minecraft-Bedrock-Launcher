@@ -383,8 +383,12 @@ impl Window {
         for part in &mut splice.parts {
             if let SplicePart::Dirty(gap) = part {
                 let current = self.element_layout_bounds(gap.layout_id);
-                if current != gap.old.bounds && !allow_moved_gap {
-                    return false;
+                if current != gap.old.bounds {
+                    if !allow_moved_gap || !self.layout_engine.as_ref().is_some_and(|engine| {
+                        engine.retained_claims_outside_gap(&splice.kept, gap.layout_id)
+                    }) {
+                        return false;
+                    }
                 }
                 gap.placement_bounds = Some(current);
             }
