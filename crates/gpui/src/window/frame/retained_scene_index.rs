@@ -69,18 +69,14 @@ impl Frame {
         // A replayed fragment may have an old frame-local link. Only the
         // destination frame is allowed to link it to another fragment.
         segment.next_for_entity = None;
-        match self.retained_scene_index.entry(segment.entity_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let entry = entry.get_mut();
-                self.retained_scene_segments[entry.last].next_for_entity =
-                    std::num::NonZeroUsize::new(index + 1);
-                entry.last = index;
-                entry.len += 1;
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(Entry { first: index, last: index, len: 1 });
-            }
+        let entry = self.retained_scene_index.entry(segment.entity_id)
+            .or_insert(Entry { first: index, last: index, len: 0 });
+        if entry.len != 0 {
+            self.retained_scene_segments[entry.last].next_for_entity =
+                std::num::NonZeroUsize::new(index + 1);
         }
+        entry.last = index;
+        entry.len += 1;
         self.retained_scene_segments.push(segment);
     }
 }
