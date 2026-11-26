@@ -168,6 +168,9 @@ impl Window {
                     .map_or(started_at, |active| active.min(started_at)),
             );
         }
+        debug_assert!(self.layout_key_scopes.is_empty());
+        self.layout_key_scopes.clear();
+        self.layout_root_index = 0;
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
         cx.entities.begin_frame_dependencies();

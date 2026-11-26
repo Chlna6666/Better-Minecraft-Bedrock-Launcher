@@ -1,110 +1,22 @@
 use super::*;
 use crate::TransformOrigin;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-struct RetainedAutoIdentityKey {
-    mount: Option<core::panic::Location<'static>>,
-    source: Option<core::panic::Location<'static>>,
-    element_type: std::any::TypeId,
-}
-
-pub(crate) enum RetainedElementIdentity {
-    Explicit(ElementId),
-    Auto {
-        mount: Option<core::panic::Location<'static>>,
-        source: Option<core::panic::Location<'static>>,
-        element_type: std::any::TypeId,
-        ordinal: Option<u32>,
-    },
-    Positional,
-}
-
-type RetainedAutoIdentityToken = u64;
-
-static NEXT_RETAINED_AUTO_IDENTITY_TOKEN: AtomicU64 = AtomicU64::new(1);
-
+// Adapt the identified/positional key rules of longbridge/gpui-fast
+// 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout_key.rs (Apache-2.0).
+// Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
+// Keep the structural path for collision checking and view identity, separate
+// from the application element-state path.
 #[derive(Default)]
-struct RetainedIdentityScope {
-    auto_occurrences: FxHashMap<RetainedAutoIdentityToken, u32>,
-    identity_stable: bool,
+pub(crate) struct LayoutKeyScope {
+    next_unidentified_child: u32,
     next_layout_slot: u32,
-    retained_id: Option<GlobalElementId>,
 }
 
-impl RetainedIdentityScope {
-    fn identity_for_path(&self, path: &ElementIdStack, cache: &RefCell<GlobalIdCache>) -> GlobalElementId {
-        self.retained_id
-            .as_ref()
-            .filter(|id| id.0.as_ref() == path.as_slice())
-            .cloned()
-            .unwrap_or_else(|| cache.borrow_mut().get(path))
-    }
-}
-
-#[derive(Default)]
-struct RetainedIdentityScopePool {
-    active: Vec<RetainedIdentityScope>,
-    spare: Vec<RetainedIdentityScope>,
-}
-
-impl RetainedIdentityScopePool {
-    fn push_scope(
-        &mut self,
-        identity_stable: bool,
-        retained_id: Option<GlobalElementId>,
-    ) {
-        let mut scope = self.spare.pop().unwrap_or_default();
-        scope.auto_occurrences.clear();
-        scope.identity_stable = identity_stable;
-        scope.next_layout_slot = 0;
-        scope.retained_id = retained_id;
-        self.active.push(scope);
-    }
-
-    fn pop_scope(&mut self) {
-        let Some(mut scope) = self.active.pop() else {
-            return;
-        };
-
-        let target = 8usize.max(scope.auto_occurrences.len());
-        if scope.auto_occurrences.capacity() > target.saturating_mul(4) {
-            scope.auto_occurrences.shrink_to(target);
-        }
-        scope.auto_occurrences.clear();
-        scope.identity_stable = false;
-        scope.next_layout_slot = 0;
-        scope.retained_id = None;
-        self.spare.push(scope);
-    }
-
-    fn clear_active(&mut self) {
-        while !self.active.is_empty() {
-            self.pop_scope();
-        }
-    }
-}
-
-thread_local! {
-    static RETAINED_AUTO_IDENTITY_TOKENS:
-        RefCell<FxHashMap<RetainedAutoIdentityKey, RetainedAutoIdentityToken>> =
-        RefCell::new(FxHashMap::default());
-    static RETAINED_IDENTITY_SCOPES:
-        RefCell<RetainedIdentityScopePool> =
-        RefCell::new(RetainedIdentityScopePool::default());
-}
-
-fn retained_auto_identity_token(key: RetainedAutoIdentityKey) -> RetainedAutoIdentityToken {
-    RETAINED_AUTO_IDENTITY_TOKENS.with(|tokens| {
-        let mut tokens = tokens.borrow_mut();
-        if let Some(token) = tokens.get(&key).copied() {
-            return token;
-        }
-
-        let token = NEXT_RETAINED_AUTO_IDENTITY_TOKEN.fetch_add(1, AtomicOrdering::Relaxed);
-        assert_ne!(token, 0, "retained auto identity token space exhausted");
-        tokens.insert(key, token);
-        token
+fn layout_segment(id: Option<ElementId>, next_unidentified_child: &mut u32) -> ElementId {
+    id.unwrap_or_else(|| {
+        let index = *next_unidentified_child;
+        *next_unidentified_child = index.checked_add(1).expect("layout child index overflow");
+        ElementId::InstanceSlot(index)
     })
 }
 
@@ -123,103 +35,20 @@ impl Window {
         result
     }
 
-    /// Begins one retained element identity scope during request layout.
-    ///
-    /// Application IDs and automatically derived identities form stable retained boundaries. Auto
-    /// identities combine the parent path, mount site, concrete element source, element type, and
-    /// a parent-local same-key occurrence. Fixed children at different call sites therefore remain
-    /// stable when unrelated conditional siblings appear or disappear, while repeated `.child()`
-    /// calls from one loop still receive distinct identities without requiring application IDs.
-    /// Elements with no usable source information fall back to positional identity and stay
-    /// conservatively ambiguous for interaction replay.
-    pub(crate) fn begin_retained_element(
-        &mut self,
-        identity: RetainedElementIdentity,
-    ) -> (ElementId, GlobalElementId, bool) {
-        let depth = self.retained_child_slot_stack.len();
-        let slot = if let Some(next_slot) = self.retained_child_slot_stack.last_mut() {
-            let slot = *next_slot;
-            *next_slot = next_slot.saturating_add(1);
-            slot
-        } else {
-            0
-        };
-
-        let (segment, retained_id, identity_stable) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            let mut scopes = scopes.borrow_mut();
-
-            // Lazy containers may add a synthetic retained child scope after their own
-            // request-layout scope has already been popped. Keep the identity-scope stack aligned
-            // with the slot stack instead of clearing all prior scopes. A synthetic level that also
-            // contributes a retained path segment (`with_retained_child_key`) is a stable boundary;
-            // a slot-only child scope inherits its parent's ambiguity conservatively. If an unwind
-            // ever leaves more identity scopes than slot scopes, discard them and reconstruct the
-            // unknown prefix as ambiguous rather than upgrading an inconsistent stack to stable.
-            if scopes.active.len() > depth {
-                scopes.clear_active();
-                for _ in 0..depth {
-                    scopes.push_scope(false, None);
-                }
-            } else {
-                while scopes.active.len() < depth {
-                    let synthetic_depth = scopes.active.len();
-                    let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
-                    let identity_stable = keyed_boundary || scopes.active.last()
-                        .is_none_or(|scope| scope.identity_stable);
-                    scopes.push_scope(identity_stable, None);
-                }
-            }
-
-            let (segment, identity_stable) = match identity {
-                RetainedElementIdentity::Explicit(explicit_id) => (explicit_id, true),
-                RetainedElementIdentity::Auto {
-                    mount,
-                    source,
-                    element_type,
-                    ordinal,
-                } => {
-                    let identity_token = retained_auto_identity_token(RetainedAutoIdentityKey {
-                        mount,
-                        source,
-                        element_type,
-                    });
-                    let occurrence = ordinal.unwrap_or_else(|| {
-                        let Some(parent) = scopes.active.last_mut() else {
-                            return 0;
-                        };
-                        let next = parent.auto_occurrences.entry(identity_token).or_insert(0);
-                        let occurrence = *next;
-                        *next = next.saturating_add(1);
-                        occurrence
-                    });
-                    (
-                        ElementId::RetainedAutoSlot {
-                            identity_token,
-                            occurrence,
-                        },
-                        true,
-                    )
-                }
-                RetainedElementIdentity::Positional => (ElementId::InstanceSlot(slot), false),
-            };
-
-            self.retained_element_id_stack.push(segment.clone());
-            let retained_id = self.global_ids.borrow_mut().get(&self.retained_element_id_stack);
-            scopes.push_scope(identity_stable, Some(retained_id.clone()));
-            (segment, retained_id, identity_stable)
-        });
-
-        self.retained_child_slot_stack.push(0);
-        (segment, retained_id, identity_stable)
+    /// Match identified elements by their ID and anonymous siblings by position.
+    pub(crate) fn begin_retained_element(&mut self, id: Option<ElementId>) -> ElementId {
+        let next_child = self.layout_key_scopes.last_mut()
+            .map(|scope| &mut scope.next_unidentified_child)
+            .unwrap_or(&mut self.layout_root_index);
+        let segment = layout_segment(id, next_child);
+        self.retained_element_id_stack.push(segment.clone());
+        self.layout_key_scopes.push(LayoutKeyScope::default());
+        segment
     }
 
-    /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
     pub(crate) fn end_retained_element(&mut self) {
-        self.retained_child_slot_stack.pop();
+        self.layout_key_scopes.pop();
         self.retained_element_id_stack.pop();
-        RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            scopes.borrow_mut().pop_scope();
-        });
     }
 
     /// Execute lazy child construction with a fresh parent-local retained slot namespace.
@@ -235,9 +64,9 @@ impl Window {
     /// Callers that retry a transactional prepaint must create a new scope for every attempt so the
     /// same logical children receive the same slots after rollback.
     pub(crate) fn with_retained_child_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.retained_child_slot_stack.push(0);
+        self.layout_key_scopes.push(LayoutKeyScope::default());
         let result = f(self);
-        self.retained_child_slot_stack.pop();
+        self.layout_key_scopes.pop();
         result
     }
 
@@ -254,9 +83,9 @@ impl Window {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.retained_element_id_stack.push(key.into());
-        self.retained_child_slot_stack.push(0);
+        self.layout_key_scopes.push(LayoutKeyScope::default());
         let result = f(self);
-        self.retained_child_slot_stack.pop();
+        self.layout_key_scopes.pop();
         self.retained_element_id_stack.pop();
         result
     }
@@ -280,54 +109,30 @@ impl Window {
         if path.is_empty() {
             return None;
         }
-        Some(RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            scopes.borrow().active.last().map_or_else(
-                || self.global_ids.borrow_mut().get(path),
-                |scope| scope.identity_for_path(path, &self.global_ids),
-            )
-        }))
+        Some(self.global_ids.borrow_mut().get(path))
     }
 
-    /// Only an unambiguous retained mount may own a cross-frame Taffy node.
-    ///
-    /// Positional identities are reused for unrelated siblings after insertion,
-    /// and ambiguous ancestors can invalidate an otherwise keyed descendant.
-    /// Those layouts must stay frame-local rather than aliasing native caches.
+    /// Obtain a layout-owned identity without assigning an application element ID.
     pub(crate) fn current_stable_layout_element_id(&self) -> Option<GlobalElementId> {
-        let _work = super::element_work::begin_named(
-            "layout_owner_identity",
-            super::element_work::ElementWorkPhase::Layout,
-        );
-        RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            let scopes = scopes.borrow();
-            let scope = scopes.active.last()?;
-            let path = &self.retained_element_id_stack;
-            (!path.is_empty() && scope.identity_stable)
-                .then(|| scope.identity_for_path(path, &self.global_ids))
-        })
+        if self.layout_key_scopes.is_empty() {
+            return None;
+        }
+        self.current_retained_element_id()
     }
 
-    /// Allocate a native node key from the current element's incremental
-    /// path hash and local request slot. The full ID guards hash collisions.
-    pub(crate) fn current_stable_layout_owner(&self) -> Option<(u64, GlobalElementId)> {
-        let _work = super::element_work::begin_named(
-            "layout_owner_identity",
-            super::element_work::ElementWorkPhase::Layout,
-        );
+    /// Derive the native node key from the incremental path and local request slot.
+    pub(crate) fn current_stable_layout_owner(&mut self) -> Option<(u64, GlobalElementId)> {
         let path = &self.retained_element_id_stack;
-        RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            let mut scopes = scopes.borrow_mut();
-            let scope = scopes.active.last_mut()?;
-            if path.is_empty() || !scope.identity_stable {
-                return None;
-            }
-            let slot = scope.next_layout_slot;
-            scope.next_layout_slot = slot.checked_add(1)?;
-            Some((
-                crate::layout::layout_node_key(path.hash(), slot),
-                scope.identity_for_path(path, &self.global_ids),
-            ))
-        })
+        let scope = self.layout_key_scopes.last_mut()?;
+        if path.is_empty() {
+            return None;
+        }
+        let slot = scope.next_layout_slot;
+        scope.next_layout_slot = slot.checked_add(1)?;
+        Some((
+            crate::layout::layout_node_key(path.hash(), slot),
+            self.global_ids.borrow_mut().get(path),
+        ))
     }
 
     /// Executes the provided function with the specified rem size.
@@ -1020,78 +825,11 @@ impl Window {
 mod layout_identity_tests {
     use super::*;
 
-    fn stack_for_path(path: &[ElementId]) -> ElementIdStack {
-        let mut stack = ElementIdStack::default();
-        for id in path {
-            stack.push(id.clone());
-        }
-        stack
-    }
-
     #[test]
-    fn mounted_identity_reuses_the_path_allocation() {
-        let path = [ElementId::from("root"), ElementId::from("child")];
-        let id = GlobalElementId::from_path(&path);
-        let scope = RetainedIdentityScope {
-            retained_id: Some(id.clone()),
-            ..Default::default()
-        };
-        let reused = scope.identity_for_path(&stack_for_path(&path), &RefCell::default());
-        assert!(std::sync::Arc::ptr_eq(&id.0, &reused.0));
-    }
-
-    #[test]
-    fn changed_ancestor_path_does_not_reuse_a_mounted_identity() {
-        let path = [ElementId::from("root"), ElementId::from("child")];
-        let id = GlobalElementId::from_path(&path);
-        let scope = RetainedIdentityScope {
-            retained_id: Some(id.clone()),
-            ..Default::default()
-        };
-        let changed = [ElementId::from("other-root"), ElementId::from("child")];
-        let cache = RefCell::new(GlobalIdCache::default());
-        let current = scope.identity_for_path(&stack_for_path(&changed), &cache);
-        assert_eq!(current.0.as_ref(), &changed);
-        assert!(!std::sync::Arc::ptr_eq(&id.0, &current.0));
-        let synthetic = RetainedIdentityScope::default().identity_for_path(&stack_for_path(&changed), &cache);
-        assert_eq!(synthetic, current);
-    }
-
-    #[test]
-    fn recycled_scope_holds_no_reference_of_its_own() {
-        let id = GlobalElementId::from_path(&[ElementId::from("recycled-scope-probe")]);
-        let weak = std::sync::Arc::downgrade(&id.0);
-        // `id` is moved into the scope, so the count before and after pushing the same
-        // allocation must match.
-        let baseline = weak.strong_count();
-        let mut pool = RetainedIdentityScopePool::default();
-        pool.push_scope(true, Some(id));
-        assert_eq!(weak.strong_count(), baseline);
-        pool.pop_scope();
-        // The scope must drop its reference.
-        assert_eq!(weak.strong_count(), baseline.saturating_sub(1));
-        pool.push_scope(true, None);
-        assert!(pool.active.last().unwrap().retained_id.is_none());
-    }
-
-    #[test]
-    fn positional_layout_identity_never_reuses_native_taffy_state() {
-        let mut pool = RetainedIdentityScopePool::default();
-        assert!(
-            !pool
-                .active
-                .last()
-                .is_some_and(|scope| { scope.identity_stable })
-        );
-        pool.push_scope(true, None);
-        assert!(pool.active.last().unwrap().identity_stable);
-
-        pool.push_scope(false, None);
-        assert!(!pool.active.last().unwrap().identity_stable);
-        pool.pop_scope();
-        assert!(pool.active.last().unwrap().identity_stable);
-        pool.push_scope(true, None);
-        assert!(pool.active.last().unwrap().identity_stable);
-        pool.pop_scope();
+    fn explicit_ids_do_not_renumber_anonymous_layout_siblings() {
+        let mut next = 0;
+        assert_eq!(layout_segment(None, &mut next), ElementId::InstanceSlot(0));
+        assert_eq!(layout_segment(Some(ElementId::from("fixed")), &mut next), ElementId::from("fixed"));
+        assert_eq!(layout_segment(None, &mut next), ElementId::InstanceSlot(1));
     }
 }

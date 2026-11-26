@@ -40,7 +40,7 @@ impl<C: RenderOnce> Element for Component<C> {
     #[track_caller]
     #[inline(never)]
     fn into_any(self) -> AnyElement {
-        AnyElement::new(self).with_retained_auto_mount(core::panic::Location::caller())
+        AnyElement::new(self)
     }
 
     fn id(&self) -> Option<ElementId> {
@@ -164,23 +164,6 @@ impl AnyElement {
         let element = with_element_arena(|arena| arena.alloc(|| Drawable::new(element)))
             .map(|element| element as &mut dyn ElementObject);
         AnyElement(element)
-    }
-
-    pub(crate) fn with_retained_auto_mount(
-        mut self,
-        source: &'static core::panic::Location<'static>,
-    ) -> Self {
-        self.0.set_retained_source_location(source, None);
-        self
-    }
-
-    pub(crate) fn with_retained_mount(
-        mut self,
-        source: &'static core::panic::Location<'static>,
-        ordinal: u32,
-    ) -> Self {
-        self.0.set_retained_source_location(source, Some(ordinal));
-        self
     }
 
     /// Attempt to downcast a reference to the boxed element to a specific type.

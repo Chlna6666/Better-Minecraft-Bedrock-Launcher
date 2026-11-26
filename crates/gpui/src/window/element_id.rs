@@ -24,16 +24,6 @@ pub enum ElementId {
     CodeLocation(core::panic::Location<'static>),
     /// A labeled child of an element.
     NamedChild(Box<ElementId>, SharedString),
-    /// Internal automatic hierarchy identity used only by retained element reconciliation.
-    ///
-    /// The static mount/source/type descriptor is interned once and represented by
-    /// identity_token. Dynamic siblings only vary by occurrence. Keeping this path segment
-    /// compact reduces retained-key copies without introducing per-element heap allocation.
-    #[doc(hidden)]
-    RetainedAutoSlot {
-        identity_token: u64,
-        occurrence: u32,
-    },
     /// Internal positional identity used only by retained element reconciliation.
     #[doc(hidden)]
     InstanceSlot(u32),
@@ -58,12 +48,6 @@ impl Display for ElementId {
             ElementId::Path(path) => write!(f, "{}", path.display())?,
             ElementId::CodeLocation(location) => write!(f, "{}", location)?,
             ElementId::NamedChild(id, name) => write!(f, "{}-{}", id, name)?,
-            ElementId::RetainedAutoSlot {
-                identity_token,
-                occurrence,
-            } => {
-                write!(f, "@auto[{identity_token}]#{occurrence}")?;
-            }
             ElementId::InstanceSlot(slot) => write!(f, "@{}", slot)?,
         }
 

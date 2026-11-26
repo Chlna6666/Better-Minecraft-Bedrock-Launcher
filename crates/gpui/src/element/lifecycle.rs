@@ -1,4 +1,3 @@
-use crate::window::RetainedElementIdentity;
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
     Pixels, Size, Window,
@@ -6,7 +5,7 @@ use crate::{
 use derive_more::Deref;
 use smallvec::SmallVec;
 use std::{
-    any::{Any, TypeId},
+    any::Any,
     fmt::{self, Display},
     hash::{Hash, Hasher},
     mem,
@@ -186,12 +185,6 @@ impl Display for GlobalElementId {
 pub(super) trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
-    fn set_retained_source_location(
-        &mut self,
-        source: &'static core::panic::Location<'static>,
-        ordinal: Option<u32>,
-    );
-
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
 
     fn prepaint(&mut self, window: &mut Window, cx: &mut App);
@@ -210,8 +203,6 @@ pub(super) trait ElementObject {
 pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
-    retained_source_location: Option<&'static core::panic::Location<'static>>,
-    retained_source_ordinal: Option<u32>,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
     #[cfg(any(test, feature = "test-support"))]
     painted_state: Option<(E::RequestLayoutState, E::PrepaintState)>,
@@ -279,29 +270,13 @@ struct RetainedElementMount {
 fn begin_retained_element_mount(
     element_id: Option<ElementId>,
     element_source_location: Option<&'static core::panic::Location<'static>>,
-    retained_source_location: Option<&'static core::panic::Location<'static>>,
-    retained_source_ordinal: Option<u32>,
-    element_type: TypeId,
     window: &mut Window,
 ) -> RetainedElementMount {
     let _work = crate::window::element_work::begin_named(
         "layout_retained_mount",
         crate::window::element_work::ElementWorkPhase::Layout,
     );
-    let retained_identity = if let Some(element_id) = element_id.clone() {
-        RetainedElementIdentity::Explicit(element_id)
-    } else if retained_source_location.is_some() || element_source_location.is_some() {
-        RetainedElementIdentity::Auto {
-            mount: retained_source_location.copied(),
-            source: element_source_location.copied(),
-            element_type,
-            ordinal: retained_source_ordinal,
-        }
-    } else {
-        RetainedElementIdentity::Positional
-    };
-    let (retained_segment, _, _) =
-        window.begin_retained_element(retained_identity);
+    let retained_segment = window.begin_retained_element(element_id.clone());
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
     let inspector_id;
@@ -407,8 +382,6 @@ impl<E: Element> Drawable<E> {
     pub(crate) fn new(element: E) -> Self {
         Drawable {
             element,
-            retained_source_location: None,
-            retained_source_ordinal: None,
             phase: ElementDrawPhase::Start,
             #[cfg(any(test, feature = "test-support"))]
             painted_state: None,
@@ -437,9 +410,6 @@ impl<E: Element> Drawable<E> {
                 let mount = begin_retained_element_mount(
                     self.element.id(),
                     element_source_location,
-                    self.retained_source_location,
-                    self.retained_source_ordinal,
-                    TypeId::of::<E>(),
                     window,
                 );
 
@@ -663,15 +633,6 @@ where
 {
     fn inner_element(&mut self) -> &mut dyn Any {
         &mut self.element
-    }
-
-    fn set_retained_source_location(
-        &mut self,
-        source: &'static core::panic::Location<'static>,
-        ordinal: Option<u32>,
-    ) {
-        self.retained_source_location = Some(source);
-        self.retained_source_ordinal = ordinal;
     }
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {

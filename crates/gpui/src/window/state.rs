@@ -505,8 +505,9 @@ pub struct Window {
     /// anonymous elements receive internal `InstanceSlot` segments here but still receive no
     /// `GlobalElementId` for state storage.
     pub(crate) retained_element_id_stack: ElementIdStack,
-    /// Parent-local positional counters used only while `request_layout` constructs retained IDs.
-    pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
+    /// Window-owned native layout key scopes; no per-thread identity tables.
+    pub(crate) layout_key_scopes: SmallVec<[super::element_context::LayoutKeyScope; 32]>,
+    pub(crate) layout_root_index: u32,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     /// Cached result of resolving `text_style_stack` over the window's default style.
     ///
