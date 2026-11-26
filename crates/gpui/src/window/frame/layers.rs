@@ -89,32 +89,58 @@ impl LayerContent {
         }
     }
 
-    /// Fast's content-space translation, but do not mutate or copy the
-    /// authoritative scene. Compare the two captures in one coordinate
-    /// system. Any difference declines translation reuse for this version.
+    /// Compare only the pixels that both viewport captures actually own.
+    /// Rows entering or leaving the viewport can change the operation count
+    /// without changing a single contributing primitive in this intersection.
     fn matches_translated(
         &self,
         previous: &Self,
-        delta: Point<ScaledPixels>,
+        old_translation: [i32; 2],
+        current_translation: [i32; 2],
+        common: Bounds<ScaledPixels>,
         viewport: ContentMask<ScaledPixels>,
     ) -> bool {
-        if self.parts != previous.parts || self.operations.len() != previous.operations.len() {
-            return false;
+        let delta = translation_point([
+            current_translation[0] - old_translation[0],
+            current_translation[1] - old_translation[1],
+        ]);
+        let current_region = translated_bounds(common, translation_point(current_translation));
+        let old_region = translated_bounds(common, translation_point(old_translation));
+        let mut current = self.contributors(current_region, viewport);
+        let mut old = previous.contributors(old_region, viewport);
+        loop {
+            match (current.next(), old.next()) {
+                (None, None) => return true,
+                (Some(Ok(current)), Some(Ok(old)))
+                    if translated_primitive_matches(current, old, delta, viewport) => {}
+                // Unknown effects are never skipped, even outside the
+                // intersection: their dependency footprint is not proven.
+                _ => return false,
+            }
         }
-        // Pointer equality alone cannot prove equality after translation.
-        self.operations.iter().zip(previous.operations.iter()).all(|(current, old)| {
-            match (current, old) {
-                (PaintOperation::Primitive(current), PaintOperation::Primitive(old)) => {
-                    translated_primitive_matches(current, old, delta, viewport)
+    }
+
+    fn contributors(
+        &self,
+        region: Bounds<ScaledPixels>,
+        viewport: ContentMask<ScaledPixels>,
+    ) -> impl Iterator<Item = Result<&Primitive, ()>> + '_ {
+        self.operations.iter().filter_map(move |operation| {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let Some(bounds) = static_raster_bounds(primitive) else {
+                        return Some(Err(()));
+                    };
+                    if *primitive.content_mask() != viewport {
+                        return Some(Err(()));
+                    }
+                    (!bounds.intersect(&region).is_empty()).then_some(Ok(primitive))
                 }
-                (PaintOperation::StartLayer(current), PaintOperation::StartLayer(old)) => {
-                    // A layer is ordering metadata. Require matching translated
-                    // geometry or the same fixed viewport on both sides.
-                    *current == translated_bounds(*old, delta)
-                        || (*current == viewport.bounds && *old == viewport.bounds)
-                }
-                (PaintOperation::EndLayer, PaintOperation::EndLayer) => true,
-                _ => false,
+                // These markers do not emit pixels. Their actual ordering
+                // effect is preserved by comparing each primitive's exact
+                // DrawOrder and keeping the contributing operation order.
+                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+                PaintOperation::StartBlur(_) | PaintOperation::EndBlur => Some(Err(())),
             }
         })
     }
@@ -257,8 +283,7 @@ impl LayerFrame {
                 damage => damage,
             }
         } else if let (Some(old), Some(current)) = (self.translation, record.translation) {
-            let delta = translation_point([current[0] - old[0], current[1] - old[1]]);
-            if content.matches_translated(&self.content, delta, record.source_viewport) {
+            if content.matches_translated(&self.content, old, current, common, record.source_viewport) {
                 LayerDamage::Clean
             } else {
                 LayerDamage::Full
@@ -417,6 +442,41 @@ mod tests {
         assert_eq!(common.bottom(), ScaledPixels(1024.));
         assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.))), 1., 2.), Some([0, -128]));
         assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.25))), 1., 2.), None);
+    }
+
+    #[test]
+    fn entering_and_leaving_rows_do_not_invalidate_common_coverage() {
+        let viewport = ContentMask::new(Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(1024.), ScaledPixels(1024.)),
+        ));
+        let common = LayerFrame::coverage(viewport, Some([0, -128]))
+            .intersect(&LayerFrame::coverage(viewport, Some([0, 0])));
+        let quad = |y| Quad {
+            bounds: Bounds::new(point(ScaledPixels(20.), ScaledPixels(y)),
+                size(ScaledPixels(100.), ScaledPixels(32.))),
+            content_mask: viewport,
+            ..Default::default()
+        };
+        let content = |quads: &[Quad]| {
+            let mut operations = Operations::default();
+            for quad in quads {
+                operations.push(PaintOperation::Primitive(Primitive::Quad(*quad)));
+            }
+            LayerContent { operations, parts: Box::new([]) }
+        };
+        let old = content(&[quad(20.), quad(300.)]);
+        // The first old row is no longer visible; two new rows are outside
+        // the shared region. Neither should affect the shared tile pixels.
+        let current = content(&[quad(172.), quad(920.), quad(970.)]);
+        assert!(current.matches_translated(&old, [0, 0], [0, -128], common, viewport));
+        let changed = content(&[quad(173.), quad(920.), quad(970.)]);
+        assert!(!changed.matches_translated(&old, [0, 0], [0, -128], common, viewport));
+        let entering = content(&[quad(172.), quad(895.)]);
+        // This row touches the common edge, including the AA guard.
+        assert!(!entering.matches_translated(&old, [0, 0], [0, -128], common, viewport));
+        let reordered = content(&[Quad { order: 1, ..quad(172.) }]);
+        assert!(!reordered.matches_translated(&old, [0, 0], [0, -128], common, viewport));
     }
 
     #[test]
