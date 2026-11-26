@@ -108,28 +108,92 @@ impl Window {
             && self.view_dirty_scope(view_id).is_none()
     }
 
-    /// Select all directly dirty leaf records in prepaint order. Until
-    /// clean descendant records can be relocated independently, an anchor
-    /// containing a clean/intermediate record must use ordinary traversal.
-    pub(super) fn dirty_leaf_gaps(&self, anchor: &RetainedViewRecord) -> Option<Range<usize>> {
-        let entries = self.rendered_frame.view_retention_records.get(anchor.nested.clone())?;
-        if entries.is_empty() {
-            return None;
-        }
+    /// Partition the anchor into non-overlapping immediate descendant subtrees.
+    /// A dirty intermediate subtree is rebuilt as one gap. Its clean siblings
+    /// keep their complete records; missing or ambiguous records reject admission.
+    pub(super) fn splice_subtrees(&self, anchor: &RetainedViewRecord) -> Option<Vec<(usize, bool)>> {
+        let table = &self.rendered_frame.view_retention_records;
+        let entries = table.get(anchor.nested.clone())?;
         let mut owners = FxHashSet::default();
         for (offset, entry) in entries.iter().enumerate() {
             let record = entry.record.as_ref()?;
-            let rebuild = record.rebuild.as_ref()?;
-            let owner = rebuild.view.entity_id();
-            if !self.direct_dirty_views.contains(&owner)
-                || !record.nested.is_empty() || !rebuild.splice_supported
-                || !owners.insert(owner)
-                || self.rendered_frame.view_retentions.get(&entry.key).copied() != Some(anchor.nested.start + offset)
+            let owner = record.rebuild.as_ref()?.view.entity_id();
+            let index = anchor.nested.start + offset;
+            if !owners.insert(owner)
+                || self.rendered_frame.view_retentions.get(&entry.key).copied() != Some(index)
+                || record.nested.start != index + 1 || record.nested.end > anchor.nested.end
+                || record.nested.end < record.nested.start
             {
                 return None;
             }
         }
-        Some(anchor.nested.clone())
+        let mut result = Vec::new();
+        let mut index = anchor.nested.start;
+        let mut any_dirty = false;
+        while index < anchor.nested.end {
+            let record = table[index].record.as_ref()?;
+            let rebuild = record.rebuild.as_ref()?;
+            let dirty = self.view_dirty_scope(rebuild.view.entity_id()).is_some();
+            if dirty && !rebuild.splice_supported {
+                return None;
+            }
+            if !dirty && table[record.nested.clone()].iter().any(|entry| {
+                entry.record.as_ref().and_then(|record| record.rebuild.as_ref())
+                    .is_none_or(|child| self.view_dirty_scope(child.view.entity_id()).is_some())
+            }) {
+                return None;
+            }
+            any_dirty |= dirty;
+            result.push((index, dirty));
+            index = record.nested.end;
+        }
+        any_dirty.then_some(result)
+    }
+
+    /// Reserve the entire clean subtree in the candidate table at its new
+    /// prepaint position. Its actual records are installed during paint.
+    pub(super) fn reserve_spliced_clean(
+        &mut self, key: GlobalElementId, record: &RetainedViewRecord,
+    ) -> (ViewRetentionSlot, Range<usize>) {
+        let slot = self.reserve_view_retention(key);
+        self.next_frame.view_retention_records.extend(
+            self.rendered_frame.view_retention_records[record.nested.clone()].iter().map(|entry| {
+                ViewRecordSlot { key: entry.key.clone(), record: None }
+            }),
+        );
+        let nested = self.finish_view_retention_scope(&slot);
+        (slot, nested)
+    }
+
+    /// A clean subtree's own damage entry is emitted after its descendant
+    /// record is committed. Unlike ordinary view replay, no wrapper is painted
+    /// here, so the original own entry must also be carried.
+    pub(super) fn commit_spliced_clean(
+        &mut self, slot: &ViewRetentionSlot, nested: Range<usize>,
+        source: &RetainedViewRecord, claims: LayoutClaimSpans,
+        prepaint: Range<PrepaintStateIndex>, paint: Range<PaintIndex>,
+        states: Range<usize>,
+    ) {
+        let owner = source.rebuild.as_ref().expect("admitted clean subtree").view.entity_id();
+        let old_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
+        let new_scene = paint.start.scene_index..paint.end.scene_index;
+        let own = self.rendered_frame.retained_scene_segments.get(source.scene_segments.end)
+            .filter(|entry| entry.entity_id == owner && entry.scene_range == old_scene)
+            .cloned();
+        let scene_segments_start = self.next_frame.retained_scene_segments.len();
+        self.commit_view_retention(slot, nested, ViewRetentionCommit {
+            layout_root: source.layout_root, layout_claims: claims,
+            prepaint_range: prepaint, paint_range: paint, bounds: source.bounds,
+            context: source.context.clone(), rebuild: source.rebuild.clone(),
+            splice_safe: source.splice_safe, scene_segments_start,
+            layout_state_range: states, reused: Some(source.clone()),
+        });
+        if let Some(mut own) = own {
+            if let Some(range) = rebase_span(&own.scene_range, &old_scene, &new_scene) {
+                own.scene_range = range;
+                self.next_frame.push_retained_scene_segment(own);
+            }
+        }
     }
 
     /// Claims the committed layout of `key` and returns its record, or `None` when the view has to

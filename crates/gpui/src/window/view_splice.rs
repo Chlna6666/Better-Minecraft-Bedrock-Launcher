@@ -24,7 +24,30 @@ pub(crate) struct ViewSplice {
     pub(crate) states: Range<usize>,
     kept: LayoutClaimSpans,
     placement: NativePlacementProof,
-    gaps: Vec<PrebuiltGap>,
+    parts: Vec<SplicePart>,
+}
+
+enum SplicePart {
+    Clean(CleanPart),
+    Dirty(PrebuiltGap),
+}
+
+struct CleanPart {
+    key: GlobalElementId,
+    old: RetainedViewRecord,
+    claims: LayoutClaimSpans,
+    states: Range<usize>,
+    prepaint: Option<Range<PrepaintStateIndex>>,
+    reservation: Option<(ViewRetentionSlot, Range<usize>)>,
+}
+
+impl SplicePart {
+    fn old(&self) -> &RetainedViewRecord {
+        match self {
+            Self::Clean(part) => &part.old,
+            Self::Dirty(part) => &part.old,
+        }
+    }
 }
 
 impl Window {
@@ -116,17 +139,19 @@ impl Window {
 
     pub(crate) fn abandon_view_splice(&mut self, splice: ViewSplice) -> RetainedViewRecord {
         self.release_retained_view(&splice.kept);
-        self.stash_prebuilt_gaps(splice.gaps);
+        self.stash_prebuilt_gaps(splice.parts);
         splice.anchor
     }
 
-    fn stash_prebuilt_gaps(&mut self, gaps: Vec<PrebuiltGap>) {
-        for gap in gaps {
-            self.prebuilt_gaps.insert(gap.key.clone(), gap);
+    fn stash_prebuilt_gaps(&mut self, parts: Vec<SplicePart>) {
+        for part in parts {
+            if let SplicePart::Dirty(gap) = part {
+                self.prebuilt_gaps.insert(gap.key.clone(), gap);
+            }
         }
     }
 
-    /// Select disjoint leaf gaps, validate the complete partition before
+    /// Select disjoint dirty and clean subtrees, validate the partition before
     /// mutating native layout, then build them under their original paths.
     pub(crate) fn try_splice_view(
         &mut self, key: &GlobalElementId, owner: EntityId,
@@ -152,19 +177,20 @@ impl Window {
         {
             return None;
         }
-        let indices = self.dirty_leaf_gaps(&anchor)?;
+        let indices = self.splice_subtrees(&anchor)?;
         let mut plan = Vec::with_capacity(indices.len());
         let mut claims = smallvec::SmallVec::<[(LayoutClaimSpans, LayoutId); 4]>::new();
         let mut dispatch = smallvec::SmallVec::<[(Range<usize>, EntityId); 4]>::new();
         let mut prepaint = anchor.prepaint_range.start.clone();
         let mut paint = anchor.paint_range.start.clone();
-        for gap_index in indices {
+        for (gap_index, dirty) in indices {
             let slot = &self.rendered_frame.view_retention_records[gap_index];
             let old = slot.record.as_ref()?.clone();
             let gap_rebuild = old.rebuild.as_ref()?;
-            if !old.splice_safe || !old.layout_state_range.is_empty()
-                || gap_rebuild.layout != rebuild.layout || old.context != anchor.context
-                // Clean stretches cannot contain ancestor-owned mutable state.
+            if !old.layout_state_range.is_empty() || !old.layout_claims[1].is_empty()
+                || (dirty && (!old.splice_safe || gap_rebuild.layout != rebuild.layout || old.context != anchor.context))
+                || self.rendered_frame.retained_scene_segments.get(old.scene_segments.clone()).is_none()
+                // Stretches outside all immediate subtrees cannot contain mutable state.
                 || prepaint.accessed_element_states_index != old.prepaint_range.start.accessed_element_states_index
                 || paint.accessed_element_states_index != old.paint_range.start.accessed_element_states_index
                 || !self.can_reuse_prepaint(&(prepaint..old.prepaint_range.start.clone()))
@@ -176,9 +202,13 @@ impl Window {
             }
             prepaint = old.prepaint_range.end.clone();
             paint = old.paint_range.end.clone();
-            dispatch.push((old.prepaint_range.start.dispatch_tree_index..old.prepaint_range.end.dispatch_tree_index, gap_rebuild.view.entity_id()));
-            claims.push((old.layout_claims.clone(), old.layout_root));
-            let view = gap_rebuild.view.upgrade()?.into_element();
+            let view = if dirty {
+                dispatch.push((old.prepaint_range.start.dispatch_tree_index..old.prepaint_range.end.dispatch_tree_index, gap_rebuild.view.entity_id()));
+                claims.push((old.layout_claims.clone(), old.layout_root));
+                Some(gap_rebuild.view.upgrade()?.into_element())
+            } else {
+                None
+            };
             plan.push((slot.key.clone(), old, view));
         }
         if prepaint.accessed_element_states_index != anchor.prepaint_range.end.accessed_element_states_index
@@ -200,8 +230,24 @@ impl Window {
             return None;
         };
         let states_start = self.begin_view_element_states();
-        let mut gaps = Vec::with_capacity(plan.len());
-        for (gap_key, old, mut view) in plan {
+        // The kept claims are compacted in original claim order. Map clean
+        // subtree spans through the same interval subtraction before building gaps.
+        let mut exclusions: Vec<_> = claims.iter().map(|(spans, _)| spans[0].clone()).collect();
+        exclusions.sort_unstable_by_key(|span| span.start);
+        let mut parts = Vec::with_capacity(plan.len());
+        for (gap_key, old, view) in plan {
+            let Some(mut view) = view else {
+                let Some(claims) = relocate_clean_claims(&old.layout_claims, &anchor.layout_claims[0], &exclusions, &kept[0]) else {
+                    self.release_retained_view(&kept);
+                    self.stash_prebuilt_gaps(parts);
+                    return None;
+                };
+                parts.push(SplicePart::Clean(CleanPart {
+                    key: gap_key, old, claims, states: states_start..states_start,
+                    prepaint: None, reservation: None,
+                }));
+                continue;
+            };
             self.splice_requests = Some(0);
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
@@ -216,18 +262,18 @@ impl Window {
             let compatible = layout_id == old.layout_root
                 && self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(&placement)
                 && !self.force_view_cache_refresh && states.is_empty();
-            gaps.push(PrebuiltGap {
+            parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
                 claims: [gap_start..self.claim_log_len(), 0..0], states, node: None, leaf_layout,
-            });
+            }));
             if !compatible {
                 self.release_retained_view(&kept);
-                self.stash_prebuilt_gaps(gaps);
+                self.stash_prebuilt_gaps(parts);
                 return None;
             }
         }
         Some(ViewSplice {
-            anchor, kept, placement, gaps, claims: [start..self.claim_log_len(), 0..0],
+            anchor, kept, placement, parts, claims: [start..self.claim_log_len(), 0..0],
             states: self.view_layout_state_range(states_start),
         })
     }
@@ -236,7 +282,10 @@ impl Window {
         !self.force_view_cache_refresh && self.splice_context_supported()
             && self.retained_view_context_matches(&splice.anchor, bounds)
             && self.layout_engine.as_ref().is_some_and(|engine| engine.splice_placement_matches(&splice.placement))
-            && splice.gaps.iter().all(|gap| self.layout_bounds(gap.layout_id) == gap.old.bounds)
+            && splice.parts.iter().all(|part| match part {
+                SplicePart::Dirty(gap) => self.layout_bounds(gap.layout_id) == gap.old.bounds,
+                SplicePart::Clean(_) => true,
+            })
     }
 
     pub(crate) fn prepaint_view_splice(&mut self, splice: &mut ViewSplice, cx: &mut App) {
@@ -245,45 +294,99 @@ impl Window {
         // Only copied intervals have a valid affine dispatch mapping. A
         // removed interval is never a valid external parent of clean nodes.
         let mut relocated = smallvec::SmallVec::<[(Range<usize>, usize); 5]>::new();
-        for gap in &mut splice.gaps {
-            let old = &gap.old;
-            let range = cursor..old.prepaint_range.start.clone();
-            let source = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
-            let target = self.next_frame.dispatch_tree.len();
-            self.replay_prepaint_segment(range, |id| relocate_dispatch(id, parent, &relocated));
-            relocated.push((source.clone(), target));
-            let node = DispatchNodeId(target + source.len() - 1);
-            self.next_frame.dispatch_tree.set_active_node(node);
-            let rebuild = old.rebuild.as_ref().expect("validated gap");
-            self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
-                gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
-            });
-            self.next_frame.dispatch_tree.set_active_node(parent);
-            gap.node = Some(node);
-            cursor = old.prepaint_range.end.clone();
+        for part in &mut splice.parts {
+            let old_start = part.old().prepaint_range.start.clone();
+            replay_prepaint(self, cursor..old_start, parent, &mut relocated);
+            match part {
+                SplicePart::Clean(clean) => {
+                    let start = self.prepaint_index();
+                    clean.reservation = Some(self.reserve_spliced_clean(clean.key.clone(), &clean.old));
+                    replay_prepaint(self, clean.old.prepaint_range.clone(), parent, &mut relocated);
+                    clean.prepaint = Some(start..self.prepaint_index());
+                    cursor = clean.old.prepaint_range.end.clone();
+                }
+                SplicePart::Dirty(gap) => {
+                    let old = &gap.old;
+                    let wrapper = DispatchNodeId(old.prepaint_range.start.dispatch_tree_index - 1);
+                    let node = relocate_dispatch(Some(wrapper), parent, &relocated).expect("validated gap wrapper");
+                    self.next_frame.dispatch_tree.set_active_node(node);
+                    let rebuild = old.rebuild.as_ref().expect("validated gap");
+                    self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
+                        gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
+                    });
+                    self.next_frame.dispatch_tree.set_active_node(parent);
+                    gap.node = Some(node);
+                    cursor = old.prepaint_range.end.clone();
+                }
+            }
         }
-        self.replay_prepaint_segment(cursor..splice.anchor.prepaint_range.end.clone(), |id| {
-            relocate_dispatch(id, parent, &relocated)
-        });
+        replay_prepaint(self, cursor..splice.anchor.prepaint_range.end.clone(), parent, &mut relocated);
     }
 
     pub(crate) fn paint_view_splice(&mut self, splice: &mut ViewSplice, owner: EntityId, cx: &mut App) {
         let parent = self.next_frame.dispatch_tree.active_node_id().expect("view dispatch node");
         let mut cursor = splice.anchor.paint_range.start.clone();
-        for gap in &mut splice.gaps {
-            let old = &gap.old;
-            self.replay_validated_paint(cursor..old.paint_range.start.clone());
-            self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
-            let rebuild = old.rebuild.as_ref().expect("validated gap");
-            self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
-                gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
-            });
-            self.next_frame.dispatch_tree.set_active_node(parent);
-            cursor = old.paint_range.end.clone();
+        for part in &mut splice.parts {
+            self.replay_validated_paint(cursor..part.old().paint_range.start.clone());
+            match part {
+                SplicePart::Clean(clean) => {
+                    let start = self.paint_index();
+                    self.replay_validated_paint(clean.old.paint_range.clone());
+                    let paint = start..self.paint_index();
+                    let (slot, nested) = clean.reservation.take().expect("prepainted clean subtree");
+                    self.commit_spliced_clean(&slot, nested, &clean.old, clean.claims.clone(),
+                        clean.prepaint.take().expect("prepaint range"), paint, clean.states.clone());
+                    cursor = clean.old.paint_range.end.clone();
+                }
+                SplicePart::Dirty(gap) => {
+                    let old = &gap.old;
+                    self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
+                    let rebuild = old.rebuild.as_ref().expect("validated gap");
+                    self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
+                        gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
+                    });
+                    self.next_frame.dispatch_tree.set_active_node(parent);
+                    cursor = old.paint_range.end.clone();
+                }
+            }
         }
         self.replay_validated_paint(cursor..splice.anchor.paint_range.end.clone());
         self.replayed_view_owners.insert(owner);
     }
+}
+
+fn replay_prepaint(
+    window: &mut Window, range: Range<PrepaintStateIndex>, parent: DispatchNodeId,
+    relocated: &mut SmallVec<[(Range<usize>, usize); 5]>,
+) {
+    let source = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
+    let target = window.next_frame.dispatch_tree.len();
+    window.replay_prepaint_segment(range, |id| relocate_dispatch(id, parent, relocated));
+    if !source.is_empty() {
+        relocated.push((source, target));
+    }
+}
+
+fn relocate_clean_claims(
+    claims: &LayoutClaimSpans, anchor: &Range<usize>, excluded: &[Range<usize>], target: &Range<usize>,
+) -> Option<LayoutClaimSpans> {
+    let span = &claims[0];
+    if !claims[1].is_empty() || span.is_empty() || span.start < anchor.start || span.end > anchor.end {
+        return None;
+    }
+    let mut removed = 0;
+    for gap in excluded {
+        if gap.end <= span.start {
+            removed += gap.len();
+        } else if gap.start < span.end {
+            return None;
+        } else {
+            break;
+        }
+    }
+    let start = target.start.checked_add(span.start.checked_sub(anchor.start)?.checked_sub(removed)?)?;
+    let end = start.checked_add(span.len())?;
+    (end <= target.end).then_some([start..end, 0..0])
 }
 
 fn relocate_dispatch(
