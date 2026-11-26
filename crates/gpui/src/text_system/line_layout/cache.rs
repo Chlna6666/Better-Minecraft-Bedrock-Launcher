@@ -7,9 +7,8 @@ use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
     hash::Hash,
-    mem::size_of,
+    mem,
     ops::Range,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
@@ -19,12 +18,11 @@ use std::{
 };
 
 use super::key::{AsCacheKeyRef, CacheKey, CacheKeyRef};
-use super::{FontRun, LineLayout, ShapedGlyph, ShapedRun, WrapBoundary};
+use super::{FontRun, LineLayout};
 
 pub(crate) struct LineLayoutCache {
     previous_frame: RefCell<FrameCache>,
     current_frame: RefCell<FrameCache>,
-    retained: RefCell<RetainedLayoutCache>,
     platform_text_system: Arc<dyn PlatformTextSystem>,
     font_generation: Arc<AtomicU64>,
     cached_font_generation: AtomicU64,
@@ -33,14 +31,6 @@ pub(crate) struct LineLayoutCache {
 
 const LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
 const LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER: usize = 4;
-// Retained layouts are sized from the observed working set rather than a fixed line count or a
-// fixed number of MiB. This keeps large editor/terminal workloads hot while allowing simple pages
-// to converge to a small cache instead of reserving an arbitrary global budget.
-const LINE_LAYOUT_CACHE_WORKING_SET_MULTIPLIER: usize = 3;
-const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_NUMERATOR: usize = 7;
-const LINE_LAYOUT_CACHE_WORKING_SET_DECAY_DENOMINATOR: usize = 8;
-const LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER: usize = 2;
-
 static LINE_LAYOUT_SINGLEFLIGHT: LazyLock<LineLayoutSingleflight> =
     LazyLock::new(LineLayoutSingleflight::default);
 
@@ -200,34 +190,12 @@ fn platform_text_system_identity(platform: &Arc<dyn PlatformTextSystem>) -> usiz
     Arc::as_ptr(platform) as *const () as usize
 }
 
-struct FrameLayoutEntry<V> {
-    value: V,
-    estimated_bytes: usize,
-}
-
 #[derive(Default)]
 struct FrameCache {
-    lines: FxHashMap<Arc<CacheKey>, FrameLayoutEntry<Arc<LineLayout>>>,
-    wrapped_lines: FxHashMap<Arc<CacheKey>, FrameLayoutEntry<Arc<WrappedLineLayout>>>,
+    lines: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
+    wrapped_lines: FxHashMap<Arc<CacheKey>, Arc<WrappedLineLayout>>,
     used_lines: Vec<Arc<CacheKey>>,
     used_wrapped_lines: Vec<Arc<CacheKey>>,
-    estimated_bytes: usize,
-}
-
-struct RetainedLayoutEntry<V> {
-    entry: FrameLayoutEntry<V>,
-    stamp: u64,
-}
-
-#[derive(Default)]
-struct RetainedLayoutCache {
-    lines: FxHashMap<Arc<CacheKey>, RetainedLayoutEntry<Arc<LineLayout>>>,
-    wrapped_lines: FxHashMap<Arc<CacheKey>, RetainedLayoutEntry<Arc<WrappedLineLayout>>>,
-    line_recency: VecDeque<(Arc<CacheKey>, u64)>,
-    wrapped_line_recency: VecDeque<(Arc<CacheKey>, u64)>,
-    next_stamp: u64,
-    estimated_bytes: usize,
-    working_set_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -316,7 +284,6 @@ impl LineLayoutCache {
         Self {
             previous_frame: RefCell::default(),
             current_frame: RefCell::default(),
-            retained: RefCell::default(),
             platform_text_system,
             font_generation,
             cached_font_generation: AtomicU64::new(cached_font_generation),
@@ -334,12 +301,10 @@ impl LineLayoutCache {
         // Clear every per-window tier before publishing the generation it represents.
         let mut current_frame = self.current_frame.borrow_mut();
         let mut previous_frame = self.previous_frame.borrow_mut();
-        let mut retained = self.retained.borrow_mut();
         let generation = self.font_generation.load(Ordering::Acquire);
         if self.cached_font_generation.load(Ordering::Acquire) != generation {
             current_frame.clear();
             previous_frame.clear();
-            retained.clear();
             self.cached_font_generation
                 .store(generation, Ordering::Release);
         }
@@ -364,7 +329,7 @@ impl LineLayoutCache {
             return false;
         }
 
-        let previous_frame = self.previous_frame.borrow_mut();
+        let previous_frame = self.previous_frame.borrow();
         self.font_generation.load(Ordering::Acquire) == font_generation
             && line_layout_range_is_valid(
                 range.start.lines_index,
@@ -394,8 +359,8 @@ impl LineLayoutCache {
 
         for index in range.start.lines_index..range.end.lines_index {
             let used_key = previous_frame.used_lines[index].clone();
-            if let Some((key, entry)) = previous_frame.take_line(used_key.as_ref()) {
-                current_frame.insert_line_entry(key, entry);
+            if let Some((key, entry)) = previous_frame.lines.remove_entry(used_key.as_ref()) {
+                current_frame.lines.insert(key, entry);
                 self.frame_metrics.reuse();
             }
             current_frame.used_lines.push(used_key);
@@ -403,8 +368,8 @@ impl LineLayoutCache {
 
         for index in range.start.wrapped_lines_index..range.end.wrapped_lines_index {
             let used_key = previous_frame.used_wrapped_lines[index].clone();
-            if let Some((key, entry)) = previous_frame.take_wrapped_line(used_key.as_ref()) {
-                current_frame.insert_wrapped_line_entry(key, entry);
+            if let Some((key, entry)) = previous_frame.wrapped_lines.remove_entry(used_key.as_ref()) {
+                current_frame.wrapped_lines.insert(key, entry);
                 self.frame_metrics.reuse();
             }
             current_frame.used_wrapped_lines.push(used_key);
@@ -430,47 +395,23 @@ impl LineLayoutCache {
     pub fn clear(&self) {
         let mut current_frame = self.current_frame.borrow_mut();
         let mut previous_frame = self.previous_frame.borrow_mut();
-        let mut retained = self.retained.borrow_mut();
         previous_frame.clear();
         current_frame.clear();
-        retained.clear();
     }
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         let _font_generation = self.clear_if_font_generation_changed();
         let mut current_frame = self.current_frame.borrow_mut();
         let mut previous_frame = self.previous_frame.borrow_mut();
-        let mut retained = self.retained.borrow_mut();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
-        retained.trim_retained_capacity_for_level(level);
     }
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
         let _font_generation = self.clear_if_font_generation_changed();
         let mut curr_frame = self.current_frame.borrow_mut();
         let mut prev_frame = self.previous_frame.borrow_mut();
-        std::mem::swap(&mut *prev_frame, &mut *curr_frame);
-
-        // After the swap, `prev_frame` is the frame that just finished rendering and therefore the
-        // best direct observation of the active shaping working set. `curr_frame` is the older frame
-        // whose entries were not reused and are now candidates for the retained LRU tier. The
-        // byte estimate is maintained incrementally as entries move between frame caches, so this
-        // hot frame-finalization path stays O(1) in the number of shaped glyphs.
-        let active_frame_bytes = prev_frame.estimated_bytes();
-        let mut retained = self.retained.borrow_mut();
-        retained.observe_working_set(active_frame_bytes);
-
-        for (key, entry) in curr_frame.lines.drain() {
-            retained.insert_line_entry(key, entry);
-        }
-        for (key, entry) in curr_frame.wrapped_lines.drain() {
-            retained.insert_wrapped_line_entry(key, entry);
-        }
-        curr_frame.estimated_bytes = 0;
-        curr_frame.used_lines.clear();
-        curr_frame.used_wrapped_lines.clear();
-        retained.evict_to_working_set_budget();
+        carry_over_line_layouts(&mut prev_frame, &mut curr_frame);
         self.frame_metrics.finish_frame()
     }
 
@@ -499,7 +440,7 @@ impl LineLayoutCache {
         let mut current_frame = self.current_frame.borrow_mut();
         if let Some(entry) = current_frame.wrapped_lines.get(key) {
             self.frame_metrics.hit();
-            let layout = entry.value.clone();
+            let layout = entry.clone();
             drop(current_frame);
             if self.font_generation.load(Ordering::Acquire) == font_generation {
                 return layout;
@@ -507,23 +448,10 @@ impl LineLayoutCache {
             return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
-        let previous_frame_entry = self.previous_frame.borrow_mut().take_wrapped_line(key);
+        let previous_frame_entry = self.previous_frame.borrow_mut().wrapped_lines.remove_entry(key);
         if let Some((key, entry)) = previous_frame_entry {
-            let layout = entry.value.clone();
-            current_frame.insert_wrapped_line_entry(key.clone(), entry);
-            current_frame.used_wrapped_lines.push(key);
-            self.frame_metrics.reuse();
-            drop(current_frame);
-            if self.font_generation.load(Ordering::Acquire) == font_generation {
-                return layout;
-            }
-            return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
-        }
-
-        let retained_entry = self.retained.borrow_mut().take_wrapped_line(key);
-        if let Some((key, entry)) = retained_entry {
-            let layout = entry.value.clone();
-            current_frame.insert_wrapped_line_entry(key.clone(), entry);
+            let layout = entry.clone();
+            current_frame.wrapped_lines.insert(key.clone(), entry);
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
             drop(current_frame);
@@ -569,7 +497,7 @@ impl LineLayoutCache {
                 &key.text, font_size, runs, wrap_width, max_lines,
             );
         }
-        current_frame.insert_wrapped_line(key.clone(), layout.clone());
+        current_frame.wrapped_lines.insert(key.clone(), layout.clone());
         current_frame.used_wrapped_lines.push(key);
 
         layout
@@ -599,7 +527,7 @@ impl LineLayoutCache {
         let mut current_frame = self.current_frame.borrow_mut();
         if let Some(entry) = current_frame.lines.get(key) {
             self.frame_metrics.hit();
-            let layout = entry.value.clone();
+            let layout = entry.clone();
             drop(current_frame);
             if self.font_generation.load(Ordering::Acquire) == font_generation {
                 return layout;
@@ -607,23 +535,10 @@ impl LineLayoutCache {
             return self.layout_line(text, font_size, runs, force_width);
         }
 
-        let previous_frame_entry = self.previous_frame.borrow_mut().take_line(key);
+        let previous_frame_entry = self.previous_frame.borrow_mut().lines.remove_entry(key);
         if let Some((key, entry)) = previous_frame_entry {
-            let layout = entry.value.clone();
-            current_frame.insert_line_entry(key.clone(), entry);
-            current_frame.used_lines.push(key);
-            self.frame_metrics.reuse();
-            drop(current_frame);
-            if self.font_generation.load(Ordering::Acquire) == font_generation {
-                return layout;
-            }
-            return self.layout_line(text, font_size, runs, force_width);
-        }
-
-        let retained_entry = self.retained.borrow_mut().take_line(key);
-        if let Some((key, entry)) = retained_entry {
-            let layout = entry.value.clone();
-            current_frame.insert_line_entry(key.clone(), entry);
+            let layout = entry.clone();
+            current_frame.lines.insert(key.clone(), entry);
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
             drop(current_frame);
@@ -666,7 +581,7 @@ impl LineLayoutCache {
             drop(current_frame);
             return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
         }
-        current_frame.insert_line(key.clone(), layout.clone());
+        current_frame.lines.insert(key.clone(), layout.clone());
         current_frame.used_lines.push(key);
         layout
     }
@@ -706,107 +621,11 @@ fn line_layout_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 }
 
 impl FrameCache {
-    fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
-        let entry = FrameLayoutEntry {
-            estimated_bytes: estimate_line_entry_bytes(&key, &layout),
-            value: layout,
-        };
-        self.insert_line_entry(key, entry);
-    }
-
-    fn insert_line_entry(
-        &mut self,
-        key: Arc<CacheKey>,
-        mut entry: FrameLayoutEntry<Arc<LineLayout>>,
-    ) {
-        if let Some((stored_key, _)) = self.lines.get_key_value(&key) {
-            entry.estimated_bytes = rebase_estimated_entry_bytes(
-                entry.estimated_bytes,
-                key.as_ref(),
-                stored_key.as_ref(),
-            );
-        }
-        let estimated_bytes = entry.estimated_bytes;
-        if let Some(previous) = self.lines.insert(key, entry) {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(previous.estimated_bytes);
-        }
-        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
-    }
-
-    fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
-        let entry = FrameLayoutEntry {
-            estimated_bytes: estimate_wrapped_line_entry_bytes(&key, &layout),
-            value: layout,
-        };
-        self.insert_wrapped_line_entry(key, entry);
-    }
-
-    fn insert_wrapped_line_entry(
-        &mut self,
-        key: Arc<CacheKey>,
-        mut entry: FrameLayoutEntry<Arc<WrappedLineLayout>>,
-    ) {
-        if let Some((stored_key, _)) = self.wrapped_lines.get_key_value(&key) {
-            entry.estimated_bytes = rebase_estimated_entry_bytes(
-                entry.estimated_bytes,
-                key.as_ref(),
-                stored_key.as_ref(),
-            );
-        }
-        let estimated_bytes = entry.estimated_bytes;
-        if let Some(previous) = self.wrapped_lines.insert(key, entry) {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(previous.estimated_bytes);
-        }
-        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
-    }
-
-    fn take_line(
-        &mut self,
-        key: &dyn AsCacheKeyRef,
-    ) -> Option<(Arc<CacheKey>, FrameLayoutEntry<Arc<LineLayout>>)> {
-        self.lines.remove_entry(key).map(|(key, entry)| {
-            self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
-            (key, entry)
-        })
-    }
-
-    fn take_wrapped_line(
-        &mut self,
-        key: &dyn AsCacheKeyRef,
-    ) -> Option<(Arc<CacheKey>, FrameLayoutEntry<Arc<WrappedLineLayout>>)> {
-        self.wrapped_lines.remove_entry(key).map(|(key, entry)| {
-            self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
-            (key, entry)
-        })
-    }
-
     fn clear(&mut self) {
         self.lines.clear();
         self.wrapped_lines.clear();
         self.used_lines.clear();
         self.used_wrapped_lines.clear();
-        self.estimated_bytes = 0;
-    }
-
-    #[inline]
-    fn estimated_bytes(&self) -> usize {
-        self.estimated_bytes
-    }
-
-    #[cfg(test)]
-    fn recompute_estimated_bytes(&self) -> usize {
-        let line_bytes = self.lines.iter().fold(0usize, |total, (key, entry)| {
-            total.saturating_add(estimate_line_entry_bytes(key, &entry.value))
-        });
-        self.wrapped_lines
-            .iter()
-            .fold(line_bytes, |total, (key, entry)| {
-                total.saturating_add(estimate_wrapped_line_entry_bytes(key, &entry.value))
-            })
     }
 
     fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
@@ -853,353 +672,32 @@ impl FrameCache {
     }
 }
 
-impl RetainedLayoutCache {
-    fn next_stamp(&mut self) -> u64 {
-        self.next_stamp = self.next_stamp.wrapping_add(1);
-        self.next_stamp
+// Ownership-driven carry-over from longbridge/gpui-fast, fast/text.rs,
+// revision 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
+// Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge.
+// SPDX-License-Identifier: Apache-2.0
+fn carry_over<K: Eq + Hash, V>(
+    previous: &mut FxHashMap<Arc<K>, Arc<V>>,
+    current: &mut FxHashMap<Arc<K>, Arc<V>>,
+) {
+    previous.retain(|_, layout| Arc::strong_count(layout) > 1);
+    if previous.len() < current.len() {
+        mem::swap(previous, current);
     }
-
-    fn observe_working_set(&mut self, frame_bytes: usize) {
-        let decayed = self
-            .working_set_bytes
-            .saturating_mul(LINE_LAYOUT_CACHE_WORKING_SET_DECAY_NUMERATOR)
-            / LINE_LAYOUT_CACHE_WORKING_SET_DECAY_DENOMINATOR;
-        self.working_set_bytes = frame_bytes.max(decayed);
-    }
-
-    fn working_set_budget(&self) -> usize {
-        self.working_set_bytes
-            .saturating_mul(LINE_LAYOUT_CACHE_WORKING_SET_MULTIPLIER)
-    }
-
-    #[cfg(test)]
-    fn insert_line(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>) {
-        let entry = FrameLayoutEntry {
-            estimated_bytes: estimate_line_entry_bytes(&key, &layout),
-            value: layout,
-        };
-        self.insert_line_entry(key, entry);
-    }
-
-    fn insert_line_entry(
-        &mut self,
-        key: Arc<CacheKey>,
-        mut entry: FrameLayoutEntry<Arc<LineLayout>>,
-    ) {
-        if let Some((stored_key, _)) = self.lines.get_key_value(&key) {
-            entry.estimated_bytes = rebase_estimated_entry_bytes(
-                entry.estimated_bytes,
-                key.as_ref(),
-                stored_key.as_ref(),
-            );
-        }
-        let stamp = self.next_stamp();
-        let estimated_bytes = entry.estimated_bytes;
-        if let Some(previous) = self
-            .lines
-            .insert(key.clone(), RetainedLayoutEntry { entry, stamp })
-        {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(previous.entry.estimated_bytes);
-        }
-        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
-        self.line_recency.push_back((key, stamp));
-        if self.should_compact_recency() {
-            self.compact_recency();
-        }
-    }
-
-    #[cfg(test)]
-    fn insert_wrapped_line(&mut self, key: Arc<CacheKey>, layout: Arc<WrappedLineLayout>) {
-        let entry = FrameLayoutEntry {
-            estimated_bytes: estimate_wrapped_line_entry_bytes(&key, &layout),
-            value: layout,
-        };
-        self.insert_wrapped_line_entry(key, entry);
-    }
-
-    fn insert_wrapped_line_entry(
-        &mut self,
-        key: Arc<CacheKey>,
-        mut entry: FrameLayoutEntry<Arc<WrappedLineLayout>>,
-    ) {
-        if let Some((stored_key, _)) = self.wrapped_lines.get_key_value(&key) {
-            entry.estimated_bytes = rebase_estimated_entry_bytes(
-                entry.estimated_bytes,
-                key.as_ref(),
-                stored_key.as_ref(),
-            );
-        }
-        let stamp = self.next_stamp();
-        let estimated_bytes = entry.estimated_bytes;
-        if let Some(previous) = self
-            .wrapped_lines
-            .insert(key.clone(), RetainedLayoutEntry { entry, stamp })
-        {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(previous.entry.estimated_bytes);
-        }
-        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
-        self.wrapped_line_recency.push_back((key, stamp));
-        if self.should_compact_recency() {
-            self.compact_recency();
-        }
-    }
-
-    fn take_line(
-        &mut self,
-        key: &dyn AsCacheKeyRef,
-    ) -> Option<(Arc<CacheKey>, FrameLayoutEntry<Arc<LineLayout>>)> {
-        self.lines.remove_entry(key).map(|(key, retained)| {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(retained.entry.estimated_bytes);
-            (key, retained.entry)
-        })
-    }
-
-    fn take_wrapped_line(
-        &mut self,
-        key: &dyn AsCacheKeyRef,
-    ) -> Option<(Arc<CacheKey>, FrameLayoutEntry<Arc<WrappedLineLayout>>)> {
-        self.wrapped_lines.remove_entry(key).map(|(key, retained)| {
-            self.estimated_bytes = self
-                .estimated_bytes
-                .saturating_sub(retained.entry.estimated_bytes);
-            (key, retained.entry)
-        })
-    }
-
-    fn clear(&mut self) {
-        self.lines.clear();
-        self.wrapped_lines.clear();
-        self.line_recency.clear();
-        self.wrapped_line_recency.clear();
-        self.next_stamp = 0;
-        self.estimated_bytes = 0;
-        self.working_set_bytes = 0;
-    }
-
-    /// Whether the recency queue has grown past the live-entry compaction threshold.
-    fn should_compact_recency(&self) -> bool {
-        let live_entries = self.lines.len().saturating_add(self.wrapped_lines.len());
-        let queue_entries = self
-            .line_recency
-            .len()
-            .saturating_add(self.wrapped_line_recency.len());
-        let compact_at = live_entries
-            .saturating_mul(LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER)
-            .max(live_entries.saturating_add(LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY));
-        queue_entries > compact_at
-    }
-
-    fn compact_recency(&mut self) {
-        compact_retained_recency(&self.lines, &mut self.line_recency);
-        compact_retained_recency(&self.wrapped_lines, &mut self.wrapped_line_recency);
-    }
-
-    fn evict_to_working_set_budget(&mut self) {
-        self.evict_to_bytes(self.working_set_budget());
-    }
-
-    fn evict_to_bytes(&mut self, target_bytes: usize) {
-        while self.estimated_bytes > target_bytes {
-            let line_stamp = oldest_valid_stamp(&self.lines, &mut self.line_recency);
-            let wrapped_stamp =
-                oldest_valid_stamp(&self.wrapped_lines, &mut self.wrapped_line_recency);
-
-            match (line_stamp, wrapped_stamp) {
-                (Some(line_stamp), Some(wrapped_stamp)) if line_stamp <= wrapped_stamp => {
-                    if !evict_oldest_retained(
-                        &mut self.lines,
-                        &mut self.line_recency,
-                        &mut self.estimated_bytes,
-                    ) {
-                        break;
-                    }
-                }
-                (Some(_), Some(_)) | (None, Some(_)) => {
-                    if !evict_oldest_retained(
-                        &mut self.wrapped_lines,
-                        &mut self.wrapped_line_recency,
-                        &mut self.estimated_bytes,
-                    ) {
-                        break;
-                    }
-                }
-                (Some(_), None) => {
-                    if !evict_oldest_retained(
-                        &mut self.lines,
-                        &mut self.line_recency,
-                        &mut self.estimated_bytes,
-                    ) {
-                        break;
-                    }
-                }
-                (None, None) => break,
-            }
-        }
-    }
-
-    fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {
-        match level {
-            GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
-                let divisor = match level {
-                    GpuiMemoryTrimLevel::Light => 2,
-                    GpuiMemoryTrimLevel::Moderate => 4,
-                    GpuiMemoryTrimLevel::Aggressive => unreachable!(),
-                };
-                self.working_set_bytes /= divisor;
-                self.evict_to_working_set_budget();
-                if self.should_compact_recency() {
-                    self.compact_recency();
-                }
-
-                let line_capacity = LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.lines.len());
-                let wrapped_capacity =
-                    LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.wrapped_lines.len());
-                trim_map_capacity(
-                    &mut self.lines,
-                    line_capacity,
-                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-                );
-                trim_map_capacity(
-                    &mut self.wrapped_lines,
-                    wrapped_capacity,
-                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-                );
-                trim_deque_capacity(
-                    &mut self.line_recency,
-                    line_capacity,
-                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-                );
-                trim_deque_capacity(
-                    &mut self.wrapped_line_recency,
-                    wrapped_capacity,
-                    LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER,
-                );
-            }
-            GpuiMemoryTrimLevel::Aggressive => {
-                self.clear();
-                self.lines.shrink_to(0);
-                self.wrapped_lines.shrink_to(0);
-                self.line_recency.shrink_to(0);
-                self.wrapped_line_recency.shrink_to(0);
-            }
-        }
-    }
+    previous.extend(current.drain());
 }
 
-fn estimate_cache_key_bytes(key: &CacheKey) -> usize {
-    size_of::<CacheKey>()
-        .saturating_add(key.text.len())
-        .saturating_add(key.runs.len().saturating_mul(size_of::<FontRun>()))
-}
+fn carry_over_line_layouts(previous: &mut FrameCache, current: &mut FrameCache) {
+    // Wrapped layouts own their underlying line; release dead wrappers first.
+    carry_over(&mut previous.wrapped_lines, &mut current.wrapped_lines);
+    carry_over(&mut previous.lines, &mut current.lines);
 
-fn rebase_estimated_entry_bytes(
-    estimated_bytes: usize,
-    source_key: &CacheKey,
-    stored_key: &CacheKey,
-) -> usize {
-    estimated_bytes
-        .saturating_sub(estimate_cache_key_bytes(source_key))
-        .saturating_add(estimate_cache_key_bytes(stored_key))
-}
-
-fn estimate_line_layout_bytes(layout: &LineLayout) -> usize {
-    layout.runs.iter().fold(
-        size_of::<LineLayout>().saturating_add(
-            layout
-                .runs
-                .capacity()
-                .saturating_mul(size_of::<ShapedRun>()),
-        ),
-        |total, run| {
-            total.saturating_add(
-                run.glyphs
-                    .capacity()
-                    .saturating_mul(size_of::<ShapedGlyph>()),
-            )
-        },
-    )
-}
-
-fn estimate_wrapped_line_layout_bytes(layout: &WrappedLineLayout) -> usize {
-    size_of::<WrappedLineLayout>()
-        .saturating_add(
-            layout
-                .wrap_boundaries
-                .capacity()
-                .saturating_mul(size_of::<WrapBoundary>()),
-        )
-        // Count the shared unwrapped layout conservatively. It is often also present in the line
-        // cache, but double-counting shared storage is preferable to retaining large wrapped text
-        // indefinitely after its standalone line entry has already been evicted.
-        .saturating_add(estimate_line_layout_bytes(&layout.unwrapped_layout))
-}
-
-fn estimate_line_entry_bytes(key: &CacheKey, layout: &LineLayout) -> usize {
-    estimate_cache_key_bytes(key)
-        .saturating_add(estimate_line_layout_bytes(layout))
-        .saturating_add(size_of::<RetainedLayoutEntry<Arc<LineLayout>>>())
-        .saturating_add(size_of::<usize>() * 2)
-}
-
-fn estimate_wrapped_line_entry_bytes(key: &CacheKey, layout: &WrappedLineLayout) -> usize {
-    estimate_cache_key_bytes(key)
-        .saturating_add(estimate_wrapped_line_layout_bytes(layout))
-        .saturating_add(size_of::<RetainedLayoutEntry<Arc<WrappedLineLayout>>>())
-        .saturating_add(size_of::<usize>() * 2)
-}
-
-fn oldest_valid_stamp<K, V>(
-    map: &FxHashMap<K, RetainedLayoutEntry<V>>,
-    recency: &mut VecDeque<(K, u64)>,
-) -> Option<u64>
-where
-    K: Clone + Eq + Hash,
-{
-    loop {
-        let (key, stamp) = recency.front()?;
-        if map.get(key).is_some_and(|entry| entry.stamp == *stamp) {
-            return Some(*stamp);
-        }
-        recency.pop_front();
-    }
-}
-
-fn evict_oldest_retained<K, V>(
-    map: &mut FxHashMap<K, RetainedLayoutEntry<V>>,
-    recency: &mut VecDeque<(K, u64)>,
-    estimated_bytes: &mut usize,
-) -> bool
-where
-    K: Clone + Eq + Hash,
-{
-    while let Some((candidate, stamp)) = recency.pop_front() {
-        if !map
-            .get(&candidate)
-            .is_some_and(|entry| entry.stamp == stamp)
-        {
-            continue;
-        }
-        if let Some(entry) = map.remove(&candidate) {
-            *estimated_bytes = estimated_bytes.saturating_sub(entry.entry.estimated_bytes);
-            return true;
-        }
-    }
-    false
-}
-
-fn compact_retained_recency<K, V>(
-    map: &FxHashMap<K, RetainedLayoutEntry<V>>,
-    recency: &mut VecDeque<(K, u64)>,
-) where
-    K: Eq + Hash,
-{
-    recency.retain(|(key, stamp)| map.get(key).is_some_and(|entry| entry.stamp == *stamp));
+    // Replay indices describe only this frame's access log, not all live
+    // layouts. Retaining a layout does not retain the old frame's log.
+    mem::swap(&mut previous.used_lines, &mut current.used_lines);
+    mem::swap(&mut previous.used_wrapped_lines, &mut current.used_wrapped_lines);
+    current.used_lines.clear();
+    current.used_wrapped_lines.clear();
 }
 
 fn trim_map_capacity<K, V>(map: &mut FxHashMap<K, V>, floor: usize, multiplier: usize)
@@ -1216,13 +714,6 @@ fn trim_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     let target = floor.max(vec.len());
     if vec.capacity() > target.saturating_mul(multiplier) {
         vec.shrink_to(target);
-    }
-}
-
-fn trim_deque_capacity<T>(deque: &mut VecDeque<T>, floor: usize, multiplier: usize) {
-    let target = floor.max(deque.len());
-    if deque.capacity() > target.saturating_mul(multiplier) {
-        deque.shrink_to(target);
     }
 }
 
@@ -1390,159 +881,39 @@ mod tests {
     }
 
     #[test]
-    fn frame_cache_estimated_bytes_stay_incremental() {
-        let line_key = Arc::new(CacheKey {
-            text: "line".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 4,
-                font_id: FontId(1),
-            }]),
-            wrap_width: None,
-            max_lines: None,
-            force_width: None,
-        });
-        let wrapped_key = Arc::new(CacheKey {
-            text: "wrapped".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 7,
-                font_id: FontId(1),
-            }]),
-            wrap_width: Some(px(80.)),
-            max_lines: None,
-            force_width: None,
-        });
-        let line = Arc::new(LineLayout::default());
-        let wrapped = Arc::new(WrappedLineLayout {
-            unwrapped_layout: line.clone(),
-            wrap_boundaries: SmallVec::new(),
-            wrap_width: Some(px(80.)),
-        });
-
-        let mut frame = FrameCache::default();
-        frame.insert_line(line_key.clone(), line.clone());
-        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
-
-        frame.insert_wrapped_line(wrapped_key.clone(), wrapped);
-        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
-
-        let _ = frame.take_line(line_key.as_ref()).unwrap();
-        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
-
-        let _ = frame.take_wrapped_line(wrapped_key.as_ref()).unwrap();
-        assert_eq!(frame.estimated_bytes(), 0);
-        assert_eq!(frame.estimated_bytes(), frame.recompute_estimated_bytes());
-    }
-
-    #[test]
-    fn cached_entry_bytes_survive_frame_and_retained_migration() {
-        let line_key = Arc::new(CacheKey {
-            text: "line".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 4,
-                font_id: FontId(1),
-            }]),
-            wrap_width: None,
-            max_lines: None,
-            force_width: None,
-        });
-        let wrapped_key = Arc::new(CacheKey {
-            text: "wrapped".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 7,
-                font_id: FontId(1),
-            }]),
-            wrap_width: Some(px(80.)),
-            max_lines: None,
-            force_width: None,
-        });
-        let line = Arc::new(LineLayout::default());
-        let wrapped = Arc::new(WrappedLineLayout {
-            unwrapped_layout: line.clone(),
-            wrap_boundaries: SmallVec::new(),
-            wrap_width: Some(px(80.)),
-        });
-        let line_bytes = 123_456;
-        let wrapped_bytes = 234_567;
-
-        let mut retained = RetainedLayoutCache::default();
-        retained.insert_line_entry(
-            line_key.clone(),
-            FrameLayoutEntry {
-                value: line,
-                estimated_bytes: line_bytes,
-            },
-        );
-        retained.insert_wrapped_line_entry(
-            wrapped_key.clone(),
-            FrameLayoutEntry {
-                value: wrapped,
-                estimated_bytes: wrapped_bytes,
-            },
-        );
-        assert_eq!(retained.estimated_bytes, line_bytes + wrapped_bytes);
-
-        let (_, line_entry) = retained.take_line(line_key.as_ref()).unwrap();
-        let (_, wrapped_entry) = retained.take_wrapped_line(wrapped_key.as_ref()).unwrap();
-        assert_eq!(line_entry.estimated_bytes, line_bytes);
-        assert_eq!(wrapped_entry.estimated_bytes, wrapped_bytes);
-
-        let mut frame = FrameCache::default();
-        frame.insert_line_entry(line_key, line_entry);
-        frame.insert_wrapped_line_entry(wrapped_key, wrapped_entry);
-        assert_eq!(frame.estimated_bytes(), line_bytes + wrapped_bytes);
-    }
-
-    #[test]
-    fn finish_frame_observes_incremental_working_set_bytes() {
+    fn unused_layouts_are_released_but_live_measurements_survive_idle_frames() {
         let cache =
             LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
-        let runs = [FontRun {
-            len: 5,
-            font_id: FontId(1),
-        }];
-
-        cache.layout_line("hello", px(14.), &runs, None);
-        let expected = cache.current_frame.borrow().estimated_bytes();
-        assert!(expected > 0);
+        let runs = [FontRun { len: 5, font_id: FontId(1) }];
+        let live = cache.layout_line("hello", px(14.), &runs, None);
+        let dead = cache.layout_line("other", px(14.), &runs, None);
+        let weak = Arc::downgrade(&dead);
+        drop(dead);
         cache.finish_frame();
-
-        assert_eq!(cache.retained.borrow_mut().working_set_bytes, expected);
-        assert_eq!(cache.current_frame.borrow().estimated_bytes(), 0);
+        assert!(weak.upgrade().is_some());
+        cache.finish_frame();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(cache.previous_frame.borrow().lines.len(), 1);
+        assert!(cache.previous_frame.borrow().used_lines.is_empty());
+        let reused = cache.layout_line("hello", px(14.), &runs, None);
+        assert!(Arc::ptr_eq(&live, &reused));
     }
 
     #[test]
-    fn finish_frame_reuses_precomputed_entry_bytes_for_retention() {
+    fn dead_wrapped_layout_does_not_keep_its_unwrapped_line_alive() {
         let cache =
             LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
-        let runs = [FontRun {
-            len: 5,
-            font_id: FontId(1),
-        }];
-
-        cache.layout_line("hello", px(14.), &runs, None);
-        let expected = cache.current_frame.borrow().estimated_bytes();
-        assert!(expected > 0);
-
+        let runs = [FontRun { len: 5, font_id: FontId(1) }];
+        let wrapped = cache.layout_wrapped_line("hello", px(14.), &runs, Some(px(80.)), None);
+        let weak_wrapped = Arc::downgrade(&wrapped);
+        let weak_line = Arc::downgrade(&wrapped.unwrapped_layout);
+        drop(wrapped);
         cache.finish_frame();
         cache.finish_frame();
-
-        let retained = cache.retained.borrow_mut();
-        assert_eq!(retained.lines.len(), 1);
-        assert_eq!(retained.estimated_bytes, expected);
-        assert_eq!(
-            retained
-                .lines
-                .values()
-                .next()
-                .unwrap()
-                .entry
-                .estimated_bytes,
-            expected
-        );
+        assert!(weak_wrapped.upgrade().is_none());
+        assert!(weak_line.upgrade().is_none());
+        assert!(cache.previous_frame.borrow().wrapped_lines.is_empty());
+        assert!(cache.previous_frame.borrow().lines.is_empty());
     }
 
     #[test]
@@ -1587,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_line_reuses_retained_entry_after_idle_frame() {
+    fn layout_line_reuses_live_entry_after_idle_frame() {
         let cache =
             LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
@@ -1604,65 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_budget_tracks_observed_working_set_bytes() {
-        let mut retained = RetainedLayoutCache::default();
-        retained.observe_working_set(1_000);
-        assert_eq!(retained.working_set_budget(), 3_000);
-
-        retained.observe_working_set(100);
-        assert_eq!(retained.working_set_bytes, 875);
-        assert_eq!(retained.working_set_budget(), 2_625);
-
-        retained.observe_working_set(2_000);
-        assert_eq!(retained.working_set_bytes, 2_000);
-        assert_eq!(retained.working_set_budget(), 6_000);
-    }
-
-    #[test]
-    fn retained_eviction_is_global_lru_across_layout_kinds() {
-        let mut retained = RetainedLayoutCache::default();
-        retained.working_set_bytes = 1;
-
-        let first_key = Arc::new(CacheKey {
-            text: "first".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 5,
-                font_id: FontId(1),
-            }]),
-            wrap_width: None,
-            max_lines: None,
-            force_width: None,
-        });
-        let second_key = Arc::new(CacheKey {
-            text: "second".into(),
-            font_size: px(14.),
-            runs: SmallVec::from([FontRun {
-                len: 6,
-                font_id: FontId(1),
-            }]),
-            wrap_width: Some(px(80.)),
-            max_lines: None,
-            force_width: None,
-        });
-        let line = Arc::new(LineLayout::default());
-        let wrapped = Arc::new(WrappedLineLayout {
-            unwrapped_layout: line.clone(),
-            wrap_boundaries: SmallVec::new(),
-            wrap_width: Some(px(80.)),
-        });
-
-        retained.insert_line(first_key.clone(), line);
-        retained.insert_wrapped_line(second_key.clone(), wrapped);
-        retained.evict_to_bytes(0);
-
-        assert!(retained.lines.is_empty());
-        assert!(retained.wrapped_lines.is_empty());
-        assert_eq!(retained.estimated_bytes, 0);
-    }
-
-    #[test]
-    fn font_generation_invalidates_frame_and_retained_layouts() {
+    fn font_generation_invalidates_live_layouts() {
         let generation = Arc::new(AtomicU64::new(0));
         let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), generation.clone());
         let runs = [FontRun {
