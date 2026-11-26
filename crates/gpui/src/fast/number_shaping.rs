@@ -165,7 +165,7 @@ impl NumberShaping {
         if font.checked < CHECKED_FIRST || font.lines.is_multiple_of(CHECKED_EVERY) {
             let shaped = platform.layout_line(text, font_size, runs);
             if !agree(&layout, &shaped) {
-                tracing::debug!(
+                log::debug!(
                     "numbers in font {font_id:?} at {font_size:?} are left to the platform: \
                      it shapes {text:?} differently"
                 );

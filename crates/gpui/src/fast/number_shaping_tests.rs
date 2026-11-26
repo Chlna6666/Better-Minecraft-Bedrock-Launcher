@@ -269,3 +269,29 @@ fn lines_other_than_numbers_are_left_to_the_platform() {
     ];
     assert!(shaping.shape(&shaper, "12", size, &two_runs, 0).is_none());
 }
+
+#[test]
+fn font_generation_discards_pair_tables_and_mismatch_decisions() {
+    let shaper = Shaper::default();
+    let mut shaping = NumberShaping::default();
+    let size = px(13.);
+    shaper.in_context.store(true, Ordering::Relaxed);
+    assert!(shaping.shape(&shaper, "1-2", size, &run("1-2"), 0).is_some());
+    assert!(shaping.shape(&shaper, "12", size, &run("12"), 0).is_none());
+    shaper.in_context.store(false, Ordering::Relaxed);
+    assert!(shaping.shape(&shaper, "12", size, &run("12"), 1).is_some());
+}
+
+#[test]
+fn animated_font_sizes_do_not_grow_pair_tables_without_bound() {
+    let shaper = Shaper::default();
+    let mut shaping = NumberShaping::default();
+    for i in 0..super::MAX_FONTS {
+        assert!(shaping.shape(&shaper, "12", px(10. + i as f32), &run("12"), 0).is_some());
+    }
+    assert!(shaping.shape(&shaper, "12", px(100.), &run("12"), 0).is_none());
+    assert_eq!(shaping.fonts.len(), super::MAX_FONTS);
+    shaping.clear();
+    assert!(shaping.fonts.is_empty());
+    assert!(shaping.shape(&shaper, "12", px(100.), &run("12"), 0).is_some());
+}
