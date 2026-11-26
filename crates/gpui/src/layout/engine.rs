@@ -833,6 +833,10 @@ impl TaffyLayoutEngine {
         spans.resolve(&self.claim_relocations)
     }
 
+    pub(crate) fn resolve_claim_blocks_in_place(&self, spans: &mut LayoutClaimBlocks) {
+        spans.resolve_in_place(&self.claim_relocations);
+    }
+
     /// Cancel exactly the speculative claims made by admission, without
     /// scanning unrelated nodes or allocating a temporary set.
     pub(crate) fn release_kept(&mut self, spans: &LayoutClaimBlocks) {

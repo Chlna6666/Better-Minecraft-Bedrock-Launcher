@@ -541,8 +541,8 @@ impl Window {
                     self.replay_validated_paint(clean.old.paint_range.clone());
                     let paint = start..self.paint_index();
                     let (slot, nested) = clean.reservation.take().expect("prepainted clean subtree");
-                    self.commit_spliced_clean(&slot, nested, &clean.old, clean.claims.clone(),
-                        clean.prepaint.take().expect("prepaint range"), paint, clean.states.clone());
+                    self.commit_spliced_clean(&slot, nested, &clean.old, std::mem::take(&mut clean.claims),
+                        clean.prepaint.take().expect("prepaint range"), paint, std::mem::take(&mut clean.states));
                     cursor = clean.old.paint_range.end.clone();
                 }
                 SplicePart::Dirty(gap) => {
@@ -569,13 +569,13 @@ impl Window {
                         window.paint_splice_parts(children, &ancestor.old.paint_range, parent, cx);
                         let end = window.paint_index();
                         window.commit_view_retention(&slot, RetainedViewRecord {
-                            layout_root: ancestor.old.layout_root, layout_claims: ancestor.claims.clone(),
+                            layout_root: ancestor.old.layout_root, layout_claims: std::mem::take(&mut ancestor.claims),
                             prepaint_range: ancestor.prepaint.take().expect("prepaint range"),
                             paint_range: start..end, bounds: ancestor.old.bounds,
                             context: ancestor.old.context.clone(), rebuild: ancestor.old.rebuild.clone(),
                             splice_safe: ancestor.old.splice_safe, nested,
                             scene_segments: scene_segments_start..window.next_frame.retained_scene_segments.len(),
-                            layout_state_range: ancestor.states.clone(),
+                            layout_state_range: std::mem::take(&mut ancestor.states),
                         }, None);
                     });
                     self.replayed_view_owners.insert(owner);

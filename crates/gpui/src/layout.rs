@@ -106,14 +106,16 @@ impl LayoutClaimBlocks {
     }
 
     pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {
-        let mut result = Self::default();
-        for span in self.request_blocks() {
-            result.push_request(moves.resolve(span));
-        }
-        for span in self.prepaint_blocks() {
-            result.push_prepaint(moves.resolve(span));
-        }
+        let mut result = self.clone();
+        result.resolve_in_place(moves);
         result
+    }
+
+    /// Relocation preserves span length and the request/prepaint partition.
+    pub(crate) fn resolve_in_place(&mut self, moves: &SpanRelocations) {
+        for span in &mut self.blocks {
+            *span = moves.resolve(span);
+        }
     }
 }
 

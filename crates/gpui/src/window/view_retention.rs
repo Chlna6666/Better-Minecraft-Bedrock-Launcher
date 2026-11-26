@@ -32,9 +32,15 @@ impl StateAccessBlocks {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Range<usize>> { self.0.iter() }
 
     pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {
-        let mut result = Self::default();
-        for span in self.iter() { result.push(moves.resolve(span)); }
+        let mut result = self.clone();
+        result.resolve_in_place(moves);
         result
+    }
+
+    fn resolve_in_place(&mut self, moves: &SpanRelocations) {
+        for span in &mut self.0 {
+            *span = moves.resolve(span);
+        }
     }
 
     fn normalize(&mut self) {
@@ -434,10 +440,10 @@ impl Window {
         mut record: RetainedViewRecord,
         reused: Option<&RetainedViewRecord>,
     ) {
-        record.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
-            .resolve_claim_blocks(&record.layout_claims);
+        self.layout_engine.as_ref().expect("layout engine installed")
+            .resolve_claim_blocks_in_place(&mut record.layout_claims);
         record.layout_claims.normalize();
-        record.layout_state_range = record.layout_state_range.resolve(&self.prebuilt_state_relocations);
+        record.layout_state_range.resolve_in_place(&self.prebuilt_state_relocations);
         record.layout_state_range.normalize();
         let index = slot.0;
         if let Some(source) = reused {
@@ -477,6 +483,10 @@ impl Window {
     ) {
         let Some(claim_map) = ClaimBlockMap::between(&source.layout_claims, target_claims) else { return; };
         let Some(state_map) = source.layout_state_range.between(target_states) else { return; };
+        let source_prepaint_states = source.prepaint_range.start.accessed_element_states_index
+            ..source.prepaint_range.end.accessed_element_states_index;
+        let target_prepaint_states = target_prepaint.start.accessed_element_states_index
+            ..target_prepaint.end.accessed_element_states_index;
         for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
             let Some(nested) = entry.record.as_ref() else {
                 continue;
@@ -494,10 +504,6 @@ impl Window {
                 continue;
             };
             let mut layout_states = StateAccessBlocks::default();
-            let source_prepaint_states = source.prepaint_range.start.accessed_element_states_index
-                ..source.prepaint_range.end.accessed_element_states_index;
-            let target_prepaint_states = target_prepaint.start.accessed_element_states_index
-                ..target_prepaint.end.accessed_element_states_index;
             let mut valid_states = true;
             for span in nested.layout_state_range.iter() {
                 let mut mapped = StateAccessBlocks::default();
