@@ -818,7 +818,7 @@ impl Window {
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
-        let mut entities = mem::take(cx.entities.accessed_entities.get_mut());
+        let mut entities = mem::take(&mut cx.entities.frame_entity_scratch);
         let mut log = cx.entities.finish_frame_read_log();
         self.invalidator.commit_frame_dependencies(
             &mut log,
@@ -835,7 +835,7 @@ impl Window {
             self.invalidator.clone(),
             &entities,
         );
-        mem::swap(&mut entities, cx.entities.accessed_entities.get_mut());
+        cx.entities.frame_entity_scratch = entities;
     }
 
     fn invalidate_entities(&mut self) -> SmallVec<[EntityId; 8]> {

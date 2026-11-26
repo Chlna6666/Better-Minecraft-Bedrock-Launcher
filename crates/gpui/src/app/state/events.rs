@@ -253,12 +253,14 @@ mod tests {
         cx.update(|cx| {
             let first = cx.new(|_| 1);
             let second = cx.new(|_| 2);
-            cx.entities.clear_accessed();
+            cx.entities.begin_frame_dependencies();
 
             let _ = first.read(cx);
             let _ = first.read(cx);
             let _ = second.read(cx);
-            let frame_accesses = cx.entities.accessed_entities.borrow();
+            let reads = cx.entities.finish_frame_read_log().into_sets();
+            let frame_accesses = &reads[&None].entities;
+            assert_eq!(frame_accesses.len(), 2);
             assert!(frame_accesses.contains(&first.entity_id()));
             assert!(frame_accesses.contains(&second.entity_id()));
         });

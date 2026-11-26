@@ -154,6 +154,10 @@ pub(crate) fn observe<S: 'static, T: Copy + PartialEq + 'static>(
 }
 
 fn merge_reads(target: &mut Vec<ScrollRead>, incoming: Vec<ScrollRead>) {
+    if target.is_empty() {
+        *target = incoming;
+        return;
+    }
     for entry in incoming {
         if !target.iter().any(|current| current.key == entry.key) {
             target.push(entry);

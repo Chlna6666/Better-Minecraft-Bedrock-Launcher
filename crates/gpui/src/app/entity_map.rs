@@ -99,12 +99,25 @@ impl FrameReadLog {
         self.entities.dedup();
         self.globals.sort_unstable();
         self.globals.dedup();
-        for (owner, entity) in self.entities.drain(..) {
-            reads.entry(owner).or_default().entities.push(entity);
+        for group in self.entities.chunk_by(|a, b| a.0 == b.0) {
+            let target = &mut reads.entry(group[0].0).or_default().entities;
+            let overlaps_replay = !target.is_empty();
+            target.extend(group.iter().map(|entry| entry.1));
+            if overlaps_replay {
+                target.sort_unstable();
+                target.dedup();
+            }
         }
-        for (owner, key) in self.globals.drain(..) {
-            reads.entry(owner).or_default().globals.push(key);
+        for group in self.globals.chunk_by(|a, b| a.0 == b.0) {
+            let target = &mut reads.entry(group[0].0).or_default().globals;
+            let overlaps_replay = !target.is_empty();
+            target.extend(group.iter().map(|entry| entry.1));
+            if overlaps_replay {
+                target.sort_unstable();
+                target.dedup();
+            }
         }
+        self.clear();
     }
 
     #[cfg(test)]
@@ -118,7 +131,8 @@ impl FrameReadLog {
 pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     entity_type_names: SecondaryMap<EntityId, &'static str>,
-    pub accessed_entities: RefCell<FxHashSet<EntityId>>,
+    // Reused only at publication; entity reads never hash into this set.
+    pub(crate) frame_entity_scratch: FxHashSet<EntityId>,
     frame_read_log: RefCell<FrameReadLog>,
     tracking_frame_dependencies: bool,
     render_dependency_owner: Option<EntityId>,
@@ -163,7 +177,7 @@ impl EntityMap {
         Self {
             entities: SecondaryMap::new(),
             entity_type_names: SecondaryMap::new(),
-            accessed_entities: RefCell::new(FxHashSet::default()),
+            frame_entity_scratch: FxHashSet::default(),
             frame_read_log: RefCell::new(FrameReadLog::default()),
             tracking_frame_dependencies: false,
             render_dependency_owner: None,
@@ -258,7 +272,6 @@ impl EntityMap {
 
     #[inline]
     fn record_access(&self, entity: EntityId) {
-        self.accessed_entities.borrow_mut().insert(entity);
         if !self.tracking_frame_dependencies {
             return;
         }
@@ -277,12 +290,8 @@ impl EntityMap {
         self.tracking_frame_dependencies
     }
 
-    pub fn clear_accessed(&mut self) {
-        self.accessed_entities.get_mut().clear();
-    }
-
     pub(crate) fn begin_frame_dependencies(&mut self) {
-        self.clear_accessed();
+        self.frame_entity_scratch.clear();
         self.frame_read_log.get_mut().clear();
         self.render_dependency_owner = None;
         self.tracking_frame_dependencies = true;
@@ -319,7 +328,6 @@ impl EntityMap {
     pub fn take_dropped(&mut self) -> Vec<(EntityId, Box<dyn Any>)> {
         let mut ref_counts = &mut *self.ref_counts.write();
         let dropped_entity_ids = ref_counts.dropped_entity_ids.drain(..);
-        let accessed_entities = self.accessed_entities.get_mut();
 
         dropped_entity_ids
             .filter_map(|entity_id| {
@@ -329,7 +337,6 @@ impl EntityMap {
                     0,
                     "dropped an entity that was referenced"
                 );
-                accessed_entities.remove(&entity_id);
                 self.entity_type_names.remove(entity_id);
                 // If the EntityId was allocated with `Context::reserve`,
                 // the entity may not have been inserted.
@@ -697,7 +704,7 @@ mod test {
         let mut entity_map = EntityMap::new();
         let slot = entity_map.reserve::<TestEntity>();
         let handle = entity_map.insert(slot, TestEntity { i: 1 });
-        entity_map.clear_accessed();
+        entity_map.begin_frame_dependencies();
 
         let any_handle = handle.clone().into_any();
         let mut lease = entity_map.lease_erased(&any_handle);
@@ -711,12 +718,8 @@ mod test {
         entity_map.end_lease_erased(handle.entity_id(), lease);
 
         assert_eq!(entity_map.read(&handle).i, 2);
-        assert!(
-            entity_map
-                .accessed_entities
-                .borrow()
-                .contains(&handle.entity_id())
-        );
+        let reads = entity_map.finish_frame_read_log().into_sets();
+        assert_eq!(reads[&None].entities.as_slice(), &[handle.entity_id()]);
     }
 
     #[test]

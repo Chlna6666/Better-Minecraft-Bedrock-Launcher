@@ -335,13 +335,8 @@ impl WindowInvalidator {
         inner.render_dependencies.clear();
         inner.global_read_dependencies.clear();
         for (owner, reads) in &mut inner.view_reads {
-            // One entity can be mounted more than once; merge newly recorded
-            // reads with replayed reads for that owner without duplicate edges.
-            reads.entities.sort_unstable();
-            reads.entities.dedup();
+            // The read log publishes sorted, unique owner sets, including mixed replay.
             reads.entities.retain(|entity| is_live(*entity));
-            reads.globals.sort_unstable();
-            reads.globals.dedup();
             let owner = owner.filter(|owner| has_route(*owner));
             for &entity in &reads.entities {
                 entities.insert(entity);
