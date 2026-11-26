@@ -1,6 +1,6 @@
 use crate::{
     AnyElement, App, Bounds, Element, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, SceneAnimationId, TextStyleRefinement, TransitionProperty, Window,
+    Pixels, SceneAnimationId, TransitionProperty, Window,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -13,7 +13,7 @@ struct DeferredSceneAnimationContext {
 
 #[derive(Clone)]
 struct DeferredInheritedContext {
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: crate::fast::text_style::TextStyleStack,
     rem_size: Pixels,
     element_opacity: f32,
     scene_animation: Option<DeferredSceneAnimationContext>,

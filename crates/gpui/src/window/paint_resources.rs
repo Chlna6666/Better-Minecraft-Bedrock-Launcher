@@ -888,7 +888,7 @@ impl Window {
             }};
         }
 
-        trim_collection!(self.text_style_stack);
+        self.text_style_stack.trim(floor, eager);
         trim_collection!(self.rendered_entity_stack);
         trim_collection!(self.view_bounds_stack);
         trim_collection!(self.element_offset_stack);

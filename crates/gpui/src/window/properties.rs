@@ -1,4 +1,3 @@
-use super::state::ResolvedTextStyle;
 use super::*;
 
 pub(super) const INPUT_POINTER: u8 = 1;
@@ -75,55 +74,13 @@ impl Window {
         &self.text_system
     }
 
-    /// The current text style. Which is composed of all the style refinements provided to `with_text_style`.
-    ///
-    /// Every painted element asks for this at least twice a frame, and building it clones the
-    /// window's default style and replays the whole refinement stack. The result is cached
-    /// against the exact stack contents, not its depth: `with_text_style` pushes a refinement
-    /// and pops it again, so two different scopes can have the same depth and different styles.
+    /// Current text style, resolved by the Fast stack only when its scope changes.
     pub fn text_style(&self) -> TextStyle {
-        if self.text_style_stack.is_empty() {
-            return self.default_text_style.clone();
-        }
-        let generation = self.text_style_generation.get();
-        if let Some(cached) = self.resolved_text_style.borrow().as_ref()
-            && cached.generation == generation
-            && cached.stack == self.text_style_stack
-        {
-            return cached.style.clone();
-        }
-
-        let mut style = self.default_text_style.clone();
-        for refinement in &self.text_style_stack {
-            style.refine(refinement);
-        }
-        *self.resolved_text_style.borrow_mut() = Some(ResolvedTextStyle {
-            generation,
-            stack: self.text_style_stack.clone(),
-            style: style.clone(),
-        });
-        style
+        self.text_style_stack.resolve(&self.default_text_style, self.text_style_generation.get()).as_ref().clone()
     }
 
-    /// Borrows the current text style when one is cached, otherwise resolves it.
-    ///
-    /// Hot retained paths only need to compare or copy this value; they must not force a
-    /// clone just to look at it.
     pub(crate) fn with_text_style_ref<R>(&self, f: impl FnOnce(&TextStyle) -> R) -> R {
-        if self.text_style_stack.is_empty() {
-            return f(&self.default_text_style);
-        }
-        let generation = self.text_style_generation.get();
-        {
-            let cached = self.resolved_text_style.borrow();
-            if let Some(cached) = cached.as_ref()
-                && cached.generation == generation
-                && cached.stack == self.text_style_stack
-            {
-                return f(&cached.style);
-            }
-        }
-        let style = self.text_style();
+        let style = self.text_style_stack.resolve(&self.default_text_style, self.text_style_generation.get());
         f(&style)
     }
 

@@ -437,20 +437,6 @@ impl PresentationState {
 
 /// A resolved text style, together with what it was resolved from.
 ///
-/// Cached on the window because resolving clones the default style and replays the whole
-/// refinement stack, and every painted element asks for the result more than once a frame.
-#[derive(Clone)]
-pub(super) struct ResolvedTextStyle {
-    /// Default-style generation this was resolved with.
-    pub(super) generation: u32,
-    /// The refinement stack it was resolved from.
-    ///
-    /// Stored in full rather than as a depth: `with_text_style` pushes and pops, so two scopes
-    /// can share a depth while resolving to different styles.
-    pub(super) stack: Vec<TextStyleRefinement>,
-    pub(super) style: TextStyle,
-}
-
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -494,12 +480,7 @@ pub struct Window {
     pub(crate) fast_layout: WindowLayout,
     /// The element currently painting, used by renderer-owned captured layers.
     pub(crate) paint_layout_key: Option<u64>,
-    pub(crate) text_style_stack: Vec<TextStyleRefinement>,
-    /// Cached result of resolving `text_style_stack` over the window's default style.
-    ///
-    /// Rebuilt only when the stack depth or the default style changes, since every painted
-    /// element asks for the resolved style at least twice per frame.
-    pub(super) resolved_text_style: RefCell<Option<ResolvedTextStyle>>,
+    pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     /// Bumped whenever the window's default text style is replaced.
     pub(super) text_style_generation: Cell<u32>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
