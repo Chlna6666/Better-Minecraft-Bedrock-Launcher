@@ -423,24 +423,8 @@ impl<'a> OperationRange<'a> {
         if self.len() != other.len() {
             return false;
         }
-        fn runs<'a>(range: OperationRange<'a>) -> impl Iterator<Item = &'a [PaintOperation]> {
-            let ops = range.operations;
-            let first = ops.segments.partition_point(|segment| segment.end <= range.start);
-            let end = ops.segments.partition_point(|segment| segment.start() < range.end);
-            let pending_start = ops.len - ops.pending.len();
-            let pending = if range.end > pending_start && range.start < range.end {
-                &ops.pending[range.start.saturating_sub(pending_start)..range.end - pending_start]
-            } else {
-                &[]
-            };
-            ops.segments[first..end].iter().map(move |segment| {
-                let start = range.start.saturating_sub(segment.start());
-                let end = range.end.min(segment.end) - segment.start();
-                &segment.slice()[start..end]
-            }).chain(std::iter::once(pending)).filter(|slice| !slice.is_empty())
-        }
-        let mut left_runs = runs(self);
-        let mut right_runs = runs(other);
+        let mut left_runs = self.slices();
+        let mut right_runs = other.slices();
         let mut left = left_runs.next().unwrap_or(&[]);
         let mut right = right_runs.next().unwrap_or(&[]);
         while !left.is_empty() && !right.is_empty() {
@@ -458,7 +442,9 @@ impl<'a> OperationRange<'a> {
         left.is_empty() && right.is_empty()
     }
 
-    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = &'a PaintOperation> + Clone {
+    /// Contiguous portions in logical order, including an unfinished tail.
+    /// Resolve the segment boundaries once for the whole range.
+    pub(crate) fn slices(self) -> impl DoubleEndedIterator<Item = &'a [PaintOperation]> + Clone {
         let first = self
             .operations
             .segments
@@ -476,12 +462,17 @@ impl<'a> OperationRange<'a> {
         };
         self.operations.segments[first..end]
             .iter()
-            .flat_map(move |segment| {
+            .map(move |segment| {
                 let start = self.start.saturating_sub(segment.start());
                 let end = self.end.min(segment.end) - segment.start();
-                segment.slice()[start..end].iter()
+                &segment.slice()[start..end]
             })
-            .chain(pending.iter())
+            .chain(std::iter::once(pending))
+            .filter(|slice| !slice.is_empty())
+    }
+
+    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = &'a PaintOperation> + Clone {
+        self.slices().flat_map(|slice| slice.iter())
     }
 }
 impl Index<usize> for Operations {

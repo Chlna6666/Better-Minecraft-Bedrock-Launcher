@@ -166,8 +166,17 @@ impl Painter {
         let mut index = range.start;
         let mut shadow_scan_end = index;
         let mut spans = quad_spans.into_iter().peekable();
+        let mut runs = prev_scene.paint_operations.range(range.clone()).slices();
+        let mut run: &[PaintOperation] = &[];
+        let mut run_end = range.start;
         while index < range.end {
-            let operation = &prev_scene.paint_operations[index];
+            // Shared Quad/Shadow spans can jump across several backing runs.
+            // Walk those boundaries without indexing each skipped operation.
+            while index >= run_end {
+                run = runs.next().expect("validated replay range");
+                run_end += run.len();
+            }
+            let operation = &run[index - (run_end - run.len())];
             if index >= shadow_scan_end
                 && retain_order
                 && !self.retained_prefix_invalid

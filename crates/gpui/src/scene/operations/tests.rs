@@ -240,3 +240,40 @@ fn range_comparison_skips_shared_runs_even_with_pending_tails() {
     }));
     assert_eq!(compared, 31);
 }
+
+#[test]
+fn range_slices_match_logical_indices_across_shared_and_pending_runs() {
+    let source = operations(32);
+    let mut current = Operations::default();
+    current.share(&source, 3..10);
+    current.push(PaintOperation::EndLayer);
+    current.share(&source, 15..27);
+    current.push(PaintOperation::EndBlur);
+    for start in 0..=current.len() {
+        for end in start..=current.len() {
+            let range = current.range(start..end);
+            let mut index = start;
+            for slice in range.slices() {
+                assert!(!slice.is_empty());
+                for op in slice {
+                    assert!(std::ptr::eq(op, &current[index]));
+                    index += 1;
+                }
+            }
+            assert_eq!(index, end);
+            // A replay cursor may jump over a shared span crossing runs.
+            for skip in start..=end {
+                let mut runs = range.slices();
+                let mut run: &[PaintOperation] = &[];
+                let mut run_end = start;
+                for index in skip..end {
+                    while index >= run_end {
+                        run = runs.next().unwrap();
+                        run_end += run.len();
+                    }
+                    assert!(std::ptr::eq(&run[index - (run_end - run.len())], &current[index]));
+                }
+            }
+        }
+    }
+}
