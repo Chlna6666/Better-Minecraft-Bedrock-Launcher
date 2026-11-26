@@ -195,7 +195,7 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
     use std::cell::Cell;
     use sum_tree::Bias;
 
-    let mut cx = cx.add_empty_window();
+    let cx = cx.add_empty_window();
     let state = ListState::new(12, crate::ListAlignment::Top, px(0.)).measure_all();
     let taller = Rc::new(Cell::new(false));
     let builds = Rc::new(Cell::new(0));
@@ -205,7 +205,7 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
             let builds = builds.clone();
             list(state.clone(), move |index, _, _| {
                 builds.set(builds.get() + 1);
-                div().w_full().h(if index == 2 && taller.get() { px(30.) } else { px(20.) }).into_any()
+                div().w_full().h(if matches!(index, 1 | 3) && taller.get() { px(30.) } else { px(20.) }).into_any()
             }).w_full().h_full()
         });
     };
@@ -229,5 +229,5 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
     draw();
     let state = state.0.borrow();
     assert_eq!(state.items.summary().count, 12);
-    assert_eq!(state.items.summary().height, px(250.));
+    assert_eq!(state.items.summary().height, px(260.));
 }

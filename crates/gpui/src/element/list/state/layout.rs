@@ -86,14 +86,6 @@ impl StateInner {
     ) -> LayoutItemsResponse {
         let old_items = self.items.clone();
         let previous_top = self.logical_scroll_top;
-        let mut changed_start = usize::MAX;
-        let mut changed_end = 0;
-        let mut note_geometry = |index: usize, old: Option<crate::Size<Pixels>>, new| {
-            if old != Some(new) {
-                changed_start = changed_start.min(index);
-                changed_end = changed_end.max(index + 1);
-            }
-        };
         let mut measured_items = std::mem::take(&mut self.measured_items_scratch);
         measured_items.clear();
         let mut item_layouts = std::mem::take(&mut self.item_layouts_scratch);
@@ -163,13 +155,14 @@ impl StateInner {
             }
 
             let item_size = item_size.unwrap();
-            note_geometry(scroll_top.item_ix + ix, item.size(), item_size);
+            if item.size() != Some(item_size) {
+                measured_items.push_back((scroll_top.item_ix + ix, ListItem::Measured {
+                    size: item_size,
+                    focus_handle: item.focus_handle(),
+                }));
+            }
             rendered_height += item_size.height;
             max_item_width = max_item_width.max(item_size.width);
-            measured_items.push_back(ListItem::Measured {
-                size: item_size,
-                focus_handle: item.focus_handle(),
-            });
         }
         rendered_height += padding.bottom;
 
@@ -191,13 +184,13 @@ impl StateInner {
                                 element.layout_as_root(available_item_space, window, cx);
                             (element, element_size)
                         });
-                    note_geometry(item_index, item.size(), element_size);
-                    let focus_handle = item.focus_handle();
+                    if item.size() != Some(element_size) {
+                        measured_items.push_front((item_index, ListItem::Measured {
+                            size: element_size,
+                            focus_handle: item.focus_handle(),
+                        }));
+                    }
                     rendered_height += element_size.height;
-                    measured_items.push_front(ListItem::Measured {
-                        size: element_size,
-                        focus_handle,
-                    });
                     item_layouts.push_front(ItemLayout {
                         index: item_index,
                         element,
@@ -233,9 +226,6 @@ impl StateInner {
 
         let mut leading_overdraw = scroll_top.offset_in_item;
         let mut leading_budget = overscan_budget;
-        // Track the first actually included item, not the cursor: stopping
-        // before an unmeasured row must not replace that row in the SumTree.
-        let mut measured_start = scroll_top.item_ix;
         while leading_overdraw < self.overdraw {
             cursor.prev();
             if let Some(item) = cursor.item() {
@@ -254,37 +244,44 @@ impl StateInner {
                     })
                 };
 
-                note_geometry(item_index, item.size(), item_size);
-                measured_start = item_index;
+                if item.size() != Some(item_size) {
+                    measured_items.push_front((item_index, ListItem::Measured {
+                        size: item_size,
+                        focus_handle: item.focus_handle(),
+                    }));
+                }
                 leading_overdraw += item_size.height;
-                measured_items.push_front(ListItem::Measured {
-                    size: item_size,
-                    focus_handle: item.focus_handle(),
-                });
             } else {
                 break;
             }
         }
 
-        // Scrolling across already measured rows does not change the geometry
-        // tree. Preserve its shared nodes rather than rebuilding a viewport-
-        // sized slice every frame. When a row changes, replace only the span
-        // from the first changed row through the last changed row.
-        let geometry_changed = changed_start < changed_end;
+        // Only changed rows own new measurement records. Reuse unchanged
+        // native SumTree stretches between them, including disjoint changes.
+        // The forward pass appends, and the backward passes prepend, so the
+        // changed indices are already strictly increasing.
+        let geometry_changed = !measured_items.is_empty();
         if geometry_changed {
-            debug_assert!(changed_start >= measured_start);
-            debug_assert!(changed_end <= measured_start + measured_items.len());
+            debug_assert!(measured_items.iter().zip(measured_items.iter().skip(1))
+                .all(|(a, b)| a.0 < b.0));
             let mut cursor = old_items.cursor::<Count>(());
-            let mut new_items = cursor.slice(&Count(changed_start), Bias::Right);
-            new_items.extend(
-                measured_items.drain(changed_start - measured_start..changed_end - measured_start),
-                (),
-            );
-            cursor.seek(&Count(changed_end), Bias::Right);
+            let mut new_items = SumTree::default();
+            while let Some(&(start, _)) = measured_items.front() {
+                new_items.append(cursor.slice(&Count(start), Bias::Right), ());
+                let mut end = start;
+                new_items.extend(std::iter::from_fn(|| {
+                    if measured_items.front().is_some_and(|(index, _)| *index == end) {
+                        end += 1;
+                        measured_items.pop_front().map(|(_, item)| item)
+                    } else {
+                        None
+                    }
+                }), ());
+                cursor.seek_forward(&Count(end), Bias::Right);
+            }
             new_items.append(cursor.suffix(), ());
             self.items = new_items;
         }
-        measured_items.clear();
         self.version.bump_if(geometry_changed || previous_top != self.logical_scroll_top);
         self.measured_items_scratch = measured_items;
 

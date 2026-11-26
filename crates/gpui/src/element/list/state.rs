@@ -38,7 +38,7 @@ pub(super) struct StateInner {
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
     scrollbar_drag_start_height: Option<Pixels>,
     measuring_behavior: ListMeasuringBehavior,
-    measured_items_scratch: VecDeque<ListItem>,
+    measured_items_scratch: VecDeque<(usize, ListItem)>,
     item_layouts_scratch: VecDeque<ItemLayout>,
 }
 
