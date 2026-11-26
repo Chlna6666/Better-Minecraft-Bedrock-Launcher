@@ -54,6 +54,13 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) rem_size: Pixels,
 }
 
+/// A scroll container's contiguous input records in the committed frame.
+/// Ranges close inside-out and are ordered by end, like scene captures.
+pub(super) struct LayerInput {
+    pub(super) hitboxes: Range<usize>,
+    viewport: Bounds<Pixels>,
+}
+
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -71,6 +78,7 @@ pub(crate) struct Frame {
     paint: Option<Arc<Paint>>,
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
+    pub(super) layer_inputs: Vec<LayerInput>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -276,6 +284,7 @@ impl Frame {
             paint: None,
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
+            layer_inputs: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -336,6 +345,7 @@ impl Frame {
         self.view_retentions.clear();
         self.view_retention_records.clear();
         self.hitboxes.clear();
+        self.layer_inputs.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -381,23 +391,81 @@ impl Frame {
             .into_inner()
     }
 
+    /// Admit only a range whose actual input masks prove containment.
+    /// Custom prepaint code and partially replayed ranges must not cause
+    /// false-negative hit tests. Small ranges do not justify an index entry.
+    pub(crate) fn record_layer_input(&mut self, start: usize, viewport: Bounds<Pixels>) {
+        let end = self.hitboxes.len();
+        if end.saturating_sub(start) < 8 {
+            return;
+        }
+        let bottom_right = viewport.bottom_right();
+        if self.hitboxes[start..end].iter().all(|hitbox| {
+            let clip = hitbox.content_mask.bounds;
+            let end = clip.bottom_right();
+            clip.origin.x >= viewport.origin.x
+                && clip.origin.y >= viewport.origin.y
+                && end.x <= bottom_right.x
+                && end.y <= bottom_right.y
+        }) {
+            self.layer_inputs.push(LayerInput { hitboxes: start..end, viewport });
+        }
+    }
+
+    /// Carry only complete input groups. A partial splice may still replay
+    /// individual hitboxes, but cannot claim the enclosing viewport.
+    pub(super) fn carry_layer_inputs(&mut self, previous: &Self, source: Range<usize>) {
+        let target = self.hitboxes.len();
+        let first = previous.layer_inputs.partition_point(|layer| layer.hitboxes.end <= source.start);
+        self.layer_inputs.extend(previous.layer_inputs[first..].iter()
+            .take_while(|layer| layer.hitboxes.end <= source.end)
+            .filter(|layer| layer.hitboxes.start >= source.start)
+            .map(|layer| LayerInput {
+                hitboxes: target + (layer.hitboxes.start - source.start)
+                    ..target + (layer.hitboxes.end - source.start),
+                viewport: layer.viewport,
+            }));
+    }
+
     pub(crate) fn hit_test(&self, position: Point<Pixels>) -> HitTest {
         let mut set_hover_hitbox_count = false;
         let mut hit_test = HitTest::default();
-        for hitbox in self.hitboxes.iter().rev() {
-            let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-            if bounds.contains(&position) {
-                hit_test.ids.push(hitbox.id);
-                if !set_hover_hitbox_count
-                    && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
-                {
-                    hit_test.hover_hitbox_count = hit_test.ids.len();
-                    set_hover_hitbox_count = true;
-                }
-                if hitbox.behavior == HitboxBehavior::BlockMouse {
+        let mut cursor = self.hitboxes.len();
+        let mut layers = self.layer_inputs.iter().rev().peekable();
+        'hitboxes: while cursor > 0 {
+            // Traverse ordinary spans in one pass, and skip a whole clipped
+            // scroll range when the pointer cannot reach any of its children.
+            let mut start = 0;
+            while let Some(layer) = layers.peek() {
+                if layer.hitboxes.end > cursor {
+                    layers.next();
+                } else if layer.hitboxes.end == cursor {
+                    let layer = layers.next().expect("peeked layer");
+                    if !layer.viewport.contains(&position) {
+                        cursor = layer.hitboxes.start;
+                        continue 'hitboxes;
+                    }
+                } else {
+                    start = layer.hitboxes.end;
                     break;
                 }
             }
+            for hitbox in self.hitboxes[start..cursor].iter().rev() {
+                let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+                if bounds.contains(&position) {
+                    hit_test.ids.push(hitbox.id);
+                    if !set_hover_hitbox_count
+                        && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
+                    {
+                        hit_test.hover_hitbox_count = hit_test.ids.len();
+                        set_hover_hitbox_count = true;
+                    }
+                    if hitbox.behavior == HitboxBehavior::BlockMouse {
+                        break 'hitboxes;
+                    }
+                }
+            }
+            cursor = start;
         }
         if !set_hover_hitbox_count {
             hit_test.hover_hitbox_count = hit_test.ids.len();
@@ -494,6 +562,7 @@ impl Frame {
             + self.mouse_listeners.capacity()
             + self.mounted_scroll_sources.capacity()
             + self.hitboxes.capacity()
+            + self.layer_inputs.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
             + self.input_handlers.capacity()
@@ -529,6 +598,11 @@ impl Frame {
         );
         trim_frame_vec_capacity(
             &mut self.mounted_scroll_sources,
+            FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.layer_inputs,
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -617,6 +691,7 @@ impl Frame {
         trim_vec_against!(mouse_listeners);
         trim_vec_against!(mounted_scroll_sources);
         trim_vec_against!(hitboxes);
+        trim_vec_against!(layer_inputs);
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
         trim_vec_against!(input_handlers);
@@ -668,6 +743,7 @@ impl Frame {
                 self.mouse_listeners.shrink_to(floor);
                 self.mounted_scroll_sources.shrink_to(floor);
                 self.hitboxes.shrink_to(floor);
+                self.layer_inputs.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);
                 self.input_handlers.shrink_to(floor);

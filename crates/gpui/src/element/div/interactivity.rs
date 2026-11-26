@@ -215,7 +215,14 @@ impl Interactivity {
 
                                 let scroll_offset =
                                     self.clamp_scroll_position(bounds, &style, window, cx);
+                                let input_start = window.next_frame.hitboxes.len();
+                                let viewport = self.scroll_offset.as_ref().map(|_| {
+                                    window.visual_content_mask().bounds
+                                });
                                 let result = f(&style, scroll_offset, hitbox, window, cx);
+                                if let Some(viewport) = viewport {
+                                    window.next_frame.record_layer_input(input_start, viewport);
+                                }
                                 (result, element_state)
                             },
                         )

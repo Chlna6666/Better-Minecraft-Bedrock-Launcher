@@ -3980,3 +3980,41 @@ fn pointer_exit_stays_outside_across_frame_hit_testing(cx: &mut TestAppContext) 
         assert!(window.pointer_hit_test(&window.next_frame, position).ids.contains(&hitbox.id));
     });
 }
+
+#[gpui::test]
+fn scroll_layer_input_matches_flat_hit_testing(cx: &mut TestAppContext) {
+    let context = cx.add_empty_window();
+    context.update(|window, _| {
+        let frame = &mut window.next_frame;
+        frame.hitboxes.clear();
+        frame.layer_inputs.clear();
+        let viewport = Bounds::new(point(px(10.), px(10.)), size(px(40.), px(40.)));
+        let inner = Bounds::new(point(px(20.), px(20.)), size(px(10.), px(10.)));
+        let make = |id, bounds, behavior| Hitbox {
+            id: HitboxId(id),
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            behavior,
+        };
+        frame.hitboxes.push(make(1, viewport, HitboxBehavior::Normal));
+        for id in 2..10 {
+            frame.hitboxes.push(make(id, inner, HitboxBehavior::Normal));
+        }
+        frame.record_layer_input(1, inner);
+        for id in 10..18 {
+            frame.hitboxes.push(make(id, viewport, HitboxBehavior::Normal));
+        }
+        frame.hitboxes[12].behavior = HitboxBehavior::BlockMouseExceptScroll;
+        frame.record_layer_input(1, viewport);
+        assert_eq!(frame.layer_inputs.len(), 2);
+        let points = [point(px(0.), px(0.)), point(px(15.), px(15.)), point(px(25.), px(25.))];
+        let indexed = points.map(|point| frame.hit_test(point));
+        let groups = std::mem::take(&mut frame.layer_inputs);
+        for (point, expected) in points.into_iter().zip(indexed) {
+            let actual = frame.hit_test(point);
+            assert_eq!(actual.ids, expected.ids);
+            assert_eq!(actual.hover_hitbox_count, expected.hover_hitbox_count);
+        }
+        frame.layer_inputs = groups;
+    }).unwrap();
+}

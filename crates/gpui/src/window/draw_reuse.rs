@@ -178,6 +178,10 @@ impl Window {
 
     pub(crate) fn truncate_prepaint_to(&mut self, index: PrepaintStateIndex) {
         self.next_frame.hitboxes.truncate(index.hitboxes_index);
+        let keep = self.next_frame.layer_inputs.partition_point(|layer| {
+            layer.hitboxes.end <= index.hitboxes_index
+        });
+        self.next_frame.layer_inputs.truncate(keep);
         self.next_frame
             .tooltip_requests
             .truncate(index.tooltips_index);
@@ -258,6 +262,10 @@ impl Window {
             super::element_work::ElementWorkPhase::Replay,
         );
 
+        self.next_frame.carry_layer_inputs(
+            &self.rendered_frame,
+            range.start.hitboxes_index..range.end.hitboxes_index,
+        );
         self.next_frame.hitboxes.extend_from_slice(
             &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
