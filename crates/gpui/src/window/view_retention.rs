@@ -177,9 +177,13 @@ impl Window {
         let entries = table.get(anchor.nested.clone())?;
         let mut owners = FxHashSet::default();
         let mut ancestors = smallvec::SmallVec::<[usize; 8]>::new();
+        let mut result = Vec::new();
+        let mut skip_until = anchor.nested.start;
+        let mut skipped_clean = false;
         for (offset, entry) in entries.iter().enumerate() {
             let record = entry.record.as_ref()?;
-            let owner = record.rebuild.as_ref()?.view.entity_id();
+            let rebuild = record.rebuild.as_ref()?;
+            let owner = rebuild.view.entity_id();
             let index = anchor.nested.start + offset;
             while ancestors.last().is_some_and(|end| *end == index) { ancestors.pop(); }
             if ancestors.last().is_some_and(|end| record.nested.end > *end)
@@ -191,26 +195,25 @@ impl Window {
                 return None;
             }
             if !record.nested.is_empty() { ancestors.push(record.nested.end); }
-        }
-        let mut result = Vec::new();
-        let mut index = anchor.nested.start;
-        while index < anchor.nested.end {
-            let record = table[index].record.as_ref()?;
-            let rebuild = record.rebuild.as_ref()?;
-            let scope = self.view_dirty_scope(rebuild.view.entity_id());
-            if scope.is_some() && !rebuild.splice_supported { return None; }
-            if scope.is_none() && table[record.nested.clone()].iter().any(|entry| {
-                entry.record.as_ref().and_then(|record| record.rebuild.as_ref())
-                    .is_none_or(|child| self.view_dirty_scope(child.view.entity_id()).is_some())
-            }) {
+
+            // Validate every record, but plan only the outermost clean/direct
+            // subtrees. Descendants of a clean subtree must also be clean;
+            // descendants of a direct gap will be rebuilt with that gap.
+            if index < skip_until {
+                if skipped_clean && self.view_dirty_scope(owner).is_some() {
+                    return None;
+                }
+                continue;
+            }
+            let scope = self.view_dirty_scope(owner);
+            if scope.is_some() && !rebuild.splice_supported {
                 return None;
             }
             result.push((index, scope));
-            index = if scope == Some(ViewDirtyScope::TraversalAncestor) {
-                index + 1
-            } else {
-                record.nested.end
-            };
+            if scope != Some(ViewDirtyScope::TraversalAncestor) {
+                skip_until = record.nested.end;
+                skipped_clean = scope.is_none();
+            }
         }
         // A missing dirty descendant is not evidence that the traversal
         // ancestor can be retained. Fall back instead of losing invalidation.
@@ -475,7 +478,7 @@ impl Window {
         let Some(claim_map) = ClaimBlockMap::between(&source.layout_claims, target_claims) else { return; };
         let Some(state_map) = source.layout_state_range.between(target_states) else { return; };
         for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
-            let Some(nested) = entry.record.clone() else {
+            let Some(nested) = entry.record.as_ref() else {
                 continue;
             };
             let Some(prepaint) = rebase_prepaint_range(
@@ -529,7 +532,11 @@ impl Window {
                     nested: descendants,
                     scene_segments,
                     layout_claims,
-                    ..nested
+                    layout_root: nested.layout_root,
+                    bounds: nested.bounds,
+                    context: nested.context.clone(),
+                    rebuild: nested.rebuild.clone(),
+                    splice_safe: nested.splice_safe,
             });
         }
     }
