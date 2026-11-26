@@ -276,14 +276,14 @@ impl Window {
         // Handlers may set this to true by calling `prevent_default`.
         self.default_prevented = false;
 
-        if input_modality_changed && self.has_completed_rendered_frame {
-            if matches!(
-                &event,
-                PlatformInput::KeyDown(_) | PlatformInput::MouseMove(_)
-            ) {
-                // KeyDown only suppresses pointer hover, while a real MouseMove legitimately
-                // restores it. Re-run framework-owned hover-transition listeners without forcing
-                // every cached view through MissRefresh.
+        if input_modality_changed
+            && self.has_completed_rendered_frame
+            && !matches!(&event, PlatformInput::MouseMove(_))
+        {
+            if matches!(&event, PlatformInput::KeyDown(_)) {
+                // Keyboard input suppresses hover without moving the pointer.
+                // Real pointer moves reconcile modality and geometry together
+                // in their normal dispatch, never against the previous position.
                 self.dispatch_input_modality_hover_transition(cx);
                 // A hover callback may stop propagation or prevent the synthetic transition.
                 // Those flags must not leak into the real keyboard/pointer event.
@@ -425,7 +425,11 @@ impl Window {
 
         self.invalidate_input_reads(previous_input);
         let binding_handled = if let Some(any_mouse_event) = event.mouse_event() {
-            self.dispatch_mouse_event(any_mouse_event, cx);
+            self.dispatch_mouse_event(
+                any_mouse_event,
+                cx,
+                input_modality_changed && matches!(&event, PlatformInput::MouseMove(_)),
+            );
             false
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx)
@@ -563,15 +567,15 @@ impl Window {
                 self.mouse_position = scroll.position;
                 self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
-                self.dispatch_mouse_event(&scroll, cx);
+                self.dispatch_mouse_event(&scroll, cx, false);
             }
             RecognizedTouchGesture::Tap { down, up } => {
                 self.mouse_position = up.position;
                 self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
-                self.dispatch_mouse_event(&down, cx);
+                self.dispatch_mouse_event(&down, cx, false);
                 cx.propagate_event = true;
-                self.dispatch_mouse_event(&up, cx);
+                self.dispatch_mouse_event(&up, cx, false);
             }
             RecognizedTouchGesture::TouchDrag(touch_drag) => {
                 self.mouse_position = touch_drag.start_position;
@@ -579,7 +583,7 @@ impl Window {
                 cx.propagate_event = true;
                 self.default_prevented = false;
                 let started = touch_drag.phase == TouchPhase::Started;
-                self.dispatch_mouse_event(&touch_drag, cx);
+                self.dispatch_mouse_event(&touch_drag, cx, false);
                 if started {
                     self.touch_gestures
                         .resolve_touch_drag(self.default_prevented);
@@ -591,7 +595,7 @@ impl Window {
                 cx.propagate_event = true;
                 self.default_prevented = false;
                 let started = long_press.phase == TouchPhase::Started;
-                self.dispatch_mouse_event(&long_press, cx);
+                self.dispatch_mouse_event(&long_press, cx, false);
                 if started {
                     self.touch_gestures
                         .resolve_long_press(self.default_prevented);
@@ -637,7 +641,17 @@ impl Window {
         }
     }
 
-    pub(super) fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
+    pub(super) fn dispatch_mouse_event(
+        &mut self,
+        event: &dyn Any,
+        cx: &mut App,
+        hover_modality_changed: bool,
+    ) {
+        if event.is::<MouseExitEvent>() {
+            self.pointer_outside = true;
+        } else if event.is::<MouseMoveEvent>() || event.is::<MouseDownEvent>() || event.is::<MouseUpEvent>() {
+            self.pointer_outside = false;
+        }
         let mouse_position = event
             .downcast_ref::<MouseMoveEvent>()
             .map(|event| event.position)
@@ -658,8 +672,9 @@ impl Window {
             })
             .unwrap_or_else(|| self.mouse_position());
         let hit_test = self.pointer_hit_test(&self.rendered_frame, mouse_position);
-        let hit_test_unchanged = hit_test == self.mouse_hit_test;
-        if hit_test != self.mouse_hit_test {
+        let geometry_changed = hit_test != self.mouse_hit_test;
+        let hit_test_unchanged = !geometry_changed && !hover_modality_changed;
+        if geometry_changed {
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
         }

@@ -1024,7 +1024,7 @@ fn drag_mouse_move_keeps_window_dirty(cx: &mut TestAppContext) {
             pressed_button: Some(MouseButton::Left),
             modifiers: Modifiers::default(),
         };
-        window.dispatch_mouse_event(&event, cx);
+        window.dispatch_mouse_event(&event, cx, false);
         assert!(window.invalidator.is_dirty());
     });
 }
@@ -1480,6 +1480,17 @@ fn input_modality_change_reconciles_framework_hover_without_full_cache_refresh(
         window.refreshing = false;
         window.dirty_frame_scheduled = false;
 
+        window.mouse_position = point(px(0.), px(0.));
+        window.mouse_hit_test = HitTest::default();
+        let hitbox = Hitbox {
+            id: window.next_hitbox_id,
+            bounds: Bounds::new(point(px(60.), px(0.)), size(px(40.), px(40.))),
+            content_mask: ContentMask::new(Bounds::new(Point::default(), window.viewport_size)),
+            behavior: HitboxBehavior::Normal,
+        };
+        window.next_hitbox_id = window.next_hitbox_id.next();
+        window.rendered_frame.hitboxes.push(hitbox);
+
         let transition_calls_for_listener = transition_calls.clone();
         window
             .rendered_frame
@@ -1521,6 +1532,17 @@ fn input_modality_change_reconciles_framework_hover_without_full_cache_refresh(
             0,
             "keyboard modality reconciliation must not synthesize application MouseMove events"
         );
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(80.), px(20.)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        assert_eq!(transition_calls.get(), 4,
+            "one real move reconciles geometry and modality in the same two phases");
+        assert_eq!(application_mouse_moves.get(), 2);
         assert!(
             !window.force_view_cache_refresh,
             "input modality changes must not invalidate every cached view"
