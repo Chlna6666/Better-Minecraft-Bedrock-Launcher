@@ -1,9 +1,5 @@
 //! Contains [TaffyTree](crate::tree::TaffyTree): the default implementation of [LayoutTree](crate::tree::LayoutTree), and the error type for Taffy.
-#[cfg(not(feature = "std"))]
-use slotmap::SecondaryMap;
-#[cfg(feature = "std")]
-use slotmap::SparseSecondaryMap as SecondaryMap;
-use slotmap::{DefaultKey, SlotMap};
+use slotmap::{DefaultKey, DenseSlotMap, SlotMap};
 
 #[cfg(feature = "block_layout")]
 use crate::block::BlockContext;
@@ -104,8 +100,9 @@ struct NodeData {
     /// These may be rounded or unrounded depending on what the `use_rounding` config setting is set to.
     pub(crate) final_layout: Layout,
 
-    /// Whether the node has context data associated with it or not
-    pub(crate) has_context: bool,
+    /// Direct generational handle into the packed measurement context arena.
+    /// Unmeasured nodes do not occupy a context slot.
+    context_key: Option<DefaultKey>,
 
     /// Out-of-flow (absolute/fixed) boxes whose containing block is this node,
     /// as recorded by the out-of-flow positioning pass
@@ -127,7 +124,7 @@ impl NodeData {
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
-            has_context: false,
+            context_key: None,
             hoisted_children: new_const_children_vec(),
             detailed_layout_info: DetailedLayoutInfo::None,
         }
@@ -151,8 +148,9 @@ pub struct TaffyTree<NodeContext = ()> {
     /// The [`NodeData`] for each node stored in this tree
     nodes: SlotMap<DefaultKey, NodeData>,
 
-    /// Functions/closures that compute the intrinsic size of leaf nodes
-    node_context_data: SecondaryMap<DefaultKey, NodeContext>,
+    /// Packed contexts, owned by native nodes. No hash lookup or large
+    /// context-sized holes for nodes without a measure function.
+    node_context_data: DenseSlotMap<DefaultKey, NodeContext>,
 
     /// The children of each node
     ///
@@ -324,9 +322,9 @@ where
                 (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
                 (_, false) => {
                     let node_key = node_id.into();
-                    let style = &tree.taffy.nodes[node_key].style;
-                    let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
+                    let node = &tree.taffy.nodes[node_key];
+                    let style = &node.style;
+                    let node_context = node.context_key.and_then(|key| tree.taffy.node_context_data.get_mut(key));
                     (tree.measure_function)(inputs, node_id, node_context, style)
                 }
             };
@@ -609,7 +607,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
             nodes: SlotMap::with_capacity(capacity),
             children: SlotMap::with_capacity(capacity),
             parents: SlotMap::with_capacity(capacity),
-            node_context_data: SecondaryMap::with_capacity(capacity),
+            node_context_data: DenseSlotMap::with_capacity(0),
             config: TaffyConfig::default(),
         }
     }
@@ -638,10 +636,9 @@ impl<NodeContext> TaffyTree<NodeContext> {
     /// Creates and adds a new leaf node with a supplied context
     pub fn new_leaf_with_context(&mut self, layout: Style, context: NodeContext) -> TaffyResult<NodeId> {
         let mut data = NodeData::new(layout);
-        data.has_context = true;
+        data.context_key = Some(self.node_context_data.insert(context));
 
         let id = self.nodes.insert(data);
-        self.node_context_data.insert(id, context);
 
         let _ = self.children.insert(new_vec_with_capacity(0));
         let _ = self.parents.insert(None);
@@ -695,8 +692,11 @@ impl<NodeContext> TaffyTree<NodeContext> {
 
         let _ = self.children.remove(key);
         let _ = self.parents.remove(key);
-        let _ = self.nodes.remove(key);
-        let _ = self.node_context_data.remove(key);
+        if let Some(data) = self.nodes.remove(key) {
+            if let Some(context) = data.context_key {
+                self.node_context_data.remove(context);
+            }
+        }
 
         Ok(node)
     }
@@ -705,12 +705,20 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn set_node_context(&mut self, node: NodeId, measure: Option<NodeContext>) -> TaffyResult<()> {
         let key = node.into();
-        if let Some(measure) = measure {
-            self.nodes[key].has_context = true;
-            self.node_context_data.insert(key, measure);
-        } else {
-            self.nodes[key].has_context = false;
-            self.node_context_data.remove(key);
+        let node = &mut self.nodes[key];
+        match (node.context_key, measure) {
+            (Some(context), Some(measure)) => {
+                // Preserve the arena slot when replacing a context.
+                *self.node_context_data.get_mut(context).expect("live node context") = measure;
+            }
+            (None, Some(measure)) => {
+                node.context_key = Some(self.node_context_data.insert(measure));
+            }
+            (Some(context), None) => {
+                node.context_key = None;
+                self.node_context_data.remove(context);
+            }
+            (None, None) => {}
         }
 
         self.mark_dirty(node)?;
@@ -721,13 +729,15 @@ impl<NodeContext> TaffyTree<NodeContext> {
     /// Gets a reference to the the context data associated with the node
     #[inline]
     pub fn get_node_context(&self, node: NodeId) -> Option<&NodeContext> {
-        self.node_context_data.get(node.into())
+        let key = self.nodes.get(node.into())?.context_key?;
+        self.node_context_data.get(key)
     }
 
     /// Gets a mutable reference to the the context data associated with the node
     #[inline]
     pub fn get_node_context_mut(&mut self, node: NodeId) -> Option<&mut NodeContext> {
-        self.node_context_data.get_mut(node.into())
+        let key = self.nodes.get(node.into())?.context_key?;
+        self.node_context_data.get_mut(key)
     }
 
     /// Gets mutable references to the the context data associated with the nodes. All keys must be valid and disjoint, otherwise None is returned.
@@ -735,7 +745,11 @@ impl<NodeContext> TaffyTree<NodeContext> {
         &mut self,
         keys: [NodeId; N],
     ) -> Option<[&mut NodeContext; N]> {
-        self.node_context_data.get_disjoint_mut(keys.map(|k| k.into()))
+        let mut contexts = [DefaultKey::default(); N];
+        for (context, node) in contexts.iter_mut().zip(keys) {
+            *context = self.nodes.get(node.into())?.context_key?;
+        }
+        self.node_context_data.get_disjoint_mut(contexts)
     }
 
     /// Adds a `child` node under the supplied `parent`
