@@ -78,7 +78,9 @@ impl Window {
             return None;
         }
         let record = self.rendered_frame.view_retentions.get(key)?.clone();
-        if record.contains_cached_view {
+        if record.contains_cached_view
+            || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
+        {
             return None;
         }
         if !self
@@ -137,6 +139,9 @@ impl Window {
             // copy itself is positional and still valid; only deeper future reuse is lost.
             log::debug!("gpui retained view prepaint changed length");
         }
+        // Reserve nested view positions during prepaint, not paint. Ancestors
+        // finish collecting their descendant order before paint begins.
+        self.next_frame.view_retention_order.extend(record.nested.iter().cloned());
         Some(start..end)
     }
 
@@ -217,6 +222,26 @@ impl Window {
         )
     }
 
+    /// Lazy children (notably List rows) request layout during prepaint.
+    /// Merge those claims with the earlier request-layout record. A nested
+    /// view may have released and rebuilt some of the earlier claims.
+    pub(crate) fn finish_view_prepaint_claims(
+        &mut self,
+        start: usize,
+        claims: &mut Rc<[LayoutClaim]>,
+    ) {
+        let engine = self.layout_engine.as_mut().expect("layout engine installed");
+        let extra = engine.finish_recording_claimed_keys(start);
+        if extra.is_empty() {
+            return;
+        }
+        let mut seen = FxHashSet::default();
+        let merged: Vec<_> = claims.iter().copied().chain(extra)
+            .filter(|claim| engine.claim_is_current(claim) && seen.insert(*claim))
+            .collect();
+        *claims = Rc::from(merged);
+    }
+
     /// Stores this view's record once its paint range is known.
     pub(crate) fn commit_view_retention(
         &mut self,
@@ -226,11 +251,12 @@ impl Window {
     ) {
         let index = slot.0;
         let element_state_range = if let Some(source) = commit.reused.as_ref() {
-            self.copy_nested_view_records(source, &commit.prepaint_range, &commit.paint_range);
-            self.copy_reused_element_metadata(index, &commit.prepaint_range, &commit.paint_range);
+            self.copy_reused_element_metadata(index, source, &commit.prepaint_range, &commit.paint_range);
             let start = self.next_frame.accessed_element_states.len();
             self.keep_reused_view_element_states(&source.element_state_range);
-            start..self.next_frame.accessed_element_states.len()
+            let states = start..self.next_frame.accessed_element_states.len();
+            self.copy_nested_view_records(source, &commit.prepaint_range, &commit.paint_range, &states);
+            states
         } else {
             commit.element_state_range
         };
@@ -259,6 +285,7 @@ impl Window {
     fn copy_reused_element_metadata(
         &mut self,
         index: usize,
+        admission: &RetainedViewRecord,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
     ) {
@@ -266,16 +293,23 @@ impl Window {
         let Some(source) = self.rendered_frame.retained_element_ranges.get(key) else {
             return;
         };
-        let source_prepaint = source.prepaint_range.clone();
-        let source_paint = source.paint_range.clone();
-        let source_metadata = source.metadata_range.clone();
-        self.replay_retained_element_metadata(
-            &source_prepaint,
-            &source_paint,
+        // The enclosing Drawable records its own metadata after View::paint.
+        // Only its descendants belong to the copied inner prepaint/paint ranges.
+        let mut source_metadata = source.metadata_range.clone();
+        if source_metadata.is_empty() {
+            return;
+        }
+        source_metadata.end -= 1;
+        if !self.replay_retained_element_metadata(
+            &admission.prepaint_range,
+            &admission.paint_range,
             &source_metadata,
             target_prepaint,
             target_paint,
-        );
+        ) {
+            self.force_view_cache_refresh = true;
+            self.degrade_current_draw();
+        }
     }
 
     fn copy_nested_view_records(
@@ -283,6 +317,7 @@ impl Window {
         source: &RetainedViewRecord,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
+        target_states: &Range<usize>,
     ) {
         for key in &source.nested {
             let Some(nested) = self.rendered_frame.view_retentions.get(key).cloned() else {
@@ -300,12 +335,24 @@ impl Window {
             else {
                 continue;
             };
-            self.next_frame.view_retention_order.push(key.clone());
+            let old_states = &nested.element_state_range;
+            if old_states.start < source.element_state_range.start
+                || old_states.end > source.element_state_range.end
+                || old_states.start > old_states.end
+            {
+                continue;
+            }
+            let start = target_states.start + (old_states.start - source.element_state_range.start);
+            let end = target_states.start + (old_states.end - source.element_state_range.start);
+            if end > target_states.end {
+                continue;
+            }
             self.next_frame.view_retentions.insert(
                 key.clone(),
                 RetainedViewRecord {
                     prepaint_range: prepaint,
                     paint_range: paint,
+                    element_state_range: start..end,
                     ..nested
                 },
             );

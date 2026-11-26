@@ -70,10 +70,10 @@ const ROW_NODE_LINGER_MIN: usize = 256;
 
 /// A retained slot and its generational Taffy identity. Unlike a hash-only
 /// key, a claim cannot silently bind to a replacement node after eviction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct LayoutClaim {
     key: u64,
-    id: LayoutId,
+    pub(crate) id: LayoutId,
 }
 
 struct PersistentLayoutNode {
@@ -130,7 +130,7 @@ pub struct TaffyLayoutEngine {
     persistent_layout_reuses: usize,
     request_frame: u64,
     claimed_this_frame: usize,
-    claimed_key_log: Vec<LayoutClaim>,
+    claimed_key_log: Vec<Option<LayoutClaim>>,
     open_key_recordings: usize,
     layout_changes: u64,
     remeasures: u64,
@@ -533,7 +533,7 @@ impl TaffyLayoutEngine {
 
     /// Ends the recording started at `start`, returning the keys it saw.
     pub(crate) fn finish_recording_claimed_keys(&mut self, start: usize) -> Vec<LayoutClaim> {
-        let keys = self.claimed_key_log[start..].to_vec();
+        let keys = self.claimed_key_log[start..].iter().flatten().copied().collect();
         self.open_key_recordings -= 1;
         if self.open_key_recordings == 0 {
             self.claimed_key_log.clear();
@@ -566,7 +566,7 @@ impl TaffyLayoutEngine {
                 node.claimed_in_frame = frame;
                 self.claimed_this_frame += 1;
                 if self.open_key_recordings > 0 {
-                    self.claimed_key_log.push(*claim);
+                    self.claimed_key_log.push(Some(*claim));
                 }
             }
         }
@@ -574,22 +574,31 @@ impl TaffyLayoutEngine {
     }
 
     /// Undo a just-acquired transaction before rebuilding the subtree.
-    /// Callers must not interleave other claims between keep and release.
+    /// Released entries become tombstones: nested recording offsets stay stable.
     pub(crate) fn release_kept(&mut self, claims: &[LayoutClaim]) {
         let frame = self.request_frame;
-        let mut released = 0usize;
         for claim in claims {
             if let Some(node) = self.persistent_nodes.get_mut(&claim.key)
                 && node.id == claim.id && node.claimed_in_frame == frame
             {
                 node.claimed_in_frame = frame.wrapping_sub(1);
                 self.claimed_this_frame -= 1;
-                released += 1;
             }
         }
         if self.open_key_recordings > 0 {
-            self.claimed_key_log.truncate(self.claimed_key_log.len().saturating_sub(released));
+            let released: FxHashSet<_> = claims.iter().copied().collect();
+            for entry in &mut self.claimed_key_log {
+                if entry.is_some_and(|claim| released.contains(&claim)) {
+                    *entry = None;
+                }
+            }
         }
+    }
+
+    pub(crate) fn claim_is_current(&self, claim: &LayoutClaim) -> bool {
+        self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+            node.id == claim.id && node.claimed_in_frame == self.request_frame
+        })
     }
 
     /// Reconcile the retained Element's native layout nodes. Only genuinely
@@ -630,7 +639,7 @@ impl TaffyLayoutEngine {
             self.claimed_this_frame += 1;
             let id = node.id;
             if self.open_key_recordings > 0 {
-                self.claimed_key_log.push(LayoutClaim { key, id });
+                self.claimed_key_log.push(Some(LayoutClaim { key, id }));
             }
             self.robbed_parents.remove(&id);
             // Compare the actual native inputs. GPUI interaction/scroll flags
@@ -723,7 +732,7 @@ impl TaffyLayoutEngine {
             let id = self.create_taffy_node(build_style(), children, measure);
             self.claimed_this_frame += 1;
             if self.open_key_recordings > 0 {
-                self.claimed_key_log.push(LayoutClaim { key, id });
+                self.claimed_key_log.push(Some(LayoutClaim { key, id }));
             }
             self.persistent_nodes.insert(
                 key,

@@ -341,14 +341,14 @@ impl Element for ViewElement {
                     let claim_start = window.begin_view_record();
                     let element_state_start = window.begin_view_element_states();
                     let cached_view_mark = window.cached_view_mark();
-                    let layout_claims;
                     let mut element = {
                         let type_name =
                             cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
                         window.record_rendered_view(entity_id, type_name);
                         self.view.render_element(window, cx)
                     };
-                    window.with_retained_child_scope(|window| {
+                    let rebuilt_root = window.with_retained_child_scope(|window| {
+                        let rebuilt_root = element.request_layout(window, cx);
                         element.prepaint_as_root(
                             bounds.origin,
                             crate::size(
@@ -358,8 +358,14 @@ impl Element for ViewElement {
                             window,
                             cx,
                         );
+                        rebuilt_root
                     });
-                    layout_claims = window.finish_view_record_claims(claim_start);
+                    let mut layout_claims = window.finish_view_record_claims(claim_start);
+                    if rebuilt_root != layout_root {
+                        // The parent still references the admitted root. Do not publish
+                        // a reusable record for that root after replacing its subtree.
+                        layout_claims = Rc::from([]);
+                    }
                     state.kind = ViewRequestLayoutKind::Built {
                         element,
                         layout_root,
@@ -373,12 +379,15 @@ impl Element for ViewElement {
                 }
                 ViewRequestLayoutKind::Built {
                     element,
+                    layout_claims,
                     prepaint_range,
                     context: recorded_context,
                     retention: state_retention,
                     ..
                 } => {
+                    let claim_start = window.begin_view_record();
                     element.prepaint(window, cx);
+                    window.finish_view_prepaint_claims(claim_start, layout_claims);
                     *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
                     *recorded_context = Some(context);
                     *state_retention = retention.take().expect("view retention slot");
@@ -449,7 +458,7 @@ impl Element for ViewElement {
                         bounds,
                         context: reused.context.clone(),
                         element_state_range: 0..0,
-                        contains_cached_view: true,
+                        contains_cached_view: admission.contains_cached_view,
                         reused: Some(admission.clone()),
                     },
                 );

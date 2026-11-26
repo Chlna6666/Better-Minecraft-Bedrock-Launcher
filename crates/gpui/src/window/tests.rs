@@ -3770,7 +3770,6 @@ fn ordinary_view_is_drawn_again_when_nothing_it_read_changed(cx: &mut TestAppCon
     });
 
     cx.update_window(window, |_, window, cx| {
-        eprintln!("ORD-DRAW-1");
         window.draw(cx).clear();
         let child_baseline = child_renders.get();
         let parent_baseline = parent_renders.get();
@@ -3780,7 +3779,6 @@ fn ordinary_view_is_drawn_again_when_nothing_it_read_changed(cx: &mut TestAppCon
 
         // The parent is rebuilt, but the child view and everything inside it are unchanged.
         parent.update(cx, |_, cx| cx.notify());
-        eprintln!("ORD-DRAW-2");
         window.draw(cx).clear();
         assert_eq!(parent_renders.get(), parent_baseline + 1);
         assert_eq!(
@@ -3802,9 +3800,17 @@ fn ordinary_view_is_drawn_again_when_nothing_it_read_changed(cx: &mut TestAppCon
             "a reused view still answers hit tests"
         );
 
+        // A successful replay must stay eligible, not poison the next record
+        // as if it contained an explicitly cached view.
+        for _ in 0..5 {
+            parent.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+            assert_eq!(child_renders.get(), child_baseline);
+            assert_eq!(window.rendered_frame.hitboxes.len(), hitboxes);
+        }
+
         // Notifying the child view itself has to rebuild it.
         child.update(cx, |_, cx| cx.notify());
-        eprintln!("ORD-DRAW-3");
         window.draw(cx).clear();
         assert_eq!(child_renders.get(), child_baseline + 1);
     })
