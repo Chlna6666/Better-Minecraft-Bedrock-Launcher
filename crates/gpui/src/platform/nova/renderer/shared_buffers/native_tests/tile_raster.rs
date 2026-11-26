@@ -39,7 +39,7 @@ fn verify(backend: RendererBackend) {
         bounds,
         content_mask: crate::ContentMask::new(bounds),
         corner_radii: crate::Corners::all(crate::ScaledPixels(6.)),
-        background: crate::rgb(0x40e080).into(),
+        background: crate::rgba(0x40e08080).into(),
         ..Default::default()
     });
     let distant = crate::Bounds::new(
@@ -50,7 +50,7 @@ fn verify(backend: RendererBackend) {
         bounds: distant,
         content_mask: crate::ContentMask::new(distant),
         corner_radii: crate::Corners::all(crate::ScaledPixels(6.)),
-        background: crate::rgb(0x40e080).into(),
+        background: crate::rgba(0x40e08080).into(),
         ..Default::default()
     });
     painter.finish();
@@ -66,8 +66,9 @@ fn verify(backend: RendererBackend) {
     assert!(source.width() >= 32 && source.height() >= 40);
     let tile = Extent2d::new(16, 16).expect("tile extent");
     let original_buffers = renderer.frame_resources[0].buffers;
-    let reference = device!(renderer, device, {
+    let (reference, resident) = device!(renderer, device, {
         let mut results = Vec::new();
+        let mut resident = None;
         for raster in [
             RasterTile { extent: source, origin: SignedOrigin2d::ZERO },
             RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } },
@@ -79,7 +80,7 @@ fn verify(backend: RendererBackend) {
                 size: extent,
                 mip_level_count: 1,
                 format: Format::Bgra8Unorm,
-                usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+                usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
                 memory_location: MemoryLocation::GpuOnly,
                 dimension: TextureDimension::D2,
                 sample_count: 1,
@@ -143,10 +144,14 @@ fn verify(backend: RendererBackend) {
             device.destroy_buffer(global_buffer).expect("retire globals");
             device.destroy_texture_view(depth_view).expect("retire depth view");
             device.destroy_texture(depth).expect("retire depth");
-            device.destroy_texture_view(color_view).expect("retire color view");
-            device.destroy_texture(color).expect("retire color");
+            if raster.origin == (SignedOrigin2d { x: 16, y: 24 }) {
+                resident = Some((color, color_view));
+            } else {
+                device.destroy_texture_view(color_view).expect("retire color view");
+                device.destroy_texture(color).expect("retire color");
+            }
         }
-        results
+        (results, resident.expect("resident tile"))
     });
     let row_bytes = source.width() as usize * 4;
     let cropped = reference[0].chunks_exact(row_bytes)
@@ -157,5 +162,96 @@ fn verify(backend: RendererBackend) {
     assert_eq!(reference[1], cropped, "tile must match full content raster");
     assert_eq!(reference[2], cropped, "far signed tile must match the same geometry");
     assert_ne!(&cropped[..4], &cropped[(8 * 16 + 8) * 4..][..4]);
+    assert!(cropped.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+
+    // Reuse the actual render-target texture twice, changing only the sprite
+    // placement. No readback bytes are uploaded to the GPU.
+    let mut composite = crate::scene::Painter::default();
+    let atlas_tile = AtlasTile {
+        texture_id: AtlasTextureId {
+            index: u32::MAX - 1,
+            kind: AtlasTextureKind::Bgra,
+        },
+        tile_id: TileId(u32::MAX - 1),
+        padding: 0,
+        bounds: crate::bounds(crate::point(DevicePixels(0), DevicePixels(0)),
+            crate::size(DevicePixels(16), DevicePixels(16))),
+    };
+    for x in [0., 24.] {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(x), crate::ScaledPixels(0.)),
+            crate::size(crate::ScaledPixels(16.), crate::ScaledPixels(16.)),
+        );
+        composite.insert_primitive(PolychromeSprite {
+            order: 0,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            corner_radii: Default::default(),
+            tile: atlas_tile,
+            grayscale: false,
+            opacity: 1.,
+            sampling: 2,
+            animation_id: None,
+        });
+    }
+    composite.finish();
+    upload(&mut renderer, 0, &composite, &crate::window::retained::RetainedPaint::default());
+    let (target, target_view) = super::target(&renderer);
+    assert!(source.width() >= 40);
+    device!(renderer, device, {
+        let global_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("resident tile composite globals".into()),
+            size: GLOBAL_UPLOAD_BYTES as u64,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::CpuToGpu,
+        }).expect("composite globals");
+        let raster = RasterTile { extent: source, origin: SignedOrigin2d::ZERO };
+        device.write_buffer(global_buffer, 0, &pack_tile_globals(raster, &renderer.frame_upload.globals))
+            .expect("composite globals");
+        let buffers = FrameResourceBuffers { global_buffer, ..renderer.frame_resources[0].buffers };
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("resident tile composite".into()),
+            layout: renderer.poly_sprite_bind_group_layout,
+            entries: poly_atlas_resource_bindings(buffers, resident.1, renderer.atlas_sampler),
+        }).expect("resident tile binding");
+        for pipeline in [
+            renderer.pipelines.premultiplied.poly_sprites,
+            renderer.pipelines.premultiplied.poly_sprites_color,
+        ] {
+            let steps = [RenderCommand::Draw(DrawCommand {
+                pipeline,
+                bind_groups: bind_group_list([bind_group]),
+                instance_count: 2,
+                ..quad_step(&renderer)
+            })];
+            device.render_to_textures(&[RenderPassCommands {
+                color_attachments: std::slice::from_ref(&target_view),
+                render_pass: renderer.render_pass,
+                commands: &steps,
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(DepthAttachment {
+                    target: renderer.depth_texture_view,
+                    depth_load_op: LoadOp::Clear(1.),
+                    stencil_load_op: None,
+                }),
+                viewport: Some(raster.viewport()),
+                resolve_target: None,
+            }]).expect("resident tile composite");
+            let pixels = device.read_texture(target).expect("composited pixels");
+            for x in [0usize, 24] {
+                let actual = pixels.bytes.chunks_exact(pixels.bytes_per_row as usize)
+                    .take(16).flat_map(|row| row[x * 4..(x + 16) * 4].iter().copied())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, cropped, "resident premultiplied tile at {x}");
+            }
+        }
+        device.destroy_bind_group(bind_group).expect("retire composite binding");
+        device.destroy_buffer(global_buffer).expect("retire composite globals");
+        device.destroy_texture_view(target_view).expect("retire target view");
+        device.destroy_texture(target).expect("retire target");
+        device.destroy_texture_view(resident.1).expect("retire resident view");
+        device.destroy_texture(resident.0).expect("retire resident tile");
+    });
     renderer.destroy();
 }
