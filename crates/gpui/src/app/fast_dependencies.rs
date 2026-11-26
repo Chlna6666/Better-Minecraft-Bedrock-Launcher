@@ -4,7 +4,9 @@
 //! SPDX-License-Identifier: Apache-2.0
 
 use crate::EntityId;
-use collections::{FxHashMap, FxHashSet};
+use collections::FxHashSet;
+#[cfg(test)]
+use collections::FxHashMap;
 use std::{any::TypeId, cell::{Cell, RefCell}, ops::Range, rc::{Rc, Weak}};
 
 /// Lists of what retained subtrees read, each kept once and shared by every

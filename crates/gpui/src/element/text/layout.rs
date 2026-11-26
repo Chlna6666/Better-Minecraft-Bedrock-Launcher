@@ -4,6 +4,7 @@ use crate::{
 };
 use smallvec::SmallVec;
 use std::{
+    borrow::Cow,
     cell::RefCell,
     cmp,
     collections::hash_map::DefaultHasher,
@@ -65,16 +66,13 @@ impl TextLayout {
             .line_height
             .to_pixels(font_size.into(), window.rem_size());
 
-        let mut runs = if let Some(runs) = runs {
-            runs
-        } else {
-            vec![text_style.to_run(text.len())]
-        };
-        let geometry_key = text_layout_cache_key(&text, &runs, &text_style, font_size, line_height);
+        // Fast's plain text path keeps the shared style and defers creation
+        // of its single run until shaping or decoration refresh is necessary.
+        let geometry_key = text_layout_cache_key(&text, runs.as_deref(), &text_style, font_size, line_height);
         // Adding fonts can change fallback, glyph advances and line breaks
         // even when the string and its requested font are unchanged.
         let cache_key = text_layout_measurement_key(geometry_key, window.text_system().font_generation());
-        let paint_key = text_layout_paint_key(&runs);
+        let paint_key = text_layout_paint_key(runs.as_deref(), &text_style, text.len());
 
         // Most UI text never uses truncation. When only paint decorations change, refresh the
         // DecorationRun sidecar in place and keep the measured/wrapped/shaped geometry intact.
@@ -89,7 +87,15 @@ impl TextLayout {
                 && text_layout.paint_key != paint_key
                 && text_layout.size.is_some()
             {
-                if refresh_cached_decoration_runs(&text, &mut text_layout.lines, &runs) {
+                let plain;
+                let paint_runs = match runs.as_deref() {
+                    Some(runs) => runs,
+                    None => {
+                        plain = [text_style.to_run(text.len())];
+                        &plain
+                    }
+                };
+                if refresh_cached_decoration_runs(&text, &mut text_layout.lines, paint_runs) {
                     text_layout.paint_key = paint_key;
                 } else {
                     paint_refresh_failed = true;
@@ -160,6 +166,17 @@ impl TextLayout {
                     return text_layout.size.unwrap();
                 }
 
+                // A measurement may run for several Taffy constraints. The
+                // original input runs must not be shortened by an earlier
+                // truncation probe. Only a truncating probe needs owned runs.
+                let plain;
+                let mut shape_runs: Cow<'_, [TextRun]> = match runs.as_deref() {
+                    Some(runs) => Cow::Borrowed(runs),
+                    None => {
+                        plain = [text_style.to_run(text.len())];
+                        Cow::Borrowed(&plain)
+                    }
+                };
                 let text = if let Some(truncate_width) = truncate_width {
                     let mut line_wrapper = {
                         let _work = crate::window::element_work::begin_named(
@@ -176,7 +193,7 @@ impl TextLayout {
                         text.clone(),
                         truncate_width,
                         &truncation_suffix,
-                        &mut runs,
+                        shape_runs.to_mut(),
                     )
                 } else {
                     text.clone()
@@ -195,7 +212,7 @@ impl TextLayout {
                         .shape_text(
                             text,
                             font_size,
-                            &runs,
+                            &shape_runs,
                             wrap_width,            // Wrap if we know the width.
                             text_style.line_clamp, // Limit the number of lines if line_clamp is set.
                         )
@@ -587,19 +604,30 @@ fn push_cached_decoration_run(
 
 fn text_layout_cache_key(
     text: &SharedString,
-    runs: &[TextRun],
+    runs: Option<&[TextRun]>,
     text_style: &TextStyle,
     font_size: Pixels,
     line_height: Pixels,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
-    runs.len().hash(&mut hasher);
-    for run in runs {
-        run.len.hash(&mut hasher);
-        run.font.hash(&mut hasher);
+    // Plain text gets its font from the style below. Explicit runs also
+    // carry font boundaries. Do not construct or hash a second Font.
+    if let Some(runs) = runs {
+        true.hash(&mut hasher);
+        runs.len().hash(&mut hasher);
+        for run in runs {
+            run.len.hash(&mut hasher);
+            run.font.hash(&mut hasher);
+        }
+    } else {
+        false.hash(&mut hasher);
     }
-    text_style.font().hash(&mut hasher);
+    text_style.font_family.hash(&mut hasher);
+    text_style.font_features.hash(&mut hasher);
+    text_style.font_fallbacks.hash(&mut hasher);
+    text_style.font_weight.hash(&mut hasher);
+    text_style.font_style.hash(&mut hasher);
     font_size.0.to_bits().hash(&mut hasher);
     line_height.0.to_bits().hash(&mut hasher);
     std::mem::discriminant(&text_style.white_space).hash(&mut hasher);
@@ -615,25 +643,32 @@ fn text_layout_cache_key(
     hasher.finish()
 }
 
-fn text_layout_paint_key(runs: &[TextRun]) -> u64 {
+fn text_layout_paint_key(runs: Option<&[TextRun]>, style: &TextStyle, len: usize) -> u64 {
     let mut hasher = DefaultHasher::new();
-    runs.len().hash(&mut hasher);
-    for run in runs {
-        run.len.hash(&mut hasher);
-        run.color.hash(&mut hasher);
-        run.background_color.hash(&mut hasher);
-        run.background_corner_radius.hash(&mut hasher);
-        if let Some(padding) = run.background_padding {
-            1u8.hash(&mut hasher);
-            padding.top.hash(&mut hasher);
-            padding.right.hash(&mut hasher);
-            padding.bottom.hash(&mut hasher);
-            padding.left.hash(&mut hasher);
-        } else {
-            0u8.hash(&mut hasher);
+    if let Some(runs) = runs {
+        runs.len().hash(&mut hasher);
+        for run in runs {
+            (
+                run.len,
+                run.color,
+                run.background_color,
+                run.background_corner_radius,
+                run.background_padding.map(|p| (p.top, p.right, p.bottom, p.left)),
+                run.underline,
+                run.strikethrough,
+            ).hash(&mut hasher);
         }
-        run.underline.hash(&mut hasher);
-        run.strikethrough.hash(&mut hasher);
+    } else {
+        1usize.hash(&mut hasher);
+        (
+            len,
+            style.color,
+            style.background_color,
+            style.background_corner_radius,
+            style.background_padding.map(|p| (p.top, p.right, p.bottom, p.left)),
+            style.underline,
+            style.strikethrough,
+        ).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -647,6 +682,28 @@ fn text_layout_measurement_key(cache_key: u64, paint_key: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plain_text_keys_do_not_require_a_run() {
+        use super::*;
+        let text = SharedString::from("plain text");
+        let style = TextStyle::default();
+        let run = style.to_run(text.len());
+        assert_eq!(
+            text_layout_paint_key(None, &style, text.len()),
+            text_layout_paint_key(Some(&[run]), &style, text.len()),
+        );
+        let mut changed = style.clone();
+        changed.color = crate::rgb(0xff0000).into();
+        assert_eq!(
+            text_layout_cache_key(&text, None, &style, crate::px(16.), crate::px(24.)),
+            text_layout_cache_key(&text, None, &changed, crate::px(16.), crate::px(24.)),
+        );
+        assert_ne!(
+            text_layout_paint_key(None, &style, text.len()),
+            text_layout_paint_key(None, &changed, text.len()),
+        );
+    }
+
     use super::{
         TextLayout, text_layout_cache_key, text_layout_paint_key,
     };
@@ -697,11 +754,11 @@ mod tests {
         let first_runs = [first];
         let second_runs = [second];
         let first_geometry =
-            text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
+            text_layout_cache_key(&text, Some(&first_runs), &text_style, font_size, line_height);
         let second_geometry =
-            text_layout_cache_key(&text, &second_runs, &text_style, font_size, line_height);
-        let first_paint = text_layout_paint_key(&first_runs);
-        let second_paint = text_layout_paint_key(&second_runs);
+            text_layout_cache_key(&text, Some(&second_runs), &text_style, font_size, line_height);
+        let first_paint = text_layout_paint_key(Some(&first_runs), &text_style, text.len());
+        let second_paint = text_layout_paint_key(Some(&second_runs), &text_style, text.len());
 
         assert_eq!(first_geometry, second_geometry);
         assert_ne!(first_paint, second_paint);
@@ -725,9 +782,9 @@ mod tests {
         let first_runs = [first];
         let second_runs = [second];
         let geometry =
-            text_layout_cache_key(&text, &first_runs, &text_style, font_size, line_height);
-        let first_paint = text_layout_paint_key(&first_runs);
-        let second_paint = text_layout_paint_key(&second_runs);
+            text_layout_cache_key(&text, Some(&first_runs), &text_style, font_size, line_height);
+        let first_paint = text_layout_paint_key(Some(&first_runs), &text_style, text.len());
+        let second_paint = text_layout_paint_key(Some(&second_runs), &text_style, text.len());
 
         let key = |paint| crate::layout::MeasurementKey::Text {
             state: 1, geometry, paint, geometry_only: false,
