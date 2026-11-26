@@ -1,5 +1,4 @@
 mod builders;
-mod cache;
 mod convert;
 mod engine;
 mod fingerprint;

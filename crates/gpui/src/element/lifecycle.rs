@@ -394,12 +394,11 @@ fn compute_element_root_layout(
     layout_id: LayoutId,
     available_space: Size<AvailableSpace>,
     previous_available_space: Option<Size<AvailableSpace>>,
-    global_id: Option<&GlobalElementId>,
     window: &mut Window,
     cx: &mut App,
 ) {
     if previous_available_space != Some(available_space) {
-        window.compute_diagnostic_layout(layout_id, available_space, global_id, cx);
+        window.compute_layout(layout_id, available_space, cx);
     }
 }
 
@@ -641,7 +640,6 @@ impl<E: Element> Drawable<E> {
             layout_id,
             available_space,
             previous_available_space,
-            global_id.as_ref(),
             window,
             cx,
         );

@@ -46,12 +46,6 @@ struct DefaultMeasuredStyle {
     fingerprint: u64,
 }
 
-struct LayoutRootDiagnosticNode {
-    style_fingerprint: u64,
-    subtree_fingerprint: Option<u64>,
-    child_count: usize,
-}
-
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
@@ -139,16 +133,11 @@ pub struct TaffyLayoutEngine {
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
-    pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     // Taffy stores device-pixel geometry; equal logical constraints at a new
     // DPI must not reuse the previous physical layout.
     root_constraints: FxHashMap<LayoutId, (Size<AvailableSpaceKey>, u32)>,
-    pub(super) subtree_scratch: Vec<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
-    root_diagnostic_ids: FxHashMap<LayoutId, GlobalElementId>,
-    previous_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
-    current_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
     pub(super) nodes_requested: usize,
     pub(super) measured_nodes_requested: usize,
     pub(super) roots_computed: usize,
@@ -202,14 +191,9 @@ impl TaffyLayoutEngine {
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
-            node_fingerprints: FxHashMap::default(),
             node_layout_metadata: FxHashMap::default(),
             root_constraints: FxHashMap::default(),
-            subtree_scratch: Vec::new(),
             layout_bounds_scratch_space: Vec::new(),
-            root_diagnostic_ids: FxHashMap::default(),
-            previous_root_diagnostics: FxHashMap::default(),
-            current_root_diagnostics: FxHashMap::default(),
             nodes_requested: 0,
             measured_nodes_requested: 0,
             roots_computed: 0,
@@ -301,7 +285,6 @@ impl TaffyLayoutEngine {
         let absolute_layout_count = self.absolute_layout_bounds.len();
         let unrounded_origin_count = self.unrounded_layout_origins.len();
         let computed_layout_count = self.computed_layouts.len();
-        let fingerprint_count = self.node_fingerprints.len();
         let metadata_count = self.node_layout_metadata.len();
         let node_working_set = self.nodes_requested;
 
@@ -321,17 +304,6 @@ impl TaffyLayoutEngine {
         debug_assert_eq!(self.open_key_recordings, 0);
         self.open_key_recordings = 0;
         self.claimed_key_log.clear();
-        std::mem::swap(
-            &mut self.previous_root_diagnostics,
-            &mut self.current_root_diagnostics,
-        );
-        self.current_root_diagnostics.clear();
-        self.root_diagnostic_ids.clear();
-        if !log::log_enabled!(log::Level::Trace) {
-            self.previous_root_diagnostics = FxHashMap::default();
-            self.current_root_diagnostics = FxHashMap::default();
-            self.root_diagnostic_ids = FxHashMap::default();
-        }
         let mut transient = std::mem::take(&mut self.anonymous_nodes);
         for id in transient.drain(..) {
             self.remove_native_node(id);
@@ -343,7 +315,6 @@ impl TaffyLayoutEngine {
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
-        self.node_fingerprints.clear();
         self.node_layout_metadata.clear();
 
         macro_rules! trim_to_working_set {
@@ -358,11 +329,9 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.absolute_layout_bounds, absolute_layout_count);
         trim_to_working_set!(self.unrounded_layout_origins, unrounded_origin_count);
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
-        trim_to_working_set!(self.node_fingerprints, fingerprint_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
         trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
         trim_to_working_set!(self.claimed_key_log, node_working_set);
-        trim_to_working_set!(self.subtree_scratch, node_working_set);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
         self.nodes_requested = 0;
@@ -376,94 +345,6 @@ impl TaffyLayoutEngine {
         self.layout_time = Duration::ZERO;
     }
 
-    pub(crate) fn register_root_diagnostic_id(&mut self, id: LayoutId, identity: &GlobalElementId) {
-        if log::log_enabled!(log::Level::Trace) {
-            self.root_diagnostic_ids.insert(id, identity.clone());
-        }
-    }
-
-    fn record_root_diagnostic(&mut self, id: LayoutId, cache_hit: bool) {
-        let Some(identity) = self.root_diagnostic_ids.get(&id).cloned() else {
-            return;
-        };
-        let mut nodes = std::mem::take(&mut self.subtree_scratch);
-        nodes.clear();
-        self.collect_subtree_nodes_into(id, &mut nodes);
-        let mut snapshot = Vec::with_capacity(nodes.len());
-        for node_id in &nodes {
-            let Some(metadata) = self.node_layout_metadata.get(node_id) else {
-                // Trace logging can be enabled after the request or a retained
-                // child may not have been requested in this frame.
-                nodes.clear();
-                self.subtree_scratch = nodes;
-                return;
-            };
-            let mut hasher = FxHasher::default();
-            self.hash_layout_style(
-                &metadata.style,
-                metadata.rem_size,
-                metadata.scale_factor,
-                &mut hasher,
-            );
-            snapshot.push(LayoutRootDiagnosticNode {
-                style_fingerprint: hasher.finish(),
-                subtree_fingerprint: self.node_fingerprints[node_id],
-                child_count: self.taffy.child_count((*node_id).into()),
-            });
-        }
-        if !cache_hit {
-            if let Some(previous) = self.previous_root_diagnostics.get(&identity) {
-                let divergence =
-                    previous
-                        .iter()
-                        .zip(&snapshot)
-                        .enumerate()
-                        .find_map(|(index, (old, new))| {
-                            if old.child_count != new.child_count {
-                                Some((index, "children"))
-                            } else if old.style_fingerprint != new.style_fingerprint {
-                                Some((index, "style"))
-                            } else if old.child_count == 0
-                                && old.subtree_fingerprint != new.subtree_fingerprint
-                            {
-                                Some((index, "measured_content"))
-                            } else {
-                                None
-                            }
-                        });
-                let divergence = divergence.or_else(|| {
-                    (previous.len() != snapshot.len())
-                        .then_some((previous.len().min(snapshot.len()), "node_count"))
-                });
-                if let Some((index, reason)) = divergence {
-                    log::trace!(
-                        "gpui layout root cache divergence: root={} preorder_node={} reason={} old_nodes={} new_nodes={}",
-                        identity,
-                        index,
-                        reason,
-                        previous.len(),
-                        snapshot.len(),
-                    );
-                } else {
-                    log::trace!(
-                        "gpui layout root cache miss without local divergence: root={} nodes={} (constraints or unavailable fingerprint)",
-                        identity,
-                        snapshot.len(),
-                    );
-                }
-            } else {
-                log::trace!(
-                    "gpui layout root cache miss without prior root: root={} nodes={}",
-                    identity,
-                    snapshot.len(),
-                );
-            }
-        }
-        self.current_root_diagnostics.insert(identity, snapshot);
-        nodes.clear();
-        self.subtree_scratch = nodes;
-    }
-
     pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
         let floor = match level {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
@@ -475,24 +356,10 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.unrounded_layout_origins.len()));
         self.computed_layouts
             .shrink_to(floor.max(self.computed_layouts.len()));
-        self.node_fingerprints
-            .shrink_to(floor.max(self.node_fingerprints.len()));
         self.node_layout_metadata
             .shrink_to(floor.max(self.node_layout_metadata.len()));
-        self.subtree_scratch
-            .shrink_to(floor.max(self.subtree_scratch.len()));
         self.layout_bounds_scratch_space
             .shrink_to(floor.max(self.layout_bounds_scratch_space.len()));
-        if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
-            self.previous_root_diagnostics.clear();
-            self.current_root_diagnostics.clear();
-        }
-        self.root_diagnostic_ids
-            .shrink_to(floor.max(self.root_diagnostic_ids.len()));
-        self.previous_root_diagnostics
-            .shrink_to(floor.max(self.previous_root_diagnostics.len()));
-        self.current_root_diagnostics
-            .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.anonymous_nodes.shrink_to_fit();
             self.claimed_key_log.shrink_to_fit();
@@ -680,7 +547,7 @@ impl TaffyLayoutEngine {
                 });
             if !child_order_unchanged {
                 if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
-                    &mut self.node_fingerprints, Some(id), children) {
+                    Some(id), children) {
                     self.absolute_layout_bounds.clear();
                     self.unrounded_layout_origins.clear();
                 }
@@ -754,12 +621,9 @@ impl TaffyLayoutEngine {
     // Based on Fast's set_children / robbed_parents mechanism
     // (longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, Apache-2.0).
     // Copyright 2022 - 2025 Zed Industries, Inc. Copyright 2026 Longbridge.
-    // Invalidate already-computed recursive proofs too: BMCBL still uses
-    // these for replay until Fast's subtree claim transaction takes over.
     fn note_reparented_children(
         taffy: &mut TaffyTree<NodeContext>,
         robbed_parents: &mut FxHashSet<LayoutId>,
-        fingerprints: &mut FxHashMap<LayoutId, Option<u64>>,
         new_parent: Option<LayoutId>,
         children: &[LayoutId],
     ) -> bool {
@@ -771,11 +635,6 @@ impl TaffyLayoutEngine {
                 changed = true;
                 robbed_parents.insert(parent.into());
                 taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
-                let mut ancestor = Some(parent);
-                while let Some(id) = ancestor {
-                    fingerprints.remove(&LayoutId::from(id));
-                    ancestor = taffy.parent(id);
-                }
             }
         }
         changed
@@ -792,7 +651,7 @@ impl TaffyLayoutEngine {
             self.remeasures = self.remeasures.wrapping_add(1);
         }
         if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
-            &mut self.node_fingerprints, None, children) {
+            None, children) {
             self.absolute_layout_bounds.clear();
             self.unrounded_layout_origins.clear();
         }
@@ -829,7 +688,6 @@ impl TaffyLayoutEngine {
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
-        let fingerprint = self.layout_fingerprint(style_fingerprint, children);
         let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
@@ -839,7 +697,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             move || pending_style.to_taffy(rem_size, scale_factor),
         );
-        self.node_fingerprints.insert(layout_id, fingerprint);
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
@@ -886,12 +743,6 @@ impl TaffyLayoutEngine {
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
-        let fingerprint = fingerprint_seed.map(|seed| {
-            let mut hasher = FxHasher::default();
-            style_fingerprint.hash(&mut hasher);
-            seed.hash(&mut hasher);
-            hasher.finish()
-        });
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let measure = Box::new(measure) as Box<MeasureFn>;
         #[cfg(feature = "stacker")]
@@ -908,7 +759,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             move || taffy_style,
         );
-        self.node_fingerprints.insert(layout_id, fingerprint);
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
@@ -996,10 +846,6 @@ impl TaffyLayoutEngine {
         );
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
-        let mut hasher = FxHasher::default();
-        style_fingerprint.hash(&mut hasher);
-        fingerprint_seed.hash(&mut hasher);
-        let fingerprint = hasher.finish();
         let measure = Box::new(measure) as Box<MeasureFn>;
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);
@@ -1015,7 +861,6 @@ impl TaffyLayoutEngine {
             Some(style_fingerprint),
             move || taffy_style,
         );
-        self.node_fingerprints.insert(layout_id, Some(fingerprint));
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
@@ -1047,7 +892,6 @@ impl TaffyLayoutEngine {
             && !self.robbed_parents.contains(&id)
             && self.root_constraints.get(&id) == Some(&constraints)
             && !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE);
-        self.record_root_diagnostic(id, reusable);
         if reusable {
             self.computed_layouts.insert(id);
             self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
@@ -1237,16 +1081,14 @@ impl TaffyLayoutEngine {
         scale_factor: f32,
     ) {
         // The full logical style is not needed to compute a native layout or
-        // fingerprint after the request. Only percentage-passthrough parents
-        // and opt-in root diagnostics consume it. Most text and fixed-size
+        // after the request. Only percentage-passthrough parents consume it.
+        // Most text and fixed-size
         // nodes therefore need no second style copy in a frame-local map.
         let percentage_axis = |length: Length| {
             matches!(length, Length::Definite(DefiniteLength::Fraction(fraction))
                 if fraction.is_finite() && fraction >= 0.0)
         };
-        if log::log_enabled!(log::Level::Trace)
-            || percentage_axis(style.size.width)
-            || percentage_axis(style.size.height)
+        if percentage_axis(style.size.width) || percentage_axis(style.size.height)
         {
             self.node_layout_metadata.insert(id, NodeLayoutMetadata {
                 style, rem_size, scale_factor,
@@ -1292,25 +1134,6 @@ impl TaffyLayoutEngine {
         // compare, and to restore the child's own style once the passthrough parent is gone.
         self.stale_style_fingerprints.insert(child_id);
         self.node_layout_metadata.insert(child_id, child);
-    }
-
-    fn layout_fingerprint(&self, style_fingerprint: u64, children: &[LayoutId]) -> Option<u64> {
-        let mut hasher = FxHasher::default();
-        style_fingerprint.hash(&mut hasher);
-        self.hash_layout_children(children, &mut hasher)?;
-        Some(hasher.finish())
-    }
-
-    fn hash_layout_children(&self, children: &[LayoutId], hasher: &mut FxHasher) -> Option<()> {
-        children.len().hash(hasher);
-        for child in children {
-            self.node_fingerprints
-                .get(child)
-                .copied()
-                .flatten()?
-                .hash(hasher);
-        }
-        Some(())
     }
 
     fn hash_layout_style(
@@ -1447,18 +1270,16 @@ mod tests {
     }
 
     #[test]
-    fn reparenting_invalidates_previous_parent_and_ancestor_proofs() {
+    fn reparenting_marks_previous_parent_robbed() {
         let mut engine = TaffyLayoutEngine::new();
         let child = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[]);
         let old = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
         let ancestor = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[old]);
-        assert!(engine.node_fingerprints.get(&old).copied().flatten().is_some());
-        assert!(engine.node_fingerprints.get(&ancestor).copied().flatten().is_some());
         let next = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
         assert_eq!(engine.taffy.parent(child.into()), Some(next.into()));
         assert!(engine.robbed_parents.contains(&old));
-        assert!(!engine.node_fingerprints.contains_key(&old));
-        assert!(!engine.node_fingerprints.contains_key(&ancestor));
+        assert!(engine.taffy.dirty(old.into()).unwrap());
+        assert!(engine.taffy.dirty(ancestor.into()).unwrap());
         engine.clear();
         assert!(engine.robbed_parents.is_empty());
     }
@@ -1528,16 +1349,13 @@ mod tests {
     fn frame_clear_releases_excess_layout_working_set_capacity() {
         let mut engine = TaffyLayoutEngine::new();
         engine.absolute_layout_bounds.reserve(4096);
-        engine.node_fingerprints.reserve(4096);
         engine.root_constraints.reserve(4096);
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
-        let fingerprints_capacity = engine.node_fingerprints.capacity();
         let roots_capacity = engine.root_constraints.capacity();
 
         engine.clear();
 
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
-        assert!(engine.node_fingerprints.capacity() < fingerprints_capacity);
         assert!(engine.root_constraints.capacity() < roots_capacity);
     }
 
@@ -1545,16 +1363,13 @@ mod tests {
     fn aggressive_trim_releases_layout_high_watermark_capacity() {
         let mut engine = TaffyLayoutEngine::new();
         engine.root_constraints.reserve(4096);
-        engine.subtree_scratch.reserve(4096);
         engine.absolute_layout_bounds.reserve(4096);
         let roots_capacity = engine.root_constraints.capacity();
-        let scratch_capacity = engine.subtree_scratch.capacity();
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
 
         engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
 
         assert!(engine.root_constraints.capacity() < roots_capacity);
-        assert!(engine.subtree_scratch.capacity() < scratch_capacity);
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
     }
 }
