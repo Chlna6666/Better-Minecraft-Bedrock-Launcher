@@ -21,7 +21,7 @@ flowchart TB
     end
     subgraph UiCore["UI core"]
         Gpui["gpui - windows, entities, elements, layout, scene, presentation"]
-        Gpui3d["gpui-3d - 3D scene preparation and extension"]
+        Gpui3d["gpui_3d - 3D scene preparation and extension"]
     end
     subgraph Gfx["Graphics"]
         Nova["nova-gfx - gfx-core plus backends"]
@@ -47,11 +47,14 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-runtime
+  -> egpui, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
 egpui -> gpui
-gpui-3d -> gpui + gfx-core
+gpui_3d -> gpui + gfx-core
 gpui -> gfx-core + selected gfx-<backend>
-bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui-3d (without gpui-sidecar)
+gpui (Windows) -> gpui_windows
+gpui (Linux / FreeBSD) -> gpui_linux
+gpui (macOS) -> gpui_macos
+bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui_3d (without gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
 
@@ -85,7 +88,7 @@ this document.
 
 ### 2.1 3D engine and UI Sidecar
 
-The 3D producer path belongs to gpui-3d and nova-gfx; GPUI consumes the resulting texture and
+The 3D producer path belongs to gpui_3d and nova-gfx; GPUI consumes the resulting texture and
 handles window presentation. The GPUI adapter is optional behind the gpui-sidecar Cargo feature;
 BMCBL must enable it explicitly. Ordinary Sidecars use the same ordered graphics queue for production
 and consumption by default. Use a separate physical queue only when native GPU timestamps show a
@@ -102,11 +105,14 @@ loss and in-flight resource reuse need failure paths.
 | Crate | Responsibility | Constraint |
 | --- | --- | --- |
 | `gpui` | Windows, entity state, declarative elements, layout, input, text, scene, presentation | Generic UI core; no BMCBL business logic |
-| `gpui-3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Scene preparation and extension resources only; presentation belongs to gpui/nova |
+| `gpui_windows` | Win32 display clocks, native dialogs and driver messages | Provides native wake events. GPUI owns windows and Nova presentation |
+| `gpui_linux` | Wayland/X11 session detection and XDG desktop settings subscriptions | GPUI owns the window event loop |
+| `gpui_macos` | CoreVideo display clock and libdispatch bindings | GPUI owns AppKit windows and Nova presentation |
+| `gpui_3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Scene preparation and extension resources only; presentation belongs to gpui/nova |
 | `gpui_tokio` | GPUI/Tokio task integration | No runtime handles in UI state |
-| `gpui-hooks` / `gpui-hooks-macros` | Hooks and their macros | UI state reuse only |
-| `gpui-macros` | Procedural-macro mirror for GPUI | Keep behaviour aligned with upstream macros |
-| `lucide-gpui` | Lucide icon assets for GPUI | Icons generated at build time |
+| `gpui_hooks` / `gpui_hooks_macros` | Hooks and their macros | UI state reuse only |
+| `gpui_macros` | Procedural-macro mirror for GPUI | Keep behaviour aligned with upstream macros |
+| `lucide_gpui` | Lucide icon assets for GPUI | Icons generated at build time |
 | `egpui` | Desktop host, Tokio/Rayon runtime, task scopes, UI bridges, i18n, durable tasks | No routes, downloads, maps or product policy |
 | `egpui-build` / `egpui-manifest` | Manifest validation, resource indexing, platform bundle plans | Build-time contracts only |
 | `nova-gfx` family | Backend-neutral graphics API and backends | Pure graphics library; see [CRATES](CRATES.md) |

@@ -7,7 +7,7 @@ belong.
 Broader boundaries and the rendering pipeline are documented in
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md). Background execution and state propagation
 follow [`docs/CONTRIBUTING.md`](../../docs/CONTRIBUTING.md). Reusable 3D scene and viewport APIs
-live in `crates/gpui-3d`; map and skin preview conversion stays in the owning `src/ui/window`
+live in `crates/gpui/gpui_3d`; map and skin preview conversion stays in the owning `src/ui/window`
 modules.
 
 ## Role Of `src/ui`
@@ -51,7 +51,7 @@ src/ui/views and src/ui/window
   -> src/ui/theme
   -> src/ui/state
   -> src/core / src/downloads / src/tasks / src/http / src/plugins
-  -> gpui-3d for reusable 3D scene and viewport rendering
+  -> gpui_3d for reusable 3D scene and viewport rendering
   -> gpui
 
 src/ui/components

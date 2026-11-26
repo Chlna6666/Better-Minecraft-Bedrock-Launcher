@@ -792,7 +792,7 @@ fn open_debug_window(cx: &mut App) {
     }
 }
 
-/// The window-system compositor alpha policy is independent of gpui-3d's
+/// The window-system compositor alpha policy is independent of gpui_3d's
 /// offscreen premultiplied scene textures.
 #[cfg(any(windows, target_os = "linux"))]
 fn main_window_surface_background() -> WindowBackgroundAppearance {

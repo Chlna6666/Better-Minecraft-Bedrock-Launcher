@@ -33,7 +33,7 @@ glTF (`.gltf`) 默认输出一个自包含 JSON 文件（`data:` URI 内嵌几�
 ```powershell
 git pull origin master
 cargo fmt --all --check
-cargo test -p gpui-3d --lib
+cargo test -p gpui_3d --lib
 cargo test -p bedrock-voxel
 cargo test --release --bin BMCBL
 cargo build --release --locked

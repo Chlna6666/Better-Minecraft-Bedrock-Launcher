@@ -32,7 +32,7 @@ GPUI-3D 不再使用手写 GLB chunk 和 glTF 文档解析器，而是通过 `gl
 
 ```powershell
 cargo fmt --check
-cargo test -p gpui-3d --lib
+cargo test -p gpui_3d --lib
 cargo test -p bedrock-voxel
 cargo test --bin BMCBL --release
 cargo build --release --locked

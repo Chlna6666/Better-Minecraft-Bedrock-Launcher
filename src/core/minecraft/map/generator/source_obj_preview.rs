@@ -91,7 +91,7 @@ pub(super) fn build_preview(
     let mut indices = Vec::<u32>::with_capacity(count * 3);
     let mut parts = Vec::<MeshPart>::new();
 
-    // Each OBJ material owns a real gpui-3d material slot. A textured OBJ
+    // Each OBJ material owns a real gpui_3d material slot. A textured OBJ
     // cannot be rendered correctly through one default white material even if
     // its triangles preserve diffuse colors as vertex attributes.
     let mut textures = Vec::<Arc<TextureAsset>>::new();

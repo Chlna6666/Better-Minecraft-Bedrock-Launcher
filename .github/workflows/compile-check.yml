@@ -103,9 +103,9 @@ jobs:
           pwsh -File scripts/check-gpui-3d-boundary.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Check standalone gpui-3d core without GPUI
+      - name: Check standalone gpui_3d core without GPUI
         shell: pwsh
-        run: cargo check -p gpui-3d --no-default-features --lib
+        run: cargo check -p gpui_3d --no-default-features --lib
 
       - name: Check Bedrock storage crates
         shell: pwsh
@@ -146,37 +146,37 @@ jobs:
         run: |
           cargo test -p gfx-core --lib render_graph::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib native_offscreen::tests
+          cargo test -p gpui_3d --lib native_offscreen::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test GPU-generated Section fusion and editor regression
         shell: pwsh
         run: |
-          cargo test -p gpui-3d --lib upload_feedback::tests -- --nocapture
+          cargo test -p gpui_3d --lib upload_feedback::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib structural_light_delta_tests -- --nocapture
+          cargo test -p gpui_3d --lib structural_light_delta_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
+          cargo test -p gpui_3d --lib voxel_mesh::fusion_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib scene_view::sidecar::tests -- --nocapture
+          cargo test -p gpui_3d --lib scene_view::sidecar::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib prepare::interruptible_prepare_tests -- --nocapture
+          cargo test -p gpui_3d --lib prepare::interruptible_prepare_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
+          cargo test -p gpui_3d --lib offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib sidecar_surface::tests -- --nocapture
+          cargo test -p gpui_3d --lib sidecar_surface::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib stable_slots::tests -- --nocapture
+          cargo test -p gpui_3d --lib stable_slots::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib sparse_arena_retirement_tests -- --nocapture
+          cargo test -p gpui_3d --lib sparse_arena_retirement_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib culling::tests -- --nocapture
+          cargo test -p gpui_3d --lib culling::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui --lib sidecar_target_retains_ui_projection_and_clip -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui --lib submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib initial_and_incompatible_scene_publications -- --nocapture
+          cargo test -p gpui_3d --lib initial_and_incompatible_scene_publications -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -200,13 +200,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib completely_hidden_plain_cube_column_never_expands_model_templates -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib portal_visibility_tests -- --nocapture
+          cargo test -p gpui_3d --lib portal_visibility_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib async_portal_visibility_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib stream_probe_epoch_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p gpui-3d --lib portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
+          cargo test -p gpui_3d --lib portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -281,8 +281,8 @@ jobs:
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Check standalone gpui-3d core without GPUI
-        run: cargo check -p gpui-3d --no-default-features --lib
+      - name: Check standalone gpui_3d core without GPUI
+        run: cargo check -p gpui_3d --no-default-features --lib
 
       - name: Check foreign-platform graphics backend interfaces
         run: |
@@ -321,27 +321,27 @@ jobs:
       - name: Test native GPU work graph and standalone 3D submit ABI
         run: |
           cargo test -p gfx-core --lib render_graph::tests
-          cargo test -p gpui-3d --no-default-features --lib native_offscreen::tests
+          cargo test -p gpui_3d --no-default-features --lib native_offscreen::tests
 
       - name: Test GPUI 3D cross-material batching and generated Section fusion
         run: |
           # The BMCBL sidecar build uses GPUI, while the pure engine
           # was already checked above without any GPUI dependency.
           # Unit-test builds must explicitly activate winit's Linux platform.
-          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::batching::tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 upload_feedback::tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 structural_light_delta_tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 voxel_mesh::fusion_tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::sidecar::tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 prepare::interruptible_prepare_tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 sidecar_surface::tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 stable_slots::tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 sparse_arena_retirement_tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 culling::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 scene_view::batching::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 upload_feedback::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 structural_light_delta_tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 voxel_mesh::fusion_tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 scene_view::sidecar::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 prepare::interruptible_prepare_tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 offscreen_sidecar_composite_shader_compiles_on_supported_backends -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 sidecar_surface::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 stable_slots::tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 sparse_arena_retirement_tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 culling::tests -- --nocapture
           cargo test -p gpui --lib --features x11 sidecar_target_retains_ui_projection_and_clip -- --nocapture
           cargo test -p gpui --lib --features x11 submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 initial_and_incompatible_scene_publications -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 initial_and_incompatible_scene_publications -- --nocapture
 
       - name: Test editor four-Section fusion and removal recovery
         run: cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
@@ -358,10 +358,10 @@ jobs:
           cargo test -p bmcbl --lib streaming_fluid_level_tests -- --nocapture
           cargo test -p bmcbl --lib hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances -- --nocapture
           cargo test -p bmcbl --lib completely_hidden_plain_cube_column_never_expands_model_templates -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 portal_visibility_tests -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 portal_visibility_tests -- --nocapture
           cargo test -p bmcbl --lib async_portal_visibility_tests -- --nocapture
           cargo test -p bmcbl --lib stream_probe_epoch_tests -- --nocapture
-          cargo test -p gpui-3d --lib --features gpui/x11 portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
+          cargo test -p gpui_3d --lib --features gpui/x11 portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
 
   metal-build:

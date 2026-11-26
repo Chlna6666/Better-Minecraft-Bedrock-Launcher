@@ -16,13 +16,16 @@
 
 | crate | 路径 | 职责 | 状态 | 文档 |
 | --- | --- | --- | --- | --- |
-| `gpui` | `crates/gpui` | 窗口、实体、元素、布局、输入、文本、场景、呈现 | 活跃，pre-1.0 | [README](../crates/gpui/README.md) |
-| `gpui-3d` | `crates/gpui-3d` | 游戏级 3D 场景/材质/光照、GPU Resident/构网/剔除/DrawIndirect、无 GPUI 的原生离屏提交核心及可选 Sidecar 适配 | 活跃，pre-1.0 | [README](../crates/gpui-3d/README.md) |
-| `gpui_tokio` | `crates/gpui_tokio` | GPUI/Tokio 任务集成 | 活跃 | [README](../crates/gpui_tokio/README.md) |
-| `gpui-hooks` | `crates/gpui-hooks` | GPUI hooks 与状态复用 | 活跃 | [README](../crates/gpui-hooks/README.md) |
-| `gpui-hooks-macros` | `crates/gpui-hooks-macros` | hooks 宏实现 | 内部 | [README](../crates/gpui-hooks-macros/README.md) |
-| `gpui-macros` | `crates/gpui-macros` | GPUI 派生宏镜像 | 内部 | [README](../crates/gpui-macros/README.md) |
-| `lucide-gpui` | `crates/lucide-gpui` | Lucide 图标资产适配 | 活跃 | [README](../crates/lucide-gpui/README.md) |
+| `gpui` | `crates/gpui/gpui` | 窗口、实体、元素、布局、输入、文本、场景、呈现 | 活跃，pre-1.0 | [README](../crates/gpui/gpui/README.md) |
+| `gpui_windows` | `crates/gpui/gpui_windows` | Windows 显示时钟、原生对话框和驱动消息 | 内部 | [README](../crates/gpui/gpui_windows/README.md) |
+| `gpui_linux` | `crates/gpui/gpui_linux` | 桌面会话检测与 XDG 桌面设置 | 内部 | [README](../crates/gpui/gpui_linux/README.md) |
+| `gpui_macos` | `crates/gpui/gpui_macos` | CoreVideo 显示时钟与 libdispatch | 内部 | [README](../crates/gpui/gpui_macos/README.md) |
+| `gpui_3d` | `crates/gpui/gpui_3d` | 游戏级 3D 场景/材质/光照、GPU Resident/构网/剔除/DrawIndirect、无 GPUI 的原生离屏提交核心及可选 Sidecar 适配 | 活跃，pre-1.0 | [README](../crates/gpui/gpui_3d/README.md) |
+| `gpui_tokio` | `crates/gpui/gpui_tokio` | GPUI/Tokio 任务集成 | 活跃 | [README](../crates/gpui/gpui_tokio/README.md) |
+| `gpui_hooks` | `crates/gpui/gpui_hooks` | GPUI hooks 与状态复用 | 活跃 | [README](../crates/gpui/gpui_hooks/README.md) |
+| `gpui_hooks_macros` | `crates/gpui/gpui_hooks_macros` | hooks 宏实现 | 内部 | [README](../crates/gpui/gpui_hooks_macros/README.md) |
+| `gpui_macros` | `crates/gpui/gpui_macros` | GPUI 派生宏镜像 | 内部 | [README](../crates/gpui/gpui_macros/README.md) |
+| `lucide_gpui` | `crates/gpui/lucide_gpui` | Lucide 图标资产适配 | 活跃 | [README](../crates/gpui/lucide_gpui/README.md) |
 
 ## 3. 图形（nova-gfx）
 
@@ -80,10 +83,10 @@
 ## 7. 边界速查
 
 - `nova-gfx`/`gfx-*` 不依赖 `gpui`/`egpui`/应用代码；`gfx-core` 不依赖窗口句柄。
-- `gpui` 不依赖应用层；`gpui-3d` 的纯引擎模块仅依赖 `gfx-core` 等无 UI 库，
+- `gpui` 不依赖应用层；`gpui_3d` 的纯引擎模块仅依赖 `gfx-core` 等无 UI 库，
   `scene_view` 适配层通过默认开启的 `gpui-sidecar` Cargo feature 依赖 `gpui`；
   `--no-default-features` 可移除该 UI 依赖；
-  3D 渲染策略、原生离屏 Pass/Compute 调度归 `gpui-3d`，窗口与 Swapchain 仍归宿主。
+  3D 渲染策略、原生离屏 Pass/Compute 调度归 `gpui_3d`，窗口与 Swapchain 仍归宿主。
 - `egpui` 不拥有下载/地图/路由等产品语义。
 - `bedrock-*` 不依赖 UI/GPU 呈现；`bedrock-voxel` 只产出计划，不直接写世界。
 - 插件 ABI 变更必须同时更新 API 版本、manifest schema 与示例插件。

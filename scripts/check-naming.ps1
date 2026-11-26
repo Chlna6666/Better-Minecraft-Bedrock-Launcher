@@ -86,7 +86,7 @@ if ($pathViolations.Count -gt 0) {
 Write-Host "Rust #[path] check passed: $pathAttributeCount test/benchmark/build-support-only use(s)." -ForegroundColor Green
 
 $novaRoot = Join-Path $PSScriptRoot "..\crates\nova-gfx"
-$gpuiNova = Join-Path $PSScriptRoot "..\crates\gpui\src\platform\nova"
+$gpuiNova = Join-Path $PSScriptRoot "..\crates\gpui\gpui\src\platform\nova"
 $files = @()
 $files += Get-ChildItem -Recurse $novaRoot -File -Filter *.rs
 $files += Get-ChildItem -Recurse $gpuiNova -File -Filter *.rs
@@ -143,7 +143,7 @@ if ($hard.Count -gt 0) {
 Write-Host "Nova-gfx naming check passed." -ForegroundColor Green
 
 # GPUI advisory: count long/chained names. These are not errors; review meanings and callers.
-$gpuiSrc = Join-Path $PSScriptRoot "..\crates\gpui\src"
+$gpuiSrc = Join-Path $PSScriptRoot "..\crates\gpui\gpui\src"
 $advisory = 0
 Get-ChildItem -Recurse $gpuiSrc -File -Filter *.rs | Where-Object {
     $_.FullName -notmatch "platform\\nova" -and

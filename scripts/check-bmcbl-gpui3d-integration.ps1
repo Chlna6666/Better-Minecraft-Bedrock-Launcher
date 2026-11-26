@@ -1,5 +1,5 @@
-# BMCBL owns a GPUI window and requires the native gpui-3d SceneView sidecar.
-# The gpui-3d library may be compiled without GPUI by standalone games, but
+# BMCBL owns a GPUI window and requires the native gpui_3d SceneView sidecar.
+# The gpui_3d library may be compiled without GPUI by standalone games, but
 # never implicitly disable SceneView in the BMCBL map/skin editors.
 # Run from repository root: pwsh -File scripts/check-bmcbl-gpui3d-integration.ps1
 $ErrorActionPreference = "Stop"
@@ -7,19 +7,19 @@ $repo = Split-Path -Parent $PSScriptRoot
 $failures = [System.Collections.Generic.List[string]]::new()
 
 $manifest = Get-Content -LiteralPath (Join-Path $repo "Cargo.toml") -Raw
-$crateManifest = Get-Content -LiteralPath (Join-Path $repo "crates/gpui-3d/Cargo.toml") -Raw
-$crateLibrary = Get-Content -LiteralPath (Join-Path $repo "crates/gpui-3d/src/lib.rs") -Raw
+$crateManifest = Get-Content -LiteralPath (Join-Path $repo "crates/gpui/gpui_3d/Cargo.toml") -Raw
+$crateLibrary = Get-Content -LiteralPath (Join-Path $repo "crates/gpui/gpui_3d/src/lib.rs") -Raw
 
 # The application must request the integration explicitly, independent of the
 # standalone library's default feature policy.
-if ($manifest -notmatch '(?m)^gpui-3d\s*=\s*\{[^\r\n]*features\s*=\s*\[[^\r\n]*"gpui-sidecar"') {
-    $failures.Add("BMCBL must explicitly enable the gpui-3d/gpui-sidecar feature")
+if ($manifest -notmatch '(?m)^gpui_3d\s*=\s*\{[^\r\n]*features\s*=\s*\[[^\r\n]*"gpui-sidecar"') {
+    $failures.Add("BMCBL must explicitly enable the gpui_3d/gpui-sidecar feature")
 }
 if ($crateManifest -notmatch '(?m)^gpui-sidecar\s*=\s*\["dep:gpui"\]') {
-    $failures.Add("gpui-3d must expose gpui-sidecar and its optional GPUI dependency")
+    $failures.Add("gpui_3d must expose gpui-sidecar and its optional GPUI dependency")
 }
 if ($crateLibrary -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*pub use scene_view::') {
-    $failures.Add("gpui-3d must export SceneView and scene_view() with gpui-sidecar")
+    $failures.Add("gpui_3d must export SceneView and scene_view() with gpui-sidecar")
 }
 
 # Smoke-check all production BMCBL callers. The map editor, embedded preview,
@@ -43,7 +43,7 @@ foreach ($relative in $viewCallers) {
 
 # The 3D draw path must remain native and offscreen. UI composite consumes the
 # finished TextureViewId and must not reconstruct mesh draw commands.
-$renderer = Join-Path $repo "crates/gpui-3d/src/scene_view/renderer.rs"
+$renderer = Join-Path $repo "crates/gpui/gpui_3d/src/scene_view/renderer.rs"
 # The native producer now forwards immutable command owners and optional run
 # plans through two specialized helpers. Check the actual device submissions,
 # not the obsolete generic helper name.
@@ -52,17 +52,17 @@ if ($rendererSource -notmatch 'submit_owned_native_offscreen_passes\s*\(' -or
     $rendererSource -notmatch 'device\.submit_owned_offscreen_batch\s*\(' -or
     $rendererSource -notmatch 'submit_planned_native_offscreen_passes\s*\(' -or
     $rendererSource -notmatch 'device\.submit_run_offscreen_batch\s*\(') {
-    $failures.Add("gpui-3d must still submit owned and planned native 3D batches outside GPUI's 2D command encoder")
+    $failures.Add("gpui_3d must still submit owned and planned native 3D batches outside GPUI's 2D command encoder")
 }
-$sidecar = Join-Path $repo "crates/gpui-3d/src/scene_view/sidecar_surface.rs"
+$sidecar = Join-Path $repo "crates/gpui/gpui_3d/src/scene_view/sidecar_surface.rs"
 if (-not (Select-String -LiteralPath $sidecar -SimpleMatch -Pattern 'TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED' -Quiet)) {
     $failures.Add("SceneView sidecar must retain the native GPU render-target / sampled view bridge")
 }
 
 if ($failures.Count -gt 0) {
-    Write-Host "BMCBL gpui-3d integration check failed:" -ForegroundColor Red
+    Write-Host "BMCBL gpui_3d integration check failed:" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
-Write-Host "BMCBL gpui-3d editor/sidecar integration source checks passed." -ForegroundColor Green
+Write-Host "BMCBL gpui_3d editor/sidecar integration source checks passed." -ForegroundColor Green
 Write-Host "Source-only validation: compile, GPU barriers and hardware rendering require separate tests."

@@ -62,9 +62,9 @@ scene.for_each_triangle(|triangle| {
 ## 本地检查
 
 \`\`\`powershell
-cargo check -p gpui-3d --features asset-import
-cargo test -p gpui-3d --features asset-import imports_a_triangle_from_stl_via_three_d_asset
-cargo test -p gpui-3d --features asset-import obj_source_is_imported_into_the_same_scene_type_as_stl
+cargo check -p gpui_3d --features asset-import
+cargo test -p gpui_3d --features asset-import imports_a_triangle_from_stl_via_three_d_asset
+cargo test -p gpui_3d --features asset-import obj_source_is_imported_into_the_same_scene_type_as_stl
 cargo check --bin BMCBL
 \`\`\`
 

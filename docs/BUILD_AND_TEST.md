@@ -89,7 +89,7 @@ cargo check -p gpui --no-default-features --features nova-gfx-dx12
 ```powershell
 cargo check -p gfx-core -p gfx-dx11 -p gfx-dx12 -p gfx-vulkan -p gfx-opengl -p gfx-metal -p gfx-webgl
 cargo check -p gpui --no-default-features --features "nova-gfx-dx11 nova-gfx-dx12 nova-gfx-vulkan nova-gfx-opengl"
-cargo check -p gpui-3d
+cargo check -p gpui_3d
 cargo check -p bmcbl
 cargo test -p gfx-core
 ```
@@ -153,8 +153,8 @@ cargo clippy -p gpui --no-default-features --features nova-gfx-dx12 -- -D warnin
 
 pwsh -File scripts/check-docs.ps1
 pwsh -File scripts/check-nova-gfx-boundary.ps1
-cargo check -p gpui-3d --no-default-features --lib
-cargo test -p gpui-3d --no-default-features --lib
+cargo check -p gpui_3d --no-default-features --lib
+cargo test -p gpui_3d --no-default-features --lib
 pwsh -File scripts/check-gpui-3d-boundary.ps1
 pwsh -File scripts/check-bmcbl-gpui3d-integration.ps1
 pwsh -File scripts/check-naming.ps1

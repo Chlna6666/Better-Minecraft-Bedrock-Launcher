@@ -6,22 +6,22 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/gpui3d-native-mrt.yml'
-      - 'crates/gpui-3d/src/scene_view.wgsl'
-      - 'crates/gpui-3d/src/scene_view/scene/**'
-      - 'crates/gpui-3d/src/scene_view/scene.rs'
-      - 'crates/gpui-3d/src/scene_view/mesher.wgsl'
-      - 'crates/gpui-3d/src/scene_view/voxel.wgsl'
-      - 'crates/gpui-3d/src/scene_view/draw_compaction.wgsl'
-      - 'crates/gpui/src/diagnostics/performance_metrics/window/native_vsync.rs'
-      - 'crates/gpui/src/platform/traits.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view.wgsl'
+      - 'crates/gpui/gpui_3d/src/scene_view/scene/**'
+      - 'crates/gpui/gpui_3d/src/scene_view/scene.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view/mesher.wgsl'
+      - 'crates/gpui/gpui_3d/src/scene_view/voxel.wgsl'
+      - 'crates/gpui/gpui_3d/src/scene_view/draw_compaction.wgsl'
+      - 'crates/gpui/gpui/src/diagnostics/performance_metrics/window/native_vsync.rs'
+      - 'crates/gpui/gpui/src/platform/traits.rs'
       - 'crates/nova-gfx/gfx-vulkan/src/**'
       - 'crates/nova-gfx/gfx-core/src/**'
       - 'crates/nova-gfx/gfx-shader/src/**'
-      - 'crates/gpui-3d/src/scene_view/effects/**'
-      - 'crates/gpui-3d/src/scene_view/generated_tests.rs'
-      - 'crates/gpui-3d/src/scene_view/generated.rs'
-      - 'crates/gpui-3d/src/scene_view/culling.rs'
-      - 'crates/gpui-3d/src/scene_view/culling_tests.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view/effects/**'
+      - 'crates/gpui/gpui_3d/src/scene_view/generated_tests.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view/generated.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view/culling.rs'
+      - 'crates/gpui/gpui_3d/src/scene_view/culling_tests.rs'
       - 'crates/nova-gfx/gfx-vulkan/tests/**'
 
 permissions:
@@ -93,19 +93,19 @@ jobs:
           PY
       - name: Compile native backend test suite
         id: native_compile
-        run: cargo test -p gpui-3d --lib --features gpui/x11 --no-run
+        run: cargo test -p gpui_3d --lib --features gpui/x11 --no-run
       - name: Verify resident descriptor-index aware draw records
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p gpui-3d --lib --features gpui/x11 draw_cache_
-          cargo test -p gpui-3d --lib --features gpui/x11 full_material_cache_preserves_unchanged_resident_gpu_records
-          cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_rebind_preserves_grouped_command_topology
-          cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_retirement_excludes_unrelated_generations_and_legacy_reads
-          cargo test -p gpui-3d --lib --features gpui/x11 sampled_replacement_preserves_compaction_only_for_exact_native_topology
-          cargo test -p gpui-3d --lib --features gpui/x11 sampled_pass_publication_keeps_command_allocation_and_order
-          cargo test -p gpui-3d --lib --features gpui/x11 effects_capture_commands_reuse_arcs_until_geometry_or_pipeline_changes
+          cargo test -p gpui_3d --lib --features gpui/x11 draw_cache_
+          cargo test -p gpui_3d --lib --features gpui/x11 full_material_cache_preserves_unchanged_resident_gpu_records
+          cargo test -p gpui_3d --lib --features gpui/x11 sampled_snapshot_rebind_preserves_grouped_command_topology
+          cargo test -p gpui_3d --lib --features gpui/x11 sampled_snapshot_retirement_excludes_unrelated_generations_and_legacy_reads
+          cargo test -p gpui_3d --lib --features gpui/x11 sampled_replacement_preserves_compaction_only_for_exact_native_topology
+          cargo test -p gpui_3d --lib --features gpui/x11 sampled_pass_publication_keeps_command_allocation_and_order
+          cargo test -p gpui_3d --lib --features gpui/x11 effects_capture_commands_reuse_arcs_until_geometry_or_pipeline_changes
       - name: Verify production Vulkan bindless Color PSOs against legacy
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
@@ -113,28 +113,28 @@ jobs:
           GPUI_3D_BINDLESS: "1"
         run: |
           set -euo pipefail
-          cargo test -p gpui-3d --lib --features gpui/x11 sampled_table_tiers_respect_device_and_application_limits
-          cargo test -p gpui-3d --lib --features gpui/x11 distinct_texture_bindings_and_raster_states_never_merge
-          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_color_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
+          cargo test -p gpui_3d --lib --features gpui/x11 sampled_table_tiers_respect_device_and_application_limits
+          cargo test -p gpui_3d --lib --features gpui/x11 distinct_texture_bindings_and_raster_states_never_merge
+          cargo test -p gpui_3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_color_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass' "$RUNNER_TEMP/production-bindless.txt"
           grep -Fq 'GPUI3D_VULKAN_PASS_SAMPLED_TABLE=pass' "$RUNNER_TEMP/production-bindless.txt"
-          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_effects_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
+          cargo test -p gpui_3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_effects_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
           grep -Fq 'GPUI3D_VULKAN_PASS_SAMPLED_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
-        run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
+        run: cargo test -p gpui_3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
       - name: Compare MRT output against legacy Surface and Albedo captures
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
-        run: cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::effects_vulkan -- --exact --ignored --nocapture
+        run: cargo test -p gpui_3d --lib --features gpui/x11 scene_view::effects::renderer::tests::effects_vulkan -- --exact --ignored --nocapture
       - name: Validate 2D Greedy and uniform-light fallback GPU counts
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --list | tee "$RUNNER_TEMP/greedy-tests.txt"
+          cargo test -p gpui_3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --list | tee "$RUNNER_TEMP/greedy-tests.txt"
           grep -Fx 'scene_view::generated::tests::gpu_mesher_vulkan: test' "$RUNNER_TEMP/greedy-tests.txt"
-          cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/greedy-results.txt"
+          cargo test -p gpui_3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/greedy-results.txt"
           grep -Fq 'running 1 test' "$RUNNER_TEMP/greedy-results.txt"
       - name: Reject illegal direct MSAA texture readback
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}

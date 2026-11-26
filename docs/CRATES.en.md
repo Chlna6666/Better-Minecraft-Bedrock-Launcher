@@ -16,13 +16,16 @@ is added or removed, update this table and `[workspace].members` in the root `Ca
 
 | Crate | Path | Responsibility | Status | Docs |
 | --- | --- | --- | --- | --- |
-| `gpui` | `crates/gpui` | Windows, entities, elements, layout, input, text, scene, presentation | Active, pre-1.0 | [README](../crates/gpui/README.md) |
-| `gpui-3d` | `crates/gpui-3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Active, pre-1.0 | [README](../crates/gpui-3d/README.md) |
-| `gpui_tokio` | `crates/gpui_tokio` | GPUI/Tokio task integration | Active | [README](../crates/gpui_tokio/README.md) |
-| `gpui-hooks` | `crates/gpui-hooks` | GPUI hooks and state reuse | Active | [README](../crates/gpui-hooks/README.md) |
-| `gpui-hooks-macros` | `crates/gpui-hooks-macros` | Hook macros | Internal | [README](../crates/gpui-hooks-macros/README.md) |
-| `gpui-macros` | `crates/gpui-macros` | GPUI derive-macro mirror | Internal | [README](../crates/gpui-macros/README.md) |
-| `lucide-gpui` | `crates/lucide-gpui` | Lucide icon assets for GPUI | Active | [README](../crates/lucide-gpui/README.md) |
+| `gpui` | `crates/gpui/gpui` | Windows, entities, elements, layout, input, text, scene, presentation | Active, pre-1.0 | [README](../crates/gpui/gpui/README.md) |
+| `gpui_windows` | `crates/gpui/gpui_windows` | Windows display clocks, native dialogs and driver messages | Internal | [README](../crates/gpui/gpui_windows/README.md) |
+| `gpui_linux` | `crates/gpui/gpui_linux` | Desktop session detection and XDG desktop settings | Internal | [README](../crates/gpui/gpui_linux/README.md) |
+| `gpui_macos` | `crates/gpui/gpui_macos` | CoreVideo display clock and libdispatch | Internal | [README](../crates/gpui/gpui_macos/README.md) |
+| `gpui_3d` | `crates/gpui/gpui_3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Active, pre-1.0 | [README](../crates/gpui/gpui_3d/README.md) |
+| `gpui_tokio` | `crates/gpui/gpui_tokio` | GPUI/Tokio task integration | Active | [README](../crates/gpui/gpui_tokio/README.md) |
+| `gpui_hooks` | `crates/gpui/gpui_hooks` | GPUI hooks and state reuse | Active | [README](../crates/gpui/gpui_hooks/README.md) |
+| `gpui_hooks_macros` | `crates/gpui/gpui_hooks_macros` | Hook macros | Internal | [README](../crates/gpui/gpui_hooks_macros/README.md) |
+| `gpui_macros` | `crates/gpui/gpui_macros` | GPUI derive-macro mirror | Internal | [README](../crates/gpui/gpui_macros/README.md) |
+| `lucide_gpui` | `crates/gpui/lucide_gpui` | Lucide icon assets for GPUI | Active | [README](../crates/gpui/lucide_gpui/README.md) |
 
 ## 3. Graphics (nova-gfx)
 
@@ -82,7 +85,7 @@ strategy in the pull request.
 
 - `nova-gfx`/`gfx-*` never depend on `gpui`/`egpui`/application code; `gfx-core` has no window
   handle dependency.
-- `gpui` does not depend on the application; `gpui-3d` depends on `gpui` + `gfx-core` and owns no
+- `gpui` does not depend on the application; `gpui_3d` depends on `gpui` + `gfx-core` and owns no
   window or backend.
 - `egpui` owns no product semantics such as downloads, maps or routes.
 - `bedrock-*` does not depend on UI/GPU presentation; `bedrock-voxel` only produces plans and does

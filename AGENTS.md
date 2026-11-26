@@ -23,13 +23,13 @@ BMCBL 是基于 Rust + GPUI 的 Minecraft Bedrock 原生桌面启动器。Window
 
 ## 3. 不可违反的项目边界
 
-- nova-gfx/gfx-* 只提供通用图形 API，不依赖 GPUI、应用代码或产品/场景策略。gpui-3d
+- nova-gfx/gfx-* 只提供通用图形 API，不依赖 GPUI、应用代码或产品/场景策略。gpui_3d
   拥有游戏级 3D 场景、GPU Resident 数据、剔除、构网、RenderGraph、DrawIndirect、原生
   离屏 Pass 调度和资源生命周期。
 - 纯 3D 引擎不得依赖 GPUI 或 BMCBL。GPUI 管理窗口、Swapchain、输入/布局、GPU Owner
   协调、Sidecar 消费、Present 与 Fence 跟踪；只依赖 gfx-core 能力 trait，不按 backend
   调用固有方法，也不得重编码、排序或合并 3D 绘制命令。
-  BMCBL 使用 gpui-3d 的 Sidecar 时必须显式启用 gpui-sidecar feature。
+  BMCBL 使用 gpui_3d 的 Sidecar 时必须显式启用 gpui-sidecar feature。
 - GPU 在途资源只能在相应提交/Fence 确实完成后释放；提交已接受不代表 GPU 已完成。
   不要在热路径加入 CPU Fence 等待，CPU 耗时与原生 GPU 时间戳分开判断。默认队列和
   资源生命周期细则见系统架构文档。

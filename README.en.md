@@ -52,8 +52,8 @@ src/downloads     download tasks, WU protocol, verification
 src/config        configuration and migration
 src/plugins       WASM plugin host
 crates/egpui      desktop host, Tokio/Rayon runtime, UI bridges, i18n
-crates/gpui       GPUI UI core and nova renderer
-crates/gpui-3d    3D scene preparation and scene-view extension
+crates/gpui/gpui       GPUI UI core and nova renderer
+crates/gpui/gpui_3d    3D scene preparation and scene-view extension
 crates/nova-gfx   backend-neutral graphics API and backends
 crates/bedrock-*  Bedrock world/storage/render/model crates
 crates/bmcbl-plugin-api  plugin ABI and packing tools

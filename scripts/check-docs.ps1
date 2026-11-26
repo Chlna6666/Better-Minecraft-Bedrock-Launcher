@@ -33,8 +33,9 @@ $firstPartyDirs = @(
     "crates/bedrock-map-render", "crates/bedrock-scene", "crates/bedrock-voxel", "crates/bedrock-world",
     "crates/bmcbl-plugin-api", "crates/bmcbl-plugin-macros",
     "crates/egpui", "crates/egpui-build", "crates/egpui-manifest",
-    "crates/gpui", "crates/gpui-3d", "crates/gpui-hooks", "crates/gpui-hooks-macros",
-    "crates/gpui-macros", "crates/gpui_tokio", "crates/lucide-gpui"
+    "crates/gpui/gpui", "crates/gpui/gpui_3d", "crates/gpui/gpui_hooks", "crates/gpui/gpui_hooks_macros",
+    "crates/gpui/gpui_linux", "crates/gpui/gpui_macos", "crates/gpui/gpui_macros",
+    "crates/gpui/gpui_tokio", "crates/gpui/gpui_windows", "crates/gpui/lucide_gpui"
 )
 Get-ChildItem (Join-Path $root "crates/nova-gfx") -Directory |
     Where-Object { $_.Name -ne "examples" } |

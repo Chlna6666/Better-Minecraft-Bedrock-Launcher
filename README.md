@@ -172,7 +172,7 @@ flowchart TD
     UI --> Config["src/config\n配置和迁移"]
     Core --> Downloads["src/downloads\n多线程下载、WU 协议、完整性校验"]
     Core --> Assets["src/assets / assets\n嵌入资源、字体、图标、本地化、运行时负载"]
-UI --> GPUI["crates/gpui\nnova-gfx 渲染、窗口、元素系统"]
+UI --> GPUI["crates/gpui/gpui\nnova-gfx 渲染、窗口、元素系统"]
 UI --> EGPUI["crates/egpui\n应用生命周期、后台运行时、UI bridge"]
 EGPUI --> GPUI
     GPUI --> Nova["crates/nova-gfx\nDX11 / DX12 / Vulkan / Metal / OpenGL / WebGL 抽象"]
@@ -190,11 +190,11 @@ EGPUI --> GPUI
 | `src/config` | 配置结构、默认值、迁移和持久化 |
 | `assets` | 编译期嵌入的图标、字体、图片、本地化和二进制负载 |
 | `crates/egpui` | 独立的桌面应用 host、Tokio/Rayon runtime、任务 scope、服务注册和 UI bridge |
-| `crates/gpui` | 本项目独立维护的 GPUI GUI 核心 |
+| `crates/gpui/gpui` | 本项目独立维护的 GPUI GUI 核心 |
 | `crates/nova-gfx` | GPUI nova 渲染路径使用的跨后端图形抽象 |
 | `crates/bmcbl-plugin-api` | 插件 ABI、宏和打包工具 |
-| `crates/gpui-hooks` | GPUI hooks 辅助库 |
-| `crates/lucide-gpui` | Lucide 图标到 GPUI 的适配 |
+| `crates/gpui/gpui_hooks` | GPUI hooks 辅助库 |
+| `crates/gpui/lucide_gpui` | Lucide 图标到 GPUI 的适配 |
 
 架构与边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 crate 职责与状态见 [docs/CRATES.md](docs/CRATES.md)。

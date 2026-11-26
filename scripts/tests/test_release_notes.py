@@ -14,7 +14,7 @@ spec.loader.exec_module(release_notes)
 class ReleaseNotesTests(unittest.TestCase):
     def test_public_changes_and_internal_scopes(self):
         for subject in ("feat(capes): add cape previews", "fix(map-viewer): correct materials",
-                        "perf(gpui-3d): reuse GPU buffers"):
+                        "perf(gpui_3d): reuse GPU buffers"):
             self.assertIsNotNone(release_notes.parse_commit("abc1234", subject))
         for subject in ("docs: update README", "docs(changelog): archive release",
                         "test(world3d): add audits", "style(gpui): rustfmt",

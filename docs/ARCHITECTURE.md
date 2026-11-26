@@ -20,7 +20,7 @@ flowchart TB
     end
     subgraph UiCore["UI 核心"]
         Gpui["gpui\n窗口/实体/元素/布局/场景/呈现"]
-        Gpui3d["gpui-3d\n游戏级 3D 渲染器 + 可选侧载"]
+        Gpui3d["gpui_3d\n游戏级 3D 渲染器 + 可选侧载"]
     end
     subgraph Gfx["图形层"]
         Nova["nova-gfx\ngfx-core + 后端"]
@@ -46,12 +46,15 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-runtime
+  -> egpui, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
 egpui -> gpui
-gpui-3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
-gpui-3d (feature: gpui-sidecar) -> gpui + gfx-core  # 默认启用，可 --no-default-features 禁用
+gpui_3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
+gpui_3d (feature: gpui-sidecar) -> gpui + gfx-core  # 默认启用，可 --no-default-features 禁用
 gpui -> gfx-core + 所选 gfx-<backend>
-bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui-3d (无 gpui-sidecar)
+gpui (Windows) -> gpui_windows
+gpui (Linux / FreeBSD) -> gpui_linux
+gpui (macOS) -> gpui_macos
+bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui_3d (无 gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
 
@@ -78,9 +81,9 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 
 ### 2.1 3D 引擎 / 通用图形 API / 可选 UI Sidecar
 
-- **渲染生产链**：`gpui-3d` 的 Scene → CPU/GPU 准备 → Resident Buffer/3D Texture →
+- **渲染生产链**：`gpui_3d` 的 Scene → CPU/GPU 准备 → Resident Buffer/3D Texture →
   Compute/DrawIndirect → `nova-gfx` 原生离屏提交 → 颜色视图和原生提交句柄。
-- **UI 消费链**：`gpui-3d::scene_view` 的 Sidecar Adapter → `gpui` 视图布局、裁剪和
+- **UI 消费链**：`gpui_3d::scene_view` 的 Sidecar Adapter → `gpui` 视图布局、裁剪和
   颜色视图采样 → Swapchain Present。纹理合成不意味着 3D 命令被绘制成 2D。
 - **资源与同步链**：GPU Owner 负责设备访问合法性、提交顺序和 `SubmissionId`；只有
   GPU Fence 完成才能释放/复用在途资源。具体到稳定物理 Draw Slot：
@@ -112,11 +115,14 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 | crate | 职责 | 关键约束 |
 | --- | --- | --- |
 | `gpui` | 窗口、实体状态、声明式元素、布局、输入、文本、场景与呈现调度 | 通用 UI 核心，不含 BMCBL 业务；渲染后端通过 nova-gfx |
-| `gpui-3d` | 游戏级 3D 引擎：Scene、GPU Resident、剔除、构网、Graphics/Compute 工作图、DrawIndirect、离屏输出及 GPUI 可选侧载 | 3D 原生 Pass 编码及调度归 3D 引擎；窗口/Swapchain 由 UI/应用拥有 |
+| `gpui_windows` | Win32 显示时钟、原生对话框与驱动消息 | 提供原生唤醒事件。GPUI 管理窗口与 Nova 呈现 |
+| `gpui_linux` | Wayland/X11 会话检测与 XDG 桌面设置订阅 | GPUI 管理窗口事件循环 |
+| `gpui_macos` | CoreVideo 显示时钟与 libdispatch 接口 | GPUI 管理 AppKit 窗口与 Nova 呈现 |
+| `gpui_3d` | 游戏级 3D 引擎：Scene、GPU Resident、剔除、构网、Graphics/Compute 工作图、DrawIndirect、离屏输出及 GPUI 可选侧载 | 3D 原生 Pass 编码及调度归 3D 引擎；窗口/Swapchain 由 UI/应用拥有 |
 | `gpui_tokio` | GPUI 与 Tokio 任务集成 | 不把 Tokio 句柄泄漏进 UI 状态 |
-| `gpui-hooks` / `gpui-hooks-macros` | GPUI hooks 与宏 | 只封装 UI 状态复用模式 |
-| `gpui-macros` | GPUI 派生宏镜像 | 与上游宏保持行为一致 |
-| `lucide-gpui` | Lucide 图标资产到 GPUI 的适配 | 构建期生成图标数据 |
+| `gpui_hooks` / `gpui_hooks_macros` | GPUI hooks 与宏 | 只封装 UI 状态复用模式 |
+| `gpui_macros` | GPUI 派生宏镜像 | 与上游宏保持行为一致 |
+| `lucide_gpui` | Lucide 图标资产到 GPUI 的适配 | 构建期生成图标数据 |
 | `egpui` | 桌面应用 host、Tokio/Rayon 运行时、任务 scope、UI bridge、i18n、持久任务 | 不包含路由、下载、地图等产品语义 |
 | `egpui-build` / `egpui-manifest` | `App.toml`/manifest 校验、资源索引、平台打包计划 | 构建期契约，不执行打包工具 |
 | `nova-gfx` 族 | 后端无关图形 API 与 DX11/DX12/Vulkan/OpenGL/Metal/WebGL 实现 | 纯图形库，详见 [CRATES](CRATES.md) |
@@ -148,11 +154,11 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
    - `SurfaceDevice::{resize_swapchain, recreate_swapchain, swapchain_extent, resolve_composite_alpha}`
 4. **backend**：DX11/DX12/Vulkan/OpenGL/Metal/WebGL。`gfx-core` 是无 UI、无窗口句柄的公共契约。
 
-通用 `RendererExtensionPass` 仍可服务普通 UI 扩展；但 `gpui-3d` 的普通 `SceneView`
+通用 `RendererExtensionPass` 仍可服务普通 UI 扩展；但 `gpui_3d` 的普通 `SceneView`
 通过 `gfx-core::OffscreenSubmissionDevice` 创建和提交自己的原生 Graphics Pass，
 不再交由 GPUI 重编码/整理 DrawIndirect。GPU Owner 只借出设备访问入口并接收
 `SubmissionId` 进行非阻塞 Fence 跟踪；GPUI 最后在对应布局位置采样 3D color view。
-`gpui-3d` 的 Graphics→Compute→Composite 效果链尚在逐步迁移，不能将目前的逻辑
+`gpui_3d` 的 Graphics→Compute→Composite 效果链尚在逐步迁移，不能将目前的逻辑
 `GpuWorkPlan` 检查当作已实现原生 Barrier。提交确认和 GPU Fence 完成是两个独立事件：
 前者仅表示 Native Queue 接受工作，后者才允许资源退休。扩展不拥有窗口或 Swapchain。
 时间相关扩展可复用不可变 Paint 连续呈现，不触发 UI 布局。
