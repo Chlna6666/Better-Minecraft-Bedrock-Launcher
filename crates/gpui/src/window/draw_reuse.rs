@@ -487,7 +487,7 @@ impl Window {
         );
 
         self.text_system
-            .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
+            .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index.clone());
     }
 
     /// Replay only the visual fragment; the independent record carry is
