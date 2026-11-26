@@ -3908,3 +3908,53 @@ fn automatic_view_retention_rebuilds_on_dependency_notify(cx: &mut TestAppContex
         assert_eq!(renders.get(), baseline + 1);
     }).unwrap();
 }
+
+#[gpui::test]
+fn pointer_exit_stays_outside_across_frame_hit_testing(cx: &mut TestAppContext) {
+    let context = cx.add_empty_window();
+    context.update(|window, cx| {
+        let position = point(px(1.), px(1.));
+        let hitbox = Hitbox {
+            id: window.next_hitbox_id,
+            bounds: Bounds::new(Point::default(), size(px(32.), px(32.))),
+            content_mask: ContentMask::new(Bounds::new(Point::default(), window.viewport_size)),
+            behavior: HitboxBehavior::Normal,
+        };
+        window.next_hitbox_id = window.next_hitbox_id.next();
+        window.rendered_frame.hitboxes.push(hitbox.clone());
+        window.next_frame.hitboxes.push(hitbox.clone());
+        window.has_completed_rendered_frame = true;
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        assert!(window.mouse_hit_test.ids.contains(&hitbox.id));
+
+        window.dispatch_event(
+            PlatformInput::MouseExited(MouseExitEvent {
+                position,
+                ..Default::default()
+            }),
+            cx,
+        );
+        assert!(window.mouse_hit_test.ids.is_empty());
+        assert!(window.next_frame.hit_test(position).ids.contains(&hitbox.id));
+        assert!(window.pointer_hit_test(&window.next_frame, position).ids.is_empty());
+        assert!(window.pointer_hit_test(&window.rendered_frame, position).ids.is_empty());
+
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        assert!(window.mouse_hit_test.ids.contains(&hitbox.id));
+        assert!(window.pointer_hit_test(&window.next_frame, position).ids.contains(&hitbox.id));
+    });
+}

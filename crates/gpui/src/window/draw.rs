@@ -243,6 +243,9 @@ impl Window {
         self.rendered_frame
             .rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
+        // Prepaint may already have computed a hit test against the rejected
+        // frame. Event dispatch must see only the still-committed geometry.
+        self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
         self.invalidator.set_dirty(true);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
@@ -975,7 +978,7 @@ impl Window {
 
         let overlay_prepaint_elapsed = overlay_prepaint_started_at.elapsed();
         let hit_test_started_at = Instant::now();
-        self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        self.mouse_hit_test = self.pointer_hit_test(&self.next_frame, self.mouse_position);
         let hit_test_elapsed = hit_test_started_at.elapsed();
         let prepaint_time = prepaint_started_at.elapsed();
         self.last_generation_stats.prepaint_breakdown = state::PrepaintWorkBreakdown {

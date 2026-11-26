@@ -227,6 +227,23 @@ impl Window {
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
         let event_started_at = Instant::now();
         let previous_input = self.input_read_snapshot();
+        // The leave position can still be inside a window-edge hitbox. Keep
+        // the exit state until an actual positional input arrives, not until
+        // a redraw. Adapted from GPUI Fast fast/pointer.rs (fd15f82).
+        match &event {
+            PlatformInput::MouseExited(_) => self.pointer_outside = true,
+            PlatformInput::MouseMove(_)
+            | PlatformInput::MouseDown(_)
+            | PlatformInput::MouseUp(_)
+            | PlatformInput::ScrollWheel(_)
+            | PlatformInput::Touch(_)
+            | PlatformInput::LongPress(_)
+            | PlatformInput::TouchDrag(_)
+            | PlatformInput::FileDrop(FileDropEvent::Entered { .. }
+                | FileDropEvent::Pending { .. }
+                | FileDropEvent::Submit { .. }) => self.pointer_outside = false,
+            _ => {}
+        }
         let event_name = platform_input_name(&event);
         #[cfg(feature = "profiler")]
         let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::input(
@@ -611,6 +628,15 @@ impl Window {
         });
     }
 
+    /// A frame's geometry is authoritative only while the pointer is inside.
+    pub(super) fn pointer_hit_test(&self, frame: &Frame, position: Point<Pixels>) -> HitTest {
+        if self.pointer_outside {
+            HitTest::default()
+        } else {
+            frame.hit_test(position)
+        }
+    }
+
     pub(super) fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
         let mouse_position = event
             .downcast_ref::<MouseMoveEvent>()
@@ -631,18 +657,14 @@ impl Window {
                     .map(|event| event.position)
             })
             .unwrap_or_else(|| self.mouse_position());
-        let hit_test = if event.is::<MouseExitEvent>() {
-            HitTest::default()
-        } else {
-            self.rendered_frame.hit_test(mouse_position)
-        };
+        let hit_test = self.pointer_hit_test(&self.rendered_frame, mouse_position);
         let hit_test_unchanged = hit_test == self.mouse_hit_test;
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
         }
 
-        let client_resize_edge = if event.is::<MouseExitEvent>() {
+        let client_resize_edge = if self.pointer_outside {
             None
         } else if matches!(self.window_decorations(), Decorations::Client { .. }) {
             self.client_inset

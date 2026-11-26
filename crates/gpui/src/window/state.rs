@@ -542,6 +542,7 @@ pub struct Window {
     pub(crate) focus_lost_listeners: SingleSubscriberSet<AnyObserver>,
     pub(super) default_prevented: bool,
     pub(super) mouse_position: Point<Pixels>,
+    pub(super) pointer_outside: bool,
     pub(super) mouse_hit_test: HitTest,
     pub(super) modifiers: Modifiers,
     pub(super) capslock: Capslock,

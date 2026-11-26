@@ -557,6 +557,7 @@ impl Window {
             focus_lost_listeners: SingleSubscriberSet::new(),
             default_prevented: true,
             mouse_position,
+            pointer_outside: false,
             mouse_hit_test: HitTest::default(),
             modifiers,
             capslock,
