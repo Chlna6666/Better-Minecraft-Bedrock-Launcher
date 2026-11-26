@@ -1,4 +1,5 @@
 use super::DispatchActionListener;
+use crate::fast::interactivity::SharedListeners;
 use crate::{
     ActionRegistry, App, DispatchPhase, EntityId, FocusId, KeyContext, Keymap,
     ModifiersChangedEvent, Window,
@@ -28,9 +29,9 @@ pub(crate) struct DispatchTree {
 
 #[derive(Default)]
 pub(crate) struct DispatchNode {
-    pub(crate) key_listeners: Vec<KeyListener>,
-    pub(crate) action_listeners: Vec<DispatchActionListener>,
-    pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
+    pub(crate) key_listeners: SharedListeners<KeyListener>,
+    pub(crate) action_listeners: SharedListeners<DispatchActionListener>,
+    pub(crate) modifiers_changed_listeners: SharedListeners<ModifiersChangedListener>,
     pub(crate) context: Option<KeyContext>,
     pub(super) focus_id: Option<FocusId>,
     pub(super) view_id: Option<EntityId>,
@@ -263,7 +264,8 @@ impl DispatchTree {
     /// Append a contiguous dispatch segment, translating in-segment parents
     /// by offset. The caller resolves parents outside the segment (including
     /// across splice gaps). No active key-context or view stack is traversed.
-    /// Committed callbacks remain owned by the source until publication.
+    /// Share immutable listener payloads with the committed source. A failed
+    /// candidate cannot consume callbacks from the visible frame.
     pub(crate) fn replay_segment(
         &mut self,
         old_range: Range<usize>,

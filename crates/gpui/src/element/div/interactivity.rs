@@ -14,6 +14,7 @@
 //! full suite of Dom-like events and Tailwind-like styling that you can use to build your own
 //! custom elements. Div is constructed by combining these two systems into an all-in-one element.
 
+use crate::fast::interactivity::LazyVec;
 use crate::{
     App, Bounds, ElementId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
     InspectorElementId, KeyContext, LayoutId, Pixels, Point, SharedString, Size, Style,
@@ -22,8 +23,6 @@ use crate::{
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    mem,
-    ops::Deref,
     rc::Rc,
     sync::Arc,
 };
@@ -42,72 +41,6 @@ use super::tooltip::TooltipBuilder;
 
 mod storage;
 pub(super) use storage::InteractivityBox;
-
-// LazyVec implementation from longbridge/gpui-fast at 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
-// Copyright 2022 - 2025 Zed Industries, Inc.
-// Copyright 2026 Longbridge.
-// SPDX-License-Identifier: Apache-2.0
-// Adapted to this module; the drop-list Vec remains at the existing runtime boundary.
-/// A list one pointer wide that allocates nothing while it is empty.
-///
-/// An [`Interactivity`] holds a score of listener lists, nearly all of them
-/// empty on any one element, and moves with its element through every call
-/// of its builder. As `Vec`s they were 500 of its bytes, copied every time.
-///
-/// [`Interactivity`]: crate::Interactivity
-// A boxed `Vec` is one pointer where a `Vec` is three, which is the point;
-// the second allocation is paid only by a list that has something in it.
-#[allow(clippy::box_collection)]
-pub(crate) struct LazyVec<T>(Option<Box<Vec<T>>>);
-
-impl<T> Default for LazyVec<T> {
-    fn default() -> Self {
-        LazyVec(None)
-    }
-}
-
-impl<T: Clone> Clone for LazyVec<T> {
-    fn clone(&self) -> Self {
-        LazyVec(self.0.clone())
-    }
-}
-
-impl<T> LazyVec<T> {
-    pub(crate) fn push(&mut self, item: T) {
-        self.0.get_or_insert_with(Default::default).push(item);
-    }
-
-    /// Takes every item out, leaving the list empty.
-    pub(crate) fn drain(&mut self, _: std::ops::RangeFull) -> std::vec::IntoIter<T> {
-        mem::take(self).into_iter()
-    }
-}
-
-impl<T> Deref for LazyVec<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        self.0.as_deref().map_or(&[], Vec::as_slice)
-    }
-}
-
-impl<T> IntoIterator for LazyVec<T> {
-    type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.map(|items| *items).unwrap_or_default().into_iter()
-    }
-}
-
-impl<'a, T> IntoIterator for &'a LazyVec<T> {
-    type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
 
 /// The interactivity struct. Powers all of the general-purpose interactivity in the `Div` element.
 #[derive(Default)]

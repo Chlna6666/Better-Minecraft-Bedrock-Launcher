@@ -176,7 +176,8 @@ impl Window {
         for node_id in dispatch_path {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
 
-            for key_listener in node.key_listeners.clone() {
+            let listeners = node.key_listeners.clone();
+            for key_listener in &listeners {
                 key_listener(event, DispatchPhase::Capture, self, cx);
                 if !cx.propagate_event {
                     return;
@@ -187,7 +188,8 @@ impl Window {
         // Bubble phase
         for node_id in dispatch_path.iter().rev() {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
-            for key_listener in node.key_listeners.clone() {
+            let listeners = node.key_listeners.clone();
+            for key_listener in &listeners {
                 key_listener(event, DispatchPhase::Bubble, self, cx);
                 if !cx.propagate_event {
                     return;
@@ -207,7 +209,8 @@ impl Window {
         };
         for node_id in dispatch_path.iter().rev() {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
-            for listener in node.modifiers_changed_listeners.clone() {
+            let listeners = node.modifiers_changed_listeners.clone();
+            for listener in &listeners {
                 listener(event, self, cx);
                 if !cx.propagate_event {
                     return;
@@ -356,13 +359,14 @@ impl Window {
         // Capture phase for window actions.
         for node_id in &dispatch_path {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
+            let listeners = node.action_listeners.clone();
             for DispatchActionListener {
                 action_type,
                 listener,
-            } in node.action_listeners.clone()
+            } in &listeners
             {
                 let any_action = action.as_any();
-                if action_type == any_action.type_id() {
+                if *action_type == any_action.type_id() {
                     listener(any_action, DispatchPhase::Capture, self, cx);
 
                     if !cx.propagate_event {
@@ -375,13 +379,14 @@ impl Window {
         // Bubble phase for window actions.
         for node_id in dispatch_path.iter().rev() {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
+            let listeners = node.action_listeners.clone();
             for DispatchActionListener {
                 action_type,
                 listener,
-            } in node.action_listeners.clone()
+            } in &listeners
             {
                 let any_action = action.as_any();
-                if action_type == any_action.type_id() {
+                if *action_type == any_action.type_id() {
                     cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
                     listener(any_action, DispatchPhase::Bubble, self, cx);
 
