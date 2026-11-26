@@ -7,7 +7,7 @@ use super::{
     BatchIterator, MonochromeSprite, PaintBackdropBlur, PaintBlur, PaintOperation,
     PaintRendererExtension, PaintSurface, Path, PolychromeSprite, PreparedSceneBatch,
     PreparedSceneBatches, Primitive, PrimitiveBatch, SceneAnimationId, SceneAnimationValue, Shadow,
-    Underline, blur_influence_radius,
+    Underline,
 };
 
 /// Completed Paint data shared with rendering; mutable construction state stays in Painter.
@@ -103,20 +103,7 @@ impl Scene {
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
         for operation in self.paint_operations.get_range(range.clone())?.iter() {
-            let operation_bounds = match operation {
-                PaintOperation::Primitive(primitive) => Some(primitive.visual_bounds()),
-                // Paint layers are ordering metadata, not pixel producers. Including their
-                // often fullscreen bounds makes a small retained subtree appear to damage
-                // the entire window when a popup or nested element changes.
-                PaintOperation::StartLayer(_) => None,
-                PaintOperation::StartBlur(blur) => Some(
-                    blur.bounds
-                        .dilate(blur_influence_radius(blur.radius))
-                        .intersect(&blur.content_mask.bounds),
-                ),
-                PaintOperation::EndLayer | PaintOperation::EndBlur => None,
-            };
-            if let Some(operation_bounds) = operation_bounds {
+            if let Some(operation_bounds) = operation.visual_bounds() {
                 bounds = Some(match bounds {
                     Some(bounds) => bounds.union(&operation_bounds),
                     None => operation_bounds,

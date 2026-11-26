@@ -189,16 +189,20 @@ impl Painter {
             if !tight.is_empty() {
                 config.bounds = tight;
                 let end = self.scene.paint_operations.len();
-                self.scene.paint_operations.edit(capture.operation_start..capture.operation_start + 1, |operation| {
-                    if let PaintOperation::StartBlur(marker) = operation {
-                        marker.bounds = tight;
-                    }
-                });
-                self.scene.paint_operations.edit(capture.operation_start + 1..end, |operation| {
-                    if let PaintOperation::StartLayer(bounds) = operation {
-                        *bounds = bounds.intersect(&tight);
-                    }
-                });
+                let marker_changed = self.scene.paint_operations.get(capture.operation_start)
+                    .is_some_and(|operation| matches!(operation, PaintOperation::StartBlur(marker) if marker.bounds != tight));
+                if marker_changed {
+                    self.scene.paint_operations.edit(capture.operation_start..capture.operation_start + 1, |operation| {
+                        if let PaintOperation::StartBlur(marker) = operation {
+                            marker.bounds = tight;
+                        }
+                    });
+                    self.scene.paint_operations.edit(capture.operation_start + 1..end, |operation| {
+                        if let PaintOperation::StartLayer(bounds) = operation {
+                            *bounds = bounds.intersect(&tight);
+                        }
+                    });
+                }
             }
             tight
         } else {
