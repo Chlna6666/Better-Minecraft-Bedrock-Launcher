@@ -3,7 +3,7 @@
 // Adapted from longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
 //! The window's text style stack, which remembers the styles it resolves.
 
-use crate::{TextStyle, TextStyleRefinement};
+use crate::{TextAlign, TextStyle, TextStyleRefinement};
 use refineable::Refineable;
 use std::{cell::{Cell, RefCell}, rc::Rc};
 
@@ -83,6 +83,20 @@ impl TextStyleStack {
         if eager || resolved.capacity() > target.saturating_mul(4) {
             resolved.shrink_to(target);
         }
+    }
+
+    /// Fast paint-only path: the last refinement wins, without resolving or
+    /// copying a full TextStyle. The window default can be customized.
+    #[inline]
+    pub(crate) fn text_align(&self, default: &TextStyle, generation: u32) -> TextAlign {
+        if self.generation.get() == generation {
+            if let Some(style) = self.resolved.borrow().last().and_then(Option::as_ref) {
+                return style.text_align;
+            }
+        }
+        self.refinements.iter().rev()
+            .find_map(|refinement| refinement.text_align)
+            .unwrap_or(default.text_align)
     }
 
     /// The default text style refined by every refinement on the stack, as

@@ -59,7 +59,7 @@ impl TextLayout {
         window: &mut Window,
         cx: &mut App,
     ) -> LayoutId {
-        let text_style = window.text_style();
+        let text_style = window.text_style_rc();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = text_style
             .line_height
@@ -283,12 +283,12 @@ impl TextLayout {
 
         let line_height = element_state.line_height;
         let mut line_origin = bounds.origin;
-        let text_style = window.text_style();
+        let text_align = window.text_paint_align();
         for line in &element_state.lines {
             line.paint_background(
                 line_origin,
                 line_height,
-                text_style.text_align,
+                text_align,
                 Some(bounds),
                 window,
                 cx,
@@ -297,7 +297,7 @@ impl TextLayout {
             line.paint(
                 line_origin,
                 line_height,
-                text_style.text_align,
+                text_align,
                 Some(bounds),
                 window,
                 cx,

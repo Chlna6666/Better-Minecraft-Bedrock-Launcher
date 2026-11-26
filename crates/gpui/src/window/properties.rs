@@ -76,11 +76,21 @@ impl Window {
 
     /// Current text style, resolved by the Fast stack only when its scope changes.
     pub fn text_style(&self) -> TextStyle {
-        self.text_style_stack.resolve(&self.default_text_style, self.text_style_generation.get()).as_ref().clone()
+        self.text_style_rc().as_ref().clone()
+    }
+
+    #[inline]
+    pub(crate) fn text_style_rc(&self) -> Rc<TextStyle> {
+        self.text_style_stack.resolve(&self.default_text_style, self.text_style_generation.get())
+    }
+
+    #[inline]
+    pub(crate) fn text_paint_align(&self) -> crate::TextAlign {
+        self.text_style_stack.text_align(&self.default_text_style, self.text_style_generation.get())
     }
 
     pub(crate) fn with_text_style_ref<R>(&self, f: impl FnOnce(&TextStyle) -> R) -> R {
-        let style = self.text_style_stack.resolve(&self.default_text_style, self.text_style_generation.get());
+        let style = self.text_style_rc();
         f(&style)
     }
 
@@ -191,7 +201,7 @@ impl Window {
 
     /// The line height associated with the current text style.
     pub fn line_height(&self) -> Pixels {
-        self.text_style().line_height_in_pixels(self.rem_size())
+        self.text_style_rc().line_height_in_pixels(self.rem_size())
     }
 
     /// Call to prevent the default action of an event. Currently only used to prevent
