@@ -1,0 +1,1210 @@
+//! Per-view attachments, material shadows and frame encoding.
+use super::super::{SceneView, resources::RendererResources, scene::SceneResources};
+use super::renderer::pass;
+use super::{
+    ScreenEffects, SHADOW_CASCADE_COUNT,
+    light_tiles::LightTiles,
+    froxel::FroxelVolume,
+    targets::{Target, Targets, uniform},
+    ssr_hiz::SsrHiZ,
+};
+use crate::{Camera, Mat4, Scene, Vec3};
+use anyhow::Context as _;
+use gfx_core::*;
+use gpui::{ExtensionDevice, RendererExtensionContext, RendererExtensionPass};
+use std::sync::Arc;
+use std::time::Instant;
+
+/// Stable, rotationally independent three-level shadow clipmap. Each level
+/// has a dedicated GPU depth texture and culling output to avoid overwriting
+/// another cascade's indirect arguments before native submission.
+pub(super) const SHADOW_MAP_SIZE: u32 = 1024;
+/// No parallel cascade arrays: the projection footprint, depth range and
+/// receiver cutoff are a single typed contract for every GPU shadow cascade.
+/// This prevents changing a split without updating its caster/projection data.
+#[derive(Clone, Copy)]
+struct ShadowCascadeSpec {
+    footprint: f32,
+    caster_depth: f32,
+    receiver_far: f32,
+}
+const SHADOW_CASCADES: [ShadowCascadeSpec; SHADOW_CASCADE_COUNT] = [
+    ShadowCascadeSpec { footprint: 128.0, caster_depth: 384.0, receiver_far: 52.0 },
+    ShadowCascadeSpec { footprint: 320.0, caster_depth: 768.0, receiver_far: 140.0 },
+    ShadowCascadeSpec { footprint: 640.0, caster_depth: 1280.0, receiver_far: 296.0 },
+];
+const SHADOW_CASCADE_BLEND: f32 = 8.0;
+fn shadow_split_uniform() -> [f32; 4] {
+    [
+        SHADOW_CASCADES[0].receiver_far,
+        SHADOW_CASCADES[1].receiver_far,
+        SHADOW_CASCADES[2].receiver_far,
+        SHADOW_CASCADE_BLEND,
+    ]
+}
+const SHADOW_SCROLL_TEXELS: f32 = 32.0;
+const SHADOW_DEPTH_SCROLL_WORLD: f32 = 16.0;
+
+/// Conservatively include casters upstream along sunlight, even when outside
+/// main-camera frustum. Shadows can only be received in this radial partition.
+fn shadow_caster_bounds(center: Vec3, sun: Vec3, cascade: usize) -> crate::Aabb {
+    // The caster volume must be derived from the *snapped* light camera, not
+    // the live eye. Otherwise its contents could change while the cascade key
+    // stays cached. Inflate for any main-eye motion inside the projection tile.
+    let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
+    let hysteresis = texel * SHADOW_SCROLL_TEXELS * 0.5
+        + SHADOW_DEPTH_SCROLL_WORLD * 0.5 + 1.0;
+    let radius = SHADOW_CASCADES[cascade].receiver_far
+        + SHADOW_CASCADE_BLEND + hysteresis;
+    let padding = Vec3::new(radius, radius, radius);
+    let upstream = sun * SHADOW_CASCADES[cascade].caster_depth;
+    crate::Aabb {
+        min: center.min(center + upstream) - padding,
+        max: center.max(center + upstream) + padding,
+    }
+}
+
+/// Stable light-space texel snapping: movement inside a tile does not change
+/// this projection. Quantized light direction and whole-texel movement avoid
+/// temporal shimmer without any CPU readback or GPU queue synchronization.
+fn stable_shadow_camera(
+    eye: Vec3,
+    sun: Vec3,
+    cascade: usize,
+) -> gpui::Result<([i32; 6], Camera)> {
+    let sun = sun.normalized().ok_or_else(|| anyhow::anyhow!("invalid sun"))?;
+    let width = SHADOW_CASCADES[cascade].footprint;
+    let scroll_world = width / SHADOW_MAP_SIZE as f32 * SHADOW_SCROLL_TEXELS;
+    let quant = [
+        (sun.x * 4096.0).round() as i32,
+        (sun.y * 4096.0).round() as i32,
+        (sun.z * 4096.0).round() as i32,
+    ];
+    let direction = Vec3::new(quant[0] as f32, quant[1] as f32, quant[2] as f32)
+        .normalized().ok_or_else(|| anyhow::anyhow!("invalid shadow light axis"))?;
+    // Keep the light-space basis continuous through high noon. Switching
+    // world-Y to world-Z when the sun crosses y=0.99 rotated the entire
+    // shadow map in one frame. Project a fixed world-X anchor instead;
+    // fallback only for the degenerate sun-along-X configuration.
+    let anchor = if direction.x.abs() > 0.99 { Vec3::Z } else { Vec3::X };
+    let right = (anchor - direction * anchor.dot(direction)).normalized()
+        .ok_or_else(|| anyhow::anyhow!("invalid shadow right"))?;
+    let vertical = direction.cross(right).normalized()
+        .ok_or_else(|| anyhow::anyhow!("invalid shadow up"))?;
+    let up = vertical;
+    let key = [
+        (eye.dot(right) / scroll_world).round() as i32,
+        (eye.dot(vertical) / scroll_world).round() as i32,
+        (eye.dot(direction) / SHADOW_DEPTH_SCROLL_WORLD).round() as i32,
+        quant[0], quant[1], quant[2],
+    ];
+    let center = right * (key[0] as f32 * scroll_world)
+        + vertical * (key[1] as f32 * scroll_world)
+        + direction * (key[2] as f32 * SHADOW_DEPTH_SCROLL_WORLD);
+    let depth = SHADOW_CASCADES[cascade].caster_depth;
+    Ok((key, Camera::orthographic(
+        center + direction * depth,
+        center,
+        up,
+        width,
+        0.1,
+        depth * 2.0,
+    )))
+}
+
+/// Per-cascade shadow-cache invalidation using the existing Scene revision
+/// lineage. Unlike whole-scene invalidation, a changed Section outside this
+/// cascade's sun-extruded caster region cannot affect its depth attachment.
+/// This visits only changed root nodes, never every voxel or every DrawRecord.
+/// Unknown/structural revisions and animated hierarchies still conservatively
+/// invalidate because their derived world bounds cannot be proven local.
+fn shadow_caster_scene_changed(
+    previous: Option<&Arc<Scene>>,
+    current: &Arc<Scene>,
+    transform: Mat4,
+    caster_region: crate::Aabb,
+) -> bool {
+    let Some(previous) = previous else { return true };
+    if Arc::ptr_eq(previous, current)
+        || (previous.instance_id() == current.instance_id()
+            && previous.version() == current.version())
+    {
+        return false;
+    }
+    let Some(changed) = current.changed_nodes(previous) else {
+        return true;
+    };
+    for id in changed.iter().copied() {
+        // Both prior and new bounds are necessary: removing a caster must
+        // invalidate the old cascade even if its new position is elsewhere.
+        for snapshot in [&**previous, &**current] {
+            let Some(node) = snapshot.node(id) else { continue };
+            if !node.visible { continue; }
+            if snapshot.parent(id).is_some()
+                || snapshot.children(id).is_some_and(|children| !children.is_empty())
+                || !node.lod.is_empty()
+            {
+                return true;
+            }
+            let Some(mesh) = node.mesh.as_ref() else { continue };
+            let Some(bounds) = mesh.bounds() else { continue };
+            let bounds = bounds.transformed(transform * node.transform.matrix());
+            if !bounds.min.is_finite() || !bounds.max.is_finite() {
+                return true;
+            }
+            if bounds.min.x <= caster_region.max.x
+                && bounds.max.x >= caster_region.min.x
+                && bounds.min.y <= caster_region.max.y
+                && bounds.max.y >= caster_region.min.y
+                && bounds.min.z <= caster_region.max.z
+                && bounds.max.z >= caster_region.min.z
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Structural identity of the per-frame GPU dependency plan. Repeated
+/// camera frames with identical pass topology reuse validation without hash
+/// maps or allocations on the render owner. Resource relocation invalidates
+/// this key through `resource_epoch`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EffectGraphKey {
+    resource_epoch: u64,
+    capture_queued: bool,
+    targets_valid: bool,
+    tile_updated: bool,
+    light_buffer: BufferId,
+    froxel_texture: Option<TextureId>,
+    reflections: bool,
+    ssr_levels: u32,
+    ssr_queued: bool,
+    ssr_valid: bool,
+    shadows_enabled: bool,
+    shadow_queued: [bool; SHADOW_CASCADE_COUNT],
+    shadow_valid: [bool; SHADOW_CASCADE_COUNT],
+    froxel_enabled: bool,
+    froxel_queued: bool,
+    froxel_valid: bool,
+    multisampled: bool,
+}
+/// The sampled descriptor is deliberately excluded from this identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CaptureCommandKey {
+    scene: u64,
+    pipelines: [u64; 2],
+}
+
+#[derive(Default)]
+struct CaptureCommands {
+    cached: Option<(CaptureCommandKey, [Arc<[RenderCommand]>; 2])>,
+    run_pipelines: Option<[u64; 2]>,
+    runs: [super::super::command_runs::GeneratedRunCache; 2],
+}
+
+impl CaptureCommands {
+    fn get_or_build(
+        &mut self, key: CaptureCommandKey,
+        build: impl FnOnce() -> gpui::Result<[Arc<[RenderCommand]>; 2]>,
+    ) -> gpui::Result<[Arc<[RenderCommand]>; 2]> {
+        if let Some((previous, commands)) = &self.cached
+            && *previous == key
+        {
+            return Ok(commands.clone());
+        }
+        // Publish both streams together; never cache a partial failed build.
+        let commands = build()?;
+        self.cached = Some((key, commands.clone()));
+        Ok(commands)
+    }
+}
+
+pub(super) struct EffectScene {
+    pub(super) last_seen: Instant,
+    pub(super) capture: Option<SceneView>,
+    capture_commands: CaptureCommands,
+    shadow_run_cache: [super::super::command_runs::FlatRunCache; SHADOW_CASCADE_COUNT],
+    pub(super) targets_valid: bool,
+    pub(super) queued_capture: bool,
+    pub(super) ssr_hiz: Option<SsrHiZ>,
+    pub(super) froxel: Option<FroxelVolume>,
+    pub(super) froxel_unavailable: bool,
+    pub(super) ssr_hiz_valid: bool,
+    pub(super) queued_ssr_hiz: bool,
+    pub(super) ssr_hiz_unavailable: bool,
+    pub(super) shadow_valid: [bool; SHADOW_CASCADE_COUNT],
+    pub(super) queued_shadow: [bool; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_revision: u64,
+    pub(super) scene: SceneResources,
+    pub(super) targets: Targets,
+    pub(super) msaa_sample_count: u32,
+    depth_sample_position: [f32; 2],
+    resource_epoch: u64,
+    cached_graph: Option<(EffectGraphKey, usize)>,
+    pub(super) frame: BufferId,
+    pub(super) composite_frame: BufferId,
+    composite_placement: Option<(gpui::Bounds<gpui::ScaledPixels>, Extent2d)>,
+    pub(super) tiles: LightTiles,
+    pub(super) groups: Option<[BindGroupId; 2]>,
+    pub(super) group_key: Option<(
+        BufferId, [Option<crate::TextureAssetId>; 3],
+        Option<TextureViewId>, Option<TextureViewId>,
+    )>,
+    pub(super) shadow: [Target; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_color: [Target; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_key: [Option<[i32; 6]>; SHADOW_CASCADE_COUNT],
+    pub(super) shadow_input: Option<SceneView>,
+    pub(super) shadow_scene: Option<Arc<Scene>>,
+    pub(super) shadow_transform: Mat4,
+    pub(super) shadow_matrix: [Mat4; SHADOW_CASCADE_COUNT],
+    pub(super) tile_key: Option<(Camera, u64)>,
+    pub(super) retired: Vec<RetiredTargets>,
+    pub(super) submitted_retirements: usize,
+}
+pub(super) struct RetiredTargets {
+    pub(super) targets: Targets,
+    pub(super) tiles: LightTiles,
+    pub(super) groups: Option<[BindGroupId; 2]>,
+    pub(super) ssr_hiz: Option<SsrHiZ>,
+    pub(super) froxel: Option<FroxelVolume>,
+}
+impl RetiredTargets {
+    pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if let Some(groups) = self.groups {
+            for group in groups {
+                device.destroy_bind_group(group)?;
+            }
+        }
+        if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
+        if let Some(froxel) = self.froxel { froxel.destroy(device)?; }
+        self.tiles.destroy(device)?;
+        self.targets.destroy(device)
+    }
+}
+impl EffectScene {
+    pub(super) fn capture_geometry(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        resources: [&mut RendererResources; 2],
+        view: &SceneView,
+        local: &RendererExtensionContext,
+        attributes_pass: RenderPassId,
+        passes: &mut Vec<RendererExtensionPass>,
+    ) -> gpui::Result<()> {
+        let mut shading = view.voxel_shading;
+        shading.shadow_strength = 0.;
+        let capture = view.with_voxel_shader().with_voxel_shading(shading)?;
+        // Pure fence retirement does not change rendered pixels, geometry
+        // or descriptors currently bound by the capture.
+        self.scene.release_completed_sampled_snapshots(device)?;
+        let capture_changed = !self.targets_valid
+            || self.scene.sampled_maintenance_pending(resources[0])
+            || self
+                .capture
+                .as_ref()
+                .is_none_or(|old| !super::renderer::same_capture(old, &capture));
+        if capture_changed {
+            self.targets_valid = false;
+            self.scene
+                .prepare(device, resources[0], &capture, &local)
+                .context("screen scene preparation")?;
+        }
+        if capture_changed {
+            let key = CaptureCommandKey {
+                scene: self.scene.command_revision,
+                pipelines: [resources[0].pipeline_revision, resources[1].pipeline_revision],
+            };
+            let compact_limit = super::super::command_runs::compact_limit(device);
+            if self.capture_commands.run_pipelines != Some(key.pipelines) {
+                self.capture_commands.runs = Default::default();
+                self.capture_commands.run_pipelines = Some(key.pipelines);
+            }
+            let compact = if compact_limit > 1 && self.scene.generated_command_visibility().is_none()
+                && let Some(count) = self.scene.generated_singleton_command_count()
+            {
+                let first = self.scene.first_blended_batch_index();
+                let mut published = Vec::with_capacity(2);
+                for (index, renderer) in resources.iter().enumerate() {
+                    if let Some(stream) = self.capture_commands.runs[index].refresh(
+                        self.scene.command_revision, count, first, self.scene.native_command_delta(),
+                        self.scene.blend_only_command_change, compact_limit,
+                        |range, output| self.scene.append_offscreen_singleton_range(renderer, output, range),
+                    )? {
+                        published.push(stream);
+                    } else { break; }
+                }
+                <Vec<_> as TryInto<[_; 2]>>::try_into(published).ok()
+            } else { None };
+            let (commands, run_plans) = if let Some([opaque, attributes]) = compact {
+                ([opaque.commands, attributes.commands], [Some(opaque.plan), Some(attributes.plan)])
+            } else {
+            let commands = self.capture_commands.get_or_build(key, || {
+                let mut opaque = Vec::new();
+                self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
+                let mut attributes = Vec::new();
+                self.scene.append_offscreen_steps(resources[1], true, &mut attributes)?;
+                // Group once per immutable topology, never on a camera-only
+                // capture. Keep the existing indirect blend suffix contract.
+                if local.backend_kind() == BackendKind::Vulkan {
+                    let first_blend = self.scene.first_blended_batch_index();
+                    if let Some(grouped) = super::super::renderer::group_indirect_commands(&opaque, first_blend) {
+                        opaque = grouped;
+                    }
+                    if let Some(grouped) = super::super::renderer::group_indirect_commands(&attributes, first_blend) {
+                        attributes = grouped;
+                    }
+                }
+                Ok([opaque.into(), attributes.into()])
+            })?;
+            (commands, [None, None])
+            };
+            let [opaque, attributes] = commands;
+            let [opaque_runs, attributes_runs] = run_plans;
+            let sampled_table = self.scene.sampled_snapshot(resources[0]);
+            debug_assert_eq!(sampled_table, self.scene.sampled_snapshot(resources[1]));
+            let msaa = self.targets.msaa.as_ref();
+            // When MSAA is enabled the geometry renders into multisampled
+            // color+depth copies and resolves into the single-sample views that
+            // downstream compositing samples. `None` keeps the single-sample path.
+            let mut opaque_plan = pass(
+                local.render_pass(),
+                msaa.map_or(self.targets.color.view, |m| m.color.view),
+                self.targets.depth.view,
+                msaa.map(|_| self.targets.color.view),
+                opaque,
+                true,
+            );
+            opaque_plan.sampled_table = sampled_table;
+            opaque_plan.run_plan = opaque_runs;
+            passes.push(opaque_plan);
+            let surface = msaa.map_or(self.targets.surface.view, |m| m.surface.view);
+            let mut attributes_plan = pass(
+                attributes_pass,
+                surface,
+                self.targets.surface_depth.view,
+                msaa.map(|_| self.targets.surface.view),
+                attributes,
+                true,
+            );
+            attributes_plan.color_attachments = Arc::from([surface, self.targets.albedo.view]);
+            attributes_plan.sampled_table = sampled_table;
+            attributes_plan.run_plan = attributes_runs;
+            passes.push(attributes_plan);
+            self.scene.queue_sampled_capture(sampled_table);
+            self.capture = Some(capture);
+            self.queued_capture = true;
+        }
+        Ok(())
+    }
+
+    /// Add native full-screen depth-minimum passes *after* opaque geometry
+    /// and *before* the SSR screen resolve. There is no host synchronization:
+    /// the backend executes the ordered render passes in one GPU submission.
+    pub(super) fn record_ssr_hiz(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        context: &RendererExtensionContext,
+        settings: ScreenEffects,
+        passes: &mut Vec<RendererExtensionPass>,
+    ) {
+        if !settings.reflections || self.ssr_hiz_unavailable {
+            return;
+        }
+        if self.ssr_hiz.is_none() {
+            let multisampled = self.targets.msaa.is_some();
+            let source = self.targets.depth.view;
+            match SsrHiZ::new(device,context,self.targets.extent,source,multisampled) {
+                Ok(hiz) => self.ssr_hiz = Some(hiz),
+                Err(error) => {
+                    // Depth pyramids are a performance feature. If a driver
+                    // rejects R32F attachment mip views or MSAA depth sampling,
+                    // retain the existing precise per-sample SSR path.
+                    eprintln!("gpui_3d: native SSR Hi-Z unavailable: {error:#}; using linear SSR");
+                    self.ssr_hiz_unavailable = true;
+                    return;
+                }
+            }
+        }
+        if self.queued_capture || !self.ssr_hiz_valid {
+            // A queued capture writes the depth buffer before this hierarchy.
+            // On a static camera both depth and its mip chain stay resident.
+            self.ssr_hiz_valid = false;
+            self.ssr_hiz.as_ref().expect("SSR pyramid created").enqueue(passes);
+            self.queued_ssr_hiz = true;
+        }
+    }
+    pub(super) fn ssr_hiz_levels(&self) -> u32 {
+        self.ssr_hiz.as_ref().map_or(0, |hiz| hiz.levels)
+    }
+
+    /// Validate GPU producer/consumer order across native raster passes and the
+    /// already-dispatched light-tile Compute stage. All texture identities are
+    /// actual allocation IDs (including MSAA and SSR intermediates), never
+    /// aliases through a TextureView. This is a fail-closed graph validation,
+    /// not a claim to issue native barriers or execute shadow-dependent compute.
+    ///
+    /// Froxel injection/integration are represented here only when the GPU
+    /// owner's mixed Graphics/Compute dispatch stream has queued both stages.
+    /// Validation is not a substitute for the backend's native barriers.
+    pub(super) fn validate_gpu_work_graph(
+        &mut self,
+        reflection_enabled: bool,
+        shadows_enabled: bool,
+        tile_updated: bool,
+        froxel_enabled: bool,
+        light_buffer: BufferId,
+    ) -> gpui::Result<usize> {
+        let key = EffectGraphKey {
+            resource_epoch: self.resource_epoch,
+            capture_queued: self.queued_capture,
+            targets_valid: self.targets_valid,
+            tile_updated,
+            light_buffer,
+            froxel_texture: self.froxel.as_ref()
+                .filter(|_| froxel_enabled)
+                .map(|volume| volume.integrated.texture),
+            reflections: reflection_enabled,
+            ssr_levels: self.ssr_hiz_levels(),
+            ssr_queued: self.queued_ssr_hiz,
+            ssr_valid: self.ssr_hiz_valid,
+            shadows_enabled,
+            shadow_queued: self.queued_shadow,
+            shadow_valid: self.shadow_valid,
+            froxel_enabled,
+            froxel_queued: self.froxel.as_ref().is_some_and(|volume| volume.queued),
+            froxel_valid: self.froxel.as_ref().is_some_and(|volume| volume.valid),
+            multisampled: self.targets.msaa.is_some(),
+        };
+        if let Some((cached_key, transitions)) = self.cached_graph {
+            if cached_key == key {
+                return Ok(transitions);
+            }
+        }
+        let mut graph = GpuWorkGraph::new();
+        let texture = |id, access| GpuResourceUse {
+            resource: GpuResource::Texture(id), access,
+        };
+        let buffer = |id, access| GpuResourceUse {
+            resource: GpuResource::Buffer(id), access,
+        };
+        let msaa = self.targets.msaa.as_ref();
+        let hdr_depth = self.targets.depth.texture;
+        let hdr_color = self.targets.color.texture;
+        let surface_depth = self.targets.surface_depth.texture;
+        let albedo = self.targets.albedo.texture;
+
+        // The light-tile Compute dispatch has no geometry/shadow dependency.
+        // It legitimately runs before the Graphics submission on the GPU
+        // owner; a future fog Compute pass reading CSM does not.
+        if tile_updated {
+            graph.push("light-tile compute", GpuWorkStage::Compute, [
+                buffer(self.tiles.buffer, GpuAccess::StorageWrite),
+            ])?;
+        } else {
+            graph.import(GpuResource::Buffer(self.tiles.buffer));
+        }
+
+        if self.queued_capture {
+            let mut outputs = vec![
+                texture(hdr_color, GpuAccess::ColorAttachment),
+                texture(hdr_depth, GpuAccess::DepthAttachment),
+            ];
+            if let Some(msaa) = msaa {
+                outputs.push(texture(msaa.color.texture, GpuAccess::ColorAttachment));
+            }
+            graph.push("HDR geometry", GpuWorkStage::Graphics, outputs)?;
+            let mut attributes = vec![
+                texture(surface_depth, GpuAccess::DepthAttachment),
+                texture(albedo, GpuAccess::ColorAttachment),
+                texture(self.targets.surface.texture, GpuAccess::ColorAttachment),
+            ];
+            if let Some(msaa) = msaa {
+                attributes.push(texture(msaa.surface.texture, GpuAccess::ColorAttachment));
+            }
+            graph.push("MRT surface/albedo geometry", GpuWorkStage::Graphics, attributes)?;
+        } else if self.targets_valid {
+            for target in [
+                hdr_color, hdr_depth, self.targets.surface.texture, surface_depth, albedo
+            ] {
+                graph.import(GpuResource::Texture(target));
+            }
+        } else {
+            return Err(anyhow::anyhow!("screen graph has no valid or queued geometry capture"));
+        }
+
+        if reflection_enabled && let Some(hiz) = &self.ssr_hiz {
+            let mut previous = hdr_depth;
+            for (level, output) in hiz.level_textures().enumerate() {
+                if self.queued_ssr_hiz {
+                    graph.push(
+                        format!("SSR Hi-Z level {level}"),
+                        GpuWorkStage::Graphics,
+                        [
+                            texture(previous, GpuAccess::Sampled),
+                            texture(output, GpuAccess::ColorAttachment),
+                        ],
+                    )?;
+                } else if self.ssr_hiz_valid {
+                    graph.import(GpuResource::Texture(output));
+                } else {
+                    return Err(anyhow::anyhow!("screen graph requires a valid SSR Hi-Z texture"));
+                }
+                previous = output;
+            }
+        }
+
+        if shadows_enabled {
+            for cascade in 0..SHADOW_CASCADE_COUNT {
+                let shadow = self.shadow[cascade].texture;
+                if self.queued_shadow[cascade] {
+                    graph.push(
+                        format!("CSM shadow cascade {cascade}"),
+                        GpuWorkStage::Graphics,
+                        [texture(shadow, GpuAccess::DepthAttachment)],
+                    )?;
+                } else if self.shadow_valid[cascade] {
+                    graph.import(GpuResource::Texture(shadow));
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "screen graph cascade {cascade} has no valid or queued shadow map"
+                    ));
+                }
+            }
+        }
+        if froxel_enabled {
+            let volume = self.froxel.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Froxel volume shader selected without a 3D GPU resource")
+            })?;
+            if volume.queued {
+                // CPU frame/light uploads are ordered before the GPU owner
+                // starts the render graph. The native CSM graphics writes are
+                // queued earlier in this same graphics submission stream.
+                graph.import(GpuResource::Buffer(self.frame));
+                graph.import(GpuResource::Buffer(light_buffer));
+                if !shadows_enabled {
+                    for shadow in &self.shadow {
+                        graph.import(GpuResource::Texture(shadow.texture));
+                    }
+                }
+                let mut injection = vec![
+                    buffer(self.frame, GpuAccess::ReadBuffer),
+                    buffer(light_buffer, GpuAccess::ReadBuffer),
+                    buffer(self.tiles.buffer, GpuAccess::ReadBuffer),
+                    texture(volume.injection_texture(), GpuAccess::StorageWrite),
+                ];
+                injection.extend(self.shadow.iter().map(|shadow|
+                    texture(shadow.texture, GpuAccess::Sampled)
+                ));
+                graph.push("Froxel light injection", GpuWorkStage::Compute, injection)?;
+                graph.push("Froxel depth integration", GpuWorkStage::Compute, [
+                    texture(volume.injection_texture(), GpuAccess::Sampled),
+                    texture(volume.integrated.texture, GpuAccess::StorageWrite),
+                ])?;
+            } else if volume.valid {
+                graph.import(GpuResource::Texture(volume.integrated.texture));
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Froxel composite cannot sample a volume without a valid GPU producer"
+                ));
+            }
+        }
+        let mut composite_reads = vec![
+            texture(hdr_color, GpuAccess::Sampled),
+            texture(hdr_depth, GpuAccess::Sampled),
+            texture(self.targets.surface.texture, GpuAccess::Sampled),
+            texture(surface_depth, GpuAccess::Sampled),
+            texture(albedo, GpuAccess::Sampled),
+            buffer(self.tiles.buffer, GpuAccess::ReadBuffer),
+            texture(self.targets.resolved.texture, GpuAccess::ColorAttachment),
+        ];
+        if reflection_enabled && let Some(hiz) = &self.ssr_hiz {
+            composite_reads.extend(
+                hiz.level_textures().map(|id| texture(id, GpuAccess::Sampled))
+            );
+        }
+        if shadows_enabled {
+            composite_reads.extend(
+                self.shadow.iter().map(|target| texture(target.texture, GpuAccess::Sampled))
+            );
+        }
+        if froxel_enabled {
+            let volume = self.froxel.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Froxel volume missing from composite graph")
+            })?;
+            composite_reads.push(texture(volume.integrated.texture, GpuAccess::Sampled));
+        }
+        graph.push("deferred effects composite", GpuWorkStage::Graphics, composite_reads)?;
+        let plan = graph.compile()?;
+        // Only the old pre-graphics Compute path may skip native mixed
+        // command submission. With Froxel active the GPUI owner has queued
+        // Graphics -> Compute -> Compute -> Graphics in program order.
+        if !froxel_enabled {
+            plan.validate_pregraphics_compute_only()?;
+        }
+        let transitions = plan.transitions().len();
+        self.cached_graph = Some((key, transitions));
+        Ok(transitions)
+    }
+    pub(super) fn new(
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        extent: Extent2d,
+        msaa_sample_count: u32,
+    ) -> gpui::Result<Self> {
+        let mut cleanup = super::construction::Construction::default();
+        let result = (|| {
+            let targets = Targets::create(device, extent, msaa_sample_count, backend)?;
+            targets.record(&mut cleanup);
+            let frame = cleanup.record(uniform(device, backend)?, |d, id| {
+                let _ = d.destroy_buffer(id);
+            });
+            let composite_frame = cleanup.record(uniform(device, backend)?, |d, id| {
+                let _ = d.destroy_buffer(id);
+            });
+            let tiles = LightTiles::new(device, backend, extent)?;
+            cleanup.record((tiles.buffer, tiles.shaders), |d, (buffer, shaders)| {
+                for shader in shaders {
+                    let _ = d.destroy_shader_module(shader);
+                }
+                let _ = d.destroy_buffer(buffer);
+            });
+            let mut shadows = Vec::with_capacity(SHADOW_CASCADE_COUNT);
+            let mut shadow_colors = Vec::with_capacity(SHADOW_CASCADE_COUNT);
+            for _ in 0..SHADOW_CASCADE_COUNT {
+                let shadow = Target::create(
+                    device, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                    Format::Depth32Float, true, 1,
+                )?;
+                shadow.record(&mut cleanup);
+                shadows.push(shadow);
+                // This unused color attachment exists for native backends that
+                // do not support a depth-only material RenderPass.
+                let color = Target::create(
+                    device, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+                    Format::R8Unorm, false, 1,
+                )?;
+                color.record(&mut cleanup);
+                shadow_colors.push(color);
+            }
+            let shadow: [Target; SHADOW_CASCADE_COUNT] = shadows
+                .try_into().map_err(|_| anyhow::anyhow!("missing shadow cascades"))?;
+            let shadow_color: [Target; SHADOW_CASCADE_COUNT] = shadow_colors
+                .try_into().map_err(|_| anyhow::anyhow!("missing shadow colors"))?;
+            let scene = SceneResources::new(device, backend)?;
+            Ok(Self {
+                last_seen: Instant::now(),
+                capture: None,
+                capture_commands: CaptureCommands::default(),
+                shadow_run_cache: Default::default(),
+                targets_valid: false,
+                queued_capture: false,
+                ssr_hiz: None,
+                froxel: None,
+                froxel_unavailable: false,
+                ssr_hiz_valid: false,
+                queued_ssr_hiz: false,
+                ssr_hiz_unavailable: false,
+                shadow_valid: [false; SHADOW_CASCADE_COUNT],
+                queued_shadow: [false; SHADOW_CASCADE_COUNT],
+                shadow_revision: 0,
+                scene,
+                targets,
+                msaa_sample_count,
+                // Preserve the legacy center convention on backends whose native
+                // sample pattern is not exposed yet. Vulkan gates unknown patterns.
+                depth_sample_position: device.sample_zero_position(msaa_sample_count).unwrap_or([0.5, 0.5]),
+                resource_epoch: 0,
+                cached_graph: None,
+                frame,
+                composite_frame,
+                composite_placement: None,
+                tiles,
+                groups: None,
+                group_key: None,
+                shadow,
+                shadow_color,
+                shadow_key: [None; SHADOW_CASCADE_COUNT],
+                shadow_input: None,
+                shadow_scene: None,
+                shadow_transform: Mat4::IDENTITY,
+                shadow_matrix: [Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
+                tile_key: None,
+                retired: Vec::new(),
+                submitted_retirements: 0,
+            })
+        })();
+        cleanup.finish(device, result)
+    }
+    pub(super) fn resize(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        extent: Extent2d,
+    ) -> gpui::Result<()> {
+        if self.targets.extent == extent {
+            return Ok(());
+        }
+        self.targets_valid = false;
+        let targets = Targets::create(device, extent, self.msaa_sample_count, backend)?;
+        let tiles = match LightTiles::new(device, backend, extent) {
+            Ok(tiles) => tiles,
+            Err(error) => {
+                let _ = targets.destroy(device);
+                return Err(error);
+            }
+        };
+        self.retired.push(RetiredTargets {
+            targets: std::mem::replace(&mut self.targets, targets),
+            tiles: std::mem::replace(&mut self.tiles, tiles),
+            groups: self.groups.take(),
+            ssr_hiz: self.ssr_hiz.take(),
+            froxel: self.froxel.take(),
+        });
+        self.tile_key = None;
+        self.group_key = None;
+        self.ssr_hiz_valid = false;
+        self.queued_ssr_hiz = false;
+        self.ssr_hiz_unavailable = false;
+        self.froxel_unavailable = false;
+        self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        self.cached_graph = None;
+        Ok(())
+    }
+    pub(super) fn shadow_pass(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        renderer: &RendererResources,
+        view: &SceneView,
+        local: &RendererExtensionContext,
+        // The shadow map stays single-sampled even when the scene passes are multisampled.
+        shadow_pass: RenderPassId,
+        passes: &mut Vec<RendererExtensionPass>,
+    ) -> gpui::Result<()> {
+        if view.voxel_shading.shadow_strength <= 0. {
+            // Shading is disabled, so neither a map clear nor a GPU cull is
+            // necessary. Retain the old maps for a subsequent re-enable.
+            return Ok(());
+        }
+        let Some(sun) = view.voxel_shading.sun_direction.normalized() else {
+            self.shadow_valid.fill(false);
+            return Err(anyhow::anyhow!("invalid sun"));
+        };
+        let caster_state_dirty =
+            self.shadow_transform != view.scene_transform
+            || self.shadow_input.as_ref().is_none_or(|old| {
+                !Arc::ptr_eq(&old.textures, &view.textures)
+                    || old.sampling != view.sampling
+                    || old.anisotropy_enabled != view.anisotropy_enabled
+                    || old.blend_edge_feather != view.blend_edge_feather
+                    || !Arc::ptr_eq(&old.animation, &view.animation)
+                    || (!view.animation.is_empty()
+                        && old.animation_time != view.animation_time)
+            });
+        // Persistent CSM: rebuild only a cascade whose texel-snapped camera
+        // crossed an integer tile, or whose actual caster geometry changed.
+        // Rotation of the main viewer never invalidates any shadow cascade.
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = match stable_shadow_camera(view.camera.eye, sun, cascade) {
+                Ok(camera) => camera,
+                Err(error) => {
+                    self.shadow_valid.fill(false);
+                    return Err(error);
+                }
+            };
+            let caster_bounds = shadow_caster_bounds(camera.target, sun, cascade);
+            if self.shadow_valid[cascade]
+                && self.shadow_key[cascade] == Some(key)
+                && !caster_state_dirty
+                && !shadow_caster_scene_changed(
+                    self.shadow_scene.as_ref(), &view.scene,
+                    view.scene_transform, caster_bounds,
+                )
+            {
+                continue;
+            }
+            // Transactional failure: keep this map invalid until the backend
+            // has actually submitted the full compute+draw command sequence.
+            self.shadow_valid[cascade] = false;
+            self.shadow_key[cascade] = Some(key);
+            self.shadow_matrix[cascade] = camera.projection_matrix(1.)? * camera.view()?;
+            let context = local.offscreen(
+                shadow_pass, Format::R8Unorm,
+                Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?,
+            );
+            let commands = self.scene.shadow_steps(
+                device, renderer, camera, cascade, caster_bounds, &context,
+            )?;
+            let (commands, run_plan) = if let Some(published) = self.shadow_run_cache[cascade]
+                .refresh(&commands, super::super::command_runs::compact_limit(device))?
+            {
+                (published.commands, Some(published.plan))
+            } else { (commands, None) };
+            let mut shadow_plan = pass(
+                shadow_pass,
+                self.shadow_color[cascade].view,
+                self.shadow[cascade].view,
+                None,
+                commands,
+                true,
+            );
+            shadow_plan.sampled_table = self.scene.sampled_snapshot(renderer);
+            shadow_plan.run_plan = run_plan;
+            self.scene.queue_sampled_capture(shadow_plan.sampled_table);
+            passes.push(shadow_plan);
+            self.queued_shadow[cascade] = true;
+        }
+        if self.queued_shadow.iter().any(|&queued| queued) {
+            self.shadow_revision = self.shadow_revision.wrapping_add(1);
+        }
+        self.shadow_scene = Some(view.scene.clone());
+        self.shadow_transform = view.scene_transform;
+        self.shadow_input = Some(view.clone());
+        Ok(())
+    }
+    pub(super) fn write_frames(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        view: &SceneView,
+        settings: ScreenEffects,
+        local: &RendererExtensionContext,
+        host: &RendererExtensionContext,
+        time: f32,
+        light_count: u32,
+        ssr_hiz_levels: u32,
+    ) -> gpui::Result<()> {
+        let matrix = view.camera.projection_matrix(
+            self.targets.extent.width() as f32 / self.targets.extent.height() as f32,
+        )? * view.camera.view()?;
+        let inverse = matrix
+            .inverse()
+            .ok_or_else(|| anyhow::anyhow!("singular projection"))?;
+        let mut bytes = Vec::with_capacity(super::FRAME_BYTES as usize);
+        for (buffer, context) in [(self.frame, local), (self.composite_frame, host)] {
+            let bounds = context.bounds();
+            let extent = context.viewport();
+            // The host composite shader reads only placement from this uniform.
+            let composite = buffer == self.composite_frame;
+            if composite && self.composite_placement == Some((bounds, extent)) {
+                continue;
+            }
+            bytes.clear();
+            for matrix in [matrix, inverse, self.shadow_matrix[0]] {
+                for column in matrix.columns() {
+                    for value in column {
+                        bytes.extend(value.to_le_bytes());
+                    }
+                }
+            }
+            let shading = view.voxel_shading;
+            for values in [
+                [view.camera.eye.x, view.camera.eye.y, view.camera.eye.z, 1.],
+                [
+                    shading.sun_direction.x,
+                    shading.sun_direction.y,
+                    shading.sun_direction.z,
+                    shading.sky_brightness,
+                ],
+                [
+                    shading.sun_color[0],
+                    shading.sun_color[1],
+                    shading.sun_color[2],
+                    shading.sun_intensity,
+                ],
+                [32., 8., ssr_hiz_levels as f32, time],
+                [
+                    f32::from(settings.reflections),
+                    f32::from(settings.water),
+                    f32::from(settings.volumetric_fog),
+                    f32::from(settings.clouds && settings.cloud_texture.is_some()),
+                ],
+                [
+                    settings.exposure,
+                    settings.fog_density,
+                    settings.cloud_height,
+                    f32::from(settings.underwater),
+                ],
+                [
+                    settings.world_origin.x,
+                    settings.world_origin.y,
+                    settings.world_origin.z,
+                    0.,
+                ],
+                [
+                    f64::from(bounds.origin.x) as f32,
+                    f64::from(bounds.origin.y) as f32,
+                    f64::from(bounds.size.width) as f32,
+                    f64::from(bounds.size.height) as f32,
+                ],
+                [
+                    extent.width() as f32,
+                    extent.height() as f32,
+                    shading.shadow_strength,
+                    0.00005,
+                ],
+            ] {
+                for value in values {
+                    bytes.extend(value.to_le_bytes());
+                }
+            }
+            for value in [light_count, self.tiles.size[0], self.tiles.size[1], 64] {
+                bytes.extend(value.to_le_bytes());
+            }
+            for values in [
+                [0.12f32, 0.045, 0.018, 0.],
+                [4., 0.0002, 16., 1.],
+                settings
+                    .background_color
+                    .map_or([shading.sky_brightness, 0., 0., 0.], |color| {
+                        [-1., color[0], color[1], color[2]]
+                    }),
+                {
+                    let animation = |strip: Option<super::FlipbookTexture>| {
+                        strip
+                            .and_then(|strip| {
+                                view.textures.get(&strip.texture).map(|asset| {
+                                    [
+                                        asset.height() as f32 / asset.width() as f32,
+                                        strip.seconds_per_frame,
+                                    ]
+                                })
+                            })
+                            .unwrap_or([0., 1.])
+                    };
+                    let [still, flow] = settings.water_flipbooks().map(animation);
+                    [still[0], flow[0], still[1], flow[1]]
+                },
+            ] {
+                for value in values {
+                    bytes.extend(value.to_le_bytes());
+                }
+            }
+            // Existing 416-byte effect ABI is followed by two additional
+            // light matrices and one 16-byte vec4 of cascade split distances.
+            for matrix in &self.shadow_matrix[1..] {
+                for column in matrix.columns() {
+                    for value in column {
+                        bytes.extend(value.to_le_bytes());
+                    }
+                }
+            }
+            for value in shadow_split_uniform() {
+                bytes.extend(value.to_le_bytes());
+            }
+            for value in [self.depth_sample_position[0], self.depth_sample_position[1], 0., 0.] {
+                bytes.extend(value.to_le_bytes());
+            }
+            debug_assert_eq!(bytes.len(), super::FRAME_BYTES as usize);
+            if composite {
+                self.composite_placement = None;
+            }
+            device.write_buffer(buffer, 0, &bytes)?;
+            if composite {
+                self.composite_placement = Some((bounds, extent));
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn destroy(mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if let Some(groups) = self.groups {
+            for group in groups {
+                device.destroy_bind_group(group)?;
+            }
+        }
+        for retired in self.retired {
+            retired.destroy(device)?;
+        }
+        self.scene.destroy(device)?;
+        if let Some(hiz) = self.ssr_hiz { hiz.destroy(device)?; }
+        if let Some(froxel) = self.froxel { froxel.destroy(device)?; }
+        self.tiles.destroy(device)?;
+        self.targets.destroy(device)?;
+        for cascade in self.shadow {
+            cascade.destroy(device)?;
+        }
+        for color in self.shadow_color {
+            color.destroy(device)?;
+        }
+        device.destroy_buffer(self.frame)?;
+        device.destroy_buffer(self.composite_frame)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod stable_shadow_tests {
+    use super::*;
+
+    #[test]
+    fn shadow_caster_cache_reuses_empty_fork_without_gpu_redraw() {
+        let old = Arc::new(Scene::new());
+        let same = Arc::new(old.fork());
+        let bounds = crate::Aabb::new(
+            Vec3::new(-10.0,-10.0,-10.0), Vec3::new(10.0,10.0,10.0),
+        ).unwrap();
+        assert!(!shadow_caster_scene_changed(Some(&old), &old, Mat4::IDENTITY, bounds));
+        assert!(!shadow_caster_scene_changed(Some(&old), &same, Mat4::IDENTITY, bounds));
+    }
+
+    #[test]
+    fn cascade_only_invalidates_for_changed_caster_within_its_region() {
+        let previous = Arc::new(Scene::new());
+        let mut changed = previous.fork();
+        changed.insert(
+            None,
+            crate::Node::new().with_mesh(Arc::new(crate::Mesh::cube())),
+        ).unwrap();
+        let changed = Arc::new(changed);
+        let near = crate::Aabb::new(
+            Vec3::new(-12.0,-12.0,-12.0), Vec3::new(12.0,12.0,12.0),
+        ).unwrap();
+        let far = crate::Aabb::new(
+            Vec3::new(400.0,400.0,400.0), Vec3::new(500.0,500.0,500.0),
+        ).unwrap();
+        assert!(shadow_caster_scene_changed(
+            Some(&previous), &changed, Mat4::IDENTITY, near,
+        ));
+        assert!(!shadow_caster_scene_changed(
+            Some(&previous), &changed, Mat4::IDENTITY, far,
+        ));
+        assert!(shadow_caster_scene_changed(None, &changed, Mat4::IDENTITY, far));
+    }
+
+    #[test]
+    fn removed_caster_invalidates_its_old_cascade() {
+        let mut baseline = Scene::new();
+        let id = baseline.insert(
+            None, crate::Node::new().with_mesh(Arc::new(crate::Mesh::cube())),
+        ).unwrap();
+        let baseline = Arc::new(baseline);
+        let mut changed = baseline.fork();
+        changed.remove(id).unwrap();
+        let changed = Arc::new(changed);
+        let near = crate::Aabb::new(
+            Vec3::new(-12.0,-12.0,-12.0), Vec3::new(12.0,12.0,12.0),
+        ).unwrap();
+        assert!(shadow_caster_scene_changed(
+            Some(&baseline), &changed, Mat4::IDENTITY, near,
+        ));
+    }
+
+    #[test]
+    fn all_cascades_use_texel_snapped_camera_projections() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let eye = Vec3::new(17.0, 80.0, -12.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            let (moved, _) = stable_shadow_camera(
+                eye + Vec3::new(0.0001, 0.0001, -0.0001), sun, cascade,
+            ).unwrap();
+            assert_eq!(key, moved, "cascade {cascade} must not jitter on subpixel motion");
+            let light = (camera.eye - camera.target).normalized().unwrap();
+            let right = camera.up.cross(light).normalized().unwrap();
+            let vertical = light.cross(right).normalized().unwrap();
+            let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
+            for axis in [right, vertical] {
+                let coordinate = camera.target.dot(axis) / texel;
+                assert!((coordinate - coordinate.round()).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn each_cascade_caches_camera_motion_within_its_shadow_tile() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let eye = Vec3::new(16.0, 72.0, -8.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, first) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            for dx in [0.0001, 0.001, 0.01] {
+                let (next_key, next) =
+                    stable_shadow_camera(eye + Vec3::X * dx, sun, cascade).unwrap();
+                assert_eq!(key, next_key);
+                assert_eq!(first, next);
+            }
+        }
+    }
+
+    #[test]
+    fn light_space_scrolling_moves_in_whole_texels() {
+        let sun = Vec3::new(0.45, 0.81, 0.37);
+        let eye = Vec3::new(0.0, 64.0, 0.0);
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            let (key, camera) = stable_shadow_camera(eye, sun, cascade).unwrap();
+            let right = camera.up.cross((camera.eye - camera.target).normalized().unwrap())
+                .normalized().unwrap();
+            let texel = SHADOW_CASCADES[cascade].footprint / SHADOW_MAP_SIZE as f32;
+            let (next_key, next) = stable_shadow_camera(
+                eye + right * (texel * SHADOW_SCROLL_TEXELS * 1.5), sun, cascade,
+            ).unwrap();
+            assert_ne!(key, next_key);
+            let displacement = (next.target - camera.target).dot(right) / texel;
+            assert!((displacement - displacement.round()).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn near_zenith_sun_motion_does_not_flip_shadow_projection_basis() {
+        let eye = Vec3::new(0.0, 80.0, 0.0);
+        let a = Vec3::new(0.1, 0.986, 0.07).normalized().unwrap();
+        let b = Vec3::new(0.1, 0.996, 0.07).normalized().unwrap();
+        let (_, camera_a) = stable_shadow_camera(eye, a, 0).unwrap();
+        let (_, camera_b) = stable_shadow_camera(eye, b, 0).unwrap();
+        assert!(camera_a.up.dot(camera_b.up) > 0.99,
+            "sun passing near zenith must not rotate the entire shadow grid");
+    }
+
+    #[test]
+    fn cascade_splits_fit_inside_their_projection_widths() {
+        for cascade in 0..SHADOW_CASCADE_COUNT {
+            assert!(
+                SHADOW_CASCADES[cascade].receiver_far + SHADOW_CASCADE_BLEND
+                    < SHADOW_CASCADES[cascade].footprint * 0.5,
+                "cascade {cascade} must fit its receiver radius and fade margin",
+            );
+        }
+        assert!(SHADOW_CASCADES[0].footprint / (SHADOW_MAP_SIZE as f32) < 0.22);
+        assert!(SHADOW_CASCADES[2].footprint > 320.0);
+    }
+
+    #[test]
+    fn sun_extruded_caster_bounds_include_offscreen_upstream_casters() {
+        let sun = Vec3::new(0.45, 0.81, 0.37).normalized().unwrap();
+        let eye = Vec3::new(0.0, 64.0, 0.0);
+        let bounds = shadow_caster_bounds(eye, sun, 0);
+        let upstream = eye + sun * 128.0;
+        assert!(upstream.x >= bounds.min.x && upstream.x <= bounds.max.x);
+        assert!(upstream.y >= bounds.min.y && upstream.y <= bounds.max.y);
+        assert!(upstream.z >= bounds.min.z && upstream.z <= bounds.max.z);
+        let behind = eye - sun * 256.0;
+        assert!(behind.y < bounds.min.y);
+    }
+}
+
+#[cfg(test)]
+mod capture_command_tests {
+    use super::*;
+
+    #[test]
+    fn effects_capture_commands_reuse_arcs_until_geometry_or_pipeline_changes() {
+        let mut cache = CaptureCommands::default();
+        let first = CaptureCommandKey { scene: 1, pipelines: [2, 3] };
+        let build = || -> gpui::Result<[Arc<[RenderCommand]>; 2]> { Ok(std::array::from_fn(|_| Arc::from([RenderCommand::Draw(DrawCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: bind_group_list([BindGroupId::from_parts(1, 1)]),
+            vertex_count: 3, first_vertex: 0, instance_count: 1, first_instance: 0,
+            scissor: None,
+        })]))) };
+        let a = cache.get_or_build(first, build).unwrap();
+        let b = cache.get_or_build(first, || panic!("stable topology must reuse both command Arcs")).unwrap();
+        assert!(Arc::ptr_eq(&a[0], &b[0]) && Arc::ptr_eq(&a[1], &b[1]));
+        let changed = CaptureCommandKey { pipelines: [4, 3], ..first };
+        assert!(cache.get_or_build(changed, || Err(anyhow::anyhow!("failed build"))).is_err());
+        let old = cache.get_or_build(first, || unreachable!()).unwrap();
+        assert!(Arc::ptr_eq(&old[0], &a[0]));
+        let c = cache.get_or_build(changed, build).unwrap();
+        assert!(!Arc::ptr_eq(&c[0], &a[0]));
+        let d = cache.get_or_build(CaptureCommandKey { scene: 2, ..changed }, build).unwrap();
+        assert!(!Arc::ptr_eq(&d[0], &c[0]));
+    }
+}

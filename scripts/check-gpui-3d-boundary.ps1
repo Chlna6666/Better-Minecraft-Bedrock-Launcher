@@ -2,7 +2,7 @@
 # Run from repository root: pwsh -File scripts/check-gpui-3d-boundary.ps1
 $ErrorActionPreference = "Stop"
 $failures = [System.Collections.Generic.List[string]]::new()
-$crateRoot = Join-Path $PSScriptRoot "..\crates\gpui-3d"
+$crateRoot = Join-Path $PSScriptRoot "..\crates\gpui\gpui_3d"
 $sourceRoot = Join-Path $crateRoot "src"
 
 # Pure engine-owned modules. Adding a GPUI/egpui/application import to any
@@ -40,16 +40,16 @@ foreach ($relative in $pureEngineFiles) {
 $manifest = Get-Content -LiteralPath (Join-Path $crateRoot "Cargo.toml") -Raw
 $librarySource = Get-Content -LiteralPath (Join-Path $sourceRoot "lib.rs") -Raw
 if ($manifest -notmatch '(?m)^gpui-sidecar\s*=\s*\["dep:gpui"\]') {
-    $failures.Add("gpui-3d must define the optional gpui-sidecar dependency feature")
+    $failures.Add("gpui_3d must define the optional gpui-sidecar dependency feature")
 }
 if ($manifest -notmatch '(?m)^gpui\s*=\s*\{[^\r\n]*optional\s*=\s*true') {
-    $failures.Add("gpui-3d must mark the gpui dependency optional")
+    $failures.Add("gpui_3d must mark the gpui dependency optional")
 }
 if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*(?:pub\s+)?mod scene_view;') {
-    $failures.Add("gpui-3d must gate the scene_view adapter behind gpui-sidecar")
+    $failures.Add("gpui_3d must gate the scene_view adapter behind gpui-sidecar")
 }
 if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*pub use scene_view::') {
-    $failures.Add("gpui-3d must gate the public SceneView symbols behind gpui-sidecar")
+    $failures.Add("gpui_3d must gate the public SceneView symbols behind gpui-sidecar")
 }
 
 # A native 3D producer must be supplied from the public engine module, not
@@ -57,7 +57,7 @@ if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*pub
 $library = Join-Path $sourceRoot "lib.rs"
 $sidecar = Join-Path $sourceRoot "scene_view\sidecar_surface.rs"
 if (-not (Select-String -LiteralPath $library -SimpleMatch -Pattern 'pub use native_offscreen::' -Quiet)) {
-    $failures.Add("gpui-3d must export its framework-independent native offscreen API")
+    $failures.Add("gpui_3d must export its framework-independent native offscreen API")
 }
 if (Select-String -LiteralPath $sidecar -SimpleMatch -Pattern 'struct NativeOffscreenPass {' -Quiet) {
     $failures.Add("GPUI sidecar must not re-own the native 3D graphics pass type")
@@ -66,8 +66,8 @@ if (Select-String -LiteralPath $sidecar -SimpleMatch -Pattern 'struct NativeOffs
 # The boundary guard already in this repo checks that nova-gfx never imports
 # GPUI. Keep both checks in CI; neither depends on a GPU or a display server.
 if ($failures.Count -gt 0) {
-    Write-Host "gpui-3d engine/sidecar boundary violations:" -ForegroundColor Red
+    Write-Host "gpui_3d engine/sidecar boundary violations:" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
-Write-Host "gpui-3d engine/sidecar boundary check passed." -ForegroundColor Green
+Write-Host "gpui_3d engine/sidecar boundary check passed." -ForegroundColor Green

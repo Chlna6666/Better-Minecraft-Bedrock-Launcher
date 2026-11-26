@@ -1,0 +1,2243 @@
+use super::{
+    SceneView, SceneViewId, gpu::MeshArena, projection::FrameProjection,
+    queue_feedback::QueueFeedback, resources::RendererResources, scene::SceneResources,
+    sidecar_surface::SidecarSurface,
+};
+use crate::prepare::StructuralDrawDelta;
+use crate::NativeOffscreenPass;
+use crate::native_offscreen::{submit_owned_native_offscreen_passes, submit_planned_native_offscreen_passes};
+use anyhow::{anyhow, bail};
+use gfx_core::{BackendKind, BindGroupId, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
+use gpui::ExtensionDevice;
+use gpui::diagnostics::gpu_owner;
+use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
+const SCENE_MEMORY_TRIM_IDLE: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy)]
+enum OffscreenFrameKind {
+    Captured,
+    Reused,
+    RetainedWhilePreparing,
+}
+
+#[derive(Default)]
+struct OffscreenTrace {
+    window_start: Option<Instant>,
+    captured: u64,
+    reused: u64,
+    retained: u64,
+}
+
+impl OffscreenTrace {
+    fn record(&mut self, kind: OffscreenFrameKind) {
+        if !trace_timings() {
+            return;
+        }
+        match kind {
+            OffscreenFrameKind::Captured => self.captured += 1,
+            OffscreenFrameKind::Reused => self.reused += 1,
+            OffscreenFrameKind::RetainedWhilePreparing => self.retained += 1,
+        }
+        let now = Instant::now();
+        let start = self.window_start.get_or_insert(now);
+        if now.saturating_duration_since(*start) < Duration::from_secs(1) {
+            return;
+        }
+        let total = self.captured + self.reused + self.retained;
+        log::info!(
+            "gpui3d offscreen_sidecar frames={} capture={} reuse={} pending_hold={} capture_ratio={:.3}",
+            total,
+            self.captured,
+            self.reused,
+            self.retained,
+            self.captured as f64 / total.max(1) as f64,
+        );
+        *self = Self {
+            window_start: Some(now),
+            ..Self::default()
+        };
+    }
+}
+
+#[derive(Default)]
+struct RendererTimingTrace {
+    last_report: Option<Instant>,
+    samples: u64,
+    prepare_total_us: u128,
+    prepare_max_us: u128,
+    commands_total_us: u128,
+    commands_max_us: u128,
+    draw_calls_max: usize,
+    gpu_cull_batches_max: usize,
+    gpu_resident_draws_max: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OffscreenCommandTraits {
+    authored_scissors: bool,
+    indirect_only: bool,
+}
+
+#[derive(Default)]
+struct CachedCommands {
+    revision: Option<u64>,
+    sampled_snapshot: Option<BindGroupId>,
+    pass_sampled: Option<bool>,
+    commands: Vec<RenderCommand>,
+    generated_runs: super::command_runs::GeneratedRunCache,
+    /// Only this canonical layout may be remapped through logical Section deltas.
+    generated_draw_count: Option<usize>,
+    blended_batch_start: Option<usize>,
+    /// The same draws regrouped so consecutive commands share pipeline and
+    /// bind groups. Backends coalesce each identical-state run into one
+    /// native indirect call, so a 100K-command scene records as a handful of
+    /// native draws. Rebuilt only when the logical list changes.
+    grouped: Option<Arc<[RenderCommand]>>,
+    /// Immutable producer snapshot. Reuse this allocation while camera,
+    /// frame uniforms or GPU culling change without changing Draw commands.
+    shared_offscreen: Option<(u64, Arc<[RenderCommand]>, OffscreenCommandTraits)>,
+    visible_offscreen: Option<((u64, u64), Arc<[RenderCommand]>)>,
+}
+
+/// Replace the immutable sampled table, never the geometry binding, PSO,
+/// index buffer, indirect address, scissor or draw order.
+pub(super) fn rebind_sampled_commands(commands: &mut [RenderCommand], old: BindGroupId, new: BindGroupId) {
+    for command in commands {
+        let groups = match command {
+            RenderCommand::Draw(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndexed(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndirect(draw) => &mut draw.bind_groups,
+            RenderCommand::DrawIndexedIndirect(draw) => &mut draw.bind_groups,
+        };
+        debug_assert_eq!(groups.as_slice().get(1), Some(&old));
+        if groups.as_slice().get(1) == Some(&old) {
+            groups[1] = new;
+        }
+    }
+}
+
+impl CachedCommands {
+    /// Descriptor publication alone does not invalidate the native command
+    /// topology. Rebind the cached canonical/grouped/filtered streams once;
+    /// Arc copy-on-write keeps older submitted command snapshots immutable.
+    /// Mode transitions instead force a full structural revision in SceneResources.
+    fn refresh_sampled_snapshot(&mut self, next: Option<BindGroupId>) {
+        if self.sampled_snapshot == next { return; }
+        if self.revision.is_some() && let (Some(old), Some(new)) = (self.sampled_snapshot, next) {
+            rebind_sampled_commands(&mut self.commands, old, new);
+            // Take the secondary aliases first so an unshared grouped
+            // allocation can be edited without cloning it twice.
+            let shared = self.shared_offscreen.take();
+            let visible = self.visible_offscreen.take();
+            let shared_is_grouped = shared.as_ref().zip(self.grouped.as_ref())
+                .is_some_and(|((_, commands, _), grouped)| Arc::ptr_eq(commands, grouped));
+            let visible_is_shared = visible.as_ref().zip(shared.as_ref())
+                .is_some_and(|((_, filtered), (_, commands, _))| Arc::ptr_eq(filtered, commands));
+            let shared = shared.map(|(revision, commands, traits)| {
+                let commands = (!shared_is_grouped).then_some(commands);
+                (revision, commands, traits)
+            });
+            let visible = visible.map(|(key, commands)| {
+                let commands = (!visible_is_shared).then_some(commands);
+                (key, commands)
+            });
+            if let Some(grouped) = self.grouped.as_mut() {
+                rebind_sampled_commands(Arc::make_mut(grouped), old, new);
+            }
+            self.shared_offscreen = shared.map(|(revision, commands, traits)| {
+                let commands = if let Some(mut commands) = commands {
+                    rebind_sampled_commands(Arc::make_mut(&mut commands), old, new);
+                    commands
+                } else {
+                    Arc::clone(self.grouped.as_ref().expect("grouped alias"))
+                };
+                (revision, commands, traits)
+            });
+            self.visible_offscreen = visible.map(|(key, commands)| {
+                let commands = if let Some(mut commands) = commands {
+                    rebind_sampled_commands(Arc::make_mut(&mut commands), old, new);
+                    commands
+                } else {
+                    Arc::clone(&self.shared_offscreen.as_ref().expect("visible alias").1)
+                };
+                (key, commands)
+            });
+        } else {
+            // A different pipeline layout cannot use the previous commands.
+            // Preserve the last committed topology for diagnostics only;
+            // invalidating the revision prohibits structural splice reuse.
+            self.revision = None;
+            self.shared_offscreen = None;
+            self.visible_offscreen = None;
+        }
+        self.sampled_snapshot = next;
+    }
+
+    fn shared_offscreen(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<(Arc<[RenderCommand]>, OffscreenCommandTraits)> {
+        if let Some((previous, shared, traits)) = self.shared_offscreen.as_ref()
+            && *previous == revision
+        {
+            return Ok((Arc::clone(shared), *traits));
+        }
+        // Refresh the canonical Section/Draw cache *without* publishing it
+        // to an intermediate Vec. The old path cloned O(draws) descriptors
+        // into scratch even though the offscreen submission borrows an Arc.
+        self.refresh_spliced(
+            revision,
+            draw_count,
+            blended_batch_start,
+            delta,
+            build,
+            build_range,
+        )?;
+        let commands: &[RenderCommand] =
+            self.grouped.as_deref().unwrap_or(self.commands.as_slice());
+        let traits = OffscreenCommandTraits {
+            authored_scissors: commands.iter().any(|command| command.scissor().is_some()),
+            indirect_only: !commands.is_empty()
+                && commands.iter().all(|command| {
+                    matches!(
+                        command,
+                        RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)
+                    )
+                }),
+        };
+        // The grouped native list is already retained in an Arc. Only the
+        // canonical ungrouped variant needs one immutable snapshot.
+        let shared = self
+            .grouped
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| Arc::from(self.commands.as_slice()));
+        self.shared_offscreen = Some((revision, Arc::clone(&shared), traits));
+        Ok((shared, traits))
+    }
+
+    fn publish(&self, steps: &mut Vec<RenderCommand>) {
+        match &self.grouped {
+            Some(grouped) => steps.extend_from_slice(grouped),
+            None => steps.extend_from_slice(&self.commands),
+        }
+    }
+
+    /// Camera motion may only permute the blended entries. A complete
+    /// generated table has one command per Batch, so its existing opaque
+    /// prefix and grouped order can survive that revision.
+    fn refresh_blended_suffix(
+        &mut self,
+        revision: u64,
+        count: usize,
+        first_blended: usize,
+        build_range: impl FnOnce(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision != Some(revision.wrapping_sub(1))
+            || self.generated_draw_count != Some(count)
+            || self.blended_batch_start != Some(first_blended)
+            || self.commands.len() != count
+            || first_blended >= count
+        {
+            return Ok(());
+        }
+        let mut suffix = Vec::with_capacity(count - first_blended);
+        build_range(first_blended..count, &mut suffix)?;
+        if suffix.len() != count - first_blended {
+            return Ok(());
+        }
+        self.grouped = self.grouped.as_ref().map(|previous| {
+            previous[..first_blended]
+                .iter()
+                .chain(suffix.iter())
+                .cloned()
+                .collect()
+        });
+        self.commands.truncate(first_blended);
+        self.commands.extend(suffix);
+        self.revision = Some(revision);
+        Ok(())
+    }
+
+    fn filter_offscreen(
+        &mut self,
+        revision: u64,
+        (commands, mut traits): (Arc<[RenderCommand]>, OffscreenCommandTraits),
+        visibility: Option<(u64, &[bool])>,
+    ) -> (Arc<[RenderCommand]>, OffscreenCommandTraits) {
+        let Some((visibility_revision, mask)) = visibility else {
+            self.visible_offscreen = None;
+            return (commands, traits);
+        };
+        let key = (revision, visibility_revision);
+        if let Some((previous, filtered)) = &self.visible_offscreen
+            && *previous == key
+        {
+            traits.indirect_only &= !filtered.is_empty();
+            return (Arc::clone(filtered), traits);
+        }
+        if mask.iter().all(|&visible| visible) {
+            self.visible_offscreen = Some((key, Arc::clone(&commands)));
+            return (commands, traits);
+        }
+        // Filter the already grouped snapshot. Its surviving commands keep
+        // their exact bind order, blended order and GPU argument addresses.
+        let filtered: Arc<[RenderCommand]> = commands
+            .iter()
+            .filter(|command| match command {
+                RenderCommand::DrawIndirect(draw) => {
+                    let logical = draw.offset / super::culling::ARGUMENT_STRIDE;
+                    mask.get(logical as usize).copied().unwrap_or(true)
+                }
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        if trace_timings() && self.visible_offscreen.is_none() {
+            eprintln!(
+                "gpui3d native_command_visibility candidates={} recorded={}",
+                commands.len(),
+                filtered.len(),
+            );
+        }
+        traits.indirect_only &= !filtered.is_empty();
+        self.visible_offscreen = Some((key, Arc::clone(&filtered)));
+        (filtered, traits)
+    }
+
+    /// Build the canonical command plan once. Publication into a GUI command
+    /// list is intentionally a separate operation; native offscreen passes
+    /// consume shared immutable snapshots instead.
+    fn rebuild(
+        &mut self,
+        revision: u64,
+        blended_batch_start: Option<usize>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision == Some(revision) {
+            return Ok(());
+        }
+        // Stage a complete replacement before altering the old revision.
+        // Failed pipeline resolution must leave the prior cache intact.
+        let mut next = Vec::new();
+        build(&mut next)?;
+        let grouped = group_indirect_commands(&next, blended_batch_start).map(Arc::from);
+        self.commands = next;
+        self.grouped = grouped;
+        self.generated_draw_count = None;
+        self.blended_batch_start = blended_batch_start;
+        self.revision = Some(revision);
+        Ok(())
+    }
+
+    /// Update the stable canonical Section layout without creating or
+    /// copying a second render-command Vec for the offscreen producer.
+    fn refresh_spliced(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        mut build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision == Some(revision) {
+            return Ok(());
+        }
+        if let (Some(count), Some(delta), Some(previous)) = (draw_count, delta, self.revision)
+            && previous.wrapping_add(1) == revision
+            && self.generated_draw_count == Some(delta.previous_count)
+            && let Some(next) =
+                self.splice_generated(delta, count, blended_batch_start, &mut build_range)?
+        {
+            if trace_timings() {
+                log::info!(
+                    "gpui3d native_command_delta previous={} current={} edits={} commands={}",
+                    delta.previous_count,
+                    count,
+                    delta.edits.len(),
+                    next.len(),
+                );
+            }
+            let grouped = group_indirect_commands(&next, blended_batch_start).map(Arc::from);
+            self.commands = next;
+            self.grouped = grouped;
+            self.revision = Some(revision);
+            self.generated_draw_count = Some(count);
+            self.blended_batch_start = blended_batch_start;
+            return Ok(());
+        }
+        self.rebuild(revision, blended_batch_start, build)?;
+        self.generated_draw_count = draw_count;
+        Ok(())
+    }
+
+    fn append_spliced(
+        &mut self,
+        revision: u64,
+        draw_count: Option<usize>,
+        blended_batch_start: Option<usize>,
+        delta: Option<&StructuralDrawDelta>,
+        steps: &mut Vec<RenderCommand>,
+        build: impl FnOnce(&mut Vec<RenderCommand>) -> gpui::Result<()>,
+        build_range: impl FnMut(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        self.refresh_spliced(
+            revision,
+            draw_count,
+            blended_batch_start,
+            delta,
+            build,
+            build_range,
+        )?;
+        self.publish(steps);
+        Ok(())
+    }
+
+    /// Transactional sparse rebuild: validate all previous command indices and
+    /// edit intervals before touching the published command cache.
+    fn splice_generated(
+        &self,
+        delta: &StructuralDrawDelta,
+        new_count: usize,
+        blended_batch_start: Option<usize>,
+        build_range: &mut impl FnMut(
+            std::ops::Range<usize>,
+            &mut Vec<RenderCommand>,
+        ) -> gpui::Result<()>,
+    ) -> gpui::Result<Option<Vec<RenderCommand>>> {
+        let old_opaque = self.blended_batch_start.unwrap_or(delta.previous_count);
+        let new_opaque = blended_batch_start.unwrap_or(new_count);
+        if old_opaque > delta.previous_count || new_opaque > new_count {
+            return Ok(None);
+        }
+        let mut previous_command = None;
+        let mut opaque_commands = 0;
+        let mut blended = false;
+        for command in &self.commands {
+            let RenderCommand::DrawIndirect(draw) = command else {
+                return Ok(None);
+            };
+            if draw.offset % 16 != 0 || draw.offset / 16 >= delta.previous_count as u64 {
+                return Ok(None);
+            }
+            if draw.offset / 16 >= old_opaque as u64 {
+                blended = true;
+                continue;
+            }
+            if blended || previous_command.is_some_and(|old| old >= draw.offset) {
+                return Ok(None);
+            }
+            opaque_commands += 1;
+            previous_command = Some(draw.offset);
+        }
+        let opaque = &self.commands[..opaque_commands];
+        let mut old = 0;
+        let mut new = 0;
+        let mut opaque_edits = 0;
+        let mut old_opaque_end = 0;
+        let mut new_opaque_end = 0;
+        for edit in &delta.edits {
+            if edit.old.start < old
+                || edit.new.start < new
+                || edit.old.end > delta.previous_count
+                || edit.new.end > new_count
+                || edit.old.start > edit.old.end
+                || edit.new.start > edit.new.end
+                || edit.old.start - old != edit.new.start - new
+            {
+                return Ok(None);
+            }
+            if edit.old.end <= old_opaque && edit.new.end <= new_opaque {
+                opaque_edits += 1;
+                old_opaque_end = edit.old.end;
+                new_opaque_end = edit.new.end;
+            } else if edit.old.start < old_opaque || edit.new.start < new_opaque {
+                return Ok(None);
+            }
+            old = edit.old.end;
+            new = edit.new.end;
+        }
+        if delta.previous_count - old != new_count - new
+            || old_opaque - old_opaque_end != new_opaque - new_opaque_end
+        {
+            return Ok(None);
+        }
+        let mut next = Vec::with_capacity(
+            self.commands
+                .len()
+                .saturating_add(new_count.saturating_sub(delta.previous_count)),
+        );
+        let mut position = 0usize;
+        let mut old_cursor = 0usize;
+        let mut new_cursor = 0usize;
+        for edit in &delta.edits[..opaque_edits] {
+            if !copy_native_survivors(
+                opaque,
+                &mut position,
+                old_cursor..edit.old.start,
+                new_cursor,
+                &mut next,
+            ) {
+                return Ok(None);
+            }
+            while let Some(RenderCommand::DrawIndirect(draw)) = opaque.get(position) {
+                if draw.offset / 16 >= edit.old.end as u64 {
+                    break;
+                }
+                position += 1;
+            }
+            let from = next.len();
+            build_range(edit.new.clone(), &mut next)?;
+            if !generated_range_matches(&next[from..], edit.new.clone()) {
+                return Ok(None);
+            }
+            old_cursor = edit.old.end;
+            new_cursor = edit.new.end;
+        }
+        if !copy_native_survivors(
+            opaque,
+            &mut position,
+            old_cursor..old_opaque,
+            new_cursor,
+            &mut next,
+        ) || position != opaque.len()
+        {
+            return Ok(None);
+        }
+        // A camera movement can permute all transparent commands. Their
+        // resident rows are independent of that order, so rebuild only the
+        // command suffix even when its GPU rows reuse the sparse edit.
+        if new_opaque < new_count {
+            build_range(new_opaque..new_count, &mut next)?;
+        }
+        Ok(Some(next))
+    }
+}
+
+fn generated_range_matches(commands: &[RenderCommand], range: std::ops::Range<usize>) -> bool {
+    let mut last = None;
+    commands.iter().all(|command| {
+        let RenderCommand::DrawIndirect(draw) = command else {
+            return false;
+        };
+        let index = draw.offset / 16;
+        if draw.offset % 16 != 0
+            || index < range.start as u64
+            || index >= range.end as u64
+            || last.is_some_and(|old| old >= index)
+        {
+            return false;
+        }
+        last = Some(index);
+        true
+    })
+}
+
+/// Regroups a canonical all-indirect command list so consecutive commands
+/// share pipeline, bind groups and scissor. Backends record each
+/// identical-state run as one native indirect call, so thousands of Section
+/// draws collapse into one native call per distinct binding state.
+///
+/// Opaque draws are bucketed by pipeline and bind group only before the
+/// first blended batch. Every subsequent command keeps its original order.
+/// Non-indirect lists return `None` and are published unchanged.
+pub(super) fn group_indirect_commands(
+    commands: &[RenderCommand],
+    blended_batch_start: Option<usize>,
+) -> Option<Vec<RenderCommand>> {
+    #[cfg(debug_assertions)]
+    {
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var_os("GPUI_3D_NO_GROUP").is_some()) {
+            return None;
+        }
+    }
+    if commands.is_empty()
+        || !commands
+            .iter()
+            .all(|command| matches!(command, RenderCommand::DrawIndirect(_)))
+    {
+        return None;
+    }
+    // Only opaque commands can be globally reordered. Transparent draws
+    // must keep their exact camera-sorted order even when Pipeline/BindGroup
+    // differs: collecting them by state would change alpha composition and
+    // could produce camera-dependent water/transparent flicker.
+    let opaque_len = blended_batch_start.map_or(commands.len(), |first_blend| {
+        commands
+            .iter()
+            .position(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset / 16 >= first_blend as u64,
+                _ => false,
+            })
+            .unwrap_or(commands.len())
+    });
+    if opaque_len <= 1 {
+        return None;
+    }
+    // Stable O(n) grouping by first-seen pipeline, then first-seen binding
+    // state. Record indices first: the earlier implementation cloned every
+    // opaque RenderCommand (including BindGroupList) while merely probing
+    // whether grouping would save any native calls, then discarded all
+    // clones if every command used a distinct binding.
+    let opaque_commands = &commands[..opaque_len];
+    let mut pipeline_slots = HashMap::<gfx_core::RenderPipelineId, usize>::new();
+    let mut pipeline_groups = Vec::<Vec<usize>>::new();
+    let mut group_slots = HashMap::<(gfx_core::RenderPipelineId, &BindGroupList), usize>::new();
+    // One contiguous link table, not one heap allocation per unique
+    // BindGroup. This matters when a scene has mostly non-coalescible
+    // commands and the grouping probe ultimately returns None.
+    let mut links = vec![usize::MAX; opaque_len];
+    let mut groups = Vec::<(usize, usize)>::new(); // (first, last)
+    for (index, command) in opaque_commands.iter().enumerate() {
+        let RenderCommand::DrawIndirect(draw) = command else {
+            continue;
+        };
+        let pipeline = command.pipeline();
+        let pipeline_index = match pipeline_slots.entry(pipeline) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let index = pipeline_groups.len();
+                pipeline_groups.push(Vec::new());
+                entry.insert(index);
+                index
+            }
+        };
+        match group_slots.entry((pipeline, &draw.bind_groups)) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let (_, last) = &mut groups[*entry.get()];
+                links[*last] = index;
+                *last = index;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let group = groups.len();
+                groups.push((index, index));
+                pipeline_groups[pipeline_index].push(group);
+                entry.insert(group);
+            }
+        }
+    }
+    if groups.len() >= opaque_commands.len() {
+        // No coalescing possible. Do not allocate or clone a second Draw
+        // table solely to rediscover the original order.
+        return None;
+    }
+    let mut grouped = Vec::with_capacity(commands.len());
+    for pipeline in &pipeline_groups {
+        for &group in pipeline {
+            let (mut index, last) = groups[group];
+            loop {
+                grouped.push(commands[index].clone());
+                if index == last {
+                    break;
+                }
+                // Every link points to a strictly later original command,
+                // preventing cycles while preserving the group's draw order.
+                index = links[index];
+                debug_assert!(index != usize::MAX);
+            }
+        }
+    }
+    // The transparent suffix MUST remain exactly camera-sorted.
+    grouped.extend_from_slice(&commands[opaque_len..]);
+    debug_assert_eq!(grouped.len(), commands.len());
+    // Regrouping must be a permutation of the original draws: every GPU
+    // indirect argument record is still executed exactly once. Pipeline and
+    // bind-group identity are preserved by construction; offsets are the
+    // stable per-draw address into the shared argument buffer.
+    debug_assert!(
+        {
+            let mut before = commands
+                .iter()
+                .map(|command| match command {
+                    RenderCommand::DrawIndirect(draw) => draw.offset,
+                    _ => u64::MAX,
+                })
+                .collect::<Vec<_>>();
+            let mut after = grouped
+                .iter()
+                .map(|command| match command {
+                    RenderCommand::DrawIndirect(draw) => draw.offset,
+                    _ => u64::MAX,
+                })
+                .collect::<Vec<_>>();
+            before.sort_unstable();
+            after.sort_unstable();
+            before == after
+        },
+        "regrouped indirect commands must be a permutation of the input"
+    );
+    Some(grouped)
+}
+
+fn copy_native_survivors(
+    old: &[RenderCommand],
+    position: &mut usize,
+    old_range: std::ops::Range<usize>,
+    new_start: usize,
+    next: &mut Vec<RenderCommand>,
+) -> bool {
+    while let Some(command) = old.get(*position) {
+        let RenderCommand::DrawIndirect(draw) = command else {
+            return false;
+        };
+        let logical = (draw.offset / 16) as usize;
+        if logical >= old_range.end {
+            break;
+        }
+        if logical < old_range.start {
+            return false;
+        }
+        let Some(next_logical) = new_start
+            .checked_add(logical - old_range.start)
+            .and_then(|value| u64::try_from(value).ok())
+            .and_then(|value| value.checked_mul(16))
+        else {
+            return false;
+        };
+        let mut copy = draw.clone();
+        copy.offset = next_logical;
+        next.push(RenderCommand::DrawIndirect(copy));
+        *position += 1;
+    }
+    true
+}
+
+impl RendererTimingTrace {
+    fn record(
+        &mut self,
+        prepare: Duration,
+        commands: Duration,
+        draw_calls: usize,
+        gpu_culling: (usize, usize),
+        backend: BackendKind,
+    ) {
+        let now = Instant::now();
+        self.samples += 1;
+        self.prepare_total_us += prepare.as_micros();
+        self.prepare_max_us = self.prepare_max_us.max(prepare.as_micros());
+        self.commands_total_us += commands.as_micros();
+        self.commands_max_us = self.commands_max_us.max(commands.as_micros());
+        self.draw_calls_max = self.draw_calls_max.max(draw_calls);
+        self.gpu_cull_batches_max = self.gpu_cull_batches_max.max(gpu_culling.0);
+        self.gpu_resident_draws_max = self.gpu_resident_draws_max.max(gpu_culling.1);
+        if self
+            .last_report
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+        {
+            return;
+        }
+        log::info!(
+            "gpui3d render samples={} prepare_avg_ms={:.2} prepare_max_ms={:.2} commands_avg_ms={:.2} commands_max_ms={:.2} draw_calls_max={} gpu_cull_batches_max={} gpu_resident_draws_max={}",
+            self.samples,
+            self.prepare_total_us as f64 / self.samples as f64 / 1000.0,
+            self.prepare_max_us as f64 / 1000.0,
+            self.commands_total_us as f64 / self.samples as f64 / 1000.0,
+            self.commands_max_us as f64 / 1000.0,
+            self.draw_calls_max,
+            self.gpu_cull_batches_max,
+            self.gpu_resident_draws_max,
+        );
+        crate::gpu_submission_trace::report(backend);
+        *self = Self {
+            last_report: Some(now),
+            ..Self::default()
+        };
+    }
+}
+
+pub(super) fn trace_timings() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+fn should_trim_scene(level: MemoryTrimLevel, last_used_at: Instant, now: Instant) -> bool {
+    match level {
+        MemoryTrimLevel::Light => false,
+        MemoryTrimLevel::Moderate => {
+            now.saturating_duration_since(last_used_at) >= SCENE_MEMORY_TRIM_IDLE
+        }
+        MemoryTrimLevel::Aggressive => true,
+    }
+}
+/// The GPUI-facing renderer is only a bridge for viewport context and
+/// offscreen compositor attachment. All 3D GPU resources, frame cache and
+/// submission planning belong to the sidecar backend below.
+pub(super) struct Renderer {
+    backend: SidecarGpuBackend,
+}
+
+/// 3D-owned GPU backend. Its native resources remain thread-affine, while
+/// CPU Scene preparation is performed by the independent sidecar scheduler.
+/// Keeping this boundary explicit lets the host's extension pass supply the
+/// final attachment without owning MeshArena or Draw Slot lifetime.
+/// Qt3D RenderJob handoff policy. The GPU owner never traverses a newly
+/// replaced large Scene solely to fill a missing worker result. Previously
+/// committed matching/compatible geometry may still be presented.
+fn defer_unprepared_scene(
+    worker_pending: bool,
+    committed_matches: bool,
+    retained_compatible: bool,
+) -> bool {
+    worker_pending && !committed_matches && !retained_compatible
+}
+
+// A sampler can capture a coordinate origin. A different sampler is not
+// proof that the incoming camera can safely render the old Scene geometry.
+fn same_camera_sampler(previous: &SceneView, current: &SceneView) -> bool {
+    match (&previous.camera_sampler, &current.camera_sampler) {
+        (Some(previous), Some(current)) => Arc::ptr_eq(&previous.0, &current.0),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Input that produced a successfully enqueued offscreen capture.
+/// Retain only cheap Arc-backed view fields; never clone mesh data.
+struct CapturedInput {
+    view: SceneView,
+    projection: FrameProjection,
+    revision: u64,
+}
+
+/// Only bypass scene.prepare when every input it could observe is unchanged.
+/// Animated/time-dependent views stay on the original update path.
+fn same_static_capture_input(previous: &SceneView, current: &SceneView) -> bool {
+    !previous.continuous_presentation
+        && !current.continuous_presentation
+        && previous.animation.is_empty()
+        && current.animation.is_empty()
+        && previous.screen_effects.is_none()
+        && current.screen_effects.is_none()
+        && Arc::ptr_eq(&previous.scene, &current.scene)
+        && Arc::ptr_eq(&previous.textures, &current.textures)
+        && previous.scene_transform == current.scene_transform
+        && previous.camera == current.camera
+        && previous.projection_region == current.projection_region
+        && previous.inset_max_pixels == current.inset_max_pixels
+        && previous.inset_fraction == current.inset_fraction
+        && previous.blend_edge_feather == current.blend_edge_feather
+        && previous.anisotropy_enabled == current.anisotropy_enabled
+        && previous.sampling == current.sampling
+        && previous.voxel_shader == current.voxel_shader
+        && previous.culling_disabled == current.culling_disabled
+        && previous.fog == current.fog
+        && previous.voxel_shading == current.voxel_shading
+        && previous.culling_bounds == current.culling_bounds
+        // The early GUI path must remain O(1). Different Arc identities
+        // take the normal prepare path, which already compares mask contents.
+        && Arc::ptr_eq(&previous.hidden_nodes, &current.hidden_nodes)
+}
+
+struct SidecarGpuBackend {
+    backend: BackendKind,
+    render_pass: RenderPassId,
+    color_format: gfx_core::Format,
+    target_extent: gfx_core::Extent2d,
+    resources: RendererResources,
+    sampled_tiers: super::resources::SampledTierCache,
+    /// Resident writable face pages live on the renderer's GPU owner and are
+    /// reused by all SceneViews that share this device.
+    generated_arena: Rc<RefCell<MeshArena>>,
+    template_arena: Rc<RefCell<MeshArena>>,
+    argument_arena: Rc<RefCell<MeshArena>>,
+    /// Native Compute/Transfer fences created while preparing any SceneView.
+    /// GPUI's owner drains these even when a later prepare step fails.
+    accepted_native_submissions: Rc<RefCell<Vec<gfx_core::SubmissionId>>>,
+    /// Device-local queue cost model; multiple 3D views share one GPU Owner.
+    queue_feedback: Rc<RefCell<QueueFeedback>>,
+    /// Reused hardware probe output avoids per-frame Vec allocation.
+    gpu_timestamp_scratch: Vec<gfx_core::GpuTimestampSample>,
+    scenes: HashMap<SceneViewId, SceneResources>,
+    command_cache: HashMap<SceneViewId, CachedCommands>,
+    /// Exact last successful producer input per view. A GUI-only redraw can
+    /// reuse the confirmed texture without even calling SceneResources::prepare.
+    captured_inputs: HashMap<SceneViewId, CapturedInput>,
+    /// True 3D offscreen producer path. Each capture becomes a separate
+    /// native submission ordered before GPUI samples its completed texture.
+    /// Device calls remain on this native owner for DX11/GL correctness.
+    offscreen: Option<SidecarSurface>,
+    pending_passes: Vec<NativeOffscreenPass>,
+    draw_compaction: Option<super::draw_compaction::Compactor>,
+    /// Capture epochs enter this list when their producer passes are encoded;
+    /// they are moved to submitted candidates only when GPUI drains those
+    /// passes, and published only after the host accepts the GPU submission.
+    pending_capture_epochs: Vec<(SceneViewId, u64)>,
+    submitted_capture_epochs: Vec<(SceneViewId, u64)>,
+    offscreen_trace: OffscreenTrace,
+    frame_time: Option<Instant>,
+    frame_index: u64,
+    /// Once per host frame, not once per SceneView. Multiple 3D widgets share
+    /// this renderer, so repeating an O(scene_count) eviction scan for every
+    /// widget would make GUI painting quadratic in the number of views.
+    last_idle_retire_frame: Option<u64>,
+    timing_trace: RendererTimingTrace,
+}
+
+/// A reused view is still live. Keep its scene resident across arbitrary
+/// GUI-only redraws without taking the costly SceneResources::prepare path.
+fn scene_last_used(id: SceneViewId, scenes: &mut HashMap<SceneViewId, SceneResources>, frame: u64) {
+    if let Some(scene) = scenes.get_mut(&id) {
+        scene.last_used_frame = frame;
+        scene.last_used_at = Instant::now();
+    }
+}
+
+/// A frame is shared by all GPUI extension draws, regardless of SceneView
+/// count. Scan the idle cache at most once per frame while still retrying
+/// any failed retirement on the next render call.
+fn should_scan_idle_scenes(frame_index: u64, last_scan: Option<u64>) -> bool {
+    last_scan != Some(frame_index)
+}
+
+impl SidecarGpuBackend {
+    fn new(
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+    ) -> gpui::Result<Self> {
+        if trace_timings() {
+            // One-time GPU capability report; no driver queries per frame.
+            // Distinguish physical array capacity from actually available
+            // backend texture-array creation/upload/shader sampling.
+            let arrays = device.texture_array_capabilities();
+            let buffers = device.buffer_binding_limits();
+            let compute = device.compute_capabilities();
+            log::info!(
+                "gpui3d backend_caps backend={:?} array_max_dimension={} array_max_layers={} array_resources={} layer_uploads={} indexed_sampling={} storage_alignment={} storage_max_binding_bytes={} compute_max_group_invocations={} indirect_draw={}",
+                context.backend_kind(),
+                arrays.max_dimension_2d,
+                arrays.max_array_layers,
+                arrays.array_resources,
+                arrays.layer_uploads,
+                arrays.indexed_sampling,
+                buffers.storage_offset_alignment,
+                buffers.max_storage_binding_bytes,
+                compute.max_invocations_per_workgroup,
+                compute.indirect_draw,
+            );
+        }
+        // Sidecar is the default development rendering path. A backend
+        // without the required render-to-texture support falls back to the
+        // existing direct draw path automatically; no environment toggle
+        // or user-facing configuration is required.
+        let mut offscreen = match SidecarSurface::new(device, &context) {
+            Ok(surface) => Some(surface),
+            Err(error) => {
+                log::warn!(
+                    "gpui3d offscreen_sidecar_unavailable backend={:?} error={error}",
+                    context.backend_kind()
+                );
+                None
+            }
+        };
+        let render_context = offscreen
+            .as_ref()
+            .map(|surface| surface.capture_context(&context))
+            .unwrap_or_else(|| context.clone());
+        let resources = match RendererResources::new(device, &render_context) {
+            Ok(resources) => resources,
+            Err(error) => {
+                if let Some(surface) = offscreen.take() {
+                    let _ = surface.destroy(device);
+                }
+                return Err(error);
+            }
+        };
+        if offscreen.is_some() && trace_timings() {
+            log::info!(
+                "gpui3d offscreen_sidecar_enabled backend={:?}",
+                context.backend_kind()
+            );
+        }
+        Ok(Self {
+            backend: context.backend_kind(),
+            render_pass: render_context.render_pass(),
+            color_format: render_context.color_format(),
+            target_extent: render_context.viewport(),
+            resources,
+            sampled_tiers: super::resources::SampledTierCache::default(),
+            generated_arena: Rc::new(RefCell::new(MeshArena::generated_output(
+                device.buffer_binding_limits(),
+            ))),
+            template_arena: Rc::new(RefCell::new(MeshArena::generated_templates(
+                device.buffer_binding_limits(),
+            ))),
+            argument_arena: Rc::new(RefCell::new(MeshArena::generated_arguments(
+                device.buffer_binding_limits(),
+            ))),
+            accepted_native_submissions: Rc::new(RefCell::new(Vec::new())),
+            queue_feedback: Rc::new(RefCell::new(QueueFeedback::default())),
+            gpu_timestamp_scratch: Vec::new(),
+            scenes: HashMap::new(),
+            command_cache: HashMap::new(),
+            captured_inputs: HashMap::new(),
+            offscreen,
+            pending_passes: Vec::new(),
+            draw_compaction: super::draw_compaction::Compactor::new(device, &render_context),
+            pending_capture_epochs: Vec::new(),
+            submitted_capture_epochs: Vec::new(),
+            offscreen_trace: OffscreenTrace::default(),
+            frame_time: None,
+            frame_index: 0,
+            last_idle_retire_frame: None,
+            timing_trace: RendererTimingTrace::default(),
+        })
+    }
+
+    fn sync_pipeline(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        context: &RendererExtensionContext,
+    ) -> gpui::Result<()> {
+        if self.backend != context.backend_kind() {
+            bail!("GPUI 3D renderer backend changed during a window lifetime")
+        }
+        // Fence-ready old scene PSOs are reclaimed on the same GPU owner,
+        // independent of whether the current view actually needs a new PSO.
+        self.resources.release_completed(device)?;
+        let next_target_extent = context.viewport();
+        // Nova DX11/DX12/Vulkan/OpenGL/Metal pipeline constructors all
+        // accept an extent but use dynamic native viewports and scissors.
+        // Different cropped SceneView sizes therefore never require
+        // rebuilding eighteen mesh/shader variants or invalidating every
+        // other view's GPU Draw command cache.
+        if self.render_pass == context.render_pass() && self.color_format == context.color_format()
+        {
+            self.target_extent = next_target_extent;
+            return Ok(());
+        }
+        self.resources.replace_pipelines(device, context)?;
+        self.command_cache.clear();
+        if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
+        self.render_pass = context.render_pass();
+        self.color_format = context.color_format();
+        self.target_extent = next_target_extent;
+        Ok(())
+    }
+
+    fn sync_sampled_capacity(
+        &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+    ) -> gpui::Result<()> {
+        self.sampled_tiers.release_completed(device, |layout| self.scenes.values()
+            .any(|scene| scene.references_sampled_layout(layout)))?;
+        let Some(current) = self.resources.sampled_table_capacity() else { return Ok(()); };
+        if !self.pending_passes.is_empty() || !self.sampled_tiers.begin_frame(context.frame_time()) { return Ok(()); }
+        let demand = self.scenes.values().map(SceneResources::sampled_capacity_demand).max().unwrap_or(1);
+        if let Some(target) = self.sampled_tiers.suggest(current, demand, context.frame_time())
+            && let Some(target) = super::resources::SampledTierCache::feasible_target(current, target,
+                |tier| self.scenes.values().all(|scene| scene.sampled_can_migrate(tier)))
+            && self.sampled_tiers.switch(device, &mut [&mut self.resources], std::slice::from_ref(context), target)?
+        {
+            self.command_cache.clear();
+            self.captured_inputs.clear();
+            if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
+        }
+        Ok(())
+    }
+
+    fn begin_frame(&mut self, frame_time: Instant) {
+        if self.frame_time != Some(frame_time) {
+            self.frame_time = Some(frame_time);
+            self.frame_index = self.frame_index.wrapping_add(1);
+            // A prior submission may have failed. Never acknowledge its
+            // drained passes during a subsequent, unrelated GUI frame.
+            self.abandon_pending_captures(false);
+            self.submitted_capture_epochs.clear();
+        }
+    }
+
+    fn abandon_pending_captures(&mut self, may_have_submitted: bool) {
+        if !self.pending_passes.is_empty() { self.sampled_tiers.abandon(may_have_submitted); }
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.render_passes_failed(&self.pending_capture_epochs);
+        }
+        for (scene_id, _) in self.pending_capture_epochs.drain(..) {
+            if let Some(scene) = self.scenes.get_mut(&scene_id) {
+                scene.abandon_sampled_capture(may_have_submitted);
+            }
+        }
+        self.pending_passes.clear();
+    }
+
+    fn retire_idle_scenes(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if !should_scan_idle_scenes(self.frame_index, self.last_idle_retire_frame) {
+            return Ok(());
+        }
+        let stale = self
+            .scenes
+            .iter()
+            .filter_map(|(id, scene)| {
+                (self.frame_index.saturating_sub(scene.last_used_frame) > 120).then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        self.destroy_scenes(device, stale)?;
+        // Record completion only after cleanup succeeds; otherwise another
+        // view in this same frame can retry failed retirement.
+        self.last_idle_retire_frame = Some(self.frame_index);
+        Ok(())
+    }
+
+    fn trim_scene_cache(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        level: MemoryTrimLevel,
+    ) -> gpui::Result<()> {
+        match level {
+            MemoryTrimLevel::Light => Ok(()),
+            MemoryTrimLevel::Moderate => {
+                let now = Instant::now();
+                let stale = self
+                    .scenes
+                    .iter()
+                    .filter_map(|(id, scene)| {
+                        should_trim_scene(level, scene.last_used_at, now).then_some(*id)
+                    })
+                    .collect();
+                self.destroy_scenes(device, stale)
+            }
+            MemoryTrimLevel::Aggressive => {
+                let stale = self.scenes.keys().copied().collect();
+                self.destroy_scenes(device, stale)
+            }
+        }
+    }
+
+    fn destroy_scenes(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        ids: Vec<SceneViewId>,
+    ) -> gpui::Result<()> {
+        for id in ids {
+            if let Some(compactor) = self.draw_compaction.as_mut() {
+                compactor.remove(device, id)?;
+            }
+            self.command_cache.remove(&id);
+            self.captured_inputs.remove(&id);
+            if let Some(mut scene) = self.scenes.remove(&id) {
+                scene.destroy(device)?;
+            }
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.retire(device, id)?;
+            }
+            // CPU-sidecar mailboxes are now SceneView-owned Arcs. They
+            // retire independently when the last producer snapshot drops.
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CachedCommands, SCENE_MEMORY_TRIM_IDLE, should_trim_scene};
+    use gfx_core::{
+        DrawCommand, MemoryTrimLevel, RenderCommand, RenderPipelineId, bind_group_list,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn sampled_snapshot_rebind_preserves_grouped_command_topology() {
+        use gfx_core::{BindGroupId, BufferId, DrawIndirectCommand};
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let first = BindGroupId::from_parts(10, 1);
+        let second = BindGroupId::from_parts(11, 1);
+        let geometry_a = BindGroupId::from_parts(20, 1);
+        let geometry_b = BindGroupId::from_parts(21, 1);
+        cache.refresh_sampled_snapshot(Some(first));
+        let (before, traits) = cache.shared_offscreen(1, Some(4), None, None, |commands| {
+            for (index, geometry) in [geometry_a, geometry_b, geometry_a, geometry_b].into_iter().enumerate() {
+                commands.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                    pipeline: RenderPipelineId::from_parts(1, 1),
+                    bind_groups: bind_group_list([geometry, first]),
+                    arguments: BufferId::from_parts(1, 1),
+                    offset: index as u64 * 16,
+                    scissor: None,
+                }));
+            }
+            Ok(())
+        }, |_, _| unreachable!()).unwrap();
+        assert!(cache.grouped.is_some());
+        let (filtered_before, _) = cache.filter_offscreen(1, (Arc::clone(&before), traits), Some((1, &[true, false, true, true])));
+        cache.refresh_sampled_snapshot(Some(second));
+        let (after, traits) = cache.shared_offscreen(1, Some(4), None, None,
+            |_| panic!("descriptor replacement must not rebuild commands"), |_, _| unreachable!()).unwrap();
+        let (filtered_after, _) = cache.filter_offscreen(1, (Arc::clone(&after), traits), Some((1, &[true, false, true, true])));
+        for (old, new) in before.iter().zip(after.iter()).chain(filtered_before.iter().zip(filtered_after.iter())) {
+            assert_eq!(old.bind_groups()[0], new.bind_groups()[0]);
+            assert_eq!(old.bind_groups()[1], first);
+            assert_eq!(new.bind_groups()[1], second);
+            assert_eq!(old.pipeline(), new.pipeline());
+            let (RenderCommand::DrawIndirect(old), RenderCommand::DrawIndirect(new)) = (old, new) else { unreachable!() };
+            assert_eq!(old.offset, new.offset);
+            assert_eq!(old.arguments, new.arguments);
+        }
+        assert_eq!(cache.revision, Some(1));
+        cache.refresh_sampled_snapshot(None);
+        assert!(cache.revision.is_none(), "layout transition must invalidate topology");
+    }
+
+    #[test]
+    fn stable_scene_reuses_commands_and_changed_scene_rebuilds() {
+        let mut cache = CachedCommands::default();
+        let mut builds = 0;
+        let mut output = Vec::new();
+        for revision in [1, 1, 2] {
+            cache
+                .rebuild(revision, None, |steps| {
+                    builds += 1;
+                    steps.push(RenderCommand::Draw(DrawCommand {
+                        pipeline: RenderPipelineId::from_parts(revision as u32, 1),
+                        bind_groups: bind_group_list([]),
+                        vertex_count: 3,
+                        first_vertex: 0,
+                        instance_count: 1,
+                        first_instance: 0,
+                        scissor: None,
+                    }));
+                    Ok(())
+                })
+                .unwrap();
+            cache.publish(&mut output);
+        }
+        assert_eq!(builds, 2);
+        assert_eq!(
+            output
+                .iter()
+                .map(|step| step.pipeline())
+                .collect::<Vec<_>>(),
+            [
+                RenderPipelineId::from_parts(1, 1),
+                RenderPipelineId::from_parts(1, 1),
+                RenderPipelineId::from_parts(2, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn offscreen_reuses_the_same_immutable_gpu_command_allocation() {
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let mut builds = 0;
+        let make = |rev: u64, cache: &mut CachedCommands, builds: &mut usize| {
+            cache
+                .shared_offscreen(
+                    rev,
+                    None,
+                    None,
+                    None,
+                    |commands| {
+                        *builds += 1;
+                        commands.push(RenderCommand::Draw(DrawCommand {
+                            pipeline: RenderPipelineId::from_parts(rev as u32, 1),
+                            bind_groups: bind_group_list([]),
+                            vertex_count: 3,
+                            first_vertex: 0,
+                            instance_count: 1,
+                            first_instance: 0,
+                            scissor: None,
+                        }));
+                        Ok(())
+                    },
+                    |_, _| Ok(()),
+                )
+                .unwrap()
+        };
+        let (first, first_traits) = make(1, &mut cache, &mut builds);
+        let (same, same_traits) = make(1, &mut cache, &mut builds);
+        assert!(!first_traits.authored_scissors && !same_traits.authored_scissors);
+        assert!(!first_traits.indirect_only && !same_traits.indirect_only);
+        assert!(
+            Arc::ptr_eq(&first, &same),
+            "camera-only capture must not duplicate the native command table"
+        );
+        assert_eq!(builds, 1);
+        let (next, traits) = make(2, &mut cache, &mut builds);
+        assert!(!traits.authored_scissors && !traits.indirect_only);
+        assert!(
+            !Arc::ptr_eq(&first, &next),
+            "a structural draw change must publish a new snapshot"
+        );
+        assert_eq!(builds, 2);
+        assert_eq!(first[0].pipeline(), RenderPipelineId::from_parts(1, 1));
+        assert_eq!(next[0].pipeline(), RenderPipelineId::from_parts(2, 1));
+    }
+
+    #[test]
+    fn offscreen_rebuild_keeps_canonical_commands_without_scratch_publication() {
+        let mut cache = CachedCommands::default();
+        let (first, traits) = cache
+            .shared_offscreen(
+                5,
+                None,
+                None,
+                None,
+                |steps| {
+                    steps.push(RenderCommand::Draw(DrawCommand {
+                        pipeline: RenderPipelineId::from_parts(5, 1),
+                        bind_groups: bind_group_list([]),
+                        vertex_count: 3,
+                        first_vertex: 0,
+                        instance_count: 1,
+                        first_instance: 0,
+                        scissor: None,
+                    }));
+                    Ok(())
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(cache.commands.len(), 1);
+        assert_eq!(first.len(), 1);
+        assert!(!traits.indirect_only);
+        // Failed replacement preserves both the old canonical revision and
+        // its published immutable snapshot, without introducing a partial list.
+        let failed = cache.shared_offscreen(
+            6,
+            None,
+            None,
+            None,
+            |_| Err(anyhow::anyhow!("test build failure")),
+            |_, _| Ok(()),
+        );
+        assert!(failed.is_err());
+        assert_eq!(cache.revision, Some(5));
+        assert_eq!(cache.commands.len(), 1);
+        let (again, _) = cache
+            .shared_offscreen(
+                5,
+                None,
+                None,
+                None,
+                |_| panic!("stable revision must not rebuild"),
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+    }
+
+    #[test]
+    fn grouped_indirect_snapshot_shares_the_exact_native_order_allocation() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        use std::sync::Arc;
+        let mut cache = CachedCommands::default();
+        let (shared, traits) = cache
+            .shared_offscreen(
+                1,
+                None,
+                None,
+                None,
+                |commands| {
+                    for (offset, pipeline) in [(0, 1), (16, 2), (32, 1)] {
+                        commands.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
+                            pipeline: RenderPipelineId::from_parts(pipeline, 1),
+                            bind_groups: bind_group_list([]),
+                            arguments: BufferId::from_parts(9, 1),
+                            offset,
+                            scissor: None,
+                        }));
+                    }
+                    Ok(())
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(!traits.authored_scissors);
+        assert!(traits.indirect_only);
+        let grouped = cache
+            .grouped
+            .as_ref()
+            .expect("interleaved opaque pipelines should group");
+        assert!(Arc::ptr_eq(&shared, grouped));
+        let offsets: Vec<_> = shared
+            .iter()
+            .map(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(offsets, vec![0, 32, 16]);
+
+        // The mask is indexed by indirect argument slot, not grouped position.
+        let mask = [false, true, true];
+        let (filtered, _) =
+            cache.filter_offscreen(1, (Arc::clone(&shared), traits), Some((1, &mask)));
+        let offsets = filtered
+            .iter()
+            .map(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(offsets, [32, 16]);
+        let (again, _) = cache.filter_offscreen(1, (shared, traits), Some((1, &mask)));
+        assert!(Arc::ptr_eq(&filtered, &again));
+    }
+
+    #[test]
+    fn indirect_grouping_never_reorders_blended_suffix() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        let pipeline = |id| RenderPipelineId::from_parts(id, 1);
+        let draw = |offset, pipeline_id| {
+            RenderCommand::DrawIndirect(DrawIndirectCommand {
+                pipeline: pipeline(pipeline_id),
+                bind_groups: bind_group_list([]),
+                arguments: BufferId::from_parts(1, 1),
+                offset,
+                scissor: None,
+            })
+        };
+        // Two opaque pipelines can be regrouped, but transparent A-B-A
+        // must remain in camera-sorted order, not be changed to A-A-B.
+        let input = vec![
+            draw(0, 1),
+            draw(16, 2),
+            draw(32, 1),
+            draw(48, 3),
+            draw(64, 4),
+            draw(80, 3),
+        ];
+        let grouped = super::group_indirect_commands(&input, Some(3))
+            .expect("opaque batching should regroup three commands");
+        let offsets = |commands: &[RenderCommand]| {
+            commands
+                .iter()
+                .map(|command| match command {
+                    RenderCommand::DrawIndirect(draw) => draw.offset,
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(offsets(&grouped[..3]), vec![0, 32, 16]);
+        assert_eq!(offsets(&grouped[3..]), vec![48, 64, 80]);
+
+        let mut cache = CachedCommands {
+            revision: Some(1),
+            generated_draw_count: Some(input.len()),
+            blended_batch_start: Some(3),
+            commands: input.clone(),
+            grouped: Some(grouped.into()),
+            ..Default::default()
+        };
+        cache
+            .refresh_blended_suffix(2, 6, 3, |range, suffix| {
+                assert_eq!(range, 3..6);
+                suffix.extend([draw(80, 3), draw(48, 3), draw(64, 4)]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(offsets(cache.commands.as_slice()), [0, 16, 32, 80, 48, 64]);
+        assert_eq!(offsets(cache.grouped.as_deref().unwrap()), [0, 32, 16, 80, 48, 64]);
+        // When every command is transparent, no global reorder is legal.
+        assert!(super::group_indirect_commands(&input[3..], Some(0)).is_none());
+
+        let delta = crate::prepare::StructuralDrawDelta {
+            previous_count: 6,
+            edits: vec![
+                crate::prepare::StructuralDrawEdit { old: 1..2, new: 1..1 },
+                crate::prepare::StructuralDrawEdit { old: 4..5, new: 3..5 },
+            ],
+        };
+        let spliced = cache
+            .splice_generated(&delta, 6, Some(2), &mut |range, commands| {
+                if range == (2..6) {
+                    commands.extend([draw(80, 3), draw(32, 4), draw(64, 3), draw(48, 3)]);
+                } else {
+                    assert!(range.is_empty());
+                }
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(offsets(&spliced), [0, 16, 80, 32, 64, 48]);
+    }
+
+    #[test]
+    fn all_unique_indirect_bindings_do_not_allocate_a_grouped_table() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        // Distinct pipelines imply distinct grouping states. The hot path
+        // should fall back to the original immutable native command order.
+        let draws: Vec<_> = (1..=64)
+            .map(|index| {
+                RenderCommand::DrawIndirect(DrawIndirectCommand {
+                    pipeline: RenderPipelineId::from_parts(index, 1),
+                    bind_groups: bind_group_list([]),
+                    arguments: BufferId::from_parts(1, 1),
+                    offset: u64::from(index - 1) * 16,
+                    scissor: None,
+                })
+            })
+            .collect();
+        assert!(super::group_indirect_commands(&draws, None).is_none());
+    }
+
+    #[test]
+    fn alternating_pipelines_keep_first_seen_pipeline_and_bind_group_order() {
+        use gfx_core::{BufferId, DrawIndirectCommand};
+        let draws: Vec<_> = [(0, 2), (16, 1), (32, 2), (48, 1), (64, 3), (80, 3)]
+            .into_iter()
+            .map(|(offset, pipeline)| {
+                RenderCommand::DrawIndirect(DrawIndirectCommand {
+                    pipeline: RenderPipelineId::from_parts(pipeline, 1),
+                    bind_groups: bind_group_list([]),
+                    arguments: BufferId::from_parts(1, 1),
+                    offset,
+                    scissor: None,
+                })
+            })
+            .collect();
+        let grouped = super::group_indirect_commands(&draws, Some(4)).unwrap();
+        let offsets: Vec<_> = grouped
+            .iter()
+            .map(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(offsets, vec![0, 32, 16, 48, 64, 80]);
+    }
+
+    #[test]
+    fn initial_and_incompatible_scene_publications_wait_for_cpu_render_jobs() {
+        use super::defer_unprepared_scene;
+        assert!(defer_unprepared_scene(true, false, false));
+        assert!(!defer_unprepared_scene(true, true, false));
+        assert!(!defer_unprepared_scene(true, false, true));
+        assert!(!defer_unprepared_scene(false, false, false));
+    }
+
+    #[test]
+    fn unrelated_scene_camera_samplers_do_not_reinterpret_retained_geometry() {
+        use std::sync::Arc;
+        let camera = crate::Camera::orthographic(crate::Vec3::ZERO, -crate::Vec3::Z,
+            crate::Vec3::Y, 4., 0.1, 100.);
+        let original = crate::SceneView::new(Arc::new(crate::Scene::new()), camera);
+        assert!(super::same_camera_sampler(&original, &original));
+        let old = original.with_camera_sampler(move |_| camera);
+        let retained = old.with_scene(Arc::new(crate::Scene::new()));
+        assert!(super::same_camera_sampler(&old, &retained));
+        let rebased = original.with_camera_sampler(move |_| camera);
+        assert!(!super::same_camera_sampler(&old, &rebased));
+        assert!(!super::same_camera_sampler(&old, &original));
+    }
+
+    #[test]
+    fn stable_gui_redraw_reuse_checks_every_shader_visible_input() {
+        use super::same_static_capture_input;
+        use crate::{Camera, Scene, Vec3};
+        use std::sync::Arc;
+        let camera = Camera::orthographic(Vec3::ZERO, -Vec3::Z, Vec3::Y, 4.0, 0.1, 100.0);
+        let original = crate::SceneView::new(Arc::new(Scene::new()), camera);
+        assert!(same_static_capture_input(&original, &original));
+        assert!(!same_static_capture_input(
+            &original,
+            &original
+                .with_voxel_shading(crate::VoxelShading {
+                    sky_brightness: 0.5,
+                    ..original.voxel_shading
+                })
+                .unwrap(),
+        ));
+        assert!(!same_static_capture_input(
+            &original,
+            &original.with_scene(Arc::new(Scene::new())),
+        ));
+        assert!(!same_static_capture_input(&original, &original.with_culling_disabled()));
+        let mut moving = original.clone();
+        moving.continuous_presentation = true;
+        assert!(!same_static_capture_input(&original, &moving));
+    }
+
+    #[test]
+    fn idle_scene_retirement_is_scanned_once_per_frame_for_all_views() {
+        use super::should_scan_idle_scenes;
+        assert!(should_scan_idle_scenes(1, None));
+        assert!(!should_scan_idle_scenes(1, Some(1)));
+        assert!(should_scan_idle_scenes(2, Some(1)));
+        // In particular, a window can wrap its render-frame epoch without
+        // incorrectly suppressing the new epoch's cache sweep.
+        assert!(should_scan_idle_scenes(0, Some(u64::MAX)));
+    }
+
+    #[test]
+    fn memory_trim_preserves_recent_scenes_until_aggressive_trim() {
+        let now = Instant::now();
+        let recent = now - SCENE_MEMORY_TRIM_IDLE + Duration::from_millis(1);
+        let idle = now - SCENE_MEMORY_TRIM_IDLE;
+
+        assert!(!should_trim_scene(MemoryTrimLevel::Light, idle, now));
+        assert!(!should_trim_scene(MemoryTrimLevel::Moderate, recent, now));
+        assert!(should_trim_scene(MemoryTrimLevel::Moderate, idle, now));
+        assert!(should_trim_scene(MemoryTrimLevel::Aggressive, recent, now));
+    }
+}
+
+impl Renderer {
+    pub(super) fn new(
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+    ) -> gpui::Result<Self> {
+        Ok(Self {
+            backend: SidecarGpuBackend::new(device, context)?,
+        })
+    }
+}
+
+/// The GPUI extension never owns GPU resources or reimplements the 3D
+/// submission algorithm: it forwards the current viewport and attachment
+/// context into the renderer-owned sidecar and drains its completed commands.
+/// The shared native device owner still serializes backend access; arbitrary
+/// cross-thread native contexts are intentionally not exposed here.
+impl RendererExtensionRenderer for Renderer {
+    fn render_passes_submitted(&mut self) {
+        self.backend.render_passes_submitted();
+    }
+
+    fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.backend.render_passes_abandoned(may_have_submitted);
+    }
+
+    fn has_native_offscreen_work(&self) -> bool {
+        self.backend.has_native_offscreen_work()
+    }
+
+    fn submit_native_offscreen(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<Option<gfx_core::SubmissionId>> {
+        self.backend.submit_native_offscreen(device)
+    }
+
+    fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.backend.gpu_submission_accepted(submission);
+    }
+
+    fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        self.backend.gpu_submission_completed(submission);
+    }
+
+    fn needs_gpu_completion(&self) -> bool {
+        self.backend.needs_gpu_completion()
+    }
+
+    fn gpu_work_completed(&mut self) {
+        self.backend.gpu_work_completed();
+    }
+
+    fn render(
+        &mut self,
+        extension: &dyn RendererExtension,
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+        steps: &mut Vec<RenderCommand>,
+    ) -> gpui::Result<()> {
+        self.backend.render(extension, device, context, steps)
+    }
+
+    fn trim_memory(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        level: MemoryTrimLevel,
+    ) -> gpui::Result<()> {
+        self.backend.trim_memory(device, level)
+    }
+
+    fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        self.backend.destroy(device)
+    }
+}
+
+impl RendererExtensionRenderer for SidecarGpuBackend {
+    fn drain_accepted_native_submissions(&mut self, submissions: &mut Vec<gfx_core::SubmissionId>) {
+        // Take every accepted native producer, independent of whether
+        // render() succeeded. No UI-side CPU fence polling or submission.
+        submissions.append(&mut *self.accepted_native_submissions.borrow_mut());
+    }
+
+    fn has_native_offscreen_work(&self) -> bool {
+        !self.pending_passes.is_empty()
+    }
+
+    fn submit_native_offscreen(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+    ) -> gpui::Result<Option<gfx_core::SubmissionId>> {
+        if self.pending_passes.is_empty() {
+            return Ok(None);
+        }
+        let started = crate::gpu_submission_trace::enabled().then(Instant::now);
+        // The 3D renderer owns the native command ordering. Borrow immutable
+        // Arc-backed RenderCommand spans directly: no GPUI 2D command encoder,
+        // global pass registry or per-DrawIndirect clone on the hot path.
+        let count = self.pending_passes.len();
+        // The pure gpui_3d submission core reuses existing Arc draw data,
+        // emits no GPUI paint commands, and uses the stack for one SceneView.
+        // The SceneView owns its independent native Graphics command stream,
+        // not a second physical GPU queue. Prefer the owner's ordered primary
+        // queue: it naturally sequences uploads, Compute, DrawIndirect and the
+        // subsequent GPUI texture consumer without DX12/Vulkan cross-queue
+        // semaphore/Fence handshakes or CPU waits. Other standalone engines
+        // can request the generic IndependentGraphicsIfAvailable mode through
+        // gfx-core when measured concurrency justifies its extra submissions.
+        // Per-view compaction scratch and cost models, one native graphics batch.
+        let native_result = if self.pending_passes.iter().any(|pass| pass.run_plan.is_some()) {
+            submit_planned_native_offscreen_passes(&self.pending_passes, |passes, owners, plans, tags, tables| {
+                device.submit_run_offscreen_batch(passes, owners, plans, tables, tags)
+            })
+        } else if let Some(compactor) = self.draw_compaction.as_mut() {
+            compactor.submit_batch(device, &self.pending_passes, &self.pending_capture_epochs)
+        } else {
+            submit_owned_native_offscreen_passes(&self.pending_passes, |passes, owners, tags, tables| {
+                device.submit_owned_offscreen_batch(passes, owners, tables, tags)
+            })
+        };
+        let submitted = match native_result {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
+                // The backend may have accepted a prefix of the requested
+                // batch. Never publish its output or drop possible readers.
+                self.abandon_pending_captures(true);
+                self.submitted_capture_epochs.clear();
+                return Err(error.into());
+            }
+        };
+        self.sampled_tiers.submitted(submitted);
+        // All three renderer-global GPU mesh pools share the native producer
+        // and can be read/written by Compute before this DrawIndirect batch.
+        // The backing allocations are conservatively stamped only once per
+        // *accepted* graphics batch; no CPU frame index becomes a GPU fence.
+        self.generated_arena
+            .borrow_mut()
+            .native_draw_submitted(submitted);
+        self.template_arena
+            .borrow_mut()
+            .native_draw_submitted(submitted);
+        self.argument_arena
+            .borrow_mut()
+            .native_draw_submitted(submitted);
+        // Track the real last DrawIndirect producer per SceneView. The
+        // submitted native batch references exactly these captured scenes;
+        // unchanged cached scenes are not falsely stamped as new readers.
+        // On a backend with no native SubmissionId, record None and retain
+        // the conservative consumer/global fallback instead of inventing a
+        // fence or relying on a stale previous frame's producer handle.
+        for &(scene_id, _) in &self.pending_capture_epochs {
+            if let Some(scene) = self.scenes.get_mut(&scene_id) {
+                scene.draw_producer_submitted(submitted);
+                if let Some(submission) = submitted {
+                    // This *native Graphics producer* is on the same ordered
+                    // owner queue AFTER the scene's Compute/Transfer uploads.
+                    // Its real fence also covers unfenced culling dispatches;
+                    // seal those retirements now, rather than retaining them
+                    // until a possibly skipped GUI Present/consumer fence.
+                    // A second independent queue must never use this shortcut
+                    // without a native GPU-side wait recorded on this queue.
+                    scene.draw_submission_accepted(submission);
+                }
+            }
+        }
+        self.pending_passes.clear();
+        // The GUI sampler follows this native producer on the same ordered
+        // GPU-owner queue. No CPU fence wait or 2D geometry conversion.
+        // Submission acceptance != fence completion or resource retirement.
+        self.submitted_capture_epochs
+            .append(&mut self.pending_capture_epochs);
+        if let Some(started) = started {
+            crate::gpu_submission_trace::observe(
+                self.backend,
+                crate::gpu_submission_trace::Phase::OffscreenSubmit,
+                count,
+                0,
+                started.elapsed(),
+            );
+        }
+        Ok(submitted)
+    }
+
+    fn render_passes_submitted(&mut self) {
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.render_passes_submitted(&self.submitted_capture_epochs);
+        }
+        self.submitted_capture_epochs.clear();
+    }
+
+    fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.abandon_pending_captures(may_have_submitted);
+        self.submitted_capture_epochs.clear();
+    }
+
+    fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.sampled_tiers.accepted(submission);
+        self.generated_arena
+            .borrow_mut()
+            .gpu_submission_accepted(submission);
+        self.template_arena
+            .borrow_mut()
+            .gpu_submission_accepted(submission);
+        self.argument_arena
+            .borrow_mut()
+            .gpu_submission_accepted(submission);
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_submission_accepted(submission);
+            // Draw Slot retirements prefer the exact last DrawIndirect
+            // producer's SubmissionId. The ordered GUI consumer fence only
+            // stamps any remaining untracked cohorts (older backend paths
+            // returning None). Independent queues need their own GPU-side
+            // dependency before this fallback could be enabled.
+        }
+        // Direct GUI draws also have unfenced reads. Their ordered GUI
+        // submission seals these even when no sidecar surface exists.
+        for scene in self.scenes.values_mut() {
+            scene.draw_submission_accepted(submission);
+        }
+    }
+
+    fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        // Host-observed producer Fence latency includes queue scheduling AND
+        // polling delay. The controller never calls this a GPU Wait timestamp.
+        self.sampled_tiers.completed(submission);
+        self.queue_feedback.borrow_mut().completed(submission);
+        self.generated_arena
+            .borrow_mut()
+            .gpu_submission_completed(submission);
+        self.template_arena
+            .borrow_mut()
+            .gpu_submission_completed(submission);
+        self.argument_arena
+            .borrow_mut()
+            .gpu_submission_completed(submission);
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_submission_completed(submission);
+        }
+        for scene in self.scenes.values_mut() {
+            scene.draw_submission_completed(submission);
+        }
+    }
+
+    fn needs_gpu_completion(&self) -> bool {
+        self.generated_arena.borrow().has_retired_ranges()
+            || self.template_arena.borrow().has_retired_ranges()
+            || self.argument_arena.borrow().has_retired_ranges()
+            || self
+                .scenes
+                .values()
+                .any(SceneResources::has_retired_arena_ranges)
+            || self.resources.has_retired_pipelines()
+            || self.sampled_tiers.needs_completion()
+            || self
+                .offscreen
+                .as_ref()
+                .is_some_and(SidecarSurface::has_retired_targets)
+    }
+
+    fn gpu_work_completed(&mut self) {
+        self.generated_arena.borrow_mut().reclaim_after_gpu_idle();
+        self.template_arena.borrow_mut().reclaim_after_gpu_idle();
+        self.argument_arena.borrow_mut().reclaim_after_gpu_idle();
+        for scene in self.scenes.values_mut() {
+            scene.reclaim_arena_after_gpu_idle();
+        }
+        self.resources.gpu_work_completed();
+        self.sampled_tiers.idle();
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.gpu_work_completed();
+        }
+    }
+
+    fn render(
+        &mut self,
+        extension: &dyn RendererExtension,
+        device: &mut dyn ExtensionDevice,
+        context: RendererExtensionContext,
+        steps: &mut Vec<RenderCommand>,
+    ) -> gpui::Result<()> {
+        let scene_view = extension
+            .downcast_ref::<SceneView>()
+            .ok_or_else(|| anyhow!("GPUI 3D renderer received an unexpected extension type"))?;
+        self.queue_feedback
+            .borrow_mut()
+            .observe_frame_cadence(context.frame_time());
+        if device.gpu_work_timestamps_supported() {
+            // Completed native probes are consumed on the owning GPU thread
+            // even in release builds, without waiting for any GPU Fence.
+            self.gpu_timestamp_scratch.clear();
+            device.drain_gpu_work_timestamps(&mut self.gpu_timestamp_scratch)?;
+            {
+                let mut feedback = self.queue_feedback.borrow_mut();
+                for &sample in &self.gpu_timestamp_scratch {
+                    feedback.observe_gpu_sample(sample);
+                    if let Some(compactor) = self.draw_compaction.as_mut() {
+                        compactor.observe(sample);
+                    }
+                }
+            }
+            if crate::gpu_submission_trace::enabled() {
+                crate::gpu_submission_trace::report_gpu_samples(
+                    context.backend_kind(),
+                    &self.gpu_timestamp_scratch,
+                );
+            } else {
+                // Preserve the native BufferUpload feedback when tracing is
+                // off; never train the upload model from host API durations.
+                for &sample in &self.gpu_timestamp_scratch {
+                    crate::upload_feedback::observe_completed_gpu_upload(
+                        context.backend_kind(),
+                        sample,
+                    );
+                }
+            }
+        }
+        let scene_view = scene_view.sample_camera(context.frame_time());
+        {
+            let _phase =
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.sync(device, &context)?;
+            }
+            // Clipped/scroll-hidden SceneViews have no visible producer pixels.
+            // Skip GPU scene upload, culling, command encoding and allocation,
+            // but continue the owner-thread lifetime/idle-cache housekeeping.
+            if self.offscreen.is_some() && !SidecarSurface::visible(&context) {
+                self.begin_frame(context.frame_time());
+                self.retire_idle_scenes(device)?;
+                return Ok(());
+            }
+            let render_context = self
+                .offscreen
+                .as_ref()
+                .map(|surface| surface.capture_context(&context))
+                .unwrap_or_else(|| context.clone());
+            self.sync_pipeline(device, &render_context)?;
+            self.begin_frame(context.frame_time());
+            self.retire_idle_scenes(device)?;
+            self.sync_sampled_capacity(device, &render_context)?;
+            // A worker may still be preparing a replacement Scene. Reposition
+            // its last successfully submitted texture *before* the retained
+            // frame early return, so scrolling/moving does not blank the view.
+            if let Some(surface) = self.offscreen.as_mut() {
+                surface.sync_placement(device, scene_view.id, &context)?;
+            }
+        }
+        // A stable 3D scene on an unrelated GUI redraw requires only one
+        // painter-ordered composite draw. Check immutable input identity and
+        // the actual cropped projection *before* scene preparation, so the
+        // GPU owner avoids redundant device queries, cull dispatch planning,
+        // frame-buffer updates and cache probing on every UI animation frame.
+        // Submission acknowledgement, not merely an enqueued pass, gates reuse.
+        if let (Some(surface), Some(captured), Some(scene)) = (
+            self.offscreen.as_ref(),
+            self.captured_inputs.get(&scene_view.id),
+            self.scenes.get(&scene_view.id),
+        ) {
+            if same_static_capture_input(&captured.view, &scene_view)
+                && scene.capture_revision == captured.revision
+                && surface.can_reuse(scene_view.id, &context, captured.revision)
+            {
+                let capture_context = surface.capture_context(&context);
+                if FrameProjection::new(&scene_view, &capture_context)? == captured.projection
+                    && surface.composite_existing(scene_view.id, &context, steps)
+                {
+                    scene_last_used(scene_view.id, &mut self.scenes, self.frame_index);
+                    self.offscreen_trace.record(OffscreenFrameKind::Reused);
+                    return Ok(());
+                }
+            }
+        }
+        // A Qt3D-like CPU RenderJob may still be preparing the initial
+        // scene or an incompatible full replacement. Do not turn the shared
+        // GPU owner into a second synchronous geometry traversal. The host
+        // extension keeps its frame alive until the worker publishes.
+        let worker_pending = super::sidecar::pending(&scene_view);
+        let retained = if worker_pending {
+            self.captured_inputs
+                .get(&scene_view.id)
+                .filter(|captured| same_camera_sampler(&captured.view, &scene_view))
+                .and_then(|_| self.scenes.get(&scene_view.id))
+                .and_then(|scene| scene.retained_sidecar_view(&scene_view))
+        } else {
+            None
+        };
+        let matching = self
+            .scenes
+            .get(&scene_view.id)
+            .is_some_and(|scene| scene.matches_published_scene(&scene_view));
+        if defer_unprepared_scene(worker_pending, matching, retained.is_some()) {
+            // Do not force the GUI to blank while a newer, incompatible Scene
+            // is prepared. Reuse the last *submitted* texture when possible;
+            // this branch must not allocate/upload or block the GPU owner.
+            if let Some(surface) = self.offscreen.as_ref()
+                && surface.composite_existing(scene_view.id, &context, steps)
+            {
+                self.offscreen_trace
+                    .record(OffscreenFrameKind::RetainedWhilePreparing);
+            }
+            return Ok(());
+        }
+        if !self.scenes.contains_key(&scene_view.id) {
+            self.scenes.insert(
+                scene_view.id,
+                SceneResources::new_shared(
+                    device,
+                    context.backend_kind(),
+                    Rc::clone(&self.generated_arena),
+                    Rc::clone(&self.template_arena),
+                    Rc::clone(&self.argument_arena),
+                    Rc::clone(&self.accepted_native_submissions),
+                    Rc::clone(&self.queue_feedback),
+                    true,
+                )?,
+            );
+        }
+        let scene = self
+            .scenes
+            .get_mut(&scene_view.id)
+            .ok_or_else(|| anyhow!("GPUI 3D scene-view state was not initialized"))?;
+        scene.last_used_frame = self.frame_index;
+        scene.last_used_at = Instant::now();
+        // A full unrelated Scene replacement is allowed to arrive as a
+        // versioned CPU-sidecar job. Until it is prepared, continue showing
+        // the last published GPU geometry with the current camera instead
+        // of blocking every window's shared GPU submission owner.
+        let prepared_view = retained.as_ref().unwrap_or(&scene_view);
+        let render_context = self
+            .offscreen
+            .as_ref()
+            .map(|surface| surface.capture_context(&context))
+            .unwrap_or_else(|| context.clone());
+        let prepare_started =
+            (trace_timings() || crate::gpu_submission_trace::enabled()).then(Instant::now);
+        {
+            let _phase =
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ScenePrepare);
+            scene.prepare(device, &mut self.resources, prepared_view, &render_context)?;
+        }
+        // Pure GUI redraw / unchanged 3D state: sample the previously
+        // submitted color image directly. Skip the offscreen producer pass,
+        // command-cache publishing, GPU culling dispatch and unnecessary
+        // descriptor references. The SceneResources revision includes camera
+        // and uniform updates, not merely native draw-command changes.
+        if let Some(surface) = self.offscreen.as_ref()
+            && surface.can_reuse(scene_view.id, &context, scene.capture_revision)
+        {
+            surface.composite_existing(scene_view.id, &context, steps);
+            self.offscreen_trace.record(OffscreenFrameKind::Reused);
+            return Ok(());
+        }
+        let commands_started = prepare_started.map(|started| (started.elapsed(), Instant::now()));
+        let mut capture_commands: Option<(Arc<[RenderCommand]>, OffscreenCommandTraits)> = None;
+        let mut capture_run_plan = None;
+        // Compaction's counted gather ABI still needs the flat logical input.
+        // Prefer compact producer runs only when that optional path is off.
+        let compact_limit = if self.draw_compaction.is_none() && self.offscreen.is_some() {
+            super::command_runs::compact_limit(device)
+        } else { 0 };
+        let commands_count = {
+            // Both paths retain the same canonical native Draw command
+            // cache. The offscreen path shares an immutable command snapshot
+            // until the logical draw revision changes, avoiding an O(draws)
+            // Vec copy on each camera/culling-only producer submission.
+            let _phase =
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CommandEncode);
+            let cache = self.command_cache.entry(scene_view.id).or_default();
+            let pass_sampled = self.offscreen.is_some();
+            if cache.pass_sampled != Some(pass_sampled) {
+                *cache = CachedCommands { pass_sampled: Some(pass_sampled), ..CachedCommands::default() };
+            }
+            if !pass_sampled {
+                cache.refresh_sampled_snapshot(scene.sampled_snapshot(&self.resources));
+            }
+            let build = |output: &mut Vec<RenderCommand>| {
+                if pass_sampled {
+                    scene.append_offscreen_steps(&self.resources, scene_view.voxel_shader, output)
+                } else {
+                    scene.append_steps(&self.resources, scene_view.voxel_shader, output)
+                }
+            };
+            let build_range = |range: std::ops::Range<usize>, output: &mut Vec<RenderCommand>| {
+                if pass_sampled {
+                    scene.append_offscreen_singleton_range(&self.resources, output, range)
+                } else {
+                    scene.append_generated_singleton_range(&self.resources, output, range)
+                }
+            };
+            let generated_count = scene.generated_singleton_command_count();
+            let first_blended = scene.first_blended_batch_index();
+            if self.offscreen.is_some() {
+                if compact_limit > 1 && scene.generated_command_visibility().is_none()
+                    && let Some(count) = generated_count
+                    && let Some(published) = cache.generated_runs.refresh(
+                        scene.command_revision, count, first_blended, scene.native_command_delta(),
+                        scene.blend_only_command_change, compact_limit, &build_range)?
+                {
+                    let logical = published.plan.logical_draw_count();
+                    capture_run_plan = Some(published.plan);
+                    capture_commands = Some((published.commands, OffscreenCommandTraits {
+                        authored_scissors: false, indirect_only: logical != 0,
+                    }));
+                    logical
+                } else {
+                if scene.blend_only_command_change
+                    && let (Some(count), Some(first)) = (generated_count, first_blended)
+                {
+                    cache.refresh_blended_suffix(scene.command_revision, count, first, &build_range)?;
+                }
+                let shared = cache.shared_offscreen(
+                    scene.command_revision,
+                    generated_count,
+                    first_blended,
+                    scene.native_command_delta(),
+                    build,
+                    build_range,
+                )?;
+                let shared = cache.filter_offscreen(
+                    scene.command_revision,
+                    shared,
+                    scene.generated_command_visibility(),
+                );
+                let count = shared.0.len();
+                capture_commands = Some(shared);
+                count
+                }
+            } else {
+                let first_step = steps.len();
+                cache.append_spliced(
+                    scene.command_revision,
+                    generated_count,
+                    first_blended,
+                    scene.native_command_delta(),
+                    steps,
+                    build,
+                    build_range,
+                )?;
+                // The compatibility direct-draw fallback is encoded by the
+                // GUI owner, not our native offscreen producer. Clear any
+                // previous native last-reader proof: the newer direct draws
+                // cannot be retired using an older producer's completion ID.
+                scene.draw_producer_submitted(None);
+                if steps.len() != first_step && self.resources.sampled_table_layout().is_some() {
+                    self.sampled_tiers.queue_use();
+                    self.sampled_tiers.submitted(None);
+                }
+                steps.len() - first_step
+            }
+        };
+        if let Some(surface) = self.offscreen.as_mut() {
+            let started = crate::gpu_submission_trace::enabled().then(Instant::now);
+            let (commands, traits) =
+                capture_commands.expect("offscreen capture built immutable commands");
+            let gpu_work_tag = (crate::gpu_submission_trace::enabled()
+                && device.gpu_work_timestamps_supported()
+                && scene.gpu_batch_id != 0)
+                .then_some(gfx_core::GpuTimestampTag {
+                    batch_id: scene.gpu_batch_id,
+                    stage: gfx_core::GpuTimestampStage::DrawIndirect,
+                });
+            // Validate before recording any producer work; a failed
+            // projection must not leave a pending capture without its epoch.
+            let captured_projection = FrameProjection::new(prepared_view, &render_context)?;
+            let sampled_table = scene.sampled_snapshot(&self.resources);
+            surface.enqueue(
+                device,
+                scene_view.id,
+                &context,
+                scene.capture_revision,
+                gpu_work_tag,
+                commands,
+                capture_run_plan,
+                sampled_table,
+                traits.authored_scissors,
+                traits.indirect_only,
+                &mut self.pending_passes,
+                steps,
+            )?;
+            if let Some(start) = started {
+                crate::gpu_submission_trace::observe(
+                    context.backend_kind(),
+                    crate::gpu_submission_trace::Phase::OffscreenEnqueue,
+                    1,
+                    0,
+                    start.elapsed(),
+                );
+            }
+            scene.queue_sampled_capture(sampled_table);
+            if self.resources.sampled_table_layout().is_some() && commands_count != 0 {
+                self.sampled_tiers.queue_use();
+            }
+            // The published input must be the one actually rendered: during
+            // a pending full replacement, the producer may capture a retained
+            // compatible scene instead of the incoming SceneView.
+            self.captured_inputs.insert(
+                scene_view.id,
+                CapturedInput {
+                    view: prepared_view.clone(),
+                    projection: captured_projection,
+                    revision: scene.capture_revision,
+                },
+            );
+            self.pending_capture_epochs
+                .push((scene_view.id, scene.capture_revision));
+            self.offscreen_trace.record(OffscreenFrameKind::Captured);
+        }
+        if let Some((prepare, started)) = commands_started {
+            let elapsed = started.elapsed();
+            crate::gpu_submission_trace::observe(
+                context.backend_kind(),
+                crate::gpu_submission_trace::Phase::DrawIndirectEncode,
+                commands_count,
+                0,
+                elapsed,
+            );
+            self.timing_trace.record(
+                prepare,
+                elapsed,
+                commands_count,
+                scene.gpu_culling_counts(),
+                context.backend_kind(),
+            );
+        }
+        Ok(())
+    }
+
+    fn trim_memory(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        level: MemoryTrimLevel,
+    ) -> gpui::Result<()> {
+        self.trim_scene_cache(device, level)
+    }
+
+    fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        let scenes = self.scenes.keys().copied().collect();
+        self.destroy_scenes(device, scenes)?;
+        if let Some(compactor) = self.draw_compaction.take() {
+            compactor.destroy(device)?;
+        }
+        self.sampled_tiers.destroy(device)?;
+        self.resources.destroy(device)?;
+        if let Some(surface) = self.offscreen.take() {
+            surface.destroy(device)?;
+        }
+        Ok(())
+    }
+}

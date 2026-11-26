@@ -1,0 +1,3598 @@
+use super::{
+    ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, FRAME_BINDING, FRAME_PARAMS_STRIDE,
+    INSTANCE_BINDING, INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE, METALLIC_ROUGHNESS_BINDING,
+    NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE, SAMPLER_BINDING, TANGENT_BINDING,
+    VERTEX_BINDING, VISIBLE_INSTANCE_BINDING, VOXEL_VERTEX_STRIDE,
+};
+use crate::{Camera, Mat4, MaterialId, Mesh, PreparedDraw, TextureAsset, TextureColorSpace};
+use anyhow::{Context as _, anyhow};
+use gfx_core::{
+    BackendKind, BindGroupDescriptor, BindGroupEntry, BindGroupId, BindGroupLayoutId,
+    BindingResource, BufferBinding, BufferDescriptor, BufferId, BufferUsage, Extent2d, Format,
+    IndexFormat, MemoryLocation, Origin2d, SamplerBinding, SamplerId, TextureBinding,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
+    TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+};
+use gpui::Bounds;
+// The Sidecar reuses the standalone 3D data encoders without duplicating shader ABI.
+pub(crate) use crate::gpu_encoding::{
+    EncodedMesh, encode_instance_records, encode_lights_into, encode_mesh,
+    write_matrix, write_vec4,
+};
+use crate::gpu_encoding::encode_draw_record_with_textures;
+#[cfg(test)]
+pub(crate) use crate::gpu_encoding::{encode_draw_record, encode_instances_into, transpose};
+#[cfg(test)]
+use crate::{PreparedLight, PreparedScene};
+use gpui::ExtensionDevice;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::convert::TryFrom;
+
+pub(super) struct MeshResources {
+    pub(super) generated: Option<super::generated::GeneratedMesh>,
+    pub(super) generation: u64,
+    pub(super) vertices: BufferId,
+    pub(super) vertex_binding_bytes: usize,
+    pub(super) vertex_stride: u32,
+    pub(super) vertex_base: u32,
+    pub(super) tangents: Option<BufferId>,
+    pub(super) tangent_bytes: usize,
+    pub(super) indices: BufferId,
+    pub(super) index_format: IndexFormat,
+    pub(super) index_offset: u64,
+    pub(super) procedural_quads: bool,
+    pub(super) allocation: Option<ArenaAllocation>,
+}
+
+pub(super) struct PendingMeshUpload {
+    pub(super) buffer: BufferId,
+    pub(super) offset: u64,
+    pub(super) bytes: Vec<u8>,
+}
+
+const VOXEL_ARENA_PAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Batch-scoped mesher input storage. One buffer per usage serves a whole
+/// streaming batch through bump allocation, replacing one native buffer
+/// creation per Section for the cells, frame-params and job scratch slots.
+pub(super) struct BatchScratch {
+    buffers: Vec<BufferId>,
+    cells: Option<ScratchPage>,
+    params: Option<ScratchPage>,
+    jobs: Option<ScratchPage>,
+    limits: gfx_core::BufferBindingLimits,
+    backend: BackendKind,
+}
+
+struct ScratchPage {
+    buffer: BufferId,
+    used: u64,
+    capacity: u64,
+    alignment: u64,
+}
+
+impl ScratchPage {
+    fn allocate(&mut self, bytes: u64) -> Option<u64> {
+        let aligned = self.used.checked_add(self.alignment.checked_sub(1)?)? / self.alignment
+            * self.alignment;
+        let end = aligned.checked_add(bytes)?;
+        if end > self.capacity {
+            return None;
+        }
+        self.used = end;
+        Some(aligned)
+    }
+}
+
+impl BatchScratch {
+    pub(super) fn new(limits: gfx_core::BufferBindingLimits, backend: BackendKind) -> Self {
+        Self {
+            buffers: Vec::new(),
+            cells: None,
+            params: None,
+            jobs: None,
+            limits,
+            backend,
+        }
+    }
+
+    fn page(
+        device: &mut dyn ExtensionDevice,
+        buffers: &mut Vec<BufferId>,
+        page: &mut Option<ScratchPage>,
+        usage: BufferUsage,
+        memory_location: MemoryLocation,
+        bytes: u64,
+        alignment: u64,
+        page_capacity: u64,
+        max_binding_bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        if alignment == 0 || bytes == 0 || bytes > max_binding_bytes {
+            return Err(anyhow!("mesher scratch binding exceeds device limits").into());
+        }
+        if let Some(existing) = page
+            && let Some(offset) = existing.allocate(bytes)
+        {
+            return Ok((existing.buffer, offset));
+        }
+        // Page sizes are policy targets, not native binding limits. Cap
+        // allocations to the actual device limit and roll to a fresh page.
+        let capacity = page_capacity.min(max_binding_bytes).max(bytes);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("gpui_3d mesher batch scratch".into()),
+            size: capacity,
+            usage,
+            memory_location,
+        })?;
+        let mut created = ScratchPage {
+            buffer,
+            used: 0,
+            capacity,
+            alignment,
+        };
+        let offset = created
+            .allocate(bytes)
+            .ok_or_else(|| anyhow!("mesher scratch page allocation failed"))?;
+        *page = Some(created);
+        buffers.push(buffer);
+        Ok((buffer, offset))
+    }
+
+    pub(super) fn cells(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        self.limits.validate_range(0, bytes, false)?;
+        let alignment = MeshArena::generated_face_alignment(self.limits, 16)?;
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.cells,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            MemoryLocation::GpuOnly,
+            bytes,
+            alignment,
+            VOXEL_ARENA_PAGE_BYTES,
+            self.limits.max_storage_binding_bytes,
+        )
+    }
+
+    pub(super) fn params(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        self.limits.validate_range(0, bytes, true)?;
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.params,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            // DX12 COMPUTE-only command lists cannot transition DEFAULT
+            // heap CBVs to VERTEX_AND_CONSTANT_BUFFER. A small immutable
+            // Upload-heap CBV remains GENERIC_READ and may be used by either
+            // direct or dedicated Compute without a resource-state barrier.
+            // All larger Cells/Jobs/Output buffers stay in GPU-local memory.
+            if self.backend == BackendKind::Dx12 {
+                MemoryLocation::CpuToGpu
+            } else {
+                MemoryLocation::GpuOnly
+            },
+            bytes,
+            self.limits.uniform_offset_alignment,
+            64 * 1024,
+            self.limits.max_uniform_binding_bytes,
+        )
+    }
+
+    pub(super) fn jobs(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bytes: u64,
+    ) -> gpui::Result<(BufferId, u64)> {
+        self.limits.validate_range(0, bytes, false)?;
+        let alignment = MeshArena::generated_face_alignment(self.limits, 16)?;
+        Self::page(
+            device,
+            &mut self.buffers,
+            &mut self.jobs,
+            BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST,
+            MemoryLocation::GpuOnly,
+            bytes,
+            alignment,
+            VOXEL_ARENA_PAGE_BYTES,
+            self.limits.max_storage_binding_bytes,
+        )
+    }
+
+    /// Destroys every batch buffer. Safe once the batch's compute dispatches
+    /// are submitted: backend buffer destruction defers to fence completion.
+    pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        if self.buffers.is_empty() {
+            return Ok(());
+        }
+        device
+            .destroy_buffer_batch(&self.buffers)
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ArenaAllocation {
+    page: usize,
+    offset: u64,
+    bytes: u64,
+}
+
+struct ArenaPage {
+    buffer: BufferId,
+    capacity: u64,
+    used: u64,
+    live: usize,
+    live_bytes: u64,
+    free_ranges: Vec<(u64, u64)>,
+    retired_ranges: Vec<(u64, u64)>,
+}
+
+impl ArenaPage {
+    fn available_bytes(&self) -> u64 {
+        self.free_ranges
+            .iter()
+            .map(|(_, len)| *len)
+            .fold(self.capacity - self.used, u64::max)
+    }
+    fn reserve(&mut self, bytes: u64) -> Option<u64> {
+        if let Some(index) = self.free_ranges.iter().position(|(_, len)| *len >= bytes) {
+            let (offset, len) = self.free_ranges[index];
+            if len == bytes {
+                self.free_ranges.swap_remove(index);
+            } else {
+                self.free_ranges[index] = (offset + bytes, len - bytes);
+            }
+            self.live += 1;
+            self.live_bytes += bytes;
+            return Some(offset);
+        }
+        if self.capacity.checked_sub(self.used)? < bytes {
+            return None;
+        }
+        let offset = self.used;
+        self.used += bytes;
+        self.live += 1;
+        self.live_bytes += bytes;
+        Some(offset)
+    }
+
+    fn retire(&mut self, offset: u64, bytes: u64) -> gpui::Result<()> {
+        let remaining = self
+            .live_bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| anyhow!("voxel arena allocation exceeds live page bytes"))?;
+        self.live -= 1;
+        self.live_bytes = remaining;
+        self.retired_ranges.push((offset, bytes));
+        Ok(())
+    }
+
+    fn reclaim_retired(&mut self) {
+        self.free_ranges.append(&mut self.retired_ranges);
+        self.coalesce_reusable();
+    }
+
+    /// Reclaim exactly one retirement whose native read/write dependencies
+    /// have completed. Unrelated bytes in this page remain quarantined.
+    fn reclaim_completed_range(&mut self, offset: u64, bytes: u64) -> bool {
+        let Some(index) = self
+            .retired_ranges
+            .iter()
+            .position(|&(old_offset, old_bytes)| old_offset == offset && old_bytes == bytes)
+        else {
+            return false;
+        };
+        self.free_ranges
+            .push(self.retired_ranges.swap_remove(index));
+        self.coalesce_reusable();
+        true
+    }
+
+    fn coalesce_reusable(&mut self) {
+        self.free_ranges.sort_unstable_by_key(|range| range.0);
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.free_ranges.len());
+        for (offset, len) in self.free_ranges.drain(..) {
+            if let Some((start, previous_len)) = merged.last_mut()
+                && *start + *previous_len == offset
+            {
+                *previous_len += len;
+            } else {
+                merged.push((offset, len));
+            }
+        }
+        // A GPU fence has completed and the sorted trailing ranges are now
+        // genuinely reusable. Return contiguous retired tail space to the
+        // page's bump allocator instead of retaining it as fragmented spans.
+        // No live GPU address is relocated and no buffer is destroyed here.
+        while let Some(&(offset, len)) = merged.last() {
+            if offset.checked_add(len) != Some(self.used) {
+                break;
+            }
+            self.used = offset;
+            merged.pop();
+        }
+        self.free_ranges = merged;
+    }
+}
+
+/// One suballocation awaiting every native reader/writer and, when
+/// untracked GPU work exists, the next same-queue completion checkpoint.
+struct RetiredMeshRange {
+    page: usize,
+    offset: u64,
+    bytes: u64,
+    dependencies: gfx_core::GpuRetirementDependencies,
+    fallback: Vec<gfx_core::SubmissionId>,
+    needs_primary_proof: bool,
+}
+
+#[derive(Default)]
+pub(super) struct MeshArena {
+    // GPU-generated face pages require writable storage. Keep them isolated
+    // from the immutable CPU-packed voxel vertex/index pages.
+    generated_output: bool,
+    /// Separate SRV-only templates from writable D3D11 UAV face outputs.
+    generated_templates: bool,
+    generated_arguments: bool,
+    generated_limits: gfx_core::BufferBindingLimits,
+    pages: Vec<Option<ArenaPage>>,
+    available_pages: BTreeSet<(u64, usize)>,
+    free_pages: Vec<usize>,
+    /// Only pages that released a GPU-visible suballocation since the last
+    /// completed submission. Prevents an O(all pages) check every frame.
+    retired_pages: HashSet<usize>,
+    /// Only changed suballocations have tickets. An unrelated completed GPU
+    /// submission cannot release a page still read by an async queue.
+    retirements: Vec<RetiredMeshRange>,
+    native_work: gfx_core::GpuSubmissionDependencyGraph,
+}
+
+impl MeshArena {
+    pub(super) fn generated_output(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            generated_output: true,
+            generated_limits: limits,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn generated_templates(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            generated_output: true,
+            generated_templates: true,
+            generated_limits: limits,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn generated_arguments(limits: gfx_core::BufferBindingLimits) -> Self {
+        Self {
+            generated_output: true,
+            generated_arguments: true,
+            generated_limits: limits,
+            ..Self::default()
+        }
+    }
+
+    // Shared page offsets must satisfy both the driver's storage binding
+    // offset alignment and the 16-byte GeneratedFace shader address unit.
+    // Compute their least common multiple; do not assume power-of-two limits.
+    fn generated_face_alignment(
+        limits: gfx_core::BufferBindingLimits,
+        record_bytes: u64,
+    ) -> gpui::Result<u64> {
+        let alignment = limits.storage_offset_alignment;
+        if alignment == 0 {
+            return Err(anyhow!("storage offset alignment was not reported").into());
+        }
+        let (mut a, mut b) = (alignment, record_bytes);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        alignment
+            .checked_div(a)
+            .and_then(|v| v.checked_mul(record_bytes))
+            .ok_or_else(|| anyhow!("generated face alignment overflow").into())
+    }
+
+    pub(super) fn allocate(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        backend: BackendKind,
+        bytes: u64,
+    ) -> gpui::Result<(ArenaAllocation, BufferId, u64, u64)> {
+        // Match the actual device's storage-buffer binding offset alignment,
+        // while also maintaining the shader's 16-byte GeneratedFace addressing.
+        // No backend name or assumed 256-byte limit is involved in this plan.
+        let stride = if self.generated_output {
+            Self::generated_face_alignment(
+                self.generated_limits,
+                if self.generated_templates { 112 } else { 16 },
+            )?
+        } else {
+            u64::from(VOXEL_VERTEX_STRIDE)
+        };
+        let aligned = bytes
+            .max(1)
+            .checked_add(stride - 1)
+            .ok_or_else(|| anyhow!("voxel mesh exceeds arena address range"))?
+            / stride
+            * stride;
+        if self.generated_output {
+            self.generated_limits.validate_range(0, aligned, false)?;
+        }
+        if let Some(reserved) = self.reserve_page(aligned)? {
+            return Ok(reserved);
+        }
+        let capacity = VOXEL_ARENA_PAGE_BYTES.max(
+            aligned
+                .checked_next_power_of_two()
+                .ok_or_else(|| anyhow!("voxel arena page size overflow"))?,
+        );
+        // The 8 MiB page is an allocation-policy target, not a GPU limit.
+        // Cap generated pages to the device's reported maximum storage range.
+        let capacity = if self.generated_output {
+            capacity.min(self.generated_limits.max_storage_binding_bytes)
+        } else {
+            capacity
+        };
+        if capacity < aligned {
+            return Err(anyhow!("generated face exceeds device storage range").into());
+        }
+        let memory_location = buffer_memory_location(backend);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(if self.generated_output {
+                if self.generated_templates {
+                    "gpui_3d generated template pool".into()
+                } else if self.generated_arguments {
+                    "gpui_3d generated part-count pool".into()
+                } else {
+                    "gpui_3d generated face pool".into()
+                }
+            } else {
+                "gpui_3d voxel mesh arena".into()
+            }),
+            size: capacity,
+            usage: if self.generated_templates {
+                BufferUsage::STORAGE | BufferUsage::COPY_DST
+            } else if self.generated_arguments {
+                BufferUsage::STORAGE
+                    | BufferUsage::STORAGE_WRITE
+                    | BufferUsage::INDIRECT
+                    | BufferUsage::COPY_DST
+            } else if self.generated_output {
+                BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE | BufferUsage::COPY_DST
+            } else {
+                BufferUsage::STORAGE | BufferUsage::INDEX | BufferUsage::COPY_DST
+            },
+            memory_location,
+        })?;
+        let page = ArenaPage {
+            buffer,
+            capacity,
+            used: aligned,
+            live: 1,
+            live_bytes: aligned,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        let available = page.available_bytes();
+        let index = if let Some(index) = self.free_pages.pop() {
+            self.pages[index] = Some(page);
+            index
+        } else {
+            let index = self.pages.len();
+            self.pages.push(Some(page));
+            index
+        };
+        if available > 0 {
+            self.available_pages.insert((available, index));
+        }
+        Ok((
+            ArenaAllocation {
+                page: index,
+                offset: 0,
+                bytes: aligned,
+            },
+            buffer,
+            0,
+            capacity,
+        ))
+    }
+
+    fn reserve_page(
+        &mut self,
+        bytes: u64,
+    ) -> gpui::Result<Option<(ArenaAllocation, BufferId, u64, u64)>> {
+        let Some(&(available, index)) = self.available_pages.range((bytes, 0)..).next() else {
+            return Ok(None);
+        };
+        let page = self.pages[index]
+            .as_mut()
+            .ok_or_else(|| anyhow!("voxel arena available page is missing"))?;
+        let offset = page
+            .reserve(bytes)
+            .ok_or_else(|| anyhow!("voxel arena available range is too small"))?;
+        self.available_pages.remove(&(available, index));
+        let remaining = page.available_bytes();
+        if remaining > 0 {
+            self.available_pages.insert((remaining, index));
+        }
+        Ok(Some((
+            ArenaAllocation {
+                page: index,
+                offset,
+                bytes,
+            },
+            page.buffer,
+            offset,
+            page.capacity,
+        )))
+    }
+
+    pub(super) fn release(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        allocation: ArenaAllocation,
+    ) -> gpui::Result<()> {
+        let Some(page) = self.pages.get_mut(allocation.page).and_then(Option::as_mut) else {
+            return Err(anyhow!("voxel arena allocation refers to a missing page").into());
+        };
+        if page.live == 0 {
+            return Err(anyhow!("voxel arena page has no live allocations").into());
+        }
+        if page.live == 1
+            && page.retired_ranges.is_empty()
+            && !self.native_work.has_independent_queue_work()
+        {
+            if page.live_bytes != allocation.bytes {
+                return Err(anyhow!("voxel arena final allocation size mismatch").into());
+            }
+            // Whole-buffer destruction is still deferred by the backend's
+            // native primary-queue fence. Never destroy when independent
+            // producers or other retired ranges still hold this allocation.
+            device.destroy_buffer(page.buffer)?;
+            self.available_pages
+                .remove(&(page.available_bytes(), allocation.page));
+            self.pages[allocation.page] = None;
+            self.free_pages.push(allocation.page);
+            self.retired_pages.remove(&allocation.page);
+        } else {
+            let span = gfx_core::GpuResourceSpan::buffer(
+                page.buffer,
+                allocation.offset,
+                allocation.bytes,
+            )?;
+            let dependencies = self.native_work.retirement(&[span]);
+            page.retire(allocation.offset, allocation.bytes)?;
+            self.retirements.push(RetiredMeshRange {
+                page: allocation.page,
+                offset: allocation.offset,
+                bytes: allocation.bytes,
+                dependencies,
+                fallback: Vec::new(),
+                needs_primary_proof: true,
+            });
+            self.retired_pages.insert(allocation.page);
+            // The last live range is quarantined rather than handing the
+            // whole GPU allocation to a backend lacking a second queue fence.
+            if page.live == 0 {
+                self.available_pages
+                    .remove(&(page.available_bytes(), allocation.page));
+            }
+        }
+        Ok(())
+    }
+
+    /// Register the real Graphics producer only after its native queue has
+    /// accepted DrawIndirect. All currently resident page allocations are
+    /// conservative potential readers; this never claims a CPU frame number
+    /// or a later GUI texture sampler is a GPU reader.
+    pub(super) fn native_draw_submitted(&mut self, submission: Option<gfx_core::SubmissionId>) {
+        let Some(submission) = submission else { return };
+        if !self.native_work.contains_submission(submission) {
+            let resident_reads = || {
+                self.pages
+                    .iter()
+                    .flatten()
+                    .filter(|page| page.live != 0)
+                    .map(|page| gfx_core::GpuSubmissionAccess {
+                        span: gfx_core::GpuResourceSpan::WholeBuffer(page.buffer),
+                        access: gfx_core::GpuAccess::ReadBuffer,
+                    })
+            };
+            if self
+                .native_work
+                .register(gfx_core::GpuSubmissionRecord::new(
+                    submission,
+                    gfx_core::GpuQueueId::PRIMARY,
+                    gfx_core::GpuWorkStage::Graphics,
+                    resident_reads().collect(),
+                ))
+                .is_err()
+            {
+                // A native DrawIndirect batch has ALREADY been accepted by
+                // the backend. Missing cross-queue wait proof cannot make its
+                // accesses disappear. Quarantine every resident buffer on
+                // the actual primary queue until a same-queue checkpoint;
+                // independent producers retain their own fence obligations.
+                for access in resident_reads() {
+                    self.native_work
+                        .register_untracked(gfx_core::GpuQueueId::PRIMARY, access);
+                }
+            }
+        }
+        self.gpu_submission_accepted(submission);
+    }
+
+    /// A GPU dispatch or transfer can remain in flight after returning from
+    /// the CPU API. Record precisely the allocation it may touch before
+    /// issuing the native operation, including partial-error paths. A later
+    /// same-queue checkpoint seals this access; it is never marked completed
+    /// merely because dispatch_compute_batch returned Ok.
+    pub(super) fn mark_untracked_access(
+        &mut self,
+        allocation: ArenaAllocation,
+        access: gfx_core::GpuAccess,
+    ) -> gfx_core::Result<()> {
+        self.mark_untracked_access_on_queue(allocation, access, gfx_core::GpuQueueId::PRIMARY)
+    }
+
+    /// Conservative physical queue tracking BEFORE native submit, including
+    /// partially accepted native command-list failure paths.
+    pub(super) fn mark_untracked_access_on_queue(
+        &mut self,
+        allocation: ArenaAllocation,
+        access: gfx_core::GpuAccess,
+        queue: gfx_core::GpuQueueId,
+    ) -> gfx_core::Result<()> {
+        let page = self
+            .pages
+            .get(allocation.page)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| {
+                gfx_core::Error::InvalidInput(
+                    "mesh arena GPU access references a missing physical page".into(),
+                )
+            })?;
+        let span =
+            gfx_core::GpuResourceSpan::buffer(page.buffer, allocation.offset, allocation.bytes)?;
+        if allocation
+            .offset
+            .checked_add(allocation.bytes)
+            .is_none_or(|end| end > page.capacity)
+        {
+            return Err(gfx_core::Error::InvalidInput(
+                "mesh arena access exceeds its actual physical GPU page".into(),
+            ));
+        }
+        self.native_work
+            .register_untracked(queue, gfx_core::GpuSubmissionAccess { span, access });
+        Ok(())
+    }
+
+    /// Register an actual primary native checkpoint after staged buffer
+    /// uploads. The accepted fence is made available to Compute/Transfer
+    /// registrations as a genuine GPU-side wait predecessor; never infer
+    /// a dependency from CPU submission order.
+    pub(super) fn register_native_primary_checkpoint(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+    ) -> gfx_core::Result<()> {
+        if !self.native_work.contains_submission(submission) {
+            self.native_work
+                .register(gfx_core::GpuSubmissionRecord::new(
+                    submission,
+                    gfx_core::GpuQueueId::PRIMARY,
+                    gfx_core::GpuWorkStage::Transfer,
+                    Vec::new(),
+                ))?;
+        }
+        self.gpu_submission_accepted(submission);
+        Ok(())
+    }
+
+    /// Once an independent native submission is accepted, convert the
+    /// conservatively marked in-flight queue accesses to the REAL fence.
+    /// Only this same physical queue can seal untracked operations.
+    fn seal_native_queue_submission(
+        &mut self,
+        queue: gfx_core::GpuQueueId,
+        submission: gfx_core::SubmissionId,
+    ) -> gfx_core::Result<()> {
+        self.native_work.seal_untracked_queue(queue, submission)?;
+        for range in &mut self.retirements {
+            range
+                .dependencies
+                .seal_ordered_queue(&self.native_work, queue, submission)?;
+        }
+        Ok(())
+    }
+
+    /// Convert an accepted native Compute producer into byte-accurate GPU
+    /// resident retirement obligations. Records reads and writes independently;
+    /// a GPU fence from an unrelated queue cannot free these allocations.
+    ///
+    /// Calls must originate from the native owner immediately after
+    /// submit_compute returns a real SubmissionId. The owner
+    /// must subsequently poll that ID and forward gpu_submission_completed.
+    /// Failure to register falls back to unfenced quarantine.
+    pub(super) fn register_native_compute_allocations(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+        queue: gfx_core::GpuQueueId,
+        allocations: &[(ArenaAllocation, gfx_core::GpuAccess)],
+        native_waits: &[gfx_core::GpuNativeWaitProof],
+    ) -> gfx_core::Result<()> {
+        if allocations.is_empty() {
+            return Err(gfx_core::Error::InvalidInput(
+                "native Compute submission has no declared arena resource use".into(),
+            ));
+        }
+        let mut uses = Vec::with_capacity(allocations.len());
+        for &(allocation, access) in allocations {
+            let page = self
+                .pages
+                .get(allocation.page)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    gfx_core::Error::InvalidInput(
+                        "native Compute references an invalid Mesh Arena page".into(),
+                    )
+                })?;
+            let span = gfx_core::GpuResourceSpan::buffer(
+                page.buffer,
+                allocation.offset,
+                allocation.bytes,
+            )?;
+            if allocation
+                .offset
+                .checked_add(allocation.bytes)
+                .is_none_or(|end| end > page.capacity)
+            {
+                return Err(gfx_core::Error::InvalidInput(
+                    "native Compute touches bytes outside its Mesh Arena page".into(),
+                ));
+            }
+            uses.push(gfx_core::GpuSubmissionAccess { span, access });
+        }
+        let mut record = gfx_core::GpuSubmissionRecord::new(
+            submission,
+            queue,
+            gfx_core::GpuWorkStage::Compute,
+            uses.clone(),
+        );
+        for proof in native_waits {
+            if let Err(error) = record.add_native_gpu_wait(*proof) {
+                for access in uses {
+                    self.native_work.register_untracked(queue, access);
+                }
+                return Err(error);
+            }
+        }
+        self.register_native_access(record)?;
+        self.seal_native_queue_submission(queue, submission)
+    }
+
+    /// Register actual Compute/Transfer/Graphics resource access by its
+    /// native submission and physical queue. Cross-queue waits in `record`
+    /// require a backend-issued GpuNativeWaitProof.
+    pub(super) fn register_native_access(
+        &mut self,
+        record: gfx_core::GpuSubmissionRecord,
+    ) -> gfx_core::Result<()> {
+        let queue = record.queue;
+        let accesses = record.uses.clone();
+        if let Err(error) = self.native_work.register(record) {
+            // Registration runs AFTER native submission acceptance. A missing
+            // queue wait, duplicate ID or unknown dependency must fail closed:
+            // do not discard already queued GPU uses from retirement tracking.
+            for access in accesses {
+                self.native_work.register_untracked(queue, access);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Bind a REAL native GPU Copy submission to precisely the source and
+    /// destination byte ranges owned by this arena. A cross-arena relocation
+    /// calls this for both arenas with the same native SubmissionId; neither
+    /// can release its physical suballocation until that fence is complete.
+    ///
+    /// Call only AFTER the backend accepts actual typed Copy commands and
+    /// returns its native producer ID. The renderer GPU owner must also poll
+    /// that ID and deliver gpu_submission_completed. A lost/invalid dependency
+    /// fails closed by registering unknown work rather than freeing bytes.
+    #[cfg(test)]
+    pub(super) fn register_native_buffer_copies(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+        queue: gfx_core::GpuQueueId,
+        copies: &[gfx_core::GpuBufferCopy],
+        native_waits: &[gfx_core::GpuNativeWaitProof],
+    ) -> gfx_core::Result<()> {
+        let mut uses = Vec::new();
+        for copy in copies {
+            copy.validate()?;
+            for page in self.pages.iter().flatten() {
+                if copy.source == page.buffer {
+                    let span = gfx_core::GpuResourceSpan::buffer(
+                        page.buffer,
+                        copy.source_offset,
+                        copy.bytes,
+                    )?;
+                    if copy
+                        .source_offset
+                        .checked_add(copy.bytes)
+                        .is_none_or(|end| end > page.capacity)
+                    {
+                        return Err(gfx_core::Error::InvalidInput(
+                            "native Copy source escapes the Mesh Arena physical page".into(),
+                        ));
+                    }
+                    uses.push(gfx_core::GpuSubmissionAccess {
+                        span,
+                        access: gfx_core::GpuAccess::CopyRead,
+                    });
+                }
+                if copy.destination == page.buffer {
+                    let span = gfx_core::GpuResourceSpan::buffer(
+                        page.buffer,
+                        copy.destination_offset,
+                        copy.bytes,
+                    )?;
+                    if copy
+                        .destination_offset
+                        .checked_add(copy.bytes)
+                        .is_none_or(|end| end > page.capacity)
+                    {
+                        return Err(gfx_core::Error::InvalidInput(
+                            "native Copy destination escapes the Mesh Arena physical page".into(),
+                        ));
+                    }
+                    uses.push(gfx_core::GpuSubmissionAccess {
+                        span,
+                        access: gfx_core::GpuAccess::CopyWrite,
+                    });
+                }
+            }
+        }
+        if uses.is_empty() {
+            return Err(gfx_core::Error::InvalidInput(
+                "native Copy has no source or destination in this Mesh Arena".into(),
+            ));
+        }
+        let mut record = gfx_core::GpuSubmissionRecord::new(
+            submission,
+            queue,
+            gfx_core::GpuWorkStage::Transfer,
+            uses.clone(),
+        );
+        for proof in native_waits {
+            if let Err(error) = record.add_native_gpu_wait(*proof) {
+                for access in uses {
+                    self.native_work.register_untracked(queue, access);
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.native_work.register(record) {
+            for access in uses {
+                self.native_work.register_untracked(queue, access);
+            }
+            return Err(error);
+        }
+        self.seal_native_queue_submission(queue, submission)
+    }
+
+    /// Attach unfenced primary-queue writes/reads to a real ordered producer
+    /// or GUI submission. This is GPU ordering, not GPU completion.
+    pub(super) fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        if self.retirements.is_empty() && !self.native_work.has_untracked_work() {
+            return;
+        }
+        if !self.native_work.contains_submission(submission) {
+            if self
+                .native_work
+                .register(gfx_core::GpuSubmissionRecord::new(
+                    submission,
+                    gfx_core::GpuQueueId::PRIMARY,
+                    gfx_core::GpuWorkStage::Graphics,
+                    Vec::new(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+        }
+        let _ = self
+            .native_work
+            .seal_untracked_queue(gfx_core::GpuQueueId::PRIMARY, submission);
+        for range in &mut self.retirements {
+            let _ = range.dependencies.seal_ordered_queue(
+                &self.native_work,
+                gfx_core::GpuQueueId::PRIMARY,
+                submission,
+            );
+            if range.needs_primary_proof {
+                range.fallback.push(submission);
+                range.needs_primary_proof = false;
+            }
+        }
+    }
+
+    /// Release only ranges whose *real* GPU read/write fence set is complete.
+    /// Independent queue work stays quarantined after a primary queue fence.
+    pub(super) fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+        let proof = if self.native_work.contains_submission(submission) {
+            self.native_work.complete(submission).ok()
+        } else {
+            None
+        };
+        for range in &mut self.retirements {
+            if let Some(proof) = &proof {
+                range.dependencies.mark_finished(proof);
+                range.fallback.retain(|id| !proof.finished().contains(id));
+            } else {
+                range.fallback.retain(|id| *id != submission);
+            }
+        }
+        self.reclaim_proven_ranges();
+    }
+
+    fn reclaim_proven_ranges(&mut self) {
+        let mut index = 0;
+        while index < self.retirements.len() {
+            let range = &self.retirements[index];
+            if range.needs_primary_proof
+                || !range.fallback.is_empty()
+                || !range.dependencies.safe_to_reuse()
+            {
+                index += 1;
+                continue;
+            }
+            let range = self.retirements.swap_remove(index);
+            let Some(page) = self.pages.get_mut(range.page).and_then(Option::as_mut) else {
+                continue;
+            };
+            self.available_pages
+                .remove(&(page.available_bytes(), range.page));
+            if page.reclaim_completed_range(range.offset, range.bytes) {
+                if page.retired_ranges.is_empty() {
+                    self.retired_pages.remove(&range.page);
+                }
+                let available = page.available_bytes();
+                if available > 0 {
+                    self.available_pages.insert((available, range.page));
+                }
+            }
+        }
+    }
+
+    /// Called only after the host has confirmed all pending GPU-owner work on
+    /// its ordered PRIMARY queue has completed, not an unrelated queue.
+    /// Independent submissions remain individually fenced.
+    pub(super) fn reclaim_after_gpu_idle(&mut self) {
+        // The owner completed all *tracked* primary submissions, not
+        // necessarily Compute/Transfer commands queued AFTER its last
+        // tracked fence. Such work retains a pending native dependency until
+        // a later accepted queue checkpoint proves its completion.
+        if self.native_work.has_independent_queue_work() || self.native_work.has_untracked_work() {
+            self.reclaim_proven_ranges();
+            return;
+        }
+        self.retirements.clear();
+        self.native_work.reset_after_gpu_idle();
+        for index in self.retired_pages.drain() {
+            let Some(page) = self.pages.get_mut(index).and_then(Option::as_mut) else {
+                continue;
+            };
+            if page.retired_ranges.is_empty() {
+                continue;
+            }
+            self.available_pages
+                .remove(&(page.available_bytes(), index));
+            page.reclaim_retired();
+            let available = page.available_bytes();
+            if available > 0 {
+                self.available_pages.insert((available, index));
+            }
+        }
+    }
+
+    /// Queried on every GPU-owner frame and shared by DX11/DX12/Vulkan/GL.
+    /// A sparse Section retirement must not scan hundreds of resident pages.
+    pub(super) fn has_retired_ranges(&self) -> bool {
+        !self.retired_pages.is_empty()
+    }
+
+    pub(super) fn stats(&self) -> (usize, u64, u64, u64) {
+        self.pages
+            .iter()
+            .flatten()
+            .fold((0, 0, 0, 0), |(count, capacity, live, dead), page| {
+                (
+                    count + 1,
+                    capacity + page.capacity,
+                    live + page.live_bytes,
+                    dead + page.used.saturating_sub(page.live_bytes),
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+mod sparse_arena_retirement_tests {
+    use super::*;
+
+    fn page(id: u32, retired: bool) -> ArenaPage {
+        ArenaPage {
+            buffer: BufferId::from_parts(id, 1),
+            capacity: 1024,
+            used: if retired { 256 } else { 128 },
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: if retired {
+                vec![(128, 128)]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn untracked_compute_after_last_graphics_fence_is_not_global_idle() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionRecord, GpuWorkStage};
+        let buffer = BufferId::from_parts(907, 1);
+        let allocation = ArenaAllocation {
+            page: 0,
+            offset: 128,
+            bytes: 64,
+        };
+        let span = GpuResourceSpan::buffer(buffer, allocation.offset, allocation.bytes).unwrap();
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 384,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let previous = gfx_core::SubmissionId::from_parts(908, 1);
+        let next = gfx_core::SubmissionId::from_parts(909, 1);
+        arena
+            .register_native_access(GpuSubmissionRecord::new(
+                previous,
+                GpuQueueId::PRIMARY,
+                GpuWorkStage::Graphics,
+                vec![],
+            ))
+            .unwrap();
+        // This GPU write was queued after previous; completing previous
+        // does not finish the newer operation without a newer queue fence.
+        arena
+            .mark_untracked_access(allocation, GpuAccess::StorageWrite)
+            .unwrap();
+        arena.retirements.push(RetiredMeshRange {
+            page: 0,
+            offset: 128,
+            bytes: 64,
+            dependencies: arena.native_work.retirement(&[span]),
+            fallback: vec![],
+            needs_primary_proof: true,
+        });
+        arena.gpu_submission_completed(previous);
+        arena.reclaim_after_gpu_idle();
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.gpu_submission_accepted(next);
+        arena.gpu_submission_completed(next);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(
+            arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64)]
+        );
+    }
+
+    #[test]
+    fn generated_native_queue_checkpoint_keeps_uploaded_mesh_bytes_until_compute_finishes() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1720, 1);
+        let range = ArenaAllocation {
+            page: 0,
+            offset: 128,
+            bytes: 64,
+        };
+        let span = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        let primary = gfx_core::SubmissionId::from_parts(1721, 1);
+        let native = gfx_core::SubmissionId::from_parts(1722, 1);
+        let queue = GpuQueueId {
+            family: 4,
+            index: 1,
+        };
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 256,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        }));
+
+        // The upload is on the PRIMARY queue. Its accepted checkpoint proves
+        // CopyWrite availability, not independent Compute completion.
+        arena
+            .mark_untracked_access(range, GpuAccess::CopyWrite)
+            .unwrap();
+        arena.register_native_primary_checkpoint(primary).unwrap();
+        assert!(!arena.native_work.has_untracked_work());
+
+        // SAFETY: Only a unit-test model of an already enqueued native GPU
+        // Wait; production proofs are returned by the Vulkan/DX12 backend.
+        let wait = unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(primary, queue) };
+        arena
+            .mark_untracked_access_on_queue(range, GpuAccess::StorageWrite, queue)
+            .unwrap();
+        arena
+            .register_native_compute_allocations(
+                native,
+                queue,
+                &[(range, GpuAccess::StorageWrite)],
+                &[wait],
+            )
+            .unwrap();
+        assert!(!arena.native_work.has_untracked_work());
+        let dependencies = arena.native_work.retirement(&[span.clone()]);
+        assert!(dependencies.pending().contains(&primary));
+        assert!(dependencies.pending().contains(&native));
+
+        arena.gpu_submission_completed(primary);
+        assert!(
+            arena
+                .native_work
+                .retirement(&[span.clone()])
+                .pending()
+                .contains(&native)
+        );
+        arena.gpu_submission_completed(native);
+        assert!(arena.native_work.retirement(&[span]).safe_to_reuse());
+    }
+
+    #[test]
+    fn native_compute_reads_and_writes_retire_by_its_own_physical_queue_fence() {
+        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1300, 1);
+        let queue = GpuQueueId {
+            family: 0,
+            index: 2,
+        };
+        let compute = gfx_core::SubmissionId::from_parts(1301, 1);
+        let graphics = gfx_core::SubmissionId::from_parts(1302, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 448,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![(128, 64), (256, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let changed = [
+            (
+                ArenaAllocation {
+                    page: 0,
+                    offset: 128,
+                    bytes: 64,
+                },
+                GpuAccess::StorageWrite,
+            ),
+            (
+                ArenaAllocation {
+                    page: 0,
+                    offset: 256,
+                    bytes: 64,
+                },
+                GpuAccess::ReadBuffer,
+            ),
+        ];
+        arena
+            .register_native_compute_allocations(compute, queue, &changed, &[])
+            .unwrap();
+        for &(allocation, _) in &changed {
+            let span =
+                GpuResourceSpan::buffer(buffer, allocation.offset, allocation.bytes).unwrap();
+            arena.retirements.push(RetiredMeshRange {
+                page: 0,
+                offset: allocation.offset,
+                bytes: allocation.bytes,
+                dependencies: arena.native_work.retirement(&[span]),
+                fallback: vec![],
+                needs_primary_proof: true,
+            });
+        }
+        assert!(
+            arena
+                .native_work
+                .retirement(&[GpuResourceSpan::buffer(buffer, 384, 32).unwrap(),])
+                .safe_to_reuse()
+        );
+        arena.gpu_submission_accepted(graphics);
+        arena.gpu_submission_completed(graphics);
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        assert_eq!(arena.retirements.len(), 2);
+        arena.gpu_submission_completed(compute);
+        assert!(arena.retirements.is_empty());
+        assert_eq!(
+            arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64), (256, 64)]
+        );
+    }
+
+    #[test]
+    fn native_copy_writer_retains_exact_mesh_range_until_its_own_queue_fence() {
+        use gfx_core::{GpuBufferCopy, GpuQueueId, GpuResourceSpan};
+        let buffer = BufferId::from_parts(1200, 1);
+        let source = BufferId::from_parts(1201, 1);
+        let transfer = GpuQueueId {
+            family: 0,
+            index: 3,
+        };
+        let producer = gfx_core::SubmissionId::from_parts(1202, 1);
+        let graphics = gfx_core::SubmissionId::from_parts(1203, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 320,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let copy = GpuBufferCopy {
+            source,
+            source_offset: 0,
+            destination: buffer,
+            destination_offset: 128,
+            bytes: 64,
+        };
+        arena
+            .register_native_buffer_copies(producer, transfer, &[copy], &[])
+            .unwrap();
+        let active = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        let unrelated = GpuResourceSpan::buffer(buffer, 256, 64).unwrap();
+        assert_eq!(
+            arena
+                .native_work
+                .retirement(&[active.clone()])
+                .pending()
+                .len(),
+            1
+        );
+        assert!(arena.native_work.retirement(&[unrelated]).safe_to_reuse());
+        arena.retirements.push(RetiredMeshRange {
+            page: 0,
+            offset: 128,
+            bytes: 64,
+            dependencies: arena.native_work.retirement(&[active]),
+            fallback: vec![],
+            needs_primary_proof: true,
+        });
+        arena.gpu_submission_accepted(graphics);
+        arena.gpu_submission_completed(graphics);
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.gpu_submission_completed(producer);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(
+            arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64)]
+        );
+    }
+
+    #[test]
+    fn native_copy_registration_checks_physical_page_bounds() {
+        let buffer = BufferId::from_parts(1210, 1);
+        let source = BufferId::from_parts(1211, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(page(1210, false)));
+        let copy = gfx_core::GpuBufferCopy {
+            source,
+            source_offset: 0,
+            destination: buffer,
+            destination_offset: 1000,
+            bytes: 64,
+        };
+        let id = gfx_core::SubmissionId::from_parts(1212, 1);
+        assert!(
+            arena
+                .register_native_buffer_copies(id, gfx_core::GpuQueueId::PRIMARY, &[copy], &[],)
+                .is_err()
+        );
+        assert_eq!(arena.native_work.live_count(), 0);
+    }
+
+    #[test]
+    fn accepted_graphics_draw_quarantines_unordered_async_mesh_writer() {
+        use gfx_core::{
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+            GpuWorkStage,
+        };
+        let buffer = BufferId::from_parts(1500, 1);
+        let write = gfx_core::SubmissionId::from_parts(1501, 1);
+        let draw = gfx_core::SubmissionId::from_parts(1502, 1);
+        let compute_queue = GpuQueueId {
+            family: 4,
+            index: 1,
+        };
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 256,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![],
+        }));
+        let span = GpuResourceSpan::buffer(buffer, 0, 128).unwrap();
+        arena
+            .register_native_access(GpuSubmissionRecord::new(
+                write,
+                compute_queue,
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: span.clone(),
+                    access: GpuAccess::StorageWrite,
+                }],
+            ))
+            .unwrap();
+
+        // A graphics producer with no explicit native wait proof conflicts
+        // with the independent writer, so it must be quarantined rather than
+        // silently dropped from the Mesh Arena's physical lifetime model.
+        arena.native_draw_submitted(Some(draw));
+        assert!(arena.native_work.contains_submission(draw));
+        assert!(!arena.native_work.has_untracked_work());
+        let dependency = arena.native_work.retirement(&[span.clone()]);
+        assert!(dependency.pending().contains(&write));
+        assert!(dependency.pending().contains(&draw));
+
+        arena.gpu_submission_completed(draw);
+        let dependency = arena.native_work.retirement(&[span]);
+        assert!(dependency.pending().contains(&write));
+        assert!(!dependency.safe_to_reuse());
+        arena.gpu_submission_completed(write);
+        assert!(
+            arena
+                .native_work
+                .retirement(&[GpuResourceSpan::buffer(buffer, 0, 128).unwrap()])
+                .safe_to_reuse()
+        );
+    }
+
+    #[test]
+    fn independent_compute_writer_prevents_primary_fence_mesh_reuse() {
+        use gfx_core::{
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+            GpuWorkStage,
+        };
+        let buffer = BufferId::from_parts(901, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 384,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![(128, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let async_queue = GpuQueueId {
+            family: 4,
+            index: 1,
+        };
+        let writer = gfx_core::SubmissionId::from_parts(902, 1);
+        let primary = gfx_core::SubmissionId::from_parts(903, 1);
+        let span = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        arena
+            .register_native_access(GpuSubmissionRecord::new(
+                writer,
+                async_queue,
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: span.clone(),
+                    access: GpuAccess::StorageReadWrite,
+                }],
+            ))
+            .unwrap();
+        arena.retirements.push(RetiredMeshRange {
+            page: 0,
+            offset: 128,
+            bytes: 64,
+            dependencies: arena.native_work.retirement(&[span]),
+            fallback: vec![],
+            needs_primary_proof: true,
+        });
+        arena.gpu_submission_accepted(primary);
+        arena.gpu_submission_completed(primary);
+        assert!(arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+        arena.reclaim_after_gpu_idle();
+        assert!(arena.has_retired_ranges());
+        arena.gpu_submission_completed(writer);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(
+            arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64)]
+        );
+    }
+
+    #[test]
+    fn completed_mesh_subrange_does_not_recycle_adjacent_pending_range() {
+        use gfx_core::{
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+            GpuWorkStage,
+        };
+        let buffer = BufferId::from_parts(904, 1);
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(ArenaPage {
+            buffer,
+            capacity: 512,
+            used: 448,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: Vec::new(),
+            retired_ranges: vec![(128, 64), (256, 64)],
+        }));
+        arena.retired_pages.insert(0);
+        let compute = gfx_core::SubmissionId::from_parts(905, 1);
+        let producer = gfx_core::SubmissionId::from_parts(906, 1);
+        let queue = GpuQueueId {
+            family: 5,
+            index: 1,
+        };
+        let blocked = GpuResourceSpan::buffer(buffer, 128, 64).unwrap();
+        arena
+            .register_native_access(GpuSubmissionRecord::new(
+                compute,
+                queue,
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: blocked.clone(),
+                    access: GpuAccess::StorageWrite,
+                }],
+            ))
+            .unwrap();
+        let free = GpuResourceSpan::buffer(buffer, 256, 64).unwrap();
+        for (span, offset) in [(blocked, 128_u64), (free, 256_u64)] {
+            arena.retirements.push(RetiredMeshRange {
+                page: 0,
+                offset,
+                bytes: 64,
+                dependencies: arena.native_work.retirement(&[span]),
+                fallback: vec![],
+                needs_primary_proof: true,
+            });
+        }
+        arena.gpu_submission_accepted(producer);
+        arena.gpu_submission_completed(producer);
+        let page = arena.pages[0].as_ref().unwrap();
+        assert_eq!(page.free_ranges, vec![(256, 64)]);
+        assert_eq!(page.retired_ranges, vec![(128, 64)]);
+        arena.gpu_submission_completed(compute);
+        assert!(!arena.has_retired_ranges());
+        assert_eq!(
+            arena.pages[0].as_ref().unwrap().free_ranges,
+            vec![(128, 64), (256, 64)]
+        );
+    }
+
+    #[test]
+    fn only_retired_pages_are_reclaimed_after_gpu_completion() {
+        let mut arena = MeshArena::default();
+        for index in 0..128 {
+            arena.pages.push(Some(page(index, index == 73)));
+        }
+        arena.retired_pages.insert(73);
+        assert!(arena.has_retired_ranges());
+        // The other 127 resident pages are intentionally untouched.
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+        assert!(arena.pages[73].as_ref().unwrap().free_ranges.is_empty());
+        assert_eq!(arena.pages[73].as_ref().unwrap().used, 128);
+        assert_eq!(arena.pages[73].as_ref().unwrap().available_bytes(), 896);
+        assert!(arena.pages[72].as_ref().unwrap().free_ranges.is_empty());
+        assert!(arena.pages[74].as_ref().unwrap().free_ranges.is_empty());
+        assert!(!arena.available_pages.is_empty());
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+    }
+
+    #[test]
+    fn completed_retired_tail_reuses_bump_space_without_moving_live_slots() {
+        let mut page = ArenaPage {
+            buffer: BufferId::from_parts(999, 1),
+            capacity: 512,
+            used: 384,
+            live: 1,
+            live_bytes: 128,
+            free_ranges: vec![(128, 64)],
+            retired_ranges: vec![(256, 128), (192, 64)],
+        };
+        // Before fence completion, none of the retired allocations can be
+        // returned to the GPU allocator (even if their owners were unloaded).
+        assert_eq!(page.available_bytes(), 128);
+        page.reclaim_retired();
+        assert_eq!(page.used, 128);
+        assert_eq!(page.live_bytes, 128);
+        assert!(page.free_ranges.is_empty());
+        assert_eq!(page.reserve(256), Some(128));
+        assert_eq!(page.used, 384);
+    }
+
+    #[test]
+    fn reclaimed_middle_holes_remain_disjoint_from_live_tail() {
+        let mut page = ArenaPage {
+            buffer: BufferId::from_parts(998, 1),
+            capacity: 512,
+            used: 384,
+            live: 2,
+            live_bytes: 192,
+            free_ranges: vec![(128, 64)],
+            retired_ranges: vec![(192, 64), (320, 64)],
+        };
+        page.reclaim_retired();
+        assert_eq!(page.used, 320);
+        assert_eq!(page.free_ranges, vec![(128, 128)]);
+        assert_eq!(page.reserve(128), Some(128));
+        assert_eq!(page.used, 320);
+    }
+
+    #[test]
+    fn retired_page_indices_do_not_outlive_recycled_page_slots() {
+        let mut arena = MeshArena::default();
+        arena.pages.push(Some(page(0, false)));
+        arena.retired_pages.insert(0);
+        // In production release() removes this index on the final buffer
+        // destruction, before a new arena buffer can reuse that slot.
+        arena.pages[0] = None;
+        arena.retired_pages.remove(&0);
+        arena.pages[0] = Some(page(1, false));
+        arena.reclaim_after_gpu_idle();
+        assert!(!arena.has_retired_ranges());
+        assert!(arena.pages[0].as_ref().unwrap().free_ranges.is_empty());
+    }
+}
+
+pub(super) struct TextureResources {
+    pub(super) texture: TextureId,
+    pub(super) view: TextureViewId,
+    pub(super) sampled_slot: Option<gfx_core::SampledTextureSlot>,
+}
+
+pub(super) struct DrawBindingResources<'a> {
+    pub(super) sampled: bool,
+    pub(super) shadow: Option<BufferId>,
+    pub(super) bind_group_layout: BindGroupLayoutId,
+    pub(super) mesh: &'a MeshResources,
+    pub(super) draw_buffer: BufferId,
+    pub(super) draw_capacity: usize,
+    pub(super) instance_buffer: BufferId,
+    pub(super) instance_count: usize,
+    pub(super) light_buffer: BufferId,
+    pub(super) light_capacity: usize,
+    pub(super) albedo_view: TextureViewId,
+    pub(super) normal_texture_view: TextureViewId,
+    pub(super) occlusion_view: TextureViewId,
+    pub(super) metallic_roughness_view: TextureViewId,
+    pub(super) material_sampler: SamplerId,
+    pub(super) frame_buffer: BufferId,
+    pub(super) visible_instances: Option<(BufferId, u64)>,
+    pub(super) draw_slots: BufferId,
+    pub(super) draw_slot_capacity: usize,
+}
+
+pub(super) fn create_texture(
+    device: &mut dyn ExtensionDevice,
+    asset: &TextureAsset,
+) -> gpui::Result<TextureResources> {
+    let size = Extent2d::new(asset.width(), asset.height())?;
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some(format!("gpui_3d texture {}", asset.id().0)),
+        size,
+        mip_level_count: asset.mip_level_count(),
+        format: match asset.color_space() {
+            TextureColorSpace::Srgb => Format::Rgba8UnormSrgb,
+            TextureColorSpace::Linear => Format::Rgba8Unorm,
+        },
+        usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
+        memory_location: MemoryLocation::GpuOnly,
+        dimension: TextureDimension::D2,
+        sample_count: 1,
+    })?;
+    if let Err(error) = write_texture_mips(device, texture, asset) {
+        device.destroy_texture(texture)?;
+        return Err(error);
+    }
+    let view = match device.create_texture_view(&TextureViewDescriptor {
+        label: Some(format!("gpui_3d texture view {}", asset.id().0)),
+        texture,
+        base_mip_level: 0,
+        mip_level_count: asset.mip_level_count(),
+        format: match asset.color_space() {
+            TextureColorSpace::Srgb => Format::Rgba8UnormSrgb,
+            TextureColorSpace::Linear => Format::Rgba8Unorm,
+        },
+    }) {
+        Ok(view) => view,
+        Err(error) => {
+            device.destroy_texture(texture)?;
+            return Err(error.into());
+        }
+    };
+    Ok(TextureResources { texture, view, sampled_slot: None })
+}
+
+fn write_texture_mips(
+    device: &mut dyn ExtensionDevice,
+    texture: TextureId,
+    asset: &TextureAsset,
+) -> gpui::Result<()> {
+    let mut writes = Vec::with_capacity(asset.mip_level_count() as usize);
+    for mip_level in 0..asset.mip_level_count() {
+        let (width, height) = asset
+            .mip_extent(mip_level)
+            .ok_or_else(|| anyhow!("GPUI 3D texture mip level is missing"))?;
+        let size = Extent2d::new(width, height)?;
+        let bytes_per_row = width
+            .checked_mul(4)
+            .ok_or_else(|| anyhow!("GPUI 3D texture row size exceeds u32"))?;
+        let layout = TextureDataLayout::new(0, bytes_per_row, height)?;
+        let data = asset
+            .mip_pixels(mip_level)
+            .ok_or_else(|| anyhow!("GPUI 3D texture mip pixels are missing"))?;
+        writes.push(TextureWrite {
+            descriptor: TextureWriteDescriptor {
+                texture,
+                mip_level,
+                layout,
+                origin: Origin2d { x: 0, y: 0 },
+                size,
+            },
+            data,
+        });
+    }
+    device.write_texture_batch(&writes)?;
+    Ok(())
+}
+
+pub(super) fn destroy_texture(
+    device: &mut dyn ExtensionDevice,
+    texture: TextureResources,
+) -> gpui::Result<()> {
+    device.destroy_texture_view(texture.view)?;
+    device.destroy_texture(texture.texture)?;
+    Ok(())
+}
+
+pub(super) fn create_mesh(
+    device: &mut dyn ExtensionDevice,
+    mesh: &Mesh,
+    backend: BackendKind,
+    compact_voxel: bool,
+    arena: &mut MeshArena,
+) -> gpui::Result<(MeshResources, Option<PendingMeshUpload>)> {
+    let encoded = if compact_voxel {
+        encode_voxel_mesh(mesh)?
+    } else {
+        encode_mesh(mesh)?
+    };
+    let EncodedMesh {
+        vertices: mut vertex_data,
+        tangents: tangent_data,
+        indices: index_data,
+        index_format,
+    } = encoded;
+    if compact_voxel {
+        let procedural_quads = mesh.compact_voxel_quad_count().is_some();
+        let vertex_bytes = vertex_data.len();
+        let index_bytes = index_data.len();
+        let requested = u64::try_from(
+            vertex_bytes
+                .checked_add(index_bytes)
+                .ok_or_else(|| anyhow!("voxel mesh size overflow"))?,
+        )
+        .context("voxel mesh exceeds address range")?;
+        let (allocation, buffer, offset, capacity) = arena.allocate(device, backend, requested)?;
+        let vertex_base = u32::try_from(offset / u64::from(VOXEL_VERTEX_STRIDE));
+        let binding_bytes = usize::try_from(capacity);
+        let (Ok(vertex_base), Ok(vertex_binding_bytes)) = (vertex_base, binding_bytes) else {
+            arena.release(device, allocation)?;
+            return Err(anyhow!("voxel arena exceeds shader or host address range").into());
+        };
+        let index_offset = offset + vertex_bytes as u64;
+        vertex_data.extend_from_slice(&index_data);
+        return Ok((
+            MeshResources {
+                generated: None,
+                generation: mesh.generation(),
+                vertices: buffer,
+                vertex_binding_bytes,
+                vertex_stride: VOXEL_VERTEX_STRIDE,
+                vertex_base,
+                tangents: None,
+                tangent_bytes: 0,
+                indices: buffer,
+                index_format,
+                index_offset,
+                procedural_quads,
+                allocation: Some(allocation),
+            },
+            Some(PendingMeshUpload {
+                buffer,
+                offset,
+                bytes: vertex_data,
+            }),
+        ));
+    }
+    // Mesh geometry is written once when the mesh is built and only read afterwards, so it
+    // belongs in device-local memory instead of consuming host-visible space. Metal and the
+    // stub backends have no staging path for device-local buffers yet, so their geometry stays
+    // host visible.
+    let buffer_memory_location = buffer_memory_location(backend);
+    let vertex_buffer = create_storage_buffer(
+        device,
+        "gpui_3d vertices",
+        vertex_data.len(),
+        buffer_memory_location,
+    )?;
+    if let Err(error) = device.write_buffer(vertex_buffer, 0, &vertex_data) {
+        device.destroy_buffer(vertex_buffer)?;
+        return Err(error.into());
+    }
+    let index_buffer = match device.create_buffer(&BufferDescriptor {
+        label: Some("gpui_3d indices".into()),
+        size: u64::try_from(index_data.len()).context("3D index buffer exceeds address range")?,
+        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        memory_location: buffer_memory_location,
+    }) {
+        Ok(buffer) => buffer,
+        Err(error) => {
+            device.destroy_buffer(vertex_buffer)?;
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = device.write_buffer(index_buffer, 0, &index_data) {
+        device.destroy_buffer(index_buffer)?;
+        device.destroy_buffer(vertex_buffer)?;
+        return Err(error.into());
+    }
+    let (tangent_buffer, tangent_bytes) = if let Some(tangent_data) = tangent_data {
+        let tangent_buffer = match create_storage_buffer(
+            device,
+            "gpui_3d tangents",
+            tangent_data.len(),
+            buffer_memory_location,
+        ) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                device.destroy_buffer(index_buffer)?;
+                device.destroy_buffer(vertex_buffer)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = device.write_buffer(tangent_buffer, 0, &tangent_data) {
+            device.destroy_buffer(tangent_buffer)?;
+            device.destroy_buffer(index_buffer)?;
+            device.destroy_buffer(vertex_buffer)?;
+            return Err(error.into());
+        }
+        (Some(tangent_buffer), tangent_data.len())
+    } else {
+        (None, 0)
+    };
+    Ok((
+        MeshResources {
+            generated: None,
+            generation: mesh.generation(),
+            vertices: vertex_buffer,
+            vertex_binding_bytes: vertex_data.len(),
+            vertex_stride: PACKED_VERTEX_STRIDE,
+            vertex_base: 0,
+            tangents: tangent_buffer,
+            tangent_bytes,
+            indices: index_buffer,
+            index_format,
+            index_offset: 0,
+            procedural_quads: false,
+            allocation: None,
+        },
+        None,
+    ))
+}
+
+pub(super) fn buffer_memory_location(backend: BackendKind) -> MemoryLocation {
+    match backend {
+        BackendKind::Dx11 | BackendKind::Dx12 | BackendKind::Vulkan => MemoryLocation::GpuOnly,
+        BackendKind::Metal | BackendKind::OpenGl | BackendKind::WebGl => MemoryLocation::CpuToGpu,
+    }
+}
+
+pub(super) fn can_encode_voxel_mesh(mesh: &Mesh) -> bool {
+    mesh.edge_masks().is_none() && mesh.has_unorm_colors()
+}
+
+fn encode_voxel_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
+    let vertex_count = mesh.vertex_count();
+    let use_u16_indices = vertex_count <= u16::MAX as usize + 1;
+    let mut vertices = Vec::with_capacity(vertex_count * VOXEL_VERTEX_STRIDE as usize);
+    if let Some(packed) = mesh.compact_voxel_vertices() {
+        for vertex in packed {
+            vertices.extend_from_slice(&vertex[..VOXEL_VERTEX_STRIDE as usize]);
+        }
+    } else {
+        for vertex in mesh.vertices() {
+            for position in [vertex.position.x, vertex.position.y, vertex.position.z] {
+                vertices.extend_from_slice(&position.to_ne_bytes());
+            }
+            let color = vertex
+                .color
+                .iter()
+                .enumerate()
+                .fold(0u32, |packed, (index, channel)| {
+                    packed | ((*channel * 255.0).round() as u32) << (index * 8)
+                });
+            vertices.extend_from_slice(&color.to_ne_bytes());
+            for uv in [vertex.uv.x, vertex.uv.y] {
+                vertices.extend_from_slice(&uv.to_ne_bytes());
+            }
+        }
+    }
+    let procedural_quads = mesh.compact_voxel_quad_count().is_some();
+    let mut indices = Vec::with_capacity(if procedural_quads {
+        0
+    } else {
+        mesh.index_count() * if use_u16_indices { 2 } else { 4 }
+    });
+    if !procedural_quads {
+        for &index in mesh.indices() {
+            if index as usize >= vertex_count {
+                return Err(anyhow!("GPUI 3D mesh index refers to a missing vertex").into());
+            }
+            if use_u16_indices {
+                indices.extend_from_slice(&(index as u16).to_ne_bytes());
+            } else {
+                indices.extend_from_slice(&index.to_ne_bytes());
+            }
+        }
+    }
+    Ok(EncodedMesh {
+        vertices,
+        tangents: None,
+        indices,
+        index_format: if use_u16_indices {
+            IndexFormat::Uint16
+        } else {
+            IndexFormat::Uint32
+        },
+    })
+}
+
+pub(super) fn create_draw_resource_set(
+    device: &mut dyn ExtensionDevice,
+    bindings: DrawBindingResources<'_>,
+) -> gpui::Result<BindGroupId> {
+    let DrawBindingResources {
+        sampled,
+        shadow,
+        bind_group_layout,
+        mesh,
+        draw_buffer,
+        draw_capacity,
+        instance_buffer,
+        instance_count,
+        light_buffer,
+        light_capacity,
+        albedo_view,
+        normal_texture_view,
+        occlusion_view,
+        metallic_roughness_view,
+        material_sampler,
+        frame_buffer,
+        visible_instances,
+        draw_slots,
+        draw_slot_capacity,
+    } = bindings;
+    let draw_bytes = draw_capacity
+        .checked_mul(DRAW_PARAMS_STRIDE as usize)
+        .ok_or_else(|| anyhow!("3D draw buffer size overflow"))?;
+    let instance_bytes = instance_count
+        .max(1)
+        .checked_mul(INSTANCE_STRIDE as usize)
+        .ok_or_else(|| anyhow!("3D instance buffer size overflow"))?;
+    let (tangent_buffer, tangent_offset, tangent_bytes) = if let Some(tangents) = mesh.tangents {
+        (
+            tangents,
+            0,
+            u64::try_from(mesh.tangent_bytes.max(16)).context("3D tangent buffer size overflow")?,
+        )
+    } else {
+        (draw_buffer, 0, 16)
+    };
+    let mut entries = vec![
+            BindGroupEntry {
+                binding: 16,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: draw_slots,
+                    offset: 0,
+                    size: u64::try_from(draw_slot_capacity.max(1) * 4)
+                        .context("3D draw slot mapping buffer exceeds address range")?,
+                    stride: Some(4),
+                }),
+            },
+            BindGroupEntry {
+                binding: 14,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: mesh.generated.as_ref().map_or(draw_buffer, |m| m.templates),
+                    offset: 0,
+                    size: mesh
+                        .generated
+                        .as_ref()
+                        .map_or(16, |m| m.template_page_bytes),
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: 13,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: if mesh.generated.is_some() {
+                        mesh.vertices
+                    } else {
+                        draw_buffer
+                    },
+                    offset: 0,
+                    size: if mesh.generated.is_some() {
+                        mesh.vertex_binding_bytes as u64
+                    } else {
+                        16
+                    },
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: 12,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: mesh
+                        .generated
+                        .as_ref()
+                        .map_or(draw_buffer, |mesh| mesh.templates),
+                    offset: 0,
+                    size: mesh
+                        .generated
+                        .as_ref()
+                        .map_or(16, |mesh| mesh.template_page_bytes / 112 * 112),
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: VISIBLE_INSTANCE_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: visible_instances.map_or(draw_buffer, |(buffer, _)| buffer),
+                    offset: 0,
+                    size: visible_instances.map_or(4, |(_, size)| size),
+                    stride: Some(4),
+                }),
+            },
+            BindGroupEntry {
+                binding: VERTEX_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: mesh.vertices,
+                    offset: 0,
+                    size: u64::try_from(mesh.vertex_binding_bytes)
+                        .context("3D vertex buffer size overflow")?,
+                    stride: Some(mesh.vertex_stride),
+                }),
+            },
+            BindGroupEntry {
+                binding: DRAW_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: draw_buffer,
+                    offset: 0,
+                    size: u64::try_from(draw_bytes)
+                        .context("3D draw buffer size exceeds address range")?,
+                    stride: Some(DRAW_PARAMS_STRIDE),
+                }),
+            },
+            BindGroupEntry {
+                binding: LIGHT_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: light_buffer,
+                    offset: 0,
+                    size: u64::try_from(light_capacity * LIGHT_STRIDE as usize)
+                        .context("3D light buffer size overflow")?,
+                    stride: Some(LIGHT_STRIDE),
+                }),
+            },
+            BindGroupEntry {
+                binding: ALBEDO_BINDING,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: albedo_view,
+                }),
+            },
+            BindGroupEntry {
+                binding: SAMPLER_BINDING,
+                resource: BindingResource::Sampler(SamplerBinding {
+                    sampler: material_sampler,
+                }),
+            },
+            BindGroupEntry {
+                binding: NORMAL_MAP_BINDING,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: normal_texture_view,
+                }),
+            },
+            BindGroupEntry {
+                binding: OCCLUSION_BINDING,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: occlusion_view,
+                }),
+            },
+            BindGroupEntry {
+                binding: METALLIC_ROUGHNESS_BINDING,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: metallic_roughness_view,
+                }),
+            },
+            BindGroupEntry {
+                binding: TANGENT_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: tangent_buffer,
+                    offset: tangent_offset,
+                    size: tangent_bytes,
+                    stride: Some(16),
+                }),
+            },
+            BindGroupEntry {
+                binding: INSTANCE_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: instance_buffer,
+                    offset: 0,
+                    size: u64::try_from(instance_bytes)
+                        .context("3D instance buffer size exceeds address range")?,
+                    stride: Some(INSTANCE_STRIDE),
+                }),
+            },
+            BindGroupEntry {
+                binding: FRAME_BINDING,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: frame_buffer,
+                    offset: 0,
+                    size: u64::try_from(FRAME_PARAMS_STRIDE)
+                        .context("3D frame buffer size exceeds address range")?,
+                    stride: None,
+                }),
+            },
+            BindGroupEntry {
+                binding: 15,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: shadow.unwrap_or(draw_buffer),
+                    offset: 0,
+                    size: if shadow.is_some() {
+                        512 * 512 * 4
+                    } else {
+                        DRAW_PARAMS_STRIDE as u64
+                    },
+                    stride: Some(4),
+                }),
+            },
+        ];
+    if sampled {
+        entries.retain(|entry| !matches!(entry.binding, ALBEDO_BINDING | NORMAL_MAP_BINDING | OCCLUSION_BINDING | METALLIC_ROUGHNESS_BINDING));
+    }
+    Ok(device.create_bind_group(&BindGroupDescriptor {
+        label: Some("gpui_3d mesh draw resource set".into()),
+        layout: bind_group_layout,
+        entries,
+    })?)
+}
+
+pub(super) fn create_storage_buffer(
+    device: &mut dyn ExtensionDevice,
+    label: &str,
+    bytes: usize,
+    memory_location: MemoryLocation,
+) -> gpui::Result<BufferId> {
+    let size = u64::try_from(bytes.max(1)).context("GPUI 3D buffer size exceeds address range")?;
+    Ok(device.create_buffer(&BufferDescriptor {
+        label: Some(label.into()),
+        size,
+        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        memory_location,
+    })?)
+}
+
+pub(super) fn destroy_mesh(
+    device: &mut dyn ExtensionDevice,
+    mesh: MeshResources,
+    arena: &mut MeshArena,
+    generated_arena: &mut MeshArena,
+    template_arena: &mut MeshArena,
+    arguments_arena: &mut MeshArena,
+) -> gpui::Result<()> {
+    if let Some(allocation) = mesh.allocation {
+        if let Some(generated) = &mesh.generated {
+            // Generated faces, templates and part counts are distinct pools.
+            // Their suballocations remain live until the corresponding mesh
+            // is retired, independent of other Section users of the page.
+            if let Some(argument_allocation) = generated.argument_allocation {
+                arguments_arena.release(device, argument_allocation)?;
+            } else {
+                device.destroy_buffer(generated.arguments)?;
+            }
+            if let Some(template_allocation) = generated.template_allocation {
+                template_arena.release(device, template_allocation)?;
+            } else {
+                device.destroy_buffer(generated.templates)?;
+            }
+            return generated_arena.release(device, allocation);
+        }
+        return arena.release(device, allocation);
+    }
+    let mut buffers = [mesh.indices, mesh.vertices, mesh.indices, mesh.indices];
+    let mut count = 2;
+    for buffer in [
+        mesh.tangents,
+        mesh.generated.as_ref().map(|generated| generated.templates),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        buffers[count] = buffer;
+        count += 1;
+    }
+    device.destroy_buffer_batch(&buffers[..count])?;
+    Ok(())
+}
+
+/// Reserve one future growth band on DX11 after entering a large streamed
+/// voxel scene. At 32K and 64K draws, rebuilding every native SRV bind group
+/// caused 357ms and 644ms stalls in captured traces. A bounded 128K physical
+/// capacity moves that unavoidable rebind to the 16K threshold instead.
+///
+/// This is deliberately not applied to small scenes or other backends, and
+/// never grows past 128K unless the actual draw count requires it.
+pub(super) fn dx11_streaming_headroom(backend: BackendKind, draws: usize) -> usize {
+    if backend == BackendKind::Dx11 && draws > 16_384 && draws <= 131_072 {
+        131_072
+    } else {
+        draws
+    }
+}
+
+pub(super) fn grow_capacity(current: usize, required: usize) -> gpui::Result<usize> {
+    if required <= current {
+        return Ok(current);
+    }
+    current
+        .checked_next_power_of_two()
+        .and_then(|capacity| capacity.max(required).checked_next_power_of_two())
+        .ok_or_else(|| anyhow!("GPUI 3D scene buffer capacity overflow"))
+}
+
+/// Encodes the camera, viewport, and extension-bounds values shared by every draw in one frame.
+///
+/// These values change whenever the camera or the viewport moves. Keeping them in a single small
+/// uniform buffer lets a camera change upload [`FRAME_PARAMS_STRIDE`] bytes instead of re-encoding
+/// every draw slot.
+pub(super) fn encode_frame_params(
+    view_projection: Mat4,
+    camera: Camera,
+    bounds: Bounds<gpui::ScaledPixels>,
+    render_target_size: gfx_core::Extent2d,
+    blend_edge_feather_px: f32,
+    light_count: u32,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(FRAME_PARAMS_STRIDE);
+    write_matrix(&mut bytes, view_projection.columns());
+    write_vec4(&mut bytes, [camera.eye.x, camera.eye.y, camera.eye.z, 0.0]);
+    write_vec4(
+        &mut bytes,
+        [
+            f64::from(bounds.origin.x) as f32,
+            f64::from(bounds.origin.y) as f32,
+            f64::from(bounds.size.width) as f32,
+            f64::from(bounds.size.height) as f32,
+        ],
+    );
+    write_vec4(
+        &mut bytes,
+        [
+            render_target_size.width() as f32,
+            render_target_size.height() as f32,
+            blend_edge_feather_px,
+            f32::from_bits(light_count),
+        ],
+    );
+    // Default fog is disabled. The frame owner fills the trailing fog uniforms.
+    bytes.resize(FRAME_PARAMS_STRIDE, 0);
+    debug_assert_eq!(bytes.len(), FRAME_PARAMS_STRIDE);
+    bytes
+}
+
+/// Encodes per-draw material state that is independent of the camera and viewport.
+#[cfg(test)]
+pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
+    encode_draw_records(&scene.draws)
+}
+
+/// Retained immutable draw parameter records. A large streamed world can render
+/// thousands of draws sharing the same material; their 80-byte GPU parameters
+/// need not be rebuilt from the material's fields for every draw on every delta.
+/// Exact identity of an encoded GPU DrawParams record.
+///
+/// MaterialId is stable across Material::clone, including cloned variants with
+/// changed fields. A per-snapshot generation therefore distinguishes immutable
+/// Arc<Material> snapshots while retaining the previous fast shared-material
+/// record cache. UV support affects GPU bytes; light counts are stored in independent frame data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DrawParamKey {
+    material: MaterialId,
+    snapshot_generation: u64,
+    uv_regions: bool,
+}
+
+struct MaterialRecord {
+    // Keep the underlying snapshot resident: Arc::make_mut will clone instead
+    // of mutating it behind a committed GPU record's identity.
+    material: std::sync::Arc<crate::Material>,
+    bytes: [u8; DRAW_PARAMS_STRIDE as usize],
+    texture_indices: [u32; 4],
+    generation: u64,
+}
+
+/// Retain material snapshots for the live draw working set. A fixed 8K or
+/// 64K ceiling makes a 100K+ section scene re-encode the uncached tail on
+/// every publication. Bound historical snapshots independently of scene size.
+fn material_record_cache_limit(draws: usize) -> usize {
+    draws.saturating_mul(2).clamp(8_192, 262_144)
+}
+
+#[derive(Default)]
+pub(super) struct DrawRecordCache {
+    // MaterialId survives Arc::make_mut. Different immutable snapshots with
+    // the same logical ID must not evict one another on every draw; retained
+    // Arc references keep the snapshot pointer identity stable while cached.
+    records: HashMap<(MaterialId, bool, usize), MaterialRecord>,
+    next_generation: u64,
+}
+
+impl DrawRecordCache {
+    /// Resolve only the material records explicitly changed by a fixed-layout
+    /// Candidate Delta. The committed physical key table and the GPU bytes
+    /// are read-only here; the caller commits rows only after successful GPU
+    /// uploads and bind-group synchronization.
+    pub(super) fn encode_resident_delta(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        dirty: &[usize],
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
+        self.encode_resident_delta_with_textures(
+            draws, mapping, dirty, previous_keys, previous_bytes, scratch, |_| Ok([0; 4]),
+        )
+    }
+
+    /// The resolver must refer to the descriptor snapshot selected for this
+    /// frame. The caller must include mapping changes in the dirty draw list.
+    pub(super) fn encode_resident_delta_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        dirty: &[usize],
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        scratch: &mut Vec<u8>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
+    ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
+        const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
+        if mapping.len() != draws.len() || previous_bytes.len() != previous_keys.len() * STRIDE {
+            return Err(
+                anyhow!("GPUI 3D dirty DrawParams require a committed stable layout").into(),
+            );
+        }
+        let cache_limit = material_record_cache_limit(draws.len());
+        if self.records.len() >= cache_limit {
+            self.records
+                .retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
+        let mut patches = Vec::with_capacity(dirty.len());
+        let mut seen = std::collections::HashSet::with_capacity(dirty.len());
+        for &logical in dirty {
+            if !seen.insert(logical) {
+                continue;
+            }
+            let draw = draws
+                .get(logical)
+                .ok_or_else(|| anyhow!("dirty DrawParams logical index outside scene"))?;
+            let slot = *mapping
+                .get(logical)
+                .ok_or_else(|| anyhow!("missing resident DrawParams slot"))?
+                as usize;
+            // Structural insertions can append new physical slots while the
+            // committed CPU mirror still has its previous high-water mark.
+            // An absent row is always dirty; never treat a synthetic
+            // placeholder key as a valid resident record.
+            let prev = previous_keys.get(slot).copied();
+            let start = slot
+                .checked_mul(STRIDE)
+                .ok_or_else(|| anyhow!("resident DrawParams offset overflow"))?;
+            let old_bytes = previous_bytes.get(start..start + STRIDE);
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
+            let cache_key = (
+                material,
+                uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
+            let (key, bytes) = if let Some(record) = self.records.get(&cache_key)
+                && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+                && record.texture_indices == texture_indices
+            {
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: record.generation,
+                        uv_regions,
+                    },
+                    record.bytes,
+                )
+            } else {
+                scratch.clear();
+                encode_draw_record_with_textures(draw, scratch, STRIDE, texture_indices)?;
+                let bytes: [u8; STRIDE] = scratch[..STRIDE]
+                    .try_into()
+                    .expect("one complete resident DrawParams record");
+                let generation = if let (Some(prev), Some(old_bytes)) = (prev, old_bytes)
+                    && prev.material == material
+                    && prev.uv_regions == uv_regions
+                    && old_bytes == bytes.as_slice()
+                {
+                    prev.snapshot_generation
+                } else {
+                    self.next_generation = self.next_generation.wrapping_add(1);
+                    self.next_generation
+                };
+                if self.records.len() < cache_limit || self.records.contains_key(&cache_key) {
+                    self.records.insert(
+                        cache_key,
+                        MaterialRecord {
+                            material: draw.material.clone(),
+                            bytes,
+                            texture_indices,
+                            generation,
+                        },
+                    );
+                }
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: generation,
+                        uv_regions,
+                    },
+                    bytes,
+                )
+            };
+            if prev != Some(key) || old_bytes != Some(bytes.as_slice()) {
+                patches.push((slot, key, bytes));
+            }
+        }
+        Ok(patches)
+    }
+
+    /// Directly resolve logical draws into persistent physical GPU DrawParams
+    /// slots. The transient logical 80-byte-per-draw table is never constructed.
+    ///
+    /// An empty `output` with matching `next_keys` means the committed CPU
+    /// snapshot is reusable after successful GPU upload/binding preparation.
+    /// The retained material snapshot cache owns immutable Arc<Material> values:
+    /// mutating a material via Arc::make_mut necessarily changes its identity.
+    pub(super) fn encode_stable(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        high_water: usize,
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        next_keys: &mut Vec<DrawParamKey>,
+        output: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+    ) -> gpui::Result<usize> {
+        self.encode_stable_with_textures(
+            draws, mapping, high_water, previous_keys, previous_bytes,
+            next_keys, output, scratch, |_| Ok([0; 4]),
+        )
+    }
+
+    /// Encode physical rows against a selected immutable descriptor snapshot.
+    /// A remapped texture index invalidates the encoded material even when
+    /// its Arc identity and UV mode are unchanged.
+    pub(super) fn encode_stable_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        high_water: usize,
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        next_keys: &mut Vec<DrawParamKey>,
+        output: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
+    ) -> gpui::Result<usize> {
+        const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
+        if draws.len() != mapping.len() {
+            return Err(anyhow!("GPUI 3D physical draw mapping length mismatch").into());
+        }
+        let byte_len = high_water
+            .max(1)
+            .checked_mul(STRIDE)
+            .ok_or_else(|| anyhow!("GPUI 3D physical DrawParams table overflows usize"))?;
+        next_keys.clear();
+        next_keys.extend_from_slice(&previous_keys[..previous_keys.len().min(high_water)]);
+        // Size the cache for the live (possibly 100K+) draw working set so
+        // ordinary Section updates do not repeatedly re-encode uncached
+        // material snapshots. Prune snapshots no longer held by the scene.
+        let cache_limit = material_record_cache_limit(draws.len());
+        if self.records.len() >= cache_limit {
+            self.records
+                .retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
+        let mut dirty = Vec::<(usize, [u8; STRIDE])>::new();
+        for (draw, &slot) in draws.iter().zip(mapping) {
+            let slot = slot as usize;
+            if slot >= high_water {
+                return Err(anyhow!("GPUI 3D physical draw slot outside table").into());
+            }
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
+            let cache_key = (
+                material,
+                uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
+            let start = slot * STRIDE;
+            let (key, record) = if let Some(cached) = self.records.get(&cache_key)
+                && std::sync::Arc::ptr_eq(&cached.material, &draw.material)
+                && cached.texture_indices == texture_indices
+            {
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: cached.generation,
+                        uv_regions,
+                    },
+                    cached.bytes,
+                )
+            } else {
+                scratch.clear();
+                encode_draw_record_with_textures(draw, scratch, STRIDE, texture_indices)?;
+                let record: [u8; STRIDE] = scratch[..STRIDE]
+                    .try_into()
+                    .expect("DrawParams encoder must write one complete record");
+                // Even when the snapshot cache is full, identical 80-byte
+                // content at the same stable physical slot is NOT dirty.
+                // Reuse its previously committed key to avoid publishing an
+                // artificial generation change and re-uploading the GPU table.
+                let same_resident_record = previous_keys
+                    .get(slot)
+                    .filter(|prev| prev.material == material && prev.uv_regions == uv_regions)
+                    .filter(|_| {
+                        previous_bytes.get(start..start + STRIDE) == Some(record.as_slice())
+                    });
+                let generation = if let Some(key) = same_resident_record {
+                    key.snapshot_generation
+                } else {
+                    self.next_generation = self.next_generation.wrapping_add(1);
+                    self.next_generation
+                };
+                if self.records.len() < cache_limit || self.records.contains_key(&cache_key) {
+                    self.records.insert(
+                        cache_key,
+                        MaterialRecord {
+                            material: draw.material.clone(),
+                            bytes: record,
+                            texture_indices,
+                            generation,
+                        },
+                    );
+                }
+                (
+                    DrawParamKey {
+                        material,
+                        snapshot_generation: generation,
+                        uv_regions,
+                    },
+                    record,
+                )
+            };
+            if previous_keys.get(slot) != Some(&key)
+                || previous_bytes.get(start..start + STRIDE).is_none()
+            {
+                dirty.push((slot, record));
+            }
+            if slot >= next_keys.len() {
+                next_keys.resize(slot + 1, key);
+            }
+            next_keys[slot] = key;
+        }
+
+        output.clear();
+        if dirty.is_empty() && next_keys == previous_keys && previous_bytes.len() == byte_len {
+            return Ok(0);
+        }
+        // Material changes are infrequent: copy the old physical table only if
+        // actual records changed or the table's occupied extent changed.
+        output.extend_from_slice(previous_bytes);
+        output.resize(byte_len, 0);
+        for (slot, record) in &dirty {
+            let start = slot * STRIDE;
+            output[start..start + STRIDE].copy_from_slice(record);
+        }
+        Ok(dirty.len())
+    }
+
+    pub(super) fn encode(
+        &mut self,
+        draws: &[PreparedDraw],
+        bytes: &mut Vec<u8>,
+        keys: &mut Vec<DrawParamKey>,
+    ) -> gpui::Result<()> {
+        self.encode_with_textures(draws, bytes, keys, |_| Ok([0; 4]))
+    }
+
+    pub(super) fn encode_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        bytes: &mut Vec<u8>,
+        keys: &mut Vec<DrawParamKey>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
+    ) -> gpui::Result<()> {
+        let cache_limit = material_record_cache_limit(draws.len());
+        if self.records.len() >= cache_limit {
+            self.records
+                .retain(|_, record| std::sync::Arc::strong_count(&record.material) > 1);
+        }
+        let stride = DRAW_PARAMS_STRIDE as usize;
+        bytes.clear();
+        bytes.reserve(draws.len().max(1).saturating_mul(stride));
+        keys.clear();
+        keys.reserve(draws.len());
+        for draw in draws {
+            let material = draw.material.id();
+            let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
+            let key = (
+                material,
+                uv_regions,
+                std::sync::Arc::as_ptr(&draw.material) as usize,
+            );
+            if let Some(record) = self.records.get(&key)
+                && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+                && record.texture_indices == texture_indices
+            {
+                bytes.extend_from_slice(&record.bytes);
+                keys.push(DrawParamKey {
+                    material,
+                    snapshot_generation: record.generation,
+                    uv_regions,
+                });
+                continue;
+            }
+            let start = bytes.len();
+            encode_draw_record_with_textures(draw, bytes, stride, texture_indices)?;
+            self.next_generation = self.next_generation.wrapping_add(1);
+            let generation = self.next_generation;
+            let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
+                .try_into()
+                .expect("draw encoder must write exactly one aligned record");
+            // Keep the live material working set; bound historical snapshots
+            // even if the scene has accumulated many distinct states.
+            if self.records.len() < cache_limit || self.records.contains_key(&key) {
+                self.records.insert(
+                    key,
+                    MaterialRecord {
+                        material: draw.material.clone(),
+                        bytes: record,
+                        texture_indices,
+                        generation,
+                    },
+                );
+            }
+            keys.push(DrawParamKey {
+                material,
+                snapshot_generation: generation,
+                uv_regions,
+            });
+        }
+        if draws.is_empty() {
+            bytes.resize(stride, 0);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn encode_draws_into(scene: &PreparedScene, bytes: &mut Vec<u8>) -> gpui::Result<()> {
+    encode_draw_records_into(&scene.draws, bytes)
+}
+
+#[cfg(test)]
+pub(super) fn encode_draw_records(draws: &[crate::PreparedDraw]) -> gpui::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(draws.len().max(1) * DRAW_PARAMS_STRIDE as usize);
+    encode_draw_records_into(draws, &mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+fn encode_draw_records_into(
+    draws: &[crate::PreparedDraw],
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    let stride = DRAW_PARAMS_STRIDE as usize;
+    bytes.clear();
+    bytes.reserve(draws.len().max(1).saturating_mul(stride));
+    for draw in draws {
+        encode_draw_record(draw, bytes, stride)?;
+    }
+    if draws.is_empty() {
+        bytes.resize(stride, 0);
+    }
+    Ok(())
+}
+
+/// Encodes one padded draw slot for a draw (or one representative per instanced batch).
+///
+/// Offscreen batching submits one draw slot per batch instead of one per instance, so the
+/// streaming draw buffer grows with distinct material/mesh combinations rather than node count.
+#[cfg(test)]
+pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * INSTANCE_STRIDE as usize);
+    encode_instances_into(scene, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Appends instance records to a reusable staging buffer.
+///
+/// The offscreen renderer reuses its staging buffer across frames so a dirty frame does not
+/// allocate the full instance table again; the GPUI scene-view path keeps the allocating wrapper.
+#[cfg(test)]
+pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(lights.len().max(1) * LIGHT_STRIDE as usize);
+    encode_lights_into(lights, &mut bytes);
+    bytes
+}
+
+/// Appends light records to a reusable staging buffer for the offscreen renderer.
+#[cfg(test)]
+mod tests {
+    use super::{
+        ArenaPage, MeshArena, can_encode_voxel_mesh, encode_draws, encode_draws_into, encode_mesh,
+        encode_voxel_mesh,
+    };
+    use crate::{Camera, Mesh, Node, PreparedScene, Scene, TriangleEdgeMask, Vec2, Vec3, Vertex};
+
+    #[test]
+    fn scratch_pages_use_device_binding_alignment_and_check_overflow() {
+        let mut page = super::ScratchPage {
+            buffer: gfx_core::BufferId::new(1),
+            used: 0,
+            capacity: 1024,
+            alignment: 256,
+        };
+        assert_eq!(page.allocate(64), Some(0));
+        assert_eq!(page.allocate(64), Some(256));
+        assert_eq!(page.allocate(64), Some(512));
+        assert_eq!(page.allocate(64), Some(768));
+        assert_eq!(page.allocate(64), None);
+
+        page.alignment = 0;
+        assert_eq!(page.allocate(1), None);
+        page.alignment = 256;
+        page.used = u64::MAX;
+        assert_eq!(page.allocate(1), None);
+    }
+
+    #[test]
+    fn generated_pool_alignment_tracks_reported_device_limits() {
+        let mut limits = gfx_core::BufferBindingLimits {
+            storage_offset_alignment: 4,
+            max_storage_binding_bytes: 16 * 1024 * 1024,
+            uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 64 * 1024,
+        };
+        let align = super::MeshArena::generated_face_alignment;
+        assert_eq!(align(limits, 16).unwrap(), 16);
+        limits.storage_offset_alignment = 64;
+        assert_eq!(align(limits, 16).unwrap(), 64);
+        limits.storage_offset_alignment = 256;
+        assert_eq!(align(limits, 16).unwrap(), 256);
+        limits.storage_offset_alignment = 384;
+        assert_eq!(align(limits, 16).unwrap(), 384);
+        limits.storage_offset_alignment = 0;
+        assert!(align(limits, 16).is_err());
+        limits.storage_offset_alignment = u64::MAX;
+        assert!(align(limits, 16).is_err());
+    }
+
+    #[test]
+    fn dx11_streaming_buffers_avoid_rebinding_again_at_32k_and_64k() {
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 8192),
+            8192
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 16384),
+            16384
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 16385),
+            131072
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 65993),
+            131072
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx11, 131073),
+            131073
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Vulkan, 65993),
+            65993
+        );
+        assert_eq!(
+            super::dx11_streaming_headroom(gfx_core::BackendKind::Dx12, 65993),
+            65993
+        );
+    }
+
+    #[test]
+    fn material_cache_capacity_tracks_large_scenes_without_unbounded_growth() {
+        assert_eq!(super::material_record_cache_limit(0), 8192);
+        assert_eq!(super::material_record_cache_limit(8192), 16384);
+        assert_eq!(super::material_record_cache_limit(103305), 206610);
+        assert_eq!(super::material_record_cache_limit(1_000_000), 262144);
+    }
+
+    #[test]
+    fn cached_draw_records_match_full_encoder_across_repeated_encodes() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let repeated = [prepared.draws[0].clone(), prepared.draws[0].clone()];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        for _ in 0..5 {
+            cache.encode(&repeated, &mut bytes, &mut keys).unwrap();
+            assert_eq!(bytes, super::encode_draw_records(&repeated).unwrap());
+            assert_eq!(keys.len(), repeated.len());
+        }
+        cache.encode(&[], &mut bytes, &mut keys).unwrap();
+        assert_eq!(bytes, vec![0; super::DRAW_PARAMS_STRIDE as usize]);
+    }
+
+    #[test]
+    fn draw_cache_invalidates_cloned_material_with_same_id() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let initial = prepared.draws[0].clone();
+        let mut modified = initial.clone();
+        let mut changed_material = (*initial.material).clone();
+        changed_material.base_color = [0.1, 0.2, 0.3, 0.4];
+        modified.material = std::sync::Arc::new(changed_material);
+        assert_eq!(modified.material.id(), initial.material.id());
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        cache
+            .encode(&[initial.clone()], &mut bytes, &mut keys)
+            .unwrap();
+        let old_key = keys[0];
+        let old_bytes = bytes.clone();
+        cache
+            .encode(&[modified.clone()], &mut bytes, &mut keys)
+            .unwrap();
+        assert_ne!(old_key, keys[0]);
+        assert_ne!(old_bytes, bytes);
+        assert_eq!(
+            bytes,
+            super::encode_draw_records(&[modified.clone()]).unwrap()
+        );
+
+        let new_key = keys[0];
+        cache
+            .encode(&[modified.clone(), modified.clone()], &mut bytes, &mut keys)
+            .unwrap();
+        assert_eq!(keys, vec![new_key; 2]);
+        assert_eq!(
+            bytes,
+            super::encode_draw_records(&[modified.clone(), modified]).unwrap()
+        );
+        cache
+            .encode(&[initial.clone()], &mut bytes, &mut keys)
+            .unwrap();
+        assert_eq!(
+            keys[0], old_key,
+            "independent retained material snapshots keep their original generations"
+        );
+        assert_eq!(bytes, super::encode_draw_records(&[initial]).unwrap());
+    }
+
+    #[test]
+    fn full_material_cache_preserves_unchanged_resident_gpu_records() {
+        use std::sync::Arc;
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(Arc::new(Mesh::cube())))
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let draw = prepared.draws[0].clone();
+        let mut cache = super::DrawRecordCache::default();
+        // Keep all simulated Section material snapshots alive: they must not
+        // be evicted as stale, so the active cache remains at its 8192 limit.
+        let mut live = Vec::with_capacity(8_192);
+        for _ in 0..8_192 {
+            let material = Arc::new(crate::Material::new());
+            cache.records.insert(
+                (material.id(), false, Arc::as_ptr(&material) as usize),
+                super::MaterialRecord {
+                    material: Arc::clone(&material),
+                    bytes: [0; super::DRAW_PARAMS_STRIDE as usize],
+                    texture_indices: [0; 4],
+                    generation: 0,
+                },
+            );
+            live.push(material);
+        }
+        assert_eq!(cache.records.len(), 8_192);
+        let mapping = [0u32];
+        let mut next_keys = Vec::new();
+        let mut next_bytes = Vec::new();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            cache
+                .encode_stable(
+                    std::slice::from_ref(&draw),
+                    &mapping,
+                    1,
+                    &[],
+                    &[],
+                    &mut next_keys,
+                    &mut next_bytes,
+                    &mut scratch,
+                )
+                .unwrap(),
+            1
+        );
+        let old_keys = next_keys.clone();
+        let old_bytes = next_bytes.clone();
+        assert_eq!(cache.records.len(), 8_192);
+        assert_eq!(
+            cache
+                .encode_stable(
+                    std::slice::from_ref(&draw),
+                    &mapping,
+                    1,
+                    &old_keys,
+                    &old_bytes,
+                    &mut next_keys,
+                    &mut next_bytes,
+                    &mut scratch,
+                )
+                .unwrap(),
+            0,
+            "a full material cache must not redirty identical resident draw data"
+        );
+        assert_eq!(next_keys, old_keys);
+        assert!(next_bytes.is_empty(), "GPU resident buffer must be reused");
+        let mut changed = draw;
+        let mut cloned = (*changed.material).clone();
+        cloned.base_color = [0.5, 0.2, 0.1, 1.0];
+        changed.material = Arc::new(cloned);
+        assert_eq!(
+            cache
+                .encode_stable(
+                    &[changed.clone()],
+                    &mapping,
+                    1,
+                    &old_keys,
+                    &old_bytes,
+                    &mut next_keys,
+                    &mut next_bytes,
+                    &mut scratch,
+                )
+                .unwrap(),
+            1
+        );
+        assert_ne!(next_keys, old_keys);
+        assert_eq!(next_bytes, super::encode_draw_records(&[changed]).unwrap());
+        assert_eq!(live.len(), 8_192);
+    }
+
+    #[test]
+    fn draw_cache_keys_remain_stable_for_identical_material_snapshots() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let draws = [prepared.draws[0].clone()];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
+        let first = keys[0];
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
+        assert_eq!(keys[0], first);
+        // DrawParams are a function of the material snapshot and UV mode.
+        // Scene light counts live in frame data, so repeated material encoding
+        // must preserve stable GPU records without a redundant light parameter.
+        cache.encode(&draws, &mut bytes, &mut keys).unwrap();
+        assert_eq!(keys[0], first);
+        assert_eq!(bytes, super::encode_draw_records(&draws).unwrap());
+    }
+
+    #[test]
+    fn draw_cache_tracks_descriptor_remapping_across_all_encoding_paths() {
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())))
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let draws = &prepared.draws[..1];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        let mut scratch = Vec::new();
+        let first = [1, 2, 3, 4];
+        let second = [4, 3, 2, 1];
+        cache.encode_with_textures(draws, &mut bytes, &mut keys, |_| Ok(first)).unwrap();
+        let mut canonical = Vec::new();
+        crate::gpu_encoding::encode_draw_record_with_textures(
+            &draws[0], &mut canonical, super::DRAW_PARAMS_STRIDE as usize, first,
+        ).unwrap();
+        assert_eq!(bytes, canonical);
+
+        let mut next_keys = Vec::new();
+        let mut next_bytes = Vec::new();
+        assert_eq!(cache.encode_stable_with_textures(
+            draws, &[0], 1, &keys, &bytes, &mut next_keys, &mut next_bytes,
+            &mut scratch, |_| Ok(second),
+        ).unwrap(), 1);
+        assert_ne!(keys, next_keys);
+        canonical.clear();
+        crate::gpu_encoding::encode_draw_record_with_textures(
+            &draws[0], &mut canonical, super::DRAW_PARAMS_STRIDE as usize, second,
+        ).unwrap();
+        assert_eq!(next_bytes, canonical);
+
+        let patches = cache.encode_resident_delta_with_textures(
+            draws, &[0], &[0], &next_keys, &next_bytes, &mut scratch, |_| Ok(first),
+        ).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, 0);
+        assert_eq!(patches[0].2.as_slice(), bytes.as_slice());
+        assert_ne!(patches[0].1, next_keys[0]);
+        assert!(cache.encode_resident_delta_with_textures(
+            draws, &[0], &[0], &[patches[0].1], &bytes, &mut scratch, |_| Ok(first),
+        ).unwrap().is_empty());
+
+        // No stale descriptor indices may survive a switch to legacy encoding.
+        cache.encode(draws, &mut bytes, &mut keys).unwrap();
+        assert_eq!(bytes, super::encode_draw_records(draws).unwrap());
+        assert_eq!(cache.records.len(), 1);
+    }
+
+    #[test]
+    fn repeated_node_instance_transform_matches_individual_encoding() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let mut repeated = vec![prepared.draws[0].clone(); 4];
+        let mut shifted = repeated[0].clone();
+        shifted.world = crate::Transform {
+            translation: Vec3::new(8.0, 1.0, -3.0),
+            ..crate::Transform::IDENTITY
+        }
+        .matrix();
+        repeated.push(shifted);
+        let mut expected = Vec::new();
+        for draw in &repeated {
+            let inverse = draw.world.inverse().unwrap();
+            super::write_matrix(&mut expected, draw.world.columns());
+            super::write_matrix(&mut expected, super::transpose(inverse).columns());
+            super::write_vec4(
+                &mut expected,
+                [
+                    draw.pixel_offset.x,
+                    draw.pixel_offset.y,
+                    draw.depth_bias,
+                    0.0,
+                ],
+            );
+        }
+        let mut actual = Vec::new();
+        super::encode_instance_records(&repeated, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn draw_encoding_reuses_staging_capacity() {
+        let mut scene = Scene::new();
+        scene
+            .insert(
+                None,
+                Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())),
+            )
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let expected = encode_draws(&prepared).unwrap();
+        let mut bytes = Vec::new();
+        encode_draws_into(&prepared, &mut bytes).unwrap();
+        assert_eq!(bytes, expected);
+        let pointer = bytes.as_ptr();
+        encode_draws_into(&prepared, &mut bytes).unwrap();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes, expected);
+    }
+
+    fn vertices() -> Vec<Vertex> {
+        [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(1.0, 1.0, 0.0)]
+            .into_iter()
+            .map(|position| Vertex {
+                position,
+                normal: Vec3::Z,
+                uv: Vec2::ZERO,
+                color: [1.0; 4],
+            })
+            .collect()
+    }
+
+    fn float(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn arena_page_reserves_disjoint_ranges_without_reusing_live_space() {
+        let mut page = ArenaPage {
+            buffer: gfx_core::BufferId::from_parts(1, 1),
+            capacity: 96,
+            used: 0,
+            live: 0,
+            live_bytes: 0,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        assert_eq!(page.reserve(32), Some(0));
+        assert_eq!(page.reserve(32), Some(32));
+        assert_eq!(page.reserve(64), None);
+        assert_eq!(page.reserve(32), Some(64));
+        assert_eq!(page.live, 3);
+        assert_eq!(page.live_bytes, 96);
+    }
+
+    #[test]
+    fn arena_stats_distinguish_live_and_retired_ranges() {
+        let arena = MeshArena {
+            pages: vec![
+                Some(ArenaPage {
+                    buffer: gfx_core::BufferId::from_parts(1, 1),
+                    capacity: 128,
+                    used: 96,
+                    live: 2,
+                    live_bytes: 64,
+                    free_ranges: Vec::new(),
+                    retired_ranges: vec![(32, 32)],
+                }),
+                None,
+            ],
+            ..Default::default()
+        };
+        assert_eq!(arena.stats(), (1, 128, 64, 32));
+    }
+
+    #[test]
+    fn arena_index_skips_full_pages_and_waits_for_retirement() {
+        let mut arena = MeshArena::default();
+        for index in 0..4096 {
+            arena.pages.push(Some(ArenaPage {
+                buffer: gfx_core::BufferId::from_parts(index as u32 + 1, 1),
+                capacity: 72,
+                used: 72,
+                live: 2,
+                live_bytes: 48,
+                free_ranges: Vec::new(),
+                retired_ranges: vec![(0, 24)],
+            }));
+        }
+        assert!(arena.reserve_page(24).unwrap().is_none());
+        arena.reclaim_after_gpu_idle();
+        assert_eq!(arena.available_pages.len(), 4096);
+        for index in 0..4096 {
+            let (allocation, _, offset, _) = arena.reserve_page(24).unwrap().unwrap();
+            assert_eq!((allocation.page, offset), (index, 0));
+        }
+        assert!(arena.available_pages.is_empty());
+        assert!(arena.reserve_page(24).unwrap().is_none());
+    }
+
+    #[test]
+    fn arena_reuses_retired_ranges_only_after_gpu_drain() {
+        let mut page = ArenaPage {
+            buffer: gfx_core::BufferId::from_parts(1, 1),
+            capacity: 96,
+            used: 0,
+            live: 0,
+            live_bytes: 0,
+            free_ranges: Vec::new(),
+            retired_ranges: Vec::new(),
+        };
+        assert_eq!(page.reserve(32), Some(0));
+        assert_eq!(page.reserve(32), Some(32));
+        assert_eq!(page.reserve(32), Some(64));
+        page.retire(0, 32).unwrap();
+        page.retire(32, 32).unwrap();
+        assert_eq!(page.reserve(48), None);
+        page.reclaim_retired();
+        assert_eq!(page.reserve(48), Some(0));
+        assert_eq!(page.reserve(16), Some(48));
+        assert_eq!(page.live_bytes, 96);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires a Windows D3D11 hardware adapter"]
+    fn native_arena_reuses_a_range_only_after_queue_completion() {
+        use gfx_core::{
+            CommandDevice, CommandEncoderDescriptor, DeviceDescriptor, SubmissionDevice,
+        };
+        let mut device = gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap();
+        let mut arena = MeshArena::default();
+        let (first, buffer, first_offset, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        let (second, _, _, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        let encoder = device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None })
+            .unwrap();
+        let submission = device.submit_deferred(encoder).unwrap();
+        arena.release(&mut device, first).unwrap();
+        let (third, _, before_completion, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_ne!(before_completion, first_offset);
+        device.wait_queue_idle().unwrap();
+        assert!(matches!(
+            device.poll_submission(submission),
+            Ok(gfx_core::SubmissionStatus::Complete)
+        ));
+        arena.reclaim_after_gpu_idle();
+        let (fourth, reused_buffer, after_completion, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_eq!((reused_buffer, after_completion), (buffer, first_offset));
+        arena.release(&mut device, second).unwrap();
+        arena.release(&mut device, third).unwrap();
+        arena.release(&mut device, fourth).unwrap();
+        assert!(arena.available_pages.is_empty());
+        assert_eq!(arena.free_pages, [0]);
+        let (next, _, _, _) = arena
+            .allocate(&mut device, gfx_core::BackendKind::Dx11, 24)
+            .unwrap();
+        assert_eq!(next.page, 0);
+        assert_eq!(arena.pages.len(), 1);
+        arena.release(&mut device, next).unwrap();
+        device.destroy_command_encoder(encoder).unwrap();
+    }
+
+    #[test]
+    fn compact_voxel_encoding_uses_24_byte_stride_and_preserves_indices() {
+        let mut source = vertices();
+        source[0].uv = Vec2::new(0.25, 0.75);
+        source[0].color = [0.0, 0.5, 1.0, 1.0];
+        let mesh = Mesh::new(source, [0, 1, 2]).unwrap();
+        assert!(can_encode_voxel_mesh(&mesh));
+        let encoded = encode_voxel_mesh(&mesh).unwrap();
+
+        assert_eq!(encoded.vertices.len(), mesh.vertices().len() * 24);
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
+        assert_eq!(
+            encoded.indices,
+            [0u16, 1, 2]
+                .iter()
+                .flat_map(|index| index.to_ne_bytes())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(float(&encoded.vertices, 0), 0.0);
+        assert_eq!(float(&encoded.vertices, 16), 0.25);
+        assert_eq!(float(&encoded.vertices, 20), 0.75);
+        assert_eq!(
+            u32::from_ne_bytes(encoded.vertices[12..16].try_into().unwrap()),
+            0xffff8000
+        );
+    }
+
+    #[test]
+    fn compact_cpu_quads_upload_vertices_without_an_index_buffer() {
+        let source = Mesh::with_parts_without_raycast(
+            vertices(),
+            [0, 1, 2, 0, 2, 3],
+            [crate::MeshPart::new(0, 6, 0)],
+        )
+        .unwrap();
+        let expected = encode_voxel_mesh(&source).unwrap();
+        let compact = source.compact_voxel();
+        let encoded = encode_voxel_mesh(&compact).unwrap();
+
+        assert!(encoded.indices.is_empty());
+        assert_eq!(compact.index_count(), expected.indices.len() / 2);
+        for (actual, expected) in encoded
+            .vertices
+            .chunks_exact(24)
+            .zip(expected.vertices.chunks_exact(24))
+        {
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(
+            compact.geometry_storage_bytes(),
+            compact.vertex_count() * 27
+        );
+    }
+
+    #[test]
+    fn compact_voxel_encoding_excludes_out_of_range_colors_and_edge_masks() {
+        let mut source = vertices();
+        source[0].color[0] = 1.5;
+        let mesh = Mesh::new(source, [0, 1, 2]).unwrap();
+        assert!(!can_encode_voxel_mesh(&mesh));
+        let masked = Mesh::new(vertices(), [0, 1, 2])
+            .unwrap()
+            .with_edge_masks([TriangleEdgeMask::ALL])
+            .unwrap();
+        assert!(!can_encode_voxel_mesh(&masked));
+    }
+
+    #[test]
+    fn mesh_without_edge_masks_keeps_shared_vertices_and_indices() {
+        let mesh = Mesh::new(vertices(), vec![0, 1, 2, 0, 2, 3]).unwrap();
+        let encoded = encode_mesh(&mesh).unwrap();
+
+        assert_eq!(encoded.vertices.len(), 4 * 64);
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
+        assert_eq!(encoded.indices.len(), 6 * 2);
+        assert!(encoded.tangents.is_none());
+        let indices = encoded
+            .indices
+            .chunks_exact(2)
+            .map(|bytes| u16::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices, [0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn mesh_with_more_than_u16_vertices_keeps_u32_indices() {
+        let mesh = Mesh::new(
+            vec![vertices()[0]; u16::MAX as usize + 2],
+            vec![u16::MAX as u32 - 1, u16::MAX as u32, u16::MAX as u32 + 1],
+        )
+        .unwrap();
+        let encoded = encode_mesh(&mesh).unwrap();
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint32);
+        assert_eq!(encoded.indices.len(), 3 * 4);
+        let indices = encoded
+            .indices
+            .chunks_exact(4)
+            .map(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices, [65534, 65535, 65536]);
+    }
+
+    #[test]
+    fn mesh_with_edge_masks_expands_triangle_corners_and_barycentrics() {
+        let mesh = Mesh::new(vertices(), vec![0, 2, 1, 0, 2, 3])
+            .unwrap()
+            .with_edge_masks(vec![
+                TriangleEdgeMask::new([true, false, true]),
+                TriangleEdgeMask::NONE,
+            ])
+            .unwrap();
+        let encoded = encode_mesh(&mesh).unwrap();
+
+        assert_eq!(encoded.vertices.len(), 6 * 64);
+        assert!(encoded.tangents.is_none());
+        assert_eq!(encoded.index_format, gfx_core::IndexFormat::Uint16);
+        let indices = encoded
+            .indices
+            .chunks_exact(2)
+            .map(|bytes| u16::from_ne_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices, [0, 1, 2, 3, 4, 5]);
+        for (corner, expected) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            .into_iter()
+            .enumerate()
+        {
+            let base = corner * 64;
+            assert_eq!(
+                [
+                    float(&encoded.vertices, base + 12),
+                    float(&encoded.vertices, base + 28),
+                    float(&encoded.vertices, base + 40),
+                ],
+                expected
+            );
+            assert_eq!(float(&encoded.vertices, base + 44), 0b101 as f32);
+        }
+        assert_eq!(float(&encoded.vertices, 3 * 64 + 44), 0.0);
+    }
+
+    #[test]
+    fn mesh_tangents_encode_to_separate_stream() {
+        let source = Mesh::new(
+            [
+                Vertex {
+                    position: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    uv: Vec2::ZERO,
+                    color: [1.0; 4],
+                },
+                Vertex {
+                    position: Vec3::X,
+                    normal: Vec3::Z,
+                    uv: Vec2::new(1.0, 0.0),
+                    color: [1.0; 4],
+                },
+                Vertex {
+                    position: Vec3::Y,
+                    normal: Vec3::Z,
+                    uv: Vec2::new(0.0, 1.0),
+                    color: [1.0; 4],
+                },
+            ],
+            [0, 1, 2],
+        )
+        .unwrap()
+        .generate_tangents()
+        .unwrap()
+        .into_parts()
+        .0;
+        let encoded = encode_mesh(&source).unwrap();
+
+        assert_eq!(encoded.vertices.len(), source.vertices().len() * 64);
+        let encoded_tangents = encoded.tangents.unwrap();
+        assert_eq!(encoded_tangents.len(), source.vertices().len() * 16);
+        let first_tangent = [
+            float(&encoded_tangents, 0),
+            float(&encoded_tangents, 4),
+            float(&encoded_tangents, 8),
+            float(&encoded_tangents, 12),
+        ];
+        assert!((first_tangent[0] - 1.0).abs() < 1.0e-5);
+        assert!(first_tangent[1].abs() < 1.0e-5);
+        assert!(first_tangent[2].abs() < 1.0e-5);
+        assert_eq!(first_tangent[3], 1.0);
+    }
+
+    #[test]
+    fn mesh_with_edge_masks_expands_tangents_in_triangle_order() {
+        let source = Mesh::new(vertices(), [0, 2, 1])
+            .unwrap()
+            .with_tangents([
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [-1.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0, 1.0],
+            ])
+            .unwrap()
+            .with_edge_masks([TriangleEdgeMask::ALL])
+            .unwrap();
+        let encoded = encode_mesh(&source).unwrap();
+        let encoded_tangents = encoded.tangents.unwrap();
+
+        assert_eq!(encoded_tangents.len(), 3 * 16);
+        for (corner, source_index) in [0, 2, 1].into_iter().enumerate() {
+            for component in 0..4 {
+                assert_eq!(
+                    float(&encoded_tangents, corner * 16 + component * 4),
+                    source.tangents().unwrap()[source_index][component]
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod voxel_clip_fast_path_tests {
+    // CPU differential of the algebra used by voxel.wgsl. The native headless
+    // renderer tests additionally compare the production shader's actual pixels.
+    fn old_projection(
+        clip: [f32; 4],
+        origin: [f32; 2],
+        bounds: [f32; 2],
+        target: [f32; 2],
+        offset: [f32; 2],
+        depth_bias: f32,
+    ) -> [f32; 4] {
+        let w = clip[3];
+        let safe_w = if w >= 0.0 {
+            w.max(0.0001)
+        } else {
+            w.min(-0.0001)
+        };
+        let mut result = [0.0; 4];
+        for axis in 0..2 {
+            let normalized = (origin[axis]
+                + (clip[axis] / safe_w * if axis == 0 { 0.5 } else { -0.5 } + 0.5) * bounds[axis]
+                + offset[axis])
+                / target[axis].max(1.0);
+            result[axis] = (normalized * if axis == 0 { 2.0 } else { -2.0 }
+                + if axis == 0 { -1.0 } else { 1.0 })
+                * w;
+        }
+        result[2] = (clip[2] / safe_w - depth_bias) * w;
+        result[3] = w;
+        result
+    }
+
+    fn new_projection(
+        clip: [f32; 4],
+        origin: [f32; 2],
+        bounds: [f32; 2],
+        target: [f32; 2],
+        offset: [f32; 2],
+        depth_bias: f32,
+    ) -> [f32; 4] {
+        if clip[3].abs() < 0.0001 {
+            return old_projection(clip, origin, bounds, target, offset, depth_bias);
+        }
+        let mut result = [0.0; 4];
+        for axis in 0..2 {
+            let scale = bounds[axis] / target[axis].max(1.0);
+            let center = origin[axis] + bounds[axis] * 0.5 + offset[axis];
+            let bias = center / target[axis].max(1.0) * if axis == 0 { 2.0 } else { -2.0 }
+                + if axis == 0 { -1.0 } else { 1.0 };
+            result[axis] = clip[axis] * scale + bias * clip[3];
+        }
+        result[2] = clip[2] - depth_bias * clip[3];
+        result[3] = clip[3];
+        result
+    }
+
+    #[test]
+    fn clip_space_viewport_fold_matches_original_for_camera_and_pixel_offsets() {
+        for clip in [
+            [0.2, -0.4, 0.5, 1.0],
+            [-4.0, 2.0, 11.0, 20.0],
+            [1.2, -0.2, -1.0, -3.0],
+            [0.5, -0.3, 0.2, 0.000001],
+            [0.5, -0.3, 0.2, -0.000001],
+            [0.0, 0.0, 0.0, 0.0],
+        ] {
+            for (origin, bounds, target, offset, bias) in [
+                (
+                    [0.0, 0.0],
+                    [1920.0, 1080.0],
+                    [1920.0, 1080.0],
+                    [0.0, 0.0],
+                    0.0,
+                ),
+                (
+                    [37.0, 28.0],
+                    [500.0, 320.0],
+                    [1920.0, 1080.0],
+                    [0.3, -2.0],
+                    0.002,
+                ),
+                (
+                    [0.0, 80.0],
+                    [180.0, 240.0],
+                    [1.0, 800.0],
+                    [15.0, -1.0],
+                    -0.15,
+                ),
+            ] {
+                let original = old_projection(clip, origin, bounds, target, offset, bias);
+                let optimized = new_projection(clip, origin, bounds, target, offset, bias);
+                for axis in 0..4 {
+                    let tolerance = 0.0002 * original[axis].abs().max(1.0);
+                    assert!(
+                        (original[axis] - optimized[axis]).abs() <= tolerance,
+                        "clip={clip:?} axis={axis} old={} new={}",
+                        original[axis],
+                        optimized[axis]
+                    );
+                }
+            }
+        }
+    }
+}
