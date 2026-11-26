@@ -97,6 +97,7 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
+            self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
             let logical_mask = mask.intersect(&self.content_mask());
             let visual_mask = self
                 .element_visual_transform

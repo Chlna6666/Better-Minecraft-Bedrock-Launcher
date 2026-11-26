@@ -59,6 +59,16 @@ pub(crate) struct RetainedPaintContext {
 pub(super) struct LayerInput {
     pub(super) hitboxes: Range<usize>,
     viewport: Bounds<Pixels>,
+    /// The original scroll placement is retained only if no descendant
+    /// introduced a moving clip or replayed input of unknown provenance.
+    geometry: Option<ScrollInputGeometry>,
+}
+
+#[derive(Clone, Copy)]
+struct ScrollInputGeometry {
+    offset: Point<Pixels>,
+    visual_scale: f32,
+    viewport: ContentMask<Pixels>,
 }
 
 pub(crate) struct Frame {
@@ -79,6 +89,7 @@ pub(crate) struct Frame {
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(super) layer_inputs: Vec<LayerInput>,
+    pub(crate) input_clip_epoch: u64,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -285,6 +296,7 @@ impl Frame {
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
             layer_inputs: Vec::new(),
+            input_clip_epoch: 0,
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -346,6 +358,7 @@ impl Frame {
         self.view_retention_records.clear();
         self.hitboxes.clear();
         self.layer_inputs.clear();
+        self.input_clip_epoch = 0;
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -408,7 +421,35 @@ impl Frame {
                 && end.x <= bottom_right.x
                 && end.y <= bottom_right.y
         }) {
-            self.layer_inputs.push(LayerInput { hitboxes: start..end, viewport });
+            self.layer_inputs.push(LayerInput {
+                hitboxes: start..end,
+                viewport,
+                geometry: None,
+            });
+        }
+    }
+
+    /// Record a fixed-viewport scroll input span. The epoch deliberately
+    /// rejects nested clip scopes, even if their current intersection equals
+    /// the viewport: that equality may stop holding when content moves.
+    pub(crate) fn record_scroll_layer_input(
+        &mut self,
+        start: usize,
+        viewport: ContentMask<Pixels>,
+        offset: Point<Pixels>,
+        visual_scale: f32,
+        clip_epoch: u64,
+    ) {
+        let before = self.layer_inputs.len();
+        self.record_layer_input(start, viewport.bounds);
+        if self.layer_inputs.len() != before
+            && self.input_clip_epoch == clip_epoch
+            && visual_scale.is_finite()
+            && visual_scale > 0.0
+            && self.hitboxes[start..].iter().all(|hitbox| hitbox.content_mask == viewport)
+        {
+            self.layer_inputs.last_mut().expect("recorded input").geometry =
+                Some(ScrollInputGeometry { offset, visual_scale, viewport });
         }
     }
 
@@ -424,7 +465,62 @@ impl Frame {
                 hitboxes: target + (layer.hitboxes.start - source.start)
                     ..target + (layer.hitboxes.end - source.start),
                 viewport: layer.viewport,
+                geometry: layer.geometry,
             }));
+    }
+
+    /// Copy committed input without mutating its source. Nonzero placement
+    /// is admitted only for one complete fixed-clip group. The caller must
+    /// also prove scene coverage and refresh coordinate-capturing listeners
+    /// before dispatching non-wheel input; this routine only moves geometry.
+    pub(super) fn carry_input_span(
+        &mut self,
+        previous: &Self,
+        source: Range<usize>,
+        scroll_offset: Option<Point<Pixels>>,
+    ) -> bool {
+        let Some(hitboxes) = previous.hitboxes.get(source.clone()) else {
+            return false;
+        };
+        if let Some(offset) = scroll_offset {
+            let first = previous.layer_inputs.partition_point(|layer| layer.hitboxes.end < source.end);
+            let mut matching = previous.layer_inputs[first..].iter()
+                .take_while(|layer| layer.hitboxes.end == source.end)
+                .filter(|layer| layer.hitboxes == source);
+            let Some(layer) = matching.next() else { return false; };
+            if matching.next().is_some() {
+                return false;
+            }
+            let Some(geometry) = layer.geometry else { return false; };
+            let delta = (offset - geometry.offset) * geometry.visual_scale;
+            if !delta.x.0.is_finite() || !delta.y.0.is_finite() {
+                return false;
+            }
+            if delta != Point::default() {
+                let start = self.hitboxes.len();
+                self.hitboxes.extend(hitboxes.iter().map(|hitbox| Hitbox {
+                    id: hitbox.id,
+                    bounds: Bounds::new(hitbox.bounds.origin + delta, hitbox.bounds.size),
+                    content_mask: geometry.viewport,
+                    behavior: hitbox.behavior,
+                }));
+                self.layer_inputs.push(LayerInput {
+                    hitboxes: start..self.hitboxes.len(),
+                    viewport: layer.viewport,
+                    geometry: Some(ScrollInputGeometry { offset, ..geometry }),
+                });
+                self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
+                return true;
+            }
+        }
+        // Normal retained prepaint uses the exact existing coordinates.
+        // Its parent cannot infer raw mask provenance from a replayed span.
+        if !hitboxes.is_empty() {
+            self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
+        }
+        self.carry_layer_inputs(previous, source);
+        self.hitboxes.extend_from_slice(hitboxes);
+        true
     }
 
     pub(crate) fn hit_test(&self, position: Point<Pixels>) -> HitTest {

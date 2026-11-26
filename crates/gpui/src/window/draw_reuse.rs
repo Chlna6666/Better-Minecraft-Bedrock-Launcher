@@ -262,13 +262,11 @@ impl Window {
             super::element_work::ElementWorkPhase::Replay,
         );
 
-        self.next_frame.carry_layer_inputs(
+        assert!(self.next_frame.carry_input_span(
             &self.rendered_frame,
             range.start.hitboxes_index..range.end.hitboxes_index,
-        );
-        self.next_frame.hitboxes.extend_from_slice(
-            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
-        );
+            None,
+        ), "validated input range");
         self.replay_prepaint_records(range, external_parent);
     }
 

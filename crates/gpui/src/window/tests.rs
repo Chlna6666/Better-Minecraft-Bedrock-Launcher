@@ -4016,7 +4016,7 @@ fn scroll_layer_input_matches_flat_hit_testing(cx: &mut TestAppContext) {
             assert_eq!(actual.hover_hitbox_count, expected.hover_hitbox_count);
         }
         frame.layer_inputs = groups;
-    }).unwrap();
+    });
 }
 
 #[gpui::test]
@@ -4047,5 +4047,55 @@ fn scroll_layer_input_carries_complete_ranges_and_rolls_back(cx: &mut TestAppCon
         window.truncate_prepaint_to(baseline);
         assert!(window.next_frame.layer_inputs.is_empty());
         assert!(window.next_frame.hitboxes.is_empty());
-    }).unwrap();
+    });
+}
+
+#[gpui::test]
+fn scroll_input_projection_preserves_fixed_rounded_viewport(cx: &mut TestAppContext) {
+    let context = cx.add_empty_window();
+    context.update(|window, _| {
+        let viewport = Bounds::new(point(px(10.), px(10.)), size(px(40.), px(40.)));
+        let mask = ContentMask {
+            bounds: viewport,
+            corner_bounds: viewport,
+            corner_radii: crate::Corners::from(px(4.)),
+        };
+        window.rendered_frame.hitboxes.clear();
+        window.rendered_frame.layer_inputs.clear();
+        window.next_frame.hitboxes.clear();
+        window.next_frame.layer_inputs.clear();
+        for id in 1..=8 {
+            window.rendered_frame.hitboxes.push(Hitbox {
+                id: HitboxId(id),
+                bounds: Bounds::new(point(px(20.), px(55.)), size(px(10.), px(10.))),
+                content_mask: mask,
+                behavior: HitboxBehavior::Normal,
+            });
+        }
+        let epoch = window.rendered_frame.input_clip_epoch;
+        window.rendered_frame.record_scroll_layer_input(
+            0, mask, Point::default(), 2.0, epoch,
+        );
+        assert!(window.next_frame.carry_input_span(
+            &window.rendered_frame, 0..8, Some(point(px(0.), px(-10.))),
+        ));
+        let position = point(px(25.), px(40.));
+        assert_eq!(window.next_frame.hit_test(position).ids.len(), 8);
+        assert!(window.rendered_frame.hit_test(position).ids.is_empty());
+        assert_eq!(window.next_frame.hitboxes[0].content_mask, mask);
+        assert_eq!(window.next_frame.hitboxes[0].bounds.origin.y, px(35.));
+        assert_eq!(window.rendered_frame.hitboxes[0].bounds.origin.y, px(55.));
+
+        // No mutation if a nested clip invalidated the proof.
+        window.rendered_frame.layer_inputs.clear();
+        window.rendered_frame.input_clip_epoch = epoch.wrapping_add(1);
+        window.rendered_frame.record_scroll_layer_input(
+            0, mask, Point::default(), 2.0, epoch,
+        );
+        let before = window.next_frame.hitboxes.len();
+        assert!(!window.next_frame.carry_input_span(
+            &window.rendered_frame, 0..8, Some(point(px(0.), px(-10.))),
+        ));
+        assert_eq!(window.next_frame.hitboxes.len(), before);
+    });
 }
