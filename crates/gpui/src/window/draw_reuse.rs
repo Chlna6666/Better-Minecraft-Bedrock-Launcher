@@ -31,40 +31,37 @@ impl Window {
                 }
 
                 // Do not hold a borrow into deferred_draws while prepainting: nested deferred
-                // elements append to the same vector.
+                // elements append to the same vector. Temporarily exchange the captured
+                // context with the window; both passes can use it without cloning paths.
                 let (
                     mut element,
                     parent_node,
                     current_view,
                     absolute_offset,
-                    element_id_stack,
-                    retained_element_id_stack,
-                    text_style_stack,
                     element_visual_transform,
-                    content_mask_stack,
-                    visual_content_mask_stack,
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
+                    mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
+                    mem::swap(
+                        &mut self.retained_element_id_stack,
+                        &mut deferred_draw.retained_element_id_stack,
+                    );
+                    mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
+                    mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
+                    mem::swap(
+                        &mut self.visual_content_mask_stack,
+                        &mut deferred_draw.visual_content_mask_stack,
+                    );
                     (
                         deferred_draw.element.take(),
                         deferred_draw.parent_node,
                         deferred_draw.current_view,
                         deferred_draw.absolute_offset,
-                        deferred_draw.element_id_stack.clone(),
-                        deferred_draw.retained_element_id_stack.clone(),
-                        deferred_draw.text_style_stack.clone(),
                         deferred_draw.element_visual_transform,
-                        deferred_draw.content_mask_stack.clone(),
-                        deferred_draw.visual_content_mask_stack.clone(),
-                        )
+                    )
                 };
 
-                self.element_id_stack = element_id_stack;
-                self.retained_element_id_stack = retained_element_id_stack;
-                self.text_style_stack = text_style_stack;
                 self.element_visual_transform = element_visual_transform;
-                self.content_mask_stack = content_mask_stack;
-                self.visual_content_mask_stack = visual_content_mask_stack;
                 self.next_frame.dispatch_tree.set_active_node(parent_node);
 
                 let prepaint_start = self.prepaint_index();
@@ -80,6 +77,17 @@ impl Window {
                 let prepaint_end = self.prepaint_index();
 
                 let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
+                mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
+                mem::swap(
+                    &mut self.retained_element_id_stack,
+                    &mut deferred_draw.retained_element_id_stack,
+                );
+                mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
+                mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
+                mem::swap(
+                    &mut self.visual_content_mask_stack,
+                    &mut deferred_draw.visual_content_mask_stack,
+                );
                 deferred_draw.element = element;
                 deferred_draw.prepaint_range = prepaint_start..prepaint_end;
 
@@ -124,27 +132,43 @@ impl Window {
             }
 
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            self.element_id_stack
-                .clone_from(&deferred_draw.element_id_stack);
-            self.retained_element_id_stack
-                .clone_from(&deferred_draw.retained_element_id_stack);
+            mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
+            mem::swap(
+                &mut self.retained_element_id_stack,
+                &mut deferred_draw.retained_element_id_stack,
+            );
             self.element_visual_transform = deferred_draw.element_visual_transform;
-            self.content_mask_stack
-                .clone_from(&deferred_draw.content_mask_stack);
-            self.visual_content_mask_stack
-                .clone_from(&deferred_draw.visual_content_mask_stack);
+            mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
+            mem::swap(
+                &mut self.visual_content_mask_stack,
+                &mut deferred_draw.visual_content_mask_stack,
+            );
             self.next_frame
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
 
             let paint_start = self.paint_index();
             let current_view = deferred_draw.current_view;
-            if let Some(element) = deferred_draw.element.as_mut() {
+            let painted = if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(current_view, |window| {
                     element.paint(window, cx);
-                })
+                });
+                true
             } else {
                 self.degrade_current_draw();
+                false
+            };
+            mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
+            mem::swap(
+                &mut self.retained_element_id_stack,
+                &mut deferred_draw.retained_element_id_stack,
+            );
+            mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
+            mem::swap(
+                &mut self.visual_content_mask_stack,
+                &mut deferred_draw.visual_content_mask_stack,
+            );
+            if !painted {
                 break;
             }
             let paint_end = self.paint_index();
