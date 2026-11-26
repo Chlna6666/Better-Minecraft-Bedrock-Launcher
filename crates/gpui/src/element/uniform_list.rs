@@ -85,7 +85,7 @@ pub struct UniformList {
 /// Frame state used by the [UniformList].
 pub struct UniformListLayout {
     item_size: Size<Pixels>,
-    items: SmallVec<[(usize, AnyElement); 32]>,
+    items: SmallVec<[AnyElement; 32]>,
     decorations: SmallVec<[AnyElement; 2]>,
 }
 
@@ -371,7 +371,7 @@ impl Element for UniformList {
                                         item.prepaint_at(item_origin, window, cx);
                                     },
                                 );
-                                frame_state.items.push((row_index, item));
+                                frame_state.items.push(item);
                             }
 
                             let bounds = Bounds::new(
@@ -431,11 +431,8 @@ impl Element for UniformList {
             window,
             cx,
             |_, window, cx| {
-                for (row_index, item) in &mut request_layout.items {
-                    window.with_retained_child_key(
-                        ElementId::named_usize(RETAINED_UNIFORM_ROW_KEY, *row_index),
-                        |window| item.paint(window, cx),
-                    );
+                for item in &mut request_layout.items {
+                    item.paint(window, cx);
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);

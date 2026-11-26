@@ -86,11 +86,19 @@ pub(crate) struct ViewReadSet {
 
 impl FrameReadLog {
     pub(crate) fn entity(&mut self, owner: Option<EntityId>, entity: EntityId) {
-        self.entities.push((owner, entity));
+        // GPUI Fast note_access suppresses consecutive equal reads. Owner
+        // identity is part of the entry, so crossing view scopes is safe.
+        let entry = (owner, entity);
+        if self.entities.last() != Some(&entry) {
+            self.entities.push(entry);
+        }
     }
 
     pub(crate) fn global(&mut self, owner: Option<EntityId>, key: (TypeId, Option<bool>)) {
-        self.globals.push((owner, key));
+        let entry = (owner, key);
+        if self.globals.last() != Some(&entry) {
+            self.globals.push(entry);
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -120,7 +128,7 @@ impl FrameReadLog {
     }
 
     #[cfg(test)]
-    pub(crate) fn into_sets(mut self) -> FxHashMap<Option<EntityId>, ViewReadSet> {
+    pub(crate) fn into_sets(&mut self) -> FxHashMap<Option<EntityId>, ViewReadSet> {
         let mut sets = FxHashMap::default();
         self.append_to(&mut sets);
         sets
@@ -303,15 +311,12 @@ impl EntityMap {
         std::mem::replace(&mut self.render_dependency_owner, owner)
     }
 
-    pub(crate) fn finish_frame_read_log(&mut self) -> FrameReadLog {
+    pub(crate) fn finish_frame_read_log(
+        &mut self,
+    ) -> (&mut FrameReadLog, &SecondaryMap<EntityId, &'static str>) {
         self.tracking_frame_dependencies = false;
         self.render_dependency_owner = None;
-        std::mem::take(self.frame_read_log.get_mut())
-    }
-
-    pub(crate) fn recycle_frame_read_log(&mut self, mut log: FrameReadLog) {
-        log.clear();
-        *self.frame_read_log.get_mut() = log;
+        (self.frame_read_log.get_mut(), &self.entity_type_names)
     }
 
     pub(crate) fn discard_frame_dependencies(&mut self) {
@@ -717,7 +722,7 @@ mod test {
         entity_map.end_lease_erased(handle.entity_id(), lease);
 
         assert_eq!(entity_map.read(&handle).i, 2);
-        let reads = entity_map.finish_frame_read_log().into_sets();
+        let reads = entity_map.finish_frame_read_log().0.into_sets();
         assert_eq!(reads[&None].entities.as_ref(), &[handle.entity_id()]);
     }
 

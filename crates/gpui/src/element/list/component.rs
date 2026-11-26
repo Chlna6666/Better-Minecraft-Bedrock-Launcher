@@ -1,5 +1,5 @@
 use crate::{
-    AnyElement, App, Bounds, ContentMask, DispatchPhase, Element, ElementId,
+    AnyElement, App, Bounds, ContentMask, DispatchPhase, Element,
     GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels,
     ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
@@ -11,8 +11,6 @@ use super::{
     layout::ListPrepaintLayout,
     state::{ListItem, ListState},
 };
-
-const RETAINED_LIST_ITEM_KEY: &str = "__gpui_retained_list_item";
 
 /// Construct a new list element
 pub fn list(
@@ -181,10 +179,7 @@ impl Element for List {
             }),
             |window| {
                 for item in &mut prepaint.layout.item_layouts {
-                    window.with_retained_child_key(
-                        ElementId::named_usize(RETAINED_LIST_ITEM_KEY, item.index),
-                        |window| item.element.paint(window, cx),
-                    );
+                    item.element.paint(window, cx);
                 }
             },
         );

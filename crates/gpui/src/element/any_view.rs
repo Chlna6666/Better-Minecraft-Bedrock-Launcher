@@ -59,7 +59,7 @@ impl AnyView {
     }
 
     #[inline(never)]
-    pub(super) fn render_element(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render_element(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         let _work = if crate::window::element_work::enabled() {
             crate::window::element_work::begin_named(
                 cx.entities
@@ -73,7 +73,6 @@ impl AnyView {
         let mut weak = Some(self.entity.downgrade());
         let mut element = None;
         let render = self.render;
-        let previous_owner = cx.entities.set_render_dependency_owner(Some(self.entity_id()));
         let previous_input_owner = window.input_dependency_owner.replace(self.entity_id());
         let scroll_scope = crate::window::scroll_dependencies::ScrollReadScope::begin();
         cx.update_entity_erased(&self.entity, &mut |entity, cx| {
@@ -88,7 +87,6 @@ impl AnyView {
         });
         window.record_scroll_reads(self.entity_id(), scroll_scope.finish());
         window.input_dependency_owner = previous_input_owner;
-        cx.entities.set_render_dependency_owner(previous_owner);
         element.expect("rendered entity callback must produce an element")
     }
 }

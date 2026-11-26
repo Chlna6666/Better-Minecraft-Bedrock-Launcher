@@ -822,15 +822,14 @@ impl Window {
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
         let mut entities = mem::take(&mut cx.entities.frame_entity_scratch);
-        let mut log = cx.entities.finish_frame_read_log();
+        let (log, live_entities) = cx.entities.finish_frame_read_log();
         self.invalidator.commit_frame_dependencies(
-            &mut log,
+            log,
             &mut entities,
             &self.replayed_view_owners,
-            |entity| cx.entities.type_name_for_id(entity).is_some(),
+            |entity| live_entities.contains_key(entity),
             |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
         );
-        cx.entities.recycle_frame_read_log(log);
         let handle = self.handle;
         cx.record_entities_accessed(
             handle,
