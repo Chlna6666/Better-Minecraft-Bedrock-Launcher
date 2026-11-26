@@ -273,18 +273,16 @@ impl DataTable {
     }
 
     fn table_bounds(&self) -> Bounds<Pixels> {
-        self.scroll_handle.0.borrow().base_handle.bounds()
+        self.scroll_handle.base_handle().bounds()
     }
 
     fn scroll_top(&self) -> Pixels {
-        self.scroll_handle.0.borrow().base_handle.offset().y
+        self.scroll_handle.base_handle().offset().y
     }
 
     fn scroll_height(&self) -> Pixels {
         self.scroll_handle
-            .0
-            .borrow()
-            .last_item_size
+            .last_item_size()
             .unwrap_or_default()
             .contents
             .height
@@ -304,7 +302,7 @@ impl DataTable {
             (table_height - SCROLLBAR_THUMB_HEIGHT - px(4.)).max(px(4.)),
         );
         let entity = cx.entity();
-        let scroll_handle = self.scroll_handle.0.borrow().base_handle.clone();
+        let scroll_handle = self.scroll_handle.base_handle();
 
         div()
             .id("scrollbar")

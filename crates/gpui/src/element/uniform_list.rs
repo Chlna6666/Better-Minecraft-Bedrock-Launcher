@@ -20,7 +20,7 @@ use std::{cmp, ops::Range};
 
 pub use decoration::UniformListDecoration;
 pub use scroll::{
-    DeferredScrollToItem, ItemSize, ScrollStrategy, UniformListScroll, UniformListScrollHandle,
+    ItemSize, ScrollStrategy, UniformListScrollHandle,
 };
 
 use super::ListHorizontalSizingBehavior;
@@ -222,10 +222,12 @@ impl Element for UniformList {
         let item_height = longest_item_size.height;
         let shared_scroll_to_item = self.scroll_handle.as_mut().and_then(|handle| {
             let mut handle = handle.0.borrow_mut();
-            handle.last_item_size = Some(ItemSize {
+            let next = Some(ItemSize {
                 item: padded_bounds.size,
                 contents: content_size,
             });
+            handle.version.bump_if(handle.last_item_size != next);
+            handle.last_item_size = next;
             handle.deferred_scroll_to_item.take()
         });
 

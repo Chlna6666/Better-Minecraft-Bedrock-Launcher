@@ -55,7 +55,7 @@ impl UniformList {
 
     /// Track and render scroll state of this list with reference to the given scroll handle.
     pub fn track_scroll(mut self, handle: UniformListScrollHandle) -> Self {
-        self.interactivity.tracked_scroll_handle = Some(handle.0.borrow().base_handle.clone());
+        self.interactivity.tracked_scroll_handle = Some(handle.base_handle());
         self.scroll_handle = Some(handle);
         self
     }
@@ -71,10 +71,12 @@ impl UniformList {
                     let new_y_offset =
                         -(offset.y + last_size.contents.height - last_size.item.height);
                     base_handle.set_offset(point(offset.x, new_y_offset));
+                    scroll_state.version.bump_if(scroll_state.y_flipped != is_y_flipped);
                     scroll_state.y_flipped = is_y_flipped;
                 }
                 None if is_y_flipped => {
                     base_handle.set_offset(point(offset.x, Pixels::MIN));
+                    scroll_state.version.bump_if(scroll_state.y_flipped != is_y_flipped);
                     scroll_state.y_flipped = is_y_flipped;
                 }
                 _ => {}

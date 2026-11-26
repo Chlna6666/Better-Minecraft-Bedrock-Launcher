@@ -47,9 +47,7 @@ fn item_positions_far_down_long_list_remain_uniform(cx: &mut TestAppContext) {
     item_bounds.borrow_mut().clear();
     view.update(cx, |view, cx| {
         view.scroll_handle
-            .0
-            .borrow()
-            .base_handle
+            .base_handle()
             .set_offset(point(px(0.0), px(-216_000_064.0)));
         cx.notify();
     });
@@ -96,7 +94,7 @@ fn fixed_rows_do_not_render_a_measurement_sample(cx: &mut TestAppContext) {
     cx.run_until_parked();
     calls.borrow_mut().clear();
     view.update(cx, |view, cx| {
-        view.scroll_handle.0.borrow().base_handle.set_offset(point(px(0.), px(-240.)));
+        view.scroll_handle.base_handle().set_offset(point(px(0.), px(-240.)));
         cx.notify();
     });
     cx.run_until_parked();

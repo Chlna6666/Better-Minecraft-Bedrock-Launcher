@@ -1,7 +1,7 @@
 //! Scroll dependencies use state versions, not per-getter executable probes.
 //! StateVersion follows longbridge/gpui-fast fast/dependencies.rs (Apache-2.0;
 //! Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge).
-use crate::{EntityId, Pixels, Point, UniformListScroll, Window};
+use crate::{EntityId, Pixels, Point, Window};
 use collections::FxHashMap;
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
@@ -26,7 +26,14 @@ impl StateVersion {
     }
 
     pub(crate) fn read(&self) {
-        record(ScrollRead::Version(Rc::downgrade(&self.0), self.0.get()));
+        CAPTURE.with(|capture| {
+            let mut capture = capture.borrow_mut();
+            let Some(reads) = capture.as_mut() else { return; };
+            let ptr = Rc::as_ptr(&self.0);
+            if !reads.iter().any(|entry| entry.state.as_ptr() == ptr) {
+                reads.push(ScrollRead { state: Rc::downgrade(&self.0), at: self.0.get() });
+            }
+        });
     }
 }
 
@@ -72,42 +79,24 @@ impl Drop for OffsetWrite<'_> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Probe { Unchanged, Changed, Dead }
+enum ReadStatus { Unchanged, Changed, Dead }
 
 #[derive(Clone)]
-pub(crate) enum ScrollRead {
-    Version(Weak<Cell<u64>>, u64),
-    // The legacy public UniformListScroll fields still permit direct mutation.
-    // One typed snapshot covers both getters until that public API is migrated.
-    Uniform(Weak<RefCell<UniformListScroll>>, bool, bool),
+pub(crate) struct ScrollRead {
+    state: Weak<Cell<u64>>,
+    at: u64,
 }
 
 impl ScrollRead {
     fn same_state(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Version(a, _), Self::Version(b, _)) => a.ptr_eq(b),
-            (Self::Uniform(a, ..), Self::Uniform(b, ..)) => a.ptr_eq(b),
-            _ => false,
-        }
+        self.state.ptr_eq(&other.state)
     }
 
-    fn status(&self) -> Probe {
-        match self {
-            Self::Version(state, at) => match state.upgrade() {
-                Some(state) if state.get() == *at => Probe::Unchanged,
-                Some(_) => Probe::Changed,
-                None => Probe::Dead,
-            },
-            Self::Uniform(state, flipped, scrollable) => {
-                let Some(state) = state.upgrade() else { return Probe::Dead; };
-                let Ok(state) = state.try_borrow() else { return Probe::Unchanged; };
-                let now = state.last_item_size.is_some_and(|size| size.contents.height > size.item.height);
-                if state.y_flipped == *flipped && now == *scrollable {
-                    Probe::Unchanged
-                } else {
-                    Probe::Changed
-                }
-            }
+    fn status(&self) -> ReadStatus {
+        match self.state.upgrade() {
+            Some(state) if state.get() == self.at => ReadStatus::Unchanged,
+            Some(_) => ReadStatus::Changed,
+            None => ReadStatus::Dead,
         }
     }
 }
@@ -123,7 +112,7 @@ pub(crate) struct MountedScrollSource {
 
 impl MountedScrollSource {
     fn new(listener_index: usize, owner: EntityId, version: &StateVersion) -> Self {
-        Self { listener_index, owner, read: ScrollRead::Version(Rc::downgrade(&version.0), version.0.get()) }
+        Self { listener_index, owner, read: ScrollRead { state: Rc::downgrade(&version.0), at: version.0.get() } }
     }
 }
 
@@ -171,25 +160,6 @@ impl Drop for ScrollReadScope {
             CAPTURE.with(|capture| { capture.replace(previous); });
         }
     }
-}
-
-/// Keep the earliest observed version: a write between two reads still invalidates.
-fn record(read: ScrollRead) {
-    CAPTURE.with(|capture| {
-        let mut capture = capture.borrow_mut();
-        let Some(reads) = capture.as_mut() else { return; };
-        if !reads.iter().any(|entry| entry.same_state(&read)) {
-            reads.push(read);
-        }
-    });
-}
-
-pub(crate) fn observe_uniform(state: &Rc<RefCell<UniformListScroll>>, value: &UniformListScroll) {
-    record(ScrollRead::Uniform(
-        Rc::downgrade(state),
-        value.y_flipped,
-        value.last_item_size.is_some_and(|size| size.contents.height > size.item.height),
-    ));
 }
 
 fn merge_reads(target: &mut Vec<ScrollRead>, incoming: Vec<ScrollRead>) {
@@ -249,16 +219,16 @@ impl Window {
         }
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         for source in &self.rendered_frame.mounted_scroll_sources {
-            if source.read.status() == Probe::Changed && !changed.contains(&source.owner) {
+            if source.read.status() == ReadStatus::Changed && !changed.contains(&source.owner) {
                 changed.push(source.owner);
             }
         }
         self.scroll_reads.retain(|&owner, reads| {
             let mut dirty = false;
             reads.retain(|entry| match entry.status() {
-                Probe::Dead => false,
-                Probe::Changed => { dirty = true; true }
-                Probe::Unchanged => true,
+                ReadStatus::Dead => false,
+                ReadStatus::Changed => { dirty = true; true }
+                ReadStatus::Unchanged => true,
             });
             if dirty && !changed.contains(&owner) { changed.push(owner); }
             !reads.is_empty()
@@ -280,9 +250,9 @@ mod tests {
         state.read();
         let reads = scope.finish();
         assert_eq!(reads.len(), 1);
-        assert_eq!(reads[0].status(), Probe::Changed);
+        assert_eq!(reads[0].status(), ReadStatus::Changed);
         drop(state);
-        assert_eq!(reads[0].status(), Probe::Dead);
+        assert_eq!(reads[0].status(), ReadStatus::Dead);
     }
 
     #[test]
@@ -292,9 +262,9 @@ mod tests {
         state.version.read();
         *state.borrow_mut() = Point::default();
         let reads = scope.finish();
-        assert_eq!(reads[0].status(), Probe::Unchanged);
+        assert_eq!(reads[0].status(), ReadStatus::Unchanged);
         state.borrow_mut().y = crate::px(10.);
-        assert_eq!(reads[0].status(), Probe::Changed);
+        assert_eq!(reads[0].status(), ReadStatus::Changed);
     }
 
     #[test]
@@ -311,7 +281,7 @@ mod tests {
         assert_eq!(target.len(), 1);
         assert_eq!(target[0].listener_index, 13);
         state.bump();
-        assert_eq!(target[0].read.status(), Probe::Changed);
+        assert_eq!(target[0].read.status(), ReadStatus::Changed);
     }
 
     #[test]

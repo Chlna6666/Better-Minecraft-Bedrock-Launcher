@@ -882,10 +882,7 @@ pub(super) fn render_asset_list(
         .iter()
         .cloned()
         .collect::<HashSet<_>>();
-    let handle = UniformListScrollHandle(Rc::new(std::cell::RefCell::new(UniformListScroll {
-        base_handle: asset_scroll_handle.clone(),
-        ..Default::default()
-    })));
+    let handle = UniformListScrollHandle::with_base_handle(asset_scroll_handle.clone());
     let scroll_handle = asset_scroll_handle.clone();
     let list = uniform_list(
         "manage-asset-list-scroll",

@@ -49,7 +49,7 @@ impl View {
         let view = cx.entity();
         let row_colors = *colors;
         // The virtual list and the visible draggable scrollbar share the same GPUI ScrollHandle.
-        let scrollbar_handle = self.map_image.player_scroll.0.borrow().base_handle.clone();
+        let scrollbar_handle = self.map_image.player_scroll.base_handle();
         let list = uniform_list("map-import-players", count, move |range, _window, _cx| {
             range
                 .map(|index| {
