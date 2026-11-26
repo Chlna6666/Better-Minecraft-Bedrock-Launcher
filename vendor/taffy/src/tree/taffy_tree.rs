@@ -705,17 +705,17 @@ impl<NodeContext> TaffyTree<NodeContext> {
     #[inline]
     pub fn set_node_context(&mut self, node: NodeId, measure: Option<NodeContext>) -> TaffyResult<()> {
         let key = node.into();
-        let node = &mut self.nodes[key];
-        match (node.context_key, measure) {
+        let data = &mut self.nodes[key];
+        match (data.context_key, measure) {
             (Some(context), Some(measure)) => {
                 // Preserve the arena slot when replacing a context.
                 *self.node_context_data.get_mut(context).expect("live node context") = measure;
             }
             (None, Some(measure)) => {
-                node.context_key = Some(self.node_context_data.insert(measure));
+                data.context_key = Some(self.node_context_data.insert(measure));
             }
             (Some(context), None) => {
-                node.context_key = None;
+                data.context_key = None;
                 self.node_context_data.remove(context);
             }
             (None, None) => {}
