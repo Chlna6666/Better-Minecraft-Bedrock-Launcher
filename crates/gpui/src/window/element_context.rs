@@ -126,6 +126,13 @@ impl Window {
         Some(self.global_ids.borrow_mut().get(path))
     }
 
+    /// Animation tickets need only the same running integer identity as
+    /// native layout, not a materialized global element path.
+    pub(crate) fn current_retained_element_key(&self) -> Option<u64> {
+        (!self.retained_element_id_stack.is_empty())
+            .then(|| self.retained_element_id_stack.hash())
+    }
+
     pub(crate) fn has_layout_owner(&self) -> bool {
         !self.layout_key_scopes.is_empty() && !self.retained_element_id_stack.is_empty()
     }

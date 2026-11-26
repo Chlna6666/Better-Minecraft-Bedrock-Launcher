@@ -351,7 +351,7 @@ impl Render for NavChromeView {
             // Chrome-nav's cached boundary has a fixed full-size box. Label
             // expansion only rearranges descendants inside that box and never
             // changes the parent shell's flow geometry.
-            .with_local_layout_animation_target(labels_animating)
+            .with_layout_animation_target(labels_animating)
     }
 }
 

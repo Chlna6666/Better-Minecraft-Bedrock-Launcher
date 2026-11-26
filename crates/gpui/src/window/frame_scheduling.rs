@@ -1,4 +1,3 @@
-use super::lifecycle::RetainedInvalidationScope;
 use super::state::FrameRequestReason;
 use super::*;
 
@@ -116,43 +115,19 @@ impl Window {
         }
     }
 
-    /// Schedule the next frame of a layout animation for one retained element path.
-    ///
-    /// Unlike [`Window::request_animation_frame`], this does not emit an application-level
-    /// `Notify`. The owning view is marked dirty only so it can resample layout state, while the
-    /// invalidator keeps the retained element path. Layout animation descendants are reconciled,
-    /// not blindly invalidated: a stable relative/flex container must be traversed when an absolute
-    /// child moves, while unrelated siblings outside the target remain replayable.
-    pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
-        self.request_layout_animation_frame_scoped(
-            retained_id,
-            RetainedInvalidationScope::RelayoutSubtree,
-        );
-    }
-
-    /// Only for absolutely positioned / layout-independent animation targets.
-    pub(crate) fn request_local_layout_animation_frame(&self, retained_id: GlobalElementId) {
-        self.request_layout_animation_frame_scoped(
-            retained_id,
-            RetainedInvalidationScope::ReconcileSubtree,
-        );
-    }
-
-    fn request_layout_animation_frame_scoped(
-        &self,
-        retained_id: GlobalElementId,
-        scope: RetainedInvalidationScope,
-    ) {
+    /// Schedule one sample per native element key. The owning view is the
+    /// actual invalidation boundary; there is no separate element scope.
+    pub(crate) fn request_layout_animation_frame(&self, layout_key: u64) {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
 
         if log::log_enabled!(log::Level::Trace) {
             log::trace!(
-                "gpui targeted layout animation frame requested: window={} entity={:?} retained_id={} active={}",
+                "gpui targeted layout animation frame requested: window={} entity={:?} layout_key={} active={}",
                 self.handle.window_id().as_u64(),
                 entity.as_u64(),
-                retained_id,
+                layout_key,
                 self.active.get()
             );
         }
@@ -162,22 +137,17 @@ impl Window {
         // callbacks carry no useful historical state; they only create stale frame pressure.
         if !self
             .invalidator
-            .arm_layout_animation_frame(entity, &retained_id, scope)
+            .arm_layout_animation_frame(entity, layout_key)
         {
             record_coalesced_refresh();
             return;
         }
 
-        // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
-        // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
         self.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
         self.enqueue_next_frame_callback(
             FrameRequestReason::LayoutAnimation,
             move |window, _cx| {
-                let Some(_scope) = window
-                    .invalidator
-                    .take_layout_animation_frame(entity, &retained_id)
-                else {
+                if !window.invalidator.take_layout_animation_frame(entity, layout_key) {
                     return;
                 };
                 if window.invalidator.invalidate_owned_view(entity) {
@@ -197,7 +167,7 @@ impl Window {
     /// invalidation.
     pub(crate) fn request_layout_animation_frame_at(
         &self,
-        retained_id: GlobalElementId,
+        layout_key: u64,
         deadline: Instant,
         cx: &App,
     ) {
@@ -206,7 +176,7 @@ impl Window {
         };
         let Some(generation) =
             self.invalidator
-                .arm_layout_animation_deadline(entity, &retained_id, deadline)
+                .arm_layout_animation_deadline(entity, layout_key, deadline)
         else {
             record_coalesced_refresh();
             return;
@@ -219,7 +189,7 @@ impl Window {
             let _ = ignore_window_not_found(handle.update(cx, |_, window, _cx| {
                 if !window.invalidator.take_layout_animation_deadline(
                     entity,
-                    &retained_id,
+                    layout_key,
                     deadline,
                     generation,
                 ) {
@@ -316,8 +286,8 @@ impl Window {
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
-            if let Some(retained_id) = self.current_retained_element_id() {
-                self.request_layout_animation_frame(retained_id);
+            if let Some(layout_key) = self.current_retained_element_key() {
+                self.request_layout_animation_frame(layout_key);
             } else {
                 self.request_animation_frame();
             }

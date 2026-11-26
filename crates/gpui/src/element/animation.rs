@@ -911,13 +911,10 @@ pub trait AnimationExt {
         }
     }
 
-    /// Attach an automatically identified retained invalidation target to a caller-sampled layout animation.
+    /// Request frame samples for a caller-sampled layout animation.
     ///
-    /// The owning view is still rerendered on every sample so callers may recompute arbitrary
-    /// layout/style values. Only this retained subtree is marked dirty, allowing unrelated siblings
-    /// to replay their previous prepaint/paint ranges instead of repainting with the entire view.
-    /// The target identity comes from the parent mount path, this wrapper's call site, and its type;
-    /// application code does not need to invent a rendering-only element ID.
+    /// The owning view is rerendered to recompute layout; a native positional
+    /// key coalesces duplicate requests without allocating an element state ID.
     #[track_caller]
     fn with_layout_animation_target(self, animating: bool) -> LayoutAnimationTargetElement<Self>
     where
@@ -927,27 +924,10 @@ pub trait AnimationExt {
             source: core::panic::Location::caller(),
             element: Some(self),
             animating,
-            local_layout: false,
         }
     }
 
-    /// Layout animation limited to an absolute-positioned/local subtree.
-    /// Only use if ancestor flow geometry cannot change with its progress.
-    #[track_caller]
-    fn with_local_layout_animation_target(
-        self,
-        animating: bool,
-    ) -> LayoutAnimationTargetElement<Self>
-    where
-        Self: Sized,
-    {
-        LayoutAnimationTargetElement {
-            source: core::panic::Location::caller(),
-            element: Some(self),
-            animating,
-            local_layout: true,
-        }
-    }
+
 }
 
 impl<E: IntoElement + 'static> AnimationExt for E {}
@@ -957,7 +937,6 @@ pub struct LayoutAnimationTargetElement<E> {
     source: &'static core::panic::Location<'static>,
     element: Option<E>,
     animating: bool,
-    local_layout: bool,
 }
 
 impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
@@ -988,14 +967,9 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         if self.animating {
-            let retained_id = window
-                .current_retained_element_id()
-                .expect("layout animation target must have a retained identity");
-            if self.local_layout {
-                window.request_local_layout_animation_frame(retained_id);
-            } else {
-                window.request_layout_animation_frame(retained_id);
-            }
+            let layout_key = window.current_retained_element_key()
+                .expect("layout animation target must have a native key");
+            window.request_layout_animation_frame(layout_key);
         }
 
         let mut element = self
@@ -1301,9 +1275,8 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
-        let retained_id = window
-            .current_retained_element_id()
-            .expect("AnimationElement must have a retained identity");
+        let layout_key = window.current_retained_element_key()
+            .expect("AnimationElement must have a native key");
         window.with_element_state(global_id, |state, window| {
             let now = window.animation_time();
             let mut state =
@@ -1329,7 +1302,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                 .animations
                 .get(animation_ix)
                 .is_some_and(|animation| matches!(animation.spec.repeat, RepeatMode::Forever));
-            schedule_next_animation_frame(window, cx, now, done, repeats, &retained_id);
+            schedule_next_animation_frame(window, cx, now, done, repeats, layout_key);
 
             ((element.request_layout(window, cx), element), state)
         })
@@ -1747,15 +1720,15 @@ fn schedule_next_animation_frame(
     now: Instant,
     done: bool,
     repeats: bool,
-    retained_id: &GlobalElementId,
+    layout_key: u64,
 ) {
     match next_animation_frame_delay(done, repeats, window.is_window_active()) {
         None => {}
         Some(delay) if delay.is_zero() => {
-            window.request_layout_animation_frame(retained_id.clone());
+            window.request_layout_animation_frame(layout_key);
         }
         Some(delay) => {
-            window.request_layout_animation_frame_at(retained_id.clone(), now + delay, cx);
+            window.request_layout_animation_frame_at(layout_key, now + delay, cx);
         }
     }
 }
