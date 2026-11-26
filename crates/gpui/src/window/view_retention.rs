@@ -15,10 +15,10 @@ use crate::layout::LayoutClaimSpans;
 
 /// Identity and effective inherited values at RequestLayout, distinct from Prepaint.
 pub(crate) struct ViewRebuild {
-    view: crate::AnyWeakView,
-    application_id: GlobalElementId,
-    layout: RetainedPaintContext,
-    splice_supported: bool,
+    pub(super) view: crate::AnyWeakView,
+    pub(super) application_id: GlobalElementId,
+    pub(super) layout: RetainedPaintContext,
+    pub(super) splice_supported: bool,
 }
 
 /// Everything needed to draw one view subtree again without building it.
@@ -34,6 +34,7 @@ pub(crate) struct RetainedViewRecord {
     /// The inherited context the ranges were recorded under.
     pub(crate) context: Rc<RetainedPaintContext>,
     pub(crate) rebuild: Option<Rc<ViewRebuild>>,
+    pub(crate) splice_safe: bool,
     /// Descendant span in the frame's prepaint-order view table.
     pub(crate) nested: Range<usize>,
     /// Descendant damage segments in paint order (the enclosing view's own segment follows).
@@ -60,6 +61,7 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) context: Rc<RetainedPaintContext>,
     pub(crate) rebuild: Option<Rc<ViewRebuild>>,
+    pub(crate) splice_safe: bool,
     pub(crate) scene_segments_start: usize,
     pub(crate) layout_state_range: Range<usize>,
     /// The retained source this frame copied, when the view was reused.
@@ -67,8 +69,16 @@ pub(crate) struct ViewRetentionCommit {
 }
 
 impl Window {
-    fn splice_context_supported(&self) -> bool {
+    pub(crate) fn splice_context_supported(&self) -> bool {
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        if self.inspector_enabled() {
+            return false;
+        }
         self.image_cache_stack.is_empty() && self.scene_animation.is_none()
+    }
+
+    pub(crate) fn splice_paint_context_matches(&self, context: &RetainedPaintContext) -> bool {
+        self.splice_context_supported() && self.retained_paint_context_matches(context)
     }
 
     /// Keep a weak view handle, so a committed frame does not extend entity lifetimes.
@@ -307,6 +317,7 @@ impl Window {
                 bounds: commit.bounds,
                 context: commit.context,
                 rebuild: commit.rebuild,
+                splice_safe: commit.splice_safe,
                 nested,
                 scene_segments,
                 layout_state_range: commit.layout_state_range,

@@ -133,6 +133,8 @@ impl IntoElement for ViewElement {
 pub struct ViewRequestLayout {
     kind: ViewRequestLayoutKind,
     rebuild: Option<Rc<crate::window::ViewRebuild>>,
+    pub(crate) adoption_serial: u64,
+    splice_safe: bool,
 }
 
 enum ViewRequestLayoutKind {
@@ -144,6 +146,13 @@ enum ViewRequestLayoutKind {
         layout_state_range: Range<usize>,
         retention: RetentionDraft,
         reused: Option<ReusedView>,
+        allow_reuse: bool,
+    },
+    Spliced {
+        splice: Option<Box<crate::window::ViewSplice>>,
+        retention: RetentionDraft,
+        prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
+        context: Option<Rc<crate::window::RetainedPaintContext>>,
     },
     /// The view was built this frame and will be recorded for the next one.
     Built {
@@ -188,8 +197,25 @@ impl Element for ViewElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
-        if let Some(global_id) = window.current_retained_element_id()
-            && let Some((admission, layout_claims)) = window.admit_retained_view(&global_id, entity_id, id, cx)
+        let adoption_serial = window.prebuilt_adoption_serial;
+        let splice_safe = window.splice_context_supported();
+        let retained_id = window.current_retained_element_id();
+        if let Some(global_id) = retained_id.as_ref() {
+            if let Some(prebuilt) = window.take_prebuilt_gap(global_id, id, entity_id) {
+                return prebuilt;
+            }
+            if let Some(splice) = window.try_splice_view(global_id, entity_id, id, cx) {
+                return (splice.anchor.layout_root, ViewRequestLayout {
+                    rebuild: splice.anchor.rebuild.clone(), adoption_serial, splice_safe,
+                    kind: ViewRequestLayoutKind::Spliced {
+                        splice: Some(Box::new(splice)), retention: RetentionDraft::default(),
+                        prepaint_range: None, context: None,
+                    },
+                });
+            }
+        }
+        if let Some(global_id) = retained_id.as_ref()
+            && let Some((admission, layout_claims)) = window.admit_retained_view(global_id, entity_id, id, cx)
         {
             let layout_root = admission.layout_root;
             let layout_state_range = window.replay_view_layout_states(&admission.layout_state_range);
@@ -197,12 +223,14 @@ impl Element for ViewElement {
                 layout_root,
                 ViewRequestLayout {
                     rebuild: admission.rebuild.clone(),
+                    adoption_serial, splice_safe: splice_safe && admission.splice_safe,
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
                         layout_claims,
                         layout_state_range,
                         retention: RetentionDraft::default(),
                         reused: None,
+                        allow_reuse: true,
                     },
                 },
             );
@@ -225,6 +253,7 @@ impl Element for ViewElement {
             layout_id,
             ViewRequestLayout {
                 rebuild,
+                adoption_serial, splice_safe,
                 kind: ViewRequestLayoutKind::Built {
                     element,
                     layout_root: layout_id,
@@ -248,6 +277,17 @@ impl Element for ViewElement {
         cx: &mut App,
     ) {
         let entity_id = self.view.entity_id();
+        state.splice_safe &= window.splice_context_supported();
+        if let ViewRequestLayoutKind::Spliced { splice, .. } = &mut state.kind {
+            if !window.can_prepaint_view_splice(splice.as_ref().expect("pending splice"), bounds) {
+                let anchor = window.abandon_view_splice(*splice.take().expect("pending splice"));
+                let empty = window.begin_view_element_states();
+                state.kind = ViewRequestLayoutKind::Retained {
+                    admission: anchor, layout_claims: [0..0, 0..0], layout_state_range: empty..empty,
+                    retention: RetentionDraft::default(), reused: None, allow_reuse: false,
+                };
+            }
+        }
         window.set_view_id(entity_id);
         let prepaint_start = window.prepaint_index();
         let mut retention = Some(RetentionDraft {
@@ -265,9 +305,10 @@ impl Element for ViewElement {
                     layout_claims,
                     layout_state_range,
                     reused,
+                    allow_reuse,
                     ..
                 } => {
-                    if window.retained_view_context_matches(admission, bounds)
+                    if *allow_reuse && window.retained_view_context_matches(admission, bounds)
                         && let Some(prepaint_range) = window.reuse_retained_view_prepaint(admission)
                     {
                         *reused = Some(ReusedView { prepaint_range, context });
@@ -317,6 +358,15 @@ impl Element for ViewElement {
                         retention: retention.take().expect("view retention slot"),
                     };
                 }
+                ViewRequestLayoutKind::Spliced { splice, retention: draft, prepaint_range, context: recorded_context } => {
+                    let splice = splice.as_mut().expect("admitted splice");
+                    let start = window.claim_log_len();
+                    window.prepaint_view_splice(splice, cx);
+                    splice.claims[1] = start..window.claim_log_len();
+                    *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
+                    *recorded_context = Some(context);
+                    *draft = retention.take().expect("view retention slot");
+                }
                 ViewRequestLayoutKind::Built {
                     element,
                     layout_claims,
@@ -350,10 +400,8 @@ impl Element for ViewElement {
                     *state_retention = draft;
                 }
             }
-            ViewRequestLayoutKind::Built {
-                retention: state_retention,
-                ..
-            } => {
+            ViewRequestLayoutKind::Built { retention: state_retention, .. }
+            | ViewRequestLayoutKind::Spliced { retention: state_retention, .. } => {
                 if let Some(slot) = state_retention.slot.as_ref() {
                     state_retention.nested = window.finish_view_retention_scope(slot);
                 }
@@ -374,8 +422,11 @@ impl Element for ViewElement {
         let entity_id = self.view.entity_id();
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         let scene_segments_start = window.next_frame.retained_scene_segments.len();
+        let splice_safe = state.splice_safe;
+        let adoption_serial = state.adoption_serial;
+        let rebuild = state.rebuild.clone();
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
-            ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused } => {
+            ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused, .. } => {
                 let Some(reused) = reused.as_ref() else {
                     unreachable!("an admitted view is either drawn again or rebuilt in prepaint")
                 };
@@ -396,12 +447,27 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: reused.context.clone(),
-                        rebuild: state.rebuild.clone(),
+                        rebuild: rebuild.clone(),
+                        splice_safe: splice_safe && window.splice_paint_context_matches(&reused.context),
                         scene_segments_start,
                         layout_state_range: layout_state_range.clone(),
                         reused: Some(admission.clone()),
                     },
                 );
+            }
+            ViewRequestLayoutKind::Spliced { splice, retention, prepaint_range, context } => {
+                let splice = splice.as_mut().expect("prepainted splice");
+                let start = window.paint_index();
+                window.paint_view_splice(splice, entity_id, cx);
+                let end = window.paint_index();
+                let (Some(slot), Some(prepaint_range), Some(context)) = (retention.slot.as_ref(), prepaint_range.as_ref(), context.as_ref()) else { return; };
+                window.commit_view_retention(slot, retention.nested.clone(), crate::window::ViewRetentionCommit {
+                    layout_root: splice.anchor.layout_root, layout_claims: splice.claims.clone(),
+                    prepaint_range: prepaint_range.clone(), paint_range: start..end, bounds,
+                    context: context.clone(), rebuild: if adoption_serial == window.prebuilt_adoption_serial { rebuild.clone() } else { None },
+                    splice_safe: splice_safe && window.splice_paint_context_matches(context),
+                    scene_segments_start, layout_state_range: splice.states.clone(), reused: None,
+                });
             }
             ViewRequestLayoutKind::Built {
                 element,
@@ -431,7 +497,8 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: context.clone(),
-                        rebuild: state.rebuild.clone(),
+                        rebuild: if adoption_serial == window.prebuilt_adoption_serial { rebuild.clone() } else { None },
+                        splice_safe: splice_safe && window.splice_paint_context_matches(context),
                         scene_segments_start,
                         layout_state_range: layout_state_range.clone(),
                         reused: None,

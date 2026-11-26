@@ -241,7 +241,7 @@ impl Window {
     }
 
     /// Replay a validated phase segment; external parents may be in earlier segments.
-    fn replay_prepaint_segment(
+    pub(super) fn replay_prepaint_segment(
         &mut self,
         range: Range<PrepaintStateIndex>,
         external_parent: impl FnMut(Option<DispatchNodeId>) -> Option<DispatchNodeId>,

@@ -641,13 +641,19 @@ impl TaffyLayoutEngine {
         if !anchor[1].is_empty() || !gap[1].is_empty()
             || gap[0].is_empty()
             || gap[0].start < anchor[0].start || gap[0].end > anchor[0].end
-            || !self.layout_reaches(root, gap_root)
         {
             return None;
         }
         let source = [anchor[0].start..gap[0].start, gap[0].end..anchor[0].end];
         // Reject a stale gap root before claiming any of the anchor.
-        if !self.committed_claim_log.get(gap[0].clone())?.iter().flatten().any(|claim| claim.id == gap_root) {
+        let old_gap = self.committed_claim_log.get(gap[0].clone())?;
+        if !old_gap.iter().flatten().any(|claim| claim.id == gap_root)
+            || !old_gap.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+                node.id == claim.id && node.claimed_in_frame != self.request_frame && !node.offscreen
+                    && !self.robbed_parents.contains(&node.id)
+            }))
+            || !self.layout_reaches(root, gap_root)
+        {
             return None;
         }
         self.try_keep_retained(&source, root)

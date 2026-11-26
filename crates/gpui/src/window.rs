@@ -110,6 +110,7 @@ pub(crate) mod scroll_dependencies;
 pub(crate) mod retained;
 mod state;
 mod view_retention;
+mod view_splice;
 mod tab_stop;
 #[cfg(test)]
 mod tests;
@@ -133,6 +134,7 @@ pub(crate) use frame::{
     DeferredDraw, Frame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
     RetainedPaintContext, RetainedSceneSegment,
 };
+pub(crate) use view_splice::ViewSplice;
 pub(crate) use view_retention::{
     RetainedViewRecord, ViewRebuild, ViewRetentionCommit, ViewRetentionSlot,
 };

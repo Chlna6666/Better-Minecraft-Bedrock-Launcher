@@ -519,6 +519,9 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     /// Only these views skipped their lifecycle and need their old read sets.
     pub(super) replayed_view_owners: FxHashSet<EntityId>,
+    pub(super) prebuilt_gaps: FxHashMap<GlobalElementId, super::view_splice::PrebuiltGap>,
+    pub(crate) prebuilt_adoption_serial: u64,
+    pub(super) splice_building: bool,
     pub(crate) input_dependency_owner: Option<EntityId>,
     pub(super) input_readers: FxHashMap<EntityId, u8>,
     pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,

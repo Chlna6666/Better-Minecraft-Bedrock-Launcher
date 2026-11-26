@@ -220,6 +220,16 @@ impl DispatchTree {
         self.node_stack.pop();
     }
 
+    /// The gap wrapper must be in the clean prefix. No copied suffix node
+    /// may have its parent in the removed dispatch interval.
+    pub(crate) fn can_splice_gap(&self, outer: Range<usize>, gap: Range<usize>, owner: EntityId) -> bool {
+        if outer.start >= gap.start || gap.start > gap.end || gap.end > outer.end || outer.end > self.nodes.len() {
+            return false;
+        }
+        self.nodes[gap.start - 1].view_id == Some(owner)
+            && self.nodes[gap.end..outer.end].iter().all(|node| node.parent.is_none_or(|parent| !gap.contains(&parent.0)))
+    }
+
     /// Append a contiguous dispatch segment, translating in-segment parents
     /// by offset. The caller resolves parents outside the segment (including
     /// across splice gaps). No active key-context or view stack is traversed.
