@@ -1870,3 +1870,30 @@ fn replay_animation_samples_keep_source_order_for_inline_and_large_tables() {
         assert_eq!(ordered.animation_values, vec![sample(1, 0.25), sample(2, 0.25)]);
     }
 }
+
+#[test]
+fn retained_shadow_pages_preserve_static_payload_and_reject_partial_runs() {
+    let viewport = bounds(point(px(0.), px(0.)), size(px(100.), px(100.))).scale(1.);
+    let shadow = Shadow {
+        bounds: viewport, content_mask: ContentMask::new(viewport),
+        blur_radius: ScaledPixels(4.), ..Default::default()
+    };
+    let mut original = crate::scene::Painter::default();
+    for _ in 0..32 { original.insert_primitive(shadow); }
+    original.finish();
+    let mut previous = crate::scene::Painter::default();
+    assert!(previous.replay(0..32, &original, []));
+    previous.finish();
+    let mut current = crate::scene::Painter::default();
+    assert!(current.replay_with_ordering(0..32, &previous, [], Some(&previous)));
+    assert!(std::ptr::eq(&current.paint_operations[0], &previous.paint_operations[0]));
+    assert!(std::ptr::eq(&current.shadows[0], &previous.shadows[0]));
+    current.insert_primitive(shadow);
+    assert_eq!(current.shadows.last().unwrap().order, 33);
+
+    let mut partial = crate::scene::Painter::default();
+    assert!(partial.replay_with_ordering(0..16, &previous, [], Some(&previous)));
+    assert_eq!(partial.shadows.len(), 16);
+    partial.insert_primitive(shadow);
+    assert_eq!(partial.shadows.last().unwrap().order, 17);
+}

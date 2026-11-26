@@ -65,6 +65,18 @@ where
         self.insert_internal(new_bounds, Some(order))
     }
 
+    /// Find a previously admitted run starting at this exact Paint offset.
+    /// The original leaves were imported from a sorted typed stream.
+    pub(crate) fn sorted_run_orders(&self, range: Range<usize>) -> Option<(usize, u32, u32)> {
+        let i = self.ordered_runs.partition_point(|(run, _)| run.start < range.start);
+        let (run, node) = self.ordered_runs.get(i)?;
+        if run.start != range.start || run.end > range.end {
+            return None;
+        }
+        let Node::Shared { page } = &self.nodes[*node] else { return None; };
+        Some((run.end, page.first()?.max_ordering(), page.last()?.max_ordering()))
+    }
+
     /// Import a proven static range as one immutable contiguous node page.
     /// Matching source runs share the page; only local connecting nodes are
     /// built again. The page contains no references to earlier trees.

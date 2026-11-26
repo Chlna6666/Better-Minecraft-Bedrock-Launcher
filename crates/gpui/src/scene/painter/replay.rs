@@ -399,6 +399,16 @@ impl Painter {
         if !self.blur_captures.is_empty() {
             return ShadowReplay::Rebind(range.start + 1);
         }
+        // The prior painter admitted this exact static range and its typed
+        // payload was shared. Its immutable ordering page also proves the
+        // source operations are static, so only check typed coverage again.
+        if self.layer_stack.is_empty()
+            && let Some((end, first, last)) = previous_tree
+                .and_then(|tree| tree.sorted_run_orders(range.clone()))
+            && let Some(typed) = Self::shadow_range_for_orders(previous, first, last, end - range.start)
+        {
+            return self.share_shadow_range(previous, range.start..end, typed, previous_tree);
+        }
         let mut count = 0;
         let mut first = DrawOrder::MAX;
         let mut last = DrawOrder::MIN;
@@ -421,32 +431,49 @@ impl Painter {
         if count == 0 {
             return ShadowReplay::Rebind(range.start + 1);
         }
-        let start = previous
-            .shadows
-            .partition_point(|shadow| shadow.order < first);
-        let end = previous
-            .shadows
-            .partition_point(|shadow| shadow.order <= last);
+        let Some(typed) = Self::shadow_range_for_orders(previous, first, last, count) else {
+            return ShadowReplay::Rebind(range.start + count);
+        };
+        self.share_shadow_range(previous, range.start..range.start + count, typed, previous_tree)
+    }
+
+    fn shadow_range_for_orders(
+        previous: &Scene,
+        first: DrawOrder,
+        last: DrawOrder,
+        count: usize,
+    ) -> Option<Range<usize>> {
+        let start = previous.shadows.partition_point(|shadow| shadow.order < first);
+        let end = previous.shadows.partition_point(|shadow| shadow.order <= last);
         // Partial equal-order ranges can include siblings not present in this
         // replay. Never import those typed instances or lose their relative order.
-        if end - start != count {
-            return ShadowReplay::Rebind(range.start + count);
-        }
-        let paint_range = range.start..range.start + count;
+        (end - start == count).then_some(start..end)
+    }
+
+    fn share_shadow_range(
+        &mut self,
+        previous: &Scene,
+        paint_range: Range<usize>,
+        typed: Range<usize>,
+        previous_tree: Option<&BoundsTree<ScaledPixels>>,
+    ) -> ShadowReplay {
+        #[cfg(test)]
+        assert!(previous.paint_operations.range(paint_range.clone()).iter().all(|op| {
+            matches!(op, PaintOperation::Primitive(Primitive::Shadow(shadow))
+                if shadow.animation_id.is_none())
+        }));
         if self.layer_stack.is_empty() {
             self.primitive_bounds.extend_ordered(
                 paint_range.clone(),
                 previous_tree,
-                previous.shadows.slices(start..end).flatten().map(|shadow| {
+                previous.shadows.slices(typed.clone()).flatten().map(|shadow| {
                     (shadow.bounds.intersect(&shadow.content_mask.bounds), shadow.order)
                 }),
             );
         }
-        self.scene
-            .paint_operations
-            .share(&previous.paint_operations, paint_range.clone());
-        self.scene.shadows.share(&previous.shadows, start..end);
-        self.scene.replayed_primitives += count;
+        self.scene.paint_operations.share(&previous.paint_operations, paint_range.clone());
+        self.scene.shadows.share(&previous.shadows, typed);
+        self.scene.replayed_primitives += paint_range.len();
         ShadowReplay::Shared(paint_range.end)
     }
 
