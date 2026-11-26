@@ -230,6 +230,7 @@ impl Window {
         for (gap_key, old, view) in plan {
             let Some(mut view) = view else {
                 let Some(claims) = relocate_clean_claims(&old.layout_claims, &anchor.layout_claims[0], &exclusions, &kept[0]) else {
+                    self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
                     self.stash_prebuilt_gaps(parts);
                     return None;
@@ -252,17 +253,23 @@ impl Window {
             self.splice_building = false;
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
-                && self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(&placement)
                 && !self.force_view_cache_refresh && states.is_empty();
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
                 claims: [gap_start..self.claim_log_len(), 0..0], states, node: None,
             }));
             if !compatible {
+                self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                 self.release_retained_view(&kept);
                 self.stash_prebuilt_gaps(parts);
                 return None;
             }
+        }
+        if !self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(placement) {
+            self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
+            self.release_retained_view(&kept);
+            self.stash_prebuilt_gaps(parts);
+            return None;
         }
         Some(ViewSplice {
             anchor, kept, placement, parts, claims: [start..self.claim_log_len(), 0..0],
@@ -271,9 +278,10 @@ impl Window {
     }
 
     pub(crate) fn can_prepaint_view_splice(&mut self, splice: &ViewSplice, bounds: Bounds<Pixels>) -> bool {
-        !self.force_view_cache_refresh && self.splice_context_supported()
+        let placement_matches = self.layout_engine.as_mut()
+            .is_some_and(|engine| engine.finish_splice_placement(splice.placement));
+        placement_matches && !self.force_view_cache_refresh && self.splice_context_supported()
             && self.retained_view_context_matches(&splice.anchor, bounds)
-            && self.layout_engine.as_ref().is_some_and(|engine| engine.splice_placement_matches(&splice.placement))
             && splice.parts.iter().all(|part| match part {
                 SplicePart::Dirty(gap) => self.layout_bounds(gap.layout_id) == gap.old.bounds,
                 SplicePart::Clean(_) => true,
