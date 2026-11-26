@@ -354,6 +354,10 @@ impl FrameUpload {
             // a full static upload can never overwrite the live clock with a shorter buffer.
             write_f32_vec(&mut self.globals, 0.0);
             write_u32_vec(&mut self.globals, 0);
+            // Content-space origin of the render target. Window targets use zero;
+            // pixel-exact tile targets can bind the same primitive streams with a local origin.
+            write_f32_vec(&mut self.globals, 0.0);
+            write_f32_vec(&mut self.globals, 0.0);
             debug_assert_eq!(self.globals.len(), GLOBAL_UPLOAD_BYTES);
             for value in rendering_parameters.gamma_ratios {
                 write_f32_vec(&mut self.text_raster_params, value);

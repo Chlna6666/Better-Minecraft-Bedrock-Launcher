@@ -7,7 +7,7 @@ struct SubpixelSpriteFragmentOutput {
 
 @fragment
 fn fs_subpixel_sprite(input: MonoSpriteVarying) -> SubpixelSpriteFragmentOutput {
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0 || input.color.a <= 0.0) {
         // The opaque Windows RGB text pipeline uses dual-source blending. Discard clipped fragments
         // so neither destination color nor alpha is touched outside the glyph coverage.

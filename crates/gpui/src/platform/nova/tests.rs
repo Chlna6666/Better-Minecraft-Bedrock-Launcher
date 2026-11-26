@@ -3144,7 +3144,7 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
         &[
             "if (any(input.clip_distances < vec4<f32>(0.0)))",
             "if (input.opacity <= 0.0)",
-            "quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii)",
+            "quad_sdf_from_packed(content_position(input.position.xy), input.bounds, input.corner_radii)",
             "let coverage = saturate(SDF_ANTIALIAS_THRESHOLD - distance)",
             "if (coverage <= 0.0)",
             "var sample: vec4<f32>",

@@ -67,7 +67,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
 
 @fragment
 fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_bounds, input.content_mask_radii);
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
@@ -86,7 +86,7 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
 
     var background_color = input.background_solid;
     if (input.background_tag != 0u) {
-        background_color = gradient_color(quad.background, input.position.xy, quad.bounds,
+        background_color = gradient_color(quad.background, content_position(input.position.xy), quad.bounds,
             input.background_solid, input.background_color0, input.background_color1);
     }
     if (background_color.a <= 0.0 && input.border_color.a <= 0.0) {
@@ -109,7 +109,7 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
 
     let size = quad.bounds.size;
     let half_size = size / 2.0;
-    let point = input.position.xy - quad.bounds.origin;
+    let point = content_position(input.position.xy) - quad.bounds.origin;
     let center_to_point = point - half_size;
 
     // Signed distance field threshold for inclusion of pixels.

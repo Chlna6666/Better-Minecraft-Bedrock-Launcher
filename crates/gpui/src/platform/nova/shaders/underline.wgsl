@@ -146,7 +146,7 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
     const WAVE_FREQUENCY: f32 = 2.0;
     const WAVE_HEIGHT_RATIO: f32 = 0.8;
 
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_bounds, input.content_mask_radii);
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
@@ -166,7 +166,7 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
 
     let half_thickness = input.thickness * 0.5;
 
-    let st = (input.position.xy - input.bounds.xy) / underline_height - vec2<f32>(0.0, 0.5);
+    let st = (content_position(input.position.xy) - input.bounds.xy) / underline_height - vec2<f32>(0.0, 0.5);
     let frequency = M_PI_F * WAVE_FREQUENCY * input.thickness / underline_height;
     let amplitude = (input.thickness * WAVE_HEIGHT_RATIO) / underline_height;
 

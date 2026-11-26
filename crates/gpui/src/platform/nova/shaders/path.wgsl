@@ -63,7 +63,7 @@ fn vs_path_rasterization(@builtin(vertex_index) vertex_id: u32) -> PathRasteriza
 
 @fragment
 fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f32> {
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_corner_bounds, input.content_mask_radii);
+    let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_corner_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
@@ -111,7 +111,7 @@ fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f
             0u,
         );
         let bounds = Bounds(input.bounds.xy, input.bounds.zw);
-        color = gradient_color(background, input.position.xy, bounds,
+        color = gradient_color(background, content_position(input.position.xy), bounds,
             input.background_solid, input.background_color0, input.background_color1);
     }
     if (color.a <= 0.0) {

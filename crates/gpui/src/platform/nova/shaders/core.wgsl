@@ -5,6 +5,9 @@ struct GlobalParams {
     pad: u32,
     presentation_time_seconds: f32,
     presentation_tick_60hz: u32,
+    // Target-local fragment coordinates + this origin = stable content coordinates.
+    // Native PixelExact viewport offsets handle the vertex position separately.
+    target_origin: vec2<f32>,
 }
 
 
@@ -145,6 +148,11 @@ struct AtlasTile {
 struct TransformationMatrix {
     rotation_scale: mat2x2<f32>,
     translation: vec2<f32>,
+}
+
+// Fragment builtins are in target pixels, not the original content space.
+fn content_position(target_position: vec2<f32>) -> vec2<f32> {
+    return target_position + globals.target_origin;
 }
 
 fn to_device_position_impl(position: vec2<f32>) -> vec4<f32> {

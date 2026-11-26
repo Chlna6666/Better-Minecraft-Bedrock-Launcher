@@ -27,7 +27,7 @@ pub(super) const INITIAL_ANIMATION_VALUES: usize = 64;
 // buffer/bind-group slot per deferred submission so the CPU can upload the
 // next frame without overwriting data still referenced by the GPU queue.
 pub(super) const MAX_IN_FLIGHT_SUBMISSIONS: usize = 2;
-pub(super) const GLOBAL_UPLOAD_BYTES: usize = 24;
+pub(super) const GLOBAL_UPLOAD_BYTES: usize = 32;
 pub(super) const TEXT_RASTER_UPLOAD_BYTES: usize = 32;
 // Four bilinear paired offsets + four normalized pair weights + center weight/padding.
 // Keeping the Gaussian kernel in the upload buffer removes exp()/normalization from every fragment.

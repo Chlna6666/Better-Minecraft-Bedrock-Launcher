@@ -79,7 +79,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
 
 @fragment
 fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    let clip_coverage = content_mask_coverage_from_packed(content_position(input.position.xy), input.content_mask_bounds, input.content_mask_radii);
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
@@ -93,7 +93,7 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
 
     let half_size = input.bounds.zw / 2.0;
     let center = input.bounds.xy + half_size;
-    let center_to_point = input.position.xy - center;
+    let center_to_point = content_position(input.position.xy) - center;
 
     let corner_radius = pick_corner_radius_from_packed(center_to_point, input.corner_radii);
 
