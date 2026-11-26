@@ -29,9 +29,10 @@ impl Window {
         let scale_factor = self.scale_factor();
 
         let owner = crate::fast::layout_key::layout_key(self);
+        let lingers = crate::fast::layout_key::is_laying_out_list_row(self);
         self.layout_engine.as_mut().unwrap().request_layout(
             owner,
-            crate::fast::layout_key::is_laying_out_list_row(self),
+            lingers,
             style,
             rem_size,
             scale_factor,
@@ -60,12 +61,13 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
         let owner = crate::fast::layout_key::layout_key(self);
+        let lingers = crate::fast::layout_key::is_laying_out_list_row(self);
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_measured_layout(
                 owner,
-                crate::fast::layout_key::is_laying_out_list_row(self),
+                lingers,
                 style,
                 rem_size,
                 scale_factor,
@@ -98,9 +100,10 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
         let owner = crate::fast::layout_key::layout_key(self);
+        let lingers = crate::fast::layout_key::is_laying_out_list_row(self);
         self.layout_engine.as_mut().unwrap().request_size_layout(
             owner,
-            crate::fast::layout_key::is_laying_out_list_row(self),
+            lingers,
             style,
             rem_size,
             scale_factor,
@@ -123,12 +126,13 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
         let owner = crate::fast::layout_key::layout_key(self);
+        let lingers = crate::fast::layout_key::is_laying_out_list_row(self);
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_default_measured_layout(
                 owner,
-                crate::fast::layout_key::is_laying_out_list_row(self),
+                lingers,
                 rem_size,
                 scale_factor,
                 key,

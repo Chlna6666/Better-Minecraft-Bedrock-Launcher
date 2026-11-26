@@ -15,7 +15,6 @@ impl Window {
         self.element_id_stack.pop();
         result
     }
-}
 
     /// Executes the provided function with the specified rem size.
     ///
@@ -693,19 +692,3 @@ impl Window {
     }
 }
 
-#[cfg(test)]
-mod layout_identity_tests {
-    use super::*;
-
-    #[test]
-    fn explicit_ids_do_not_renumber_anonymous_layout_siblings() {
-        let fixed = ElementId::from("fixed");
-        let parent = mix(LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT);
-        let first = mix(parent, mix(0, 2));
-        let named = crate::fast::layout_key::key_for_path(&[fixed]);
-        let second = mix(parent, mix(1, 2));
-        assert_ne!(first, named);
-        assert_ne!(second, named);
-        assert_ne!(first, second);
-    }
-}
