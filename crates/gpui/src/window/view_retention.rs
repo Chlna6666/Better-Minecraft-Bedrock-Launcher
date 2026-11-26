@@ -129,21 +129,6 @@ pub(crate) struct ViewRecordSlot {
 /// Where the view's own record is inserted once it has painted.
 pub(crate) struct ViewRetentionSlot(usize);
 
-pub(crate) struct ViewRetentionCommit {
-    pub(crate) layout_root: LayoutId,
-    pub(crate) layout_claims: LayoutClaimBlocks,
-    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
-    pub(crate) paint_range: Range<PaintIndex>,
-    pub(crate) bounds: Bounds<Pixels>,
-    pub(crate) context: Rc<RetainedPaintContext>,
-    pub(crate) rebuild: Option<Rc<ViewRebuild>>,
-    pub(crate) splice_safe: bool,
-    pub(crate) scene_segments_start: usize,
-    pub(crate) layout_state_range: StateAccessBlocks,
-    /// The retained source this frame copied, when the view was reused.
-    pub(crate) reused: Option<RetainedViewRecord>,
-}
-
 impl Window {
     pub(crate) fn splice_context_supported(&self) -> bool {
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -276,13 +261,14 @@ impl Window {
             .filter(|entry| entry.entity_id == owner && entry.scene_range == old_scene)
             .cloned();
         let scene_segments_start = self.next_frame.retained_scene_segments.len();
-        self.commit_view_retention(slot, nested, ViewRetentionCommit {
+        self.commit_view_retention(slot, RetainedViewRecord {
             layout_root: source.layout_root, layout_claims: claims,
             prepaint_range: prepaint, paint_range: paint, bounds: source.bounds,
             context: source.context.clone(), rebuild: source.rebuild.clone(),
-            splice_safe: source.splice_safe, scene_segments_start,
-            layout_state_range: states, reused: Some(source.clone()),
-        });
+            splice_safe: source.splice_safe, nested,
+            scene_segments: scene_segments_start..self.next_frame.retained_scene_segments.len(),
+            layout_state_range: states,
+        }, Some(source));
         if let Some(mut own) = own {
             if let Some(range) = rebase_span(&own.scene_range, &old_scene, &new_scene) {
                 own.scene_range = range;
@@ -442,22 +428,22 @@ impl Window {
     pub(crate) fn commit_view_retention(
         &mut self,
         slot: &ViewRetentionSlot,
-        nested: Range<usize>,
-        mut commit: ViewRetentionCommit,
+        mut record: RetainedViewRecord,
+        reused: Option<&RetainedViewRecord>,
     ) {
-        commit.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
-            .resolve_claim_blocks(&commit.layout_claims);
-        commit.layout_claims.normalize();
-        commit.layout_state_range = commit.layout_state_range.resolve(&self.prebuilt_state_relocations);
-        commit.layout_state_range.normalize();
+        record.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
+            .resolve_claim_blocks(&record.layout_claims);
+        record.layout_claims.normalize();
+        record.layout_state_range = record.layout_state_range.resolve(&self.prebuilt_state_relocations);
+        record.layout_state_range.normalize();
         let index = slot.0;
-        if let Some(source) = commit.reused.as_ref() {
+        if let Some(source) = reused {
             let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
             for entry in std::iter::once(&self.next_frame.view_retention_records[index]).chain(source_slots) {
                 self.replayed_view_owners.insert(entry.owner);
             }
             let source_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
-            let target_scene = commit.paint_range.start.scene_index..commit.paint_range.end.scene_index;
+            let target_scene = record.paint_range.start.scene_index..record.paint_range.end.scene_index;
             for segment in &self.rendered_frame.retained_scene_segments[source.scene_segments.clone()] {
                 if let Some(scene_range) = rebase_span(&segment.scene_range, &source_scene, &target_scene) {
                     self.next_frame.push_retained_scene_segment(RetainedSceneSegment {
@@ -466,27 +452,15 @@ impl Window {
                     });
                 }
             }
-            let scene_segments = commit.scene_segments_start..self.next_frame.retained_scene_segments.len();
+            let scene_segments = record.scene_segments.start..self.next_frame.retained_scene_segments.len();
             if scene_segments.len() == source.scene_segments.len() {
-                self.copy_nested_view_records(source, &nested, &commit.layout_claims, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range, &scene_segments);
+                self.copy_nested_view_records(source, &record.nested, &record.layout_claims, &record.prepaint_range, &record.paint_range, &record.layout_state_range, &scene_segments);
             }
         }
-        let scene_segments = commit.scene_segments_start..self.next_frame.retained_scene_segments.len();
+        record.scene_segments.end = self.next_frame.retained_scene_segments.len();
         let entry = &mut self.next_frame.view_retention_records[index];
         self.next_frame.view_retentions.entry(entry.key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
-        entry.record = Some(RetainedViewRecord {
-                layout_root: commit.layout_root,
-                layout_claims: commit.layout_claims,
-                prepaint_range: commit.prepaint_range,
-                paint_range: commit.paint_range,
-                bounds: commit.bounds,
-                context: commit.context,
-                rebuild: commit.rebuild,
-                splice_safe: commit.splice_safe,
-                nested,
-                scene_segments,
-                layout_state_range: commit.layout_state_range,
-        });
+        entry.record = Some(record);
     }
 
     fn copy_nested_view_records(

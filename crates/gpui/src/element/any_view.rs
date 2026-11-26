@@ -455,8 +455,7 @@ impl Element for ViewElement {
                 let end = window.paint_index();
                 window.commit_view_retention(
                     slot,
-                    retention.nested.clone(),
-                    crate::window::ViewRetentionCommit {
+                    crate::window::RetainedViewRecord {
                         layout_root: admission.layout_root,
                         layout_claims: layout_claims.clone(),
                         prepaint_range: reused.prepaint_range.clone(),
@@ -465,10 +464,11 @@ impl Element for ViewElement {
                         context: reused.context.clone(),
                         rebuild: rebuild.clone(),
                         splice_safe: splice_safe && window.splice_paint_context_matches(&reused.context),
-                        scene_segments_start,
+                        nested: retention.nested.clone(),
+                        scene_segments: scene_segments_start..window.next_frame.retained_scene_segments.len(),
                         layout_state_range: layout_state_range.clone(),
-                        reused: Some(admission.clone()),
                     },
+                    Some(admission),
                 );
             }
             ViewRequestLayoutKind::Spliced { splice, retention, prepaint_range, context } => {
@@ -477,13 +477,15 @@ impl Element for ViewElement {
                 window.paint_view_splice(splice, entity_id, cx);
                 let end = window.paint_index();
                 let (Some(slot), Some(prepaint_range), Some(context)) = (retention.slot.as_ref(), prepaint_range.as_ref(), context.as_ref()) else { return; };
-                window.commit_view_retention(slot, retention.nested.clone(), crate::window::ViewRetentionCommit {
+                window.commit_view_retention(slot, crate::window::RetainedViewRecord {
                     layout_root: splice.anchor.layout_root, layout_claims: splice.claims.clone(),
                     prepaint_range: prepaint_range.clone(), paint_range: start..end, bounds,
                     context: context.clone(), rebuild: rebuild.clone(),
                     splice_safe: splice_safe && window.splice_paint_context_matches(context),
-                    scene_segments_start, layout_state_range: splice.states.clone(), reused: None,
-                });
+                    nested: retention.nested.clone(),
+                    scene_segments: scene_segments_start..window.next_frame.retained_scene_segments.len(),
+                    layout_state_range: splice.states.clone(),
+                }, None);
             }
             ViewRequestLayoutKind::Built {
                 element,
@@ -505,8 +507,7 @@ impl Element for ViewElement {
                 };
                 window.commit_view_retention(
                     slot,
-                    retention.nested.clone(),
-                    crate::window::ViewRetentionCommit {
+                    crate::window::RetainedViewRecord {
                         layout_root: *layout_root,
                         layout_claims: layout_claims.clone(),
                         prepaint_range: prepaint_range.clone(),
@@ -515,10 +516,11 @@ impl Element for ViewElement {
                         context: context.clone(),
                         rebuild: rebuild.clone(),
                         splice_safe: splice_safe && window.splice_paint_context_matches(context),
-                        scene_segments_start,
+                        nested: retention.nested.clone(),
+                        scene_segments: scene_segments_start..window.next_frame.retained_scene_segments.len(),
                         layout_state_range: layout_state_range.clone(),
-                        reused: None,
                     },
+                    None,
                 );
             }
         });
