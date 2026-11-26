@@ -190,16 +190,16 @@ fn large_overdraw_bounds_speculative_measurements_and_keeps_row_indices(cx: &mut
 
 #[gpui::test]
 fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut TestAppContext) {
-    use crate::{ListState, Styled, div, list, point, px, size};
+    use crate::{Element, ListState, Styled, div, list, point, px, size};
     use super::tree::Count;
     use std::cell::Cell;
     use sum_tree::Bias;
 
-    let cx = cx.add_empty_window();
+    let mut cx = cx.add_empty_window();
     let state = ListState::new(12, crate::ListAlignment::Top, px(0.)).measure_all();
     let taller = Rc::new(Cell::new(false));
     let builds = Rc::new(Cell::new(0));
-    let draw = || {
+    let mut draw = || {
         cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
             let taller = taller.clone();
             let builds = builds.clone();
@@ -230,5 +230,4 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
     let state = state.0.borrow();
     assert_eq!(state.items.summary().count, 12);
     assert_eq!(state.items.summary().height, px(250.));
-    drop(state);
 }
