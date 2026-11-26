@@ -316,7 +316,7 @@ pub struct PerformanceMetricsSnapshot {
     pub text_layout_misses: usize,
     /// Number of style refinement applications performed since process start.
     pub style_refine_count: usize,
-    /// Number of Style/LayoutStyle to Taffy style conversions performed since process start.
+    /// Number of Style to Taffy style conversions performed since process start.
     pub layout_conversion_count: usize,
     /// Number of times the GPUI arena had to allocate a new chunk.
     pub arena_chunk_expansion_count: usize,

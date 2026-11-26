@@ -1,5 +1,5 @@
 use crate::{
-    AbsoluteLength, DefiniteLength, Edges, LayoutStyle, Length, Pixels, Point, Size, Style,
+    AbsoluteLength, DefiniteLength, Edges, Length, Pixels, Point, Size, Style,
     record_layout_conversion,
 };
 use std::{fmt::Debug, ops::Range};
@@ -138,12 +138,6 @@ impl From<crate::Position> for taffy::style::Position {
 }
 
 impl ToTaffy<taffy::style::Style> for Style {
-    fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::Style {
-        LayoutStyle::from(self).to_taffy(rem_size, scale_factor)
-    }
-}
-
-impl ToTaffy<taffy::style::Style> for LayoutStyle {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::Style {
         record_layout_conversion(1);
         use taffy::style_helpers::{fr, length, minmax, repeat};
@@ -391,7 +385,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{ToTaffy, border_widths_to_taffy};
-    use crate::{AbsoluteLength, Edges, LayoutStyle, Style, snapshot, px};
+    use crate::{AbsoluteLength, Edges, Style, snapshot, px};
 
     #[test]
     fn style_to_taffy_records_single_conversion() {
@@ -402,14 +396,20 @@ mod tests {
     }
 
     #[test]
-    fn layout_style_without_grid_uses_empty_grid_fields() {
-        let style = LayoutStyle::from(&Style::default());
+    fn style_without_grid_uses_empty_grid_fields() {
+        let style = Style::default();
         let taffy_style = style.to_taffy(px(16.), 1.0);
 
         assert!(taffy_style.grid_template_rows.is_empty());
         assert!(taffy_style.grid_template_columns.is_empty());
         assert_eq!(taffy_style.grid_row, Default::default());
         assert_eq!(taffy_style.grid_column, Default::default());
+    }
+
+    #[test]
+    fn visual_scale_does_not_change_native_layout_style() {
+        let scaled = Style { scale: 0.5, ..Style::default() };
+        assert_eq!(scaled.to_taffy(px(16.), 1.), Style::default().to_taffy(px(16.), 1.));
     }
 
     #[test]

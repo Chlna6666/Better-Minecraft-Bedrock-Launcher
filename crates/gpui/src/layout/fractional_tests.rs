@@ -71,7 +71,7 @@ fn persistent_layout_restores_child_style_after_passthrough_is_removed() {
     let same_child = engine.request_layout(owner("child"), false, child_style.clone(), px(16.), 1.0, &[]);
     assert_eq!(child, same_child);
     let expected_style = super::convert::ToTaffy::to_taffy(
-        &crate::LayoutStyle::from(&child_style),
+        &child_style,
         px(16.),
         1.0,
     );

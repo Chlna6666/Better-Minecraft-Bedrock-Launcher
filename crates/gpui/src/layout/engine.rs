@@ -1,5 +1,5 @@
 use crate::{
-    App, Bounds, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
+    App, Bounds, GpuiMemoryTrimLevel, Length, Pixels,
     Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
@@ -1064,7 +1064,7 @@ impl TaffyLayoutEngine {
         &mut self,
         owner: Option<u64>,
         lingers: bool,
-        style: Style,
+        mut style: Style,
         rem_size: Pixels,
         scale_factor: f32,
         children: &[LayoutId],
@@ -1074,10 +1074,9 @@ impl TaffyLayoutEngine {
             crate::window::element_work::ElementWorkPhase::Layout,
         );
         self.nodes_requested = self.nodes_requested.saturating_add(1);
-        let mut layout_style = LayoutStyle::from(&style);
-        self.normalize_percentage_passthrough(&mut layout_style, children);
+        self.normalize_percentage_passthrough(&mut style, children);
         let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        self.hash_layout_style(&style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
         let layout_id = self.request_persistent_node(
             owner,
@@ -1085,7 +1084,7 @@ impl TaffyLayoutEngine {
             children,
             None::<MeasureRequest<fn() -> Option<NodeMeasureFn>>>,
             Some(style_fingerprint),
-            || layout_style.to_taffy(rem_size, scale_factor),
+            || style.to_taffy(rem_size, scale_factor),
         );
         layout_id
     }
@@ -1159,9 +1158,8 @@ impl TaffyLayoutEngine {
         );
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
-        let layout_style = LayoutStyle::from(&style);
         let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        self.hash_layout_style(&style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
         let layout_id = self.request_persistent_node(
             owner,
@@ -1169,7 +1167,7 @@ impl TaffyLayoutEngine {
             &[],
             Some(request),
             Some(style_fingerprint),
-            || layout_style.to_taffy(rem_size, scale_factor),
+            || style.to_taffy(rem_size, scale_factor),
         );
         layout_id
     }
@@ -1194,7 +1192,7 @@ impl TaffyLayoutEngine {
             cached.rem_size.0.to_bits() != rem_size.0.to_bits()
                 || cached.scale_bits != scale_factor.to_bits()
         }) {
-            let layout = LayoutStyle::from(&Style::default());
+            let layout = Style::default();
             let mut hasher = FxHasher::default();
             self.hash_layout_style(&layout, rem_size, scale_factor, &mut hasher);
             self.default_measured_style = Some(DefaultMeasuredStyle {
@@ -1526,7 +1524,7 @@ impl TaffyLayoutEngine {
     /// dimensions directly instead of recording a second logical style per node.
     fn normalize_percentage_passthrough(
         &mut self,
-        wrapper: &mut LayoutStyle,
+        wrapper: &mut Style,
         children: &[LayoutId],
     ) {
         if !wrapper.percentage_passthrough || children.len() != 1 {
@@ -1559,7 +1557,7 @@ impl TaffyLayoutEngine {
 
     fn hash_layout_style(
         &self,
-        style: &LayoutStyle,
+        style: &Style,
         rem_size: Pixels,
         scale_factor: f32,
         hasher: &mut FxHasher,
@@ -1707,7 +1705,7 @@ mod tests {
         changed.percentage_passthrough = !original.percentage_passthrough;
         let fingerprint = |style: &Style| {
             let mut hasher = FxHasher::default();
-            engine.hash_layout_style(&LayoutStyle::from(style), crate::px(16.), 1., &mut hasher);
+            engine.hash_layout_style(style, crate::px(16.), 1., &mut hasher);
             hasher.finish()
         };
         assert_eq!(fingerprint(&original), fingerprint(&changed));

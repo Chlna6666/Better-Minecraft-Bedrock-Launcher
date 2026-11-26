@@ -48,7 +48,7 @@ impl TransformOrigin {
 #[cfg(test)]
 mod transform_origin_tests {
     use super::*;
-    use crate::{LayoutStyle, bounds, point, px, size};
+    use crate::{bounds, point, px, size};
 
     #[test]
     fn transform_origin_resolves_from_final_layout_bounds() {
@@ -70,18 +70,7 @@ mod transform_origin_tests {
         );
     }
 
-    #[test]
-    fn scale_does_not_change_layout_style() {
-        let scaled = Style {
-            scale: 0.5,
-            ..Style::default()
-        };
 
-        assert_eq!(
-            LayoutStyle::from(&scaled),
-            LayoutStyle::from(&Style::default())
-        );
-    }
 }
 
 impl Default for TransformOrigin {
