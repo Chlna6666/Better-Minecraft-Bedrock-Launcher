@@ -28,6 +28,7 @@ pub(crate) struct LineLayoutCache {
     cached_font_generation: AtomicU64,
     frame_metrics: LineLayoutCacheMetrics,
     number_shaping: RefCell<crate::fast::number_shaping::NumberShaping>,
+    recent_shapes: Arc<Mutex<RecentShapes>>,
 }
 
 const LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
@@ -199,6 +200,71 @@ struct FrameCache {
     used_wrapped_lines: Vec<Arc<CacheKey>>,
 }
 
+// Fast RecentShapes uses two generations instead of an LRU. Adapted from
+// longbridge/gpui-fast fast/text.rs, revision 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
+// Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge.
+// SPDX-License-Identifier: Apache-2.0
+// Only retired, short unwrapped lines enter this pool. A live frame never
+// shares a second cache entry with this pool, and glyphs are never copied.
+const RECENT_SHAPE_UNITS: usize = 16 * 1024;
+const MAX_RECENT_TEXT_BYTES: usize = 256;
+const MAX_RECENT_RUNS: usize = 16;
+
+#[derive(Default)]
+pub(crate) struct RecentShapes {
+    current: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
+    old: FxHashMap<Arc<CacheKey>, Arc<LineLayout>>,
+    current_units: usize,
+    generation: u64,
+}
+
+impl RecentShapes {
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn trim(&mut self, level: GpuiMemoryTrimLevel) {
+        match level {
+            GpuiMemoryTrimLevel::Light => self.old = FxHashMap::default(),
+            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => self.clear(),
+        }
+    }
+
+    fn sync_generation(&mut self, generation: u64) {
+        if self.generation != generation {
+            self.clear();
+            self.generation = generation;
+        }
+    }
+
+    fn units(key: &CacheKey, layout: &LineLayout) -> Option<usize> {
+        if key.text.len() > MAX_RECENT_TEXT_BYTES
+            || key.runs.len() > MAX_RECENT_RUNS
+            || layout.runs.len() > MAX_RECENT_RUNS
+            || key.force_width.is_some()
+        {
+            return None;
+        }
+        let glyphs = layout.runs.iter().map(|run| run.glyphs.capacity()).sum::<usize>();
+        let units = key.text.len().max(glyphs).max(8);
+        (units <= RECENT_SHAPE_UNITS).then_some(units)
+    }
+
+    fn insert(&mut self, key: Arc<CacheKey>, layout: Arc<LineLayout>, units: usize) {
+        if self.current_units + units > RECENT_SHAPE_UNITS {
+            self.old = mem::take(&mut self.current);
+            self.current_units = 0;
+        }
+        self.old.remove(key.as_ref());
+        self.current_units += units;
+        self.current.insert(key, layout);
+    }
+
+    fn take(&mut self, key: &dyn AsCacheKeyRef) -> Option<(Arc<CacheKey>, Arc<LineLayout>)> {
+        self.current.remove_entry(key).or_else(|| self.old.remove_entry(key))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LineLayoutFrameMetrics {
     pub(crate) hits: usize,
@@ -277,9 +343,18 @@ impl LineLayoutIndex {
 }
 
 impl LineLayoutCache {
+    #[cfg(test)]
     pub fn new(
         platform_text_system: Arc<dyn PlatformTextSystem>,
         font_generation: Arc<AtomicU64>,
+    ) -> Self {
+        Self::with_recent_shapes(platform_text_system, font_generation, Arc::default())
+    }
+
+    pub(crate) fn with_recent_shapes(
+        platform_text_system: Arc<dyn PlatformTextSystem>,
+        font_generation: Arc<AtomicU64>,
+        recent_shapes: Arc<Mutex<RecentShapes>>,
     ) -> Self {
         let cached_font_generation = font_generation.load(Ordering::Acquire);
         Self {
@@ -290,6 +365,7 @@ impl LineLayoutCache {
             cached_font_generation: AtomicU64::new(cached_font_generation),
             frame_metrics: LineLayoutCacheMetrics::default(),
             number_shaping: RefCell::default(),
+            recent_shapes,
         }
     }
 
@@ -401,6 +477,7 @@ impl LineLayoutCache {
         previous_frame.clear();
         current_frame.clear();
         self.number_shaping.borrow_mut().clear();
+        self.recent_shapes.lock().clear();
     }
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
@@ -409,16 +486,20 @@ impl LineLayoutCache {
         let mut previous_frame = self.previous_frame.borrow_mut();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
+        self.recent_shapes.lock().trim(level);
         if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
             self.number_shaping.borrow_mut().clear();
         }
     }
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
-        let _font_generation = self.clear_if_font_generation_changed();
+        let generation = self.clear_if_font_generation_changed();
         let mut curr_frame = self.current_frame.borrow_mut();
         let mut prev_frame = self.previous_frame.borrow_mut();
-        carry_over_line_layouts(&mut prev_frame, &mut curr_frame);
+        carry_over_line_layouts(
+            &mut prev_frame, &mut curr_frame, &self.recent_shapes,
+            generation, &self.font_generation,
+        );
         self.frame_metrics.finish_frame()
     }
 
@@ -543,6 +624,17 @@ impl LineLayoutCache {
         }
 
         let previous_frame_entry = self.previous_frame.borrow_mut().lines.remove_entry(key);
+        let previous_frame_entry = previous_frame_entry.or_else(|| {
+            if force_width.is_some() || text.as_ref().len() > MAX_RECENT_TEXT_BYTES {
+                return None;
+            }
+            let mut recent = self.recent_shapes.lock();
+            if self.font_generation.load(Ordering::Acquire) != font_generation {
+                return None;
+            }
+            recent.sync_generation(font_generation);
+            recent.take(key)
+        });
         if let Some((key, entry)) = previous_frame_entry {
             let layout = entry.clone();
             current_frame.lines.insert(key.clone(), entry);
@@ -692,16 +784,48 @@ fn carry_over<K: Eq + Hash, V>(
     current: &mut FxHashMap<Arc<K>, Arc<V>>,
 ) {
     previous.retain(|_, layout| Arc::strong_count(layout) > 1);
+    merge_frame_maps(previous, current);
+}
+
+fn merge_frame_maps<K: Eq + Hash, V>(
+    previous: &mut FxHashMap<Arc<K>, Arc<V>>,
+    current: &mut FxHashMap<Arc<K>, Arc<V>>,
+) {
     if previous.len() < current.len() {
         mem::swap(previous, current);
     }
     previous.extend(current.drain());
 }
 
-fn carry_over_line_layouts(previous: &mut FrameCache, current: &mut FrameCache) {
+fn carry_over_line_layouts(
+    previous: &mut FrameCache,
+    current: &mut FrameCache,
+    recent_shapes: &Mutex<RecentShapes>,
+    generation: u64,
+    font_generation: &AtomicU64,
+) {
     // Wrapped layouts own their underlying line; release dead wrappers first.
     carry_over(&mut previous.wrapped_lines, &mut current.wrapped_lines);
-    carry_over(&mut previous.lines, &mut current.lines);
+    {
+        // Lock the shared pool only when a retired short line can enter it.
+        let mut recent = None;
+        previous.lines.retain(|key, layout| {
+            if Arc::strong_count(layout) > 1 {
+                return true;
+            }
+            if let Some(units) = RecentShapes::units(key, layout) {
+                let recent = recent.get_or_insert_with(|| recent_shapes.lock());
+                if font_generation.load(Ordering::Acquire) == generation {
+                    recent.sync_generation(generation);
+                    // The two Arc handles move ownership without cloning
+                    // the key text, shaping runs, or glyph allocation.
+                    recent.insert(key.clone(), layout.clone(), units);
+                }
+            }
+            false
+        });
+    }
+    merge_frame_maps(&mut previous.lines, &mut current.lines);
 
     // Replay indices describe only this frame's access log, not all live
     // layouts. Retaining a layout does not retain the old frame's log.
@@ -893,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn unused_layouts_are_released_but_live_measurements_survive_idle_frames() {
+    fn retired_lines_leave_frame_map_but_live_measurements_survive_idle_frames() {
         let cache =
             LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun { len: 5, font_id: FontId(1) }];
@@ -904,15 +1028,18 @@ mod tests {
         cache.finish_frame();
         assert!(weak.upgrade().is_some());
         cache.finish_frame();
-        assert!(weak.upgrade().is_none());
+        assert!(weak.upgrade().is_some());
         assert_eq!(cache.previous_frame.borrow().lines.len(), 1);
+        let retired = cache.layout_line("other", px(14.), &runs, None);
+        assert!(Arc::ptr_eq(&weak.upgrade().unwrap(), &retired));
+        assert!(cache.recent_shapes.lock().current.is_empty());
         assert!(cache.previous_frame.borrow().used_lines.is_empty());
         let reused = cache.layout_line("hello", px(14.), &runs, None);
         assert!(Arc::ptr_eq(&live, &reused));
     }
 
     #[test]
-    fn dead_wrapped_layout_does_not_keep_its_unwrapped_line_alive() {
+    fn dead_wrapped_layout_is_not_kept_in_recent_shapes() {
         let cache =
             LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun { len: 5, font_id: FontId(1) }];
@@ -923,9 +1050,64 @@ mod tests {
         cache.finish_frame();
         cache.finish_frame();
         assert!(weak_wrapped.upgrade().is_none());
+        assert!(weak_line.upgrade().is_some());
+        cache.recent_shapes.lock().clear();
         assert!(weak_line.upgrade().is_none());
         assert!(cache.previous_frame.borrow().wrapped_lines.is_empty());
         assert!(cache.previous_frame.borrow().lines.is_empty());
+    }
+
+    #[test]
+    fn recent_shapes_move_between_windows_and_respect_font_generation() {
+        let platform: Arc<dyn PlatformTextSystem> = Arc::new(NoopTextSystem::new());
+        let generation = Arc::new(AtomicU64::new(0));
+        let recent = Arc::new(Mutex::new(RecentShapes::default()));
+        let first = LineLayoutCache::with_recent_shapes(platform.clone(), generation.clone(), recent.clone());
+        let second = LineLayoutCache::with_recent_shapes(platform, generation.clone(), recent.clone());
+        let runs = [FontRun { len: 5, font_id: FontId(1) }];
+        let line = first.layout_line("hello", px(14.), &runs, None);
+        let weak = Arc::downgrade(&line);
+        drop(line);
+        first.finish_frame();
+        first.finish_frame();
+        assert!(first.previous_frame.borrow().lines.is_empty());
+        let reused = second.layout_line("hello", px(14.), &runs, None);
+        assert!(Arc::ptr_eq(&weak.upgrade().unwrap(), &reused));
+        assert!(recent.lock().current.is_empty());
+        drop(reused);
+        second.finish_frame();
+        second.finish_frame();
+        assert!(weak.upgrade().is_some());
+        generation.fetch_add(1, Ordering::Release);
+        let fresh = first.layout_line("hello", px(14.), &runs, None);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(fresh.len, 5);
+    }
+
+    #[test]
+    fn recent_shapes_are_bounded_and_skip_oversized_lines() {
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::default());
+        let long = "x".repeat(MAX_RECENT_TEXT_BYTES + 1);
+        let runs = [FontRun { len: long.len(), font_id: FontId(1) }];
+        let oversized = cache.layout_line(long.as_str(), px(14.), &runs, None);
+        let weak = Arc::downgrade(&oversized);
+        drop(oversized);
+        cache.finish_frame();
+        cache.finish_frame();
+        assert!(weak.upgrade().is_none());
+        let mut recent = cache.recent_shapes.lock();
+        for i in 0..3 {
+            let key = Arc::new(CacheKey {
+                text: format!("shape {i}").into(),
+                font_size: px(14.),
+                runs: SmallVec::new(),
+                wrap_width: None, max_lines: None, force_width: None,
+            });
+            recent.insert(key, Arc::new(LineLayout::default()), RECENT_SHAPE_UNITS);
+        }
+        assert_eq!(recent.current.len(), 1);
+        assert_eq!(recent.old.len(), 1);
+        assert_eq!(recent.current_units, RECENT_SHAPE_UNITS);
     }
 
     #[test]

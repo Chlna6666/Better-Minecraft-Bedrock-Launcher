@@ -5,7 +5,7 @@ mod line;
 mod run;
 mod wrapped;
 
-pub(crate) use cache::{LineLayoutCache, LineLayoutFrameMetrics, LineLayoutIndex};
+pub(crate) use cache::{LineLayoutCache, LineLayoutFrameMetrics, LineLayoutIndex, RecentShapes};
 pub use glyph::ShapedGlyph;
 pub use key::FontRun;
 pub use line::LineLayout;

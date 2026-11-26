@@ -27,7 +27,7 @@ use super::MissingGlyph;
 
 use super::{
     DecorationRun, Font, FontId, FontMetrics, FontRun, FontWeight, LineLayout, LineLayoutCache,
-    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyphReceiver,
+    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyphReceiver, RecentShapes,
     MissingGlyphReporter, RenderGlyphParams, ShapedLine, TextRun, WrappedLine, font,
     font_catalog::FontCatalog, missing_glyph::channel,
 };
@@ -51,6 +51,7 @@ pub struct TextSystem {
     pub(super) font_decision_logged: RwLock<bool>,
     font_id_cache: RwLock<FontIdCache>,
     font_cache_generation: Arc<AtomicU64>,
+    recent_shapes: Arc<Mutex<RecentShapes>>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<RasterBoundsCache>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
@@ -297,6 +298,7 @@ impl TextSystem {
             raster_bounds: RwLock::default(),
             font_id_cache: RwLock::default(),
             font_cache_generation: Arc::new(AtomicU64::new(0)),
+            recent_shapes: Arc::default(),
             wrapper_pool: Mutex::default(),
             font_catalog: FontCatalog::default(),
             missing_glyph_reporter,
@@ -488,6 +490,7 @@ impl TextSystem {
         drop(font_id_cache);
         self.raster_bounds.write().clear();
         self.wrapper_pool.lock().clear();
+        self.recent_shapes.lock().clear();
     }
 
     /// Get the FontId for the configure font family and style.
@@ -805,6 +808,7 @@ impl TextSystem {
 
     pub(crate) fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
         trim_wrapper_pool(&mut self.wrapper_pool.lock(), level);
+        self.recent_shapes.lock().trim(level);
         self.raster_bounds
             .write()
             .trim_retained_capacity_for_level(level);
@@ -847,9 +851,10 @@ impl WindowTextSystem {
 
     pub(crate) fn new(text_system: Arc<TextSystem>) -> Self {
         Self {
-            line_layout_cache: LineLayoutCache::new(
+            line_layout_cache: LineLayoutCache::with_recent_shapes(
                 text_system.platform_text_system.clone(),
                 text_system.font_cache_generation.clone(),
+                text_system.recent_shapes.clone(),
             ),
             font_runs_buffer: RefCell::default(),
             text_system,
