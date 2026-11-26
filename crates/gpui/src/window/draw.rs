@@ -465,6 +465,7 @@ impl Window {
 
     fn finish_layout_and_text_frame(&mut self, committed: bool) {
         self.discard_prebuilt_gaps();
+        self.prebuilt_state_relocations.clear();
         let mut layout_metrics = LayoutFrameMetrics::default();
         let mut layout_cache_metrics = LayoutCacheFrameMetrics::default();
         if let Some(layout_engine) = self.layout_engine.as_mut() {

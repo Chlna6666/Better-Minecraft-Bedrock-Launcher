@@ -133,13 +133,12 @@ impl IntoElement for ViewElement {
 pub struct ViewRequestLayout {
     kind: ViewRequestLayoutKind,
     rebuild: Option<Rc<crate::window::ViewRebuild>>,
-    pub(crate) adoption_serial: u64,
     splice_safe: bool,
 }
 
 impl ViewRequestLayout {
-    /// No nested RequestLayout states may retain the old offsets when moving
-    /// a leaf gap. The surrounding request now owns the relocated interval.
+    /// Transfer the gap's complete request-layout span. Nested lifecycle
+    /// states resolve relocated offsets at release/commit.
     pub(crate) fn adopt_prebuilt_layout(
         &mut self, window: &mut Window,
         claims: &crate::layout::LayoutClaimSpans, states: &Range<usize>,
@@ -219,10 +218,6 @@ impl Element for ViewElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
-        if let Some(requests) = &mut window.splice_requests {
-            *requests = requests.saturating_add(1);
-        }
-        let adoption_serial = window.prebuilt_adoption_serial;
         let splice_safe = window.splice_context_supported();
         let retained_id = window.current_retained_element_id();
         if let Some(global_id) = retained_id.as_ref() {
@@ -231,7 +226,7 @@ impl Element for ViewElement {
             }
             if let Some(splice) = window.try_splice_view(global_id, entity_id, id, cx) {
                 return (splice.anchor.layout_root, ViewRequestLayout {
-                    rebuild: splice.anchor.rebuild.clone(), adoption_serial, splice_safe,
+                    rebuild: splice.anchor.rebuild.clone(), splice_safe,
                     kind: ViewRequestLayoutKind::Spliced {
                         splice: Some(Box::new(splice)), retention: RetentionDraft::default(),
                         prepaint_range: None, context: None,
@@ -248,7 +243,7 @@ impl Element for ViewElement {
                 layout_root,
                 ViewRequestLayout {
                     rebuild: admission.rebuild.clone(),
-                    adoption_serial, splice_safe: splice_safe && admission.splice_safe,
+                    splice_safe: splice_safe && admission.splice_safe,
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
                         layout_claims,
@@ -278,7 +273,7 @@ impl Element for ViewElement {
             layout_id,
             ViewRequestLayout {
                 rebuild,
-                adoption_serial, splice_safe,
+                splice_safe,
                 kind: ViewRequestLayoutKind::Built {
                     element,
                     layout_root: layout_id,
@@ -448,7 +443,6 @@ impl Element for ViewElement {
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         let scene_segments_start = window.next_frame.retained_scene_segments.len();
         let splice_safe = state.splice_safe;
-        let adoption_serial = state.adoption_serial;
         let rebuild = state.rebuild.clone();
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
             ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused, .. } => {
@@ -489,7 +483,7 @@ impl Element for ViewElement {
                 window.commit_view_retention(slot, retention.nested.clone(), crate::window::ViewRetentionCommit {
                     layout_root: splice.anchor.layout_root, layout_claims: splice.claims.clone(),
                     prepaint_range: prepaint_range.clone(), paint_range: start..end, bounds,
-                    context: context.clone(), rebuild: if adoption_serial == window.prebuilt_adoption_serial { rebuild.clone() } else { None },
+                    context: context.clone(), rebuild: rebuild.clone(),
                     splice_safe: splice_safe && window.splice_paint_context_matches(context),
                     scene_segments_start, layout_state_range: splice.states.clone(), reused: None,
                 });
@@ -522,7 +516,7 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: context.clone(),
-                        rebuild: if adoption_serial == window.prebuilt_adoption_serial { rebuild.clone() } else { None },
+                        rebuild: rebuild.clone(),
                         splice_safe: splice_safe && window.splice_paint_context_matches(context),
                         scene_segments_start,
                         layout_state_range: layout_state_range.clone(),

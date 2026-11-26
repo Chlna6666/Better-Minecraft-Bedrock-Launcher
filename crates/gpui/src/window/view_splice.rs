@@ -15,7 +15,6 @@ pub(super) struct PrebuiltGap {
     claims: LayoutClaimSpans,
     states: Range<usize>,
     node: Option<DispatchNodeId>,
-    leaf_layout: bool,
 }
 
 pub(crate) struct ViewSplice {
@@ -87,20 +86,10 @@ impl Window {
                 && self.splice_context_supported()
                 && self.retained_paint_context_matches(&rebuild.layout)
         });
-        if !compatible {
+        if !compatible || !gap.state.adopt_prebuilt_layout(self, &gap.claims, &gap.states) {
             self.release_retained_view(&gap.claims);
             self.cancel_view_layout_states(&gap.states);
             return None;
-        }
-        if gap.leaf_layout && gap.state.adopt_prebuilt_layout(self, &gap.claims, &gap.states) {
-            // The caller's open claim/state intervals now contain the gap.
-            gap.state.adoption_serial = self.prebuilt_adoption_serial;
-        } else {
-            // A nested prebuilt still needs relocation of all descendant
-            // lifecycle states. Preserve their original offsets and decline
-            // the enclosing record's contiguous-ownership proof.
-            self.prebuilt_adoption_serial = self.prebuilt_adoption_serial.wrapping_add(1);
-            gap.state.adoption_serial = self.prebuilt_adoption_serial;
         }
         Some((gap.layout_id, gap.state))
     }
@@ -108,6 +97,7 @@ impl Window {
     pub(crate) fn adopt_gap_layout_spans(
         &mut self, root: LayoutId, claims: &LayoutClaimSpans, states: &Range<usize>,
     ) -> Option<(LayoutClaimSpans, Range<usize>)> {
+        let states = self.prebuilt_state_relocations.resolve(states);
         if !claims[1].is_empty()
             || self.next_frame.accessed_element_states.get(states.clone()).is_none()
         {
@@ -121,7 +111,9 @@ impl Window {
             let state = accesses[index].take();
             accesses.push(state);
         }
-        Some(([claimed, 0..0], start..accesses.len()))
+        let end = accesses.len();
+        self.prebuilt_state_relocations.record(states, start);
+        Some(([claimed, 0..0], start..end))
     }
 
     /// Arena-backed elements and their candidate claims never survive a frame.
@@ -158,7 +150,7 @@ impl Window {
         id: Option<&GlobalElementId>, cx: &mut App,
     ) -> Option<ViewSplice> {
         if self.view_dirty_scope(owner) != Some(ViewDirtyScope::TraversalAncestor)
-            || self.splice_requests.is_some() || !self.prebuilt_gaps.is_empty()
+            || self.splice_building || !self.prebuilt_gaps.is_empty()
             || cfg!(gpui_hot_reload) || self.force_view_cache_refresh
             || cx.has_active_drag() || self.is_inspector_picking(cx)
             || !self.splice_context_supported()
@@ -248,7 +240,7 @@ impl Window {
                 }));
                 continue;
             };
-            self.splice_requests = Some(0);
+            self.splice_building = true;
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
             let rebuild = old.rebuild.as_ref().expect("validated gap");
@@ -257,14 +249,14 @@ impl Window {
                     view.request_layout(Some(&rebuild.application_id), None, window, cx)
                 })
             });
-            let leaf_layout = self.splice_requests.take() == Some(1);
+            self.splice_building = false;
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
                 && self.layout_engine.as_ref().expect("layout engine").splice_topology_matches(&placement)
                 && !self.force_view_cache_refresh && states.is_empty();
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
-                claims: [gap_start..self.claim_log_len(), 0..0], states, node: None, leaf_layout,
+                claims: [gap_start..self.claim_log_len(), 0..0], states, node: None,
             }));
             if !compatible {
                 self.release_retained_view(&kept);

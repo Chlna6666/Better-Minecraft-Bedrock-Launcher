@@ -11,7 +11,7 @@ use std::{
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
-    LayoutClaimSpans,
+    LayoutClaimSpans, SpanRelocations,
     convert::ToTaffy,
     fingerprint::{
         hash_absolute_length, hash_display, hash_edges_absolute_length, hash_edges_definite_length,
@@ -289,6 +289,7 @@ pub struct TaffyLayoutEngine {
     claimed_this_frame: usize,
     claimed_key_log: Vec<Option<LayoutClaim>>,
     committed_claim_log: Vec<Option<LayoutClaim>>,
+    claim_relocations: SpanRelocations,
     pending_replays: Vec<LayoutId>,
     layout_changes: u64,
     remeasures: u64,
@@ -348,6 +349,7 @@ impl TaffyLayoutEngine {
             claimed_this_frame: 0,
             claimed_key_log: Vec::new(),
             committed_claim_log: Vec::new(),
+            claim_relocations: SpanRelocations::default(),
             pending_replays: Vec::new(),
             layout_changes: 0,
             remeasures: 0,
@@ -474,6 +476,7 @@ impl TaffyLayoutEngine {
         self.persistent_layout_reuses = 0;
         std::mem::swap(&mut self.claimed_key_log, &mut self.committed_claim_log);
         self.claimed_key_log.clear();
+        self.claim_relocations.clear();
         for id in self.pending_replays.drain(..) {
             if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
                 context.replay_pending = false;
@@ -738,13 +741,13 @@ impl TaffyLayoutEngine {
         Some([kept, 0..0])
     }
 
-    /// Move a prebuilt leaf's claims into its new owner's open interval.
-    /// The old offsets become tombstones; the actual native ownership and
-    /// claim counter do not change. Nested View states must be rebased by
-    /// their caller before moving a non-leaf span.
+    /// Transfer a prebuilt subtree into its caller's open interval.
+    /// Old slots become tombstones and nested View states resolve their
+    /// offsets through the same relocation table before release or commit.
     pub(crate) fn adopt_claim_span(
         &mut self, span: &Range<usize>, root: LayoutId,
     ) -> Option<Range<usize>> {
+        let span = self.claim_relocations.resolve(span);
         let source = self.claimed_key_log.get(span.clone())?;
         let frame = self.request_frame;
         if !source.iter().flatten().any(|claim| claim.id == root)
@@ -760,15 +763,20 @@ impl TaffyLayoutEngine {
             let entry = self.claimed_key_log[index].take();
             self.claimed_key_log.push(entry);
         }
+        self.claim_relocations.record(span, start);
         Some(start..self.claimed_key_log.len())
+    }
+
+    pub(crate) fn resolve_claim_spans(&self, spans: &LayoutClaimSpans) -> LayoutClaimSpans {
+        spans.clone().map(|span| self.claim_relocations.resolve(&span))
     }
 
     /// Cancel exactly the speculative claims made by admission, without
     /// scanning unrelated nodes or allocating a temporary set.
     pub(crate) fn release_kept(&mut self, spans: &LayoutClaimSpans) {
         let frame = self.request_frame;
-        for span in spans {
-            for entry in &mut self.claimed_key_log[span.clone()] {
+        for span in self.resolve_claim_spans(spans) {
+            for entry in &mut self.claimed_key_log[span] {
                 let Some(claim) = entry.take() else { continue; };
                 if let Some(node) = self.persistent_nodes.get_mut(&claim.key)
                     && node.id == claim.id && node.claimed_in_frame == frame

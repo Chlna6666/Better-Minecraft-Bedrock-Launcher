@@ -312,7 +312,8 @@ impl Window {
     /// An admitted view that rebuilds in prepaint no longer owns its
     /// speculative layout accesses. Keep the offsets stable for its ancestors.
     pub(crate) fn cancel_view_layout_states(&mut self, range: &Range<usize>) {
-        self.next_frame.accessed_element_states[range.clone()].fill(None);
+        let range = self.prebuilt_state_relocations.resolve(range);
+        self.next_frame.accessed_element_states[range].fill(None);
     }
 
     /// Reserves this frame's record position for a view before its subtree runs.
@@ -345,8 +346,11 @@ impl Window {
         &mut self,
         slot: &ViewRetentionSlot,
         nested: Range<usize>,
-        commit: ViewRetentionCommit,
+        mut commit: ViewRetentionCommit,
     ) {
+        commit.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
+            .resolve_claim_spans(&commit.layout_claims);
+        commit.layout_state_range = self.prebuilt_state_relocations.resolve(&commit.layout_state_range);
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {
             let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
