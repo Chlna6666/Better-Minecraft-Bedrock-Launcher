@@ -373,6 +373,7 @@ impl Element for ViewElement {
     ) {
         let entity_id = self.view.entity_id();
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
+        let scene_segments_start = window.next_frame.retained_scene_segments.len();
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
             ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused } => {
                 let Some(reused) = reused.as_ref() else {
@@ -396,6 +397,7 @@ impl Element for ViewElement {
                         bounds,
                         context: reused.context.clone(),
                         rebuild: state.rebuild.clone(),
+                        scene_segments_start,
                         layout_state_range: layout_state_range.clone(),
                         reused: Some(admission.clone()),
                     },
@@ -430,6 +432,7 @@ impl Element for ViewElement {
                         bounds,
                         context: context.clone(),
                         rebuild: state.rebuild.clone(),
+                        scene_segments_start,
                         layout_state_range: layout_state_range.clone(),
                         reused: None,
                     },

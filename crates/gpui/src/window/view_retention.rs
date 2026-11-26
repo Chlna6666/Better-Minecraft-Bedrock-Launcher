@@ -36,6 +36,8 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) rebuild: Option<Rc<ViewRebuild>>,
     /// Descendant span in the frame's prepaint-order view table.
     pub(crate) nested: Range<usize>,
+    /// Descendant damage segments in paint order (the enclosing view's own segment follows).
+    pub(crate) scene_segments: Range<usize>,
     /// Only states taken during request layout. Prepaint and paint replay their own spans.
     pub(crate) layout_state_range: Range<usize>,
 }
@@ -58,6 +60,7 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) context: Rc<RetainedPaintContext>,
     pub(crate) rebuild: Option<Rc<ViewRebuild>>,
+    pub(crate) scene_segments_start: usize,
     pub(crate) layout_state_range: Range<usize>,
     /// The retained source this frame copied, when the view was reused.
     pub(crate) reused: Option<RetainedViewRecord>,
@@ -124,6 +127,7 @@ impl Window {
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
             || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
             || self.rendered_frame.view_retention_records.get(record.nested.clone()).is_none()
+            || self.rendered_frame.retained_scene_segments.get(record.scene_segments.clone()).is_none()
         {
             return None;
         }
@@ -253,8 +257,22 @@ impl Window {
                     self.replayed_view_owners.insert(*owner);
                 }
             }
-            self.copy_nested_view_records(source, &nested, &commit.layout_claims, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
+            let source_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
+            let target_scene = commit.paint_range.start.scene_index..commit.paint_range.end.scene_index;
+            for segment in &self.rendered_frame.retained_scene_segments[source.scene_segments.clone()] {
+                if let Some(scene_range) = rebase_span(&segment.scene_range, &source_scene, &target_scene) {
+                    self.next_frame.push_retained_scene_segment(RetainedSceneSegment {
+                        scene_range,
+                        ..segment.clone()
+                    });
+                }
+            }
+            let scene_segments = commit.scene_segments_start..self.next_frame.retained_scene_segments.len();
+            if scene_segments.len() == source.scene_segments.len() {
+                self.copy_nested_view_records(source, &nested, &commit.layout_claims, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range, &scene_segments);
+            }
         }
+        let scene_segments = commit.scene_segments_start..self.next_frame.retained_scene_segments.len();
         let entry = &mut self.next_frame.view_retention_records[index];
         self.next_frame.view_retentions.insert(entry.key.clone(), index);
         entry.record = Some(RetainedViewRecord {
@@ -266,6 +284,7 @@ impl Window {
                 context: commit.context,
                 rebuild: commit.rebuild,
                 nested,
+                scene_segments,
                 layout_state_range: commit.layout_state_range,
         });
     }
@@ -278,6 +297,7 @@ impl Window {
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
         target_states: &Range<usize>,
+        target_scene_segments: &Range<usize>,
     ) {
         for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
             let Some(nested) = entry.record.clone() else {
@@ -317,6 +337,9 @@ impl Window {
             let Some(layout_claims) = rebase_claims(&nested.layout_claims, &source.layout_claims, target_claims) else {
                 continue;
             };
+            let Some(scene_segments) = rebase_span(&nested.scene_segments, &source.scene_segments, target_scene_segments) else {
+                continue;
+            };
             let index = target_nested.start + offset;
             let entry = &mut self.next_frame.view_retention_records[index];
             self.next_frame.view_retentions.insert(entry.key.clone(), index);
@@ -325,6 +348,7 @@ impl Window {
                     paint_range: paint,
                     layout_state_range: layout_states,
                     nested: descendants,
+                    scene_segments,
                     layout_claims,
                     ..nested
             });

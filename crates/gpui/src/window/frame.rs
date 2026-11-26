@@ -23,12 +23,9 @@ pub(crate) struct DeferredDraw {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct RetainedSceneSegment {
     pub(crate) bounds: Bounds<ScaledPixels>,
     pub(crate) scene_range: Range<usize>,
-    pub(crate) paint_range: Range<PaintIndex>,
-    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) entity_id: EntityId,
 }
 

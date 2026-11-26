@@ -17,8 +17,6 @@ fn segment(entity: u64, x: f32) -> RetainedSceneSegment {
         )
         .scale(1.0),
         scene_range: 0..1,
-        paint_range: Default::default(),
-        prepaint_range: Default::default(),
     }
 }
 
