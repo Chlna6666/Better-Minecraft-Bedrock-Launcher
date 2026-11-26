@@ -13,7 +13,7 @@ test-support = []
 bedrock-block-model = { path = "../bedrock-block-model" }
 bedrock-map-render = { path = "../bedrock-map-render", default-features = false }
 bedrock-world = { path = "../bedrock-world", default-features = false }
-gpui-3d = { path = "../gpui-3d", default-features = false }
+gpui_3d = { path = "../gpui/gpui_3d", default-features = false }
 indexmap = "2.12.1"
 rayon = "1.11.0"
 rustc-hash = "2"

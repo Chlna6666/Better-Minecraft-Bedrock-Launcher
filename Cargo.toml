@@ -48,14 +48,14 @@ zstd = "0.14.0"
 [dependencies]
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
-gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx"] }
+gpui = { path = "crates/gpui/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx"] }
 # BMCBL always requires native 3D editor sidecar integration even if the
-# reusable gpui-3d crate changes its standalone defaults in the future.
-gpui-3d = { path = "crates/gpui-3d", default-features = false, features = ["gpui-sidecar"] }
-gpui_tokio = { path = "crates/gpui_tokio" }
+# reusable gpui_3d crate changes its standalone defaults in the future.
+gpui_3d = { path = "crates/gpui/gpui_3d", default-features = false, features = ["gpui-sidecar"] }
+gpui_tokio = { path = "crates/gpui/gpui_tokio" }
 gpui-router = { version = "0.5.0", default-features = false, features = ["gpui"] }
-gpui_hooks = { path = "crates/gpui-hooks" }
-lucide-gpui = { path = "crates/lucide-gpui" }
+gpui_hooks = { path = "crates/gpui/gpui_hooks" }
+lucide_gpui = { path = "crates/gpui/lucide_gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
 # BMCBL queries Bedrock servers of every game version, so both Bedrock
 # transports stay compiled in: the Java Edition probe and its SRV resolver
@@ -132,13 +132,13 @@ p256 = { version = "0.13.2", features = ["ecdsa"] }
 secrecy = "0.10.3"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-vulkan", "wayland", "x11"] }
+gpui = { path = "crates/gpui/gpui", default-features = false, features = ["nova-gfx-vulkan", "wayland", "x11"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-dx11"] }
+gpui = { path = "crates/gpui/gpui", default-features = false, features = ["nova-gfx-dx11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-metal"] }
+gpui = { path = "crates/gpui/gpui", default-features = false, features = ["nova-gfx-metal"] }
 
 [features]
 default = ["gpui-windows-dx12", "gpui-windows-vulkan", "gpui-opengl"]
@@ -164,10 +164,16 @@ members = [
     "crates/egpui",
     "crates/egpui-build",
     "crates/egpui-manifest",
-    "crates/gpui",
-    "crates/gpui-3d",
-    "crates/gpui-macros",
-    "crates/gpui_tokio",
+    "crates/gpui/gpui",
+    "crates/gpui/gpui_3d",
+    "crates/gpui/gpui_hooks",
+    "crates/gpui/gpui_hooks_macros",
+    "crates/gpui/gpui_linux",
+    "crates/gpui/gpui_macos",
+    "crates/gpui/gpui_macros",
+    "crates/gpui/gpui_tokio",
+    "crates/gpui/gpui_windows",
+    "crates/gpui/lucide_gpui",
     "crates/bmcbl-plugin-api",
     "crates/bmcbl-plugin-macros",
     "crates/bmcbl-plugin-runtime",
@@ -213,7 +219,7 @@ keyring = { version = "3.6.3", default-features = false, features = ["async-io",
 [dev-dependencies]
 bedrock-scene = { path = "crates/bedrock-scene", features = ["test-support"] }
 bedrock-leveldb = { path = "crates/bedrock-leveldb" }
-gpui = { path = "crates/gpui", default-features = false, features = ["test-support"] }
+gpui = { path = "crates/gpui/gpui", default-features = false, features = ["test-support"] }
 gfx-core = { path = "crates/nova-gfx/gfx-core" }
 gfx-vulkan = { path = "crates/nova-gfx/gfx-vulkan" }
 
@@ -226,7 +232,7 @@ raw-window-handle = "0.6"
 [patch.crates-io]
 # Taffy v0.15.0 (eb6450694f33e2b7413e40677f230ff63f0fc194) with a native layout-write observer.
 taffy = { path = "vendor/taffy" }
-gpui = { path = "crates/gpui" }
+gpui = { path = "crates/gpui/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }
 
