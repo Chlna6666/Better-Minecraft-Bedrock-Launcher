@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{Element, IntoElement, ViewElement, ViewRequestLayout};
-use crate::layout::{LayoutClaimSpans, NativePlacementProof};
+use crate::layout::{LayoutClaimBlocks, NativePlacementProof};
 
 pub(super) struct PrebuiltGap {
     key: GlobalElementId,
@@ -12,16 +12,16 @@ pub(super) struct PrebuiltGap {
     view: ViewElement,
     layout_id: LayoutId,
     state: ViewRequestLayout,
-    claims: LayoutClaimSpans,
+    claims: LayoutClaimBlocks,
     states: Range<usize>,
     node: Option<DispatchNodeId>,
 }
 
 pub(crate) struct ViewSplice {
     pub(crate) anchor: RetainedViewRecord,
-    pub(crate) claims: LayoutClaimSpans,
+    pub(crate) claims: LayoutClaimBlocks,
     pub(crate) states: Range<usize>,
-    kept: LayoutClaimSpans,
+    kept: LayoutClaimBlocks,
     placement: NativePlacementProof,
     parts: Vec<SplicePart>,
 }
@@ -34,7 +34,7 @@ enum SplicePart {
 struct CleanPart {
     key: GlobalElementId,
     old: RetainedViewRecord,
-    claims: LayoutClaimSpans,
+    claims: LayoutClaimBlocks,
     states: Range<usize>,
     prepaint: Option<Range<PrepaintStateIndex>>,
     reservation: Option<(ViewRetentionSlot, Range<usize>)>,
@@ -95,15 +95,15 @@ impl Window {
     }
 
     pub(crate) fn adopt_gap_layout_spans(
-        &mut self, root: LayoutId, claims: &LayoutClaimSpans, states: &Range<usize>,
-    ) -> Option<(LayoutClaimSpans, Range<usize>)> {
+        &mut self, root: LayoutId, claims: &LayoutClaimBlocks, states: &Range<usize>,
+    ) -> Option<(LayoutClaimBlocks, Range<usize>)> {
         let states = self.prebuilt_state_relocations.resolve(states);
-        if !claims[1].is_empty()
+        if !claims.prepaint_blocks().is_empty() || claims.request_blocks().len() != 1
             || self.next_frame.accessed_element_states.get(states.clone()).is_none()
         {
             return None;
         }
-        let claimed = self.layout_engine.as_mut()?.adopt_claim_span(&claims[0], root)?;
+        let claimed = self.layout_engine.as_mut()?.adopt_claim_span(&claims.request_blocks()[0], root)?;
         let accesses = &mut self.next_frame.accessed_element_states;
         let start = accesses.len();
         accesses.reserve(states.len());
@@ -113,7 +113,7 @@ impl Window {
         }
         let end = accesses.len();
         self.prebuilt_state_relocations.record(states, start);
-        Some(([claimed, 0..0], start..end))
+        Some((LayoutClaimBlocks::request(claimed), start..end))
     }
 
     /// Arena-backed elements and their candidate claims never survive a frame.
@@ -171,7 +171,7 @@ impl Window {
         }
         let indices = self.splice_subtrees(&anchor)?;
         let mut plan = Vec::with_capacity(indices.len());
-        let mut claims = smallvec::SmallVec::<[(LayoutClaimSpans, LayoutId); 4]>::new();
+        let mut claims = smallvec::SmallVec::<[(LayoutClaimBlocks, LayoutId); 4]>::new();
         let mut dispatch = smallvec::SmallVec::<[(Range<usize>, EntityId); 4]>::new();
         let mut prepaint = anchor.prepaint_range.start.clone();
         let mut paint = anchor.paint_range.start.clone();
@@ -179,7 +179,7 @@ impl Window {
             let slot = &self.rendered_frame.view_retention_records[gap_index];
             let old = slot.record.as_ref()?.clone();
             let gap_rebuild = old.rebuild.as_ref()?;
-            if !old.layout_state_range.is_empty() || !old.layout_claims[1].is_empty()
+            if !old.layout_state_range.is_empty() || !old.layout_claims.prepaint_blocks().is_empty()
                 || (dirty && (!old.splice_safe || gap_rebuild.layout != rebuild.layout || old.context != anchor.context))
                 || self.rendered_frame.retained_scene_segments.get(old.scene_segments.clone()).is_none()
                 // Stretches outside all immediate subtrees cannot contain mutable state.
@@ -214,27 +214,19 @@ impl Window {
         {
             return None;
         }
-        // Native claim order may differ from prepaint order after an earlier splice.
-        claims.sort_unstable_by_key(|(spans, _)| spans[0].start);
         let engine = self.layout_engine.as_mut()?;
         let start = engine.claim_log_len();
-        let kept = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
+        let (kept, claim_map) = engine.try_keep_around_gaps(&anchor.layout_claims, &claims, anchor.layout_root)?;
         let Some(placement) = engine.capture_splice_placement(&kept, &claims) else {
             engine.release_kept(&kept);
             return None;
         };
         let states_start = self.begin_view_element_states();
-        // The kept claims are compacted in original claim order. Map clean
-        // subtree spans through the same interval subtraction before building gaps.
-        let mut removed = 0;
-        let exclusions: SmallVec<[(Range<usize>, usize); 4]> = claims.iter().map(|(spans, _)| {
-            removed += spans[0].len();
-            (spans[0].clone(), removed)
-        }).collect();
+        // The engine's block map is the only source of retained claim relocation.
         let mut parts = Vec::with_capacity(plan.len());
         for (gap_key, old, view) in plan {
             let Some(mut view) = view else {
-                let Some(claims) = relocate_clean_claims(&old.layout_claims, &anchor.layout_claims[0], &exclusions, &kept[0]) else {
+                let Some(claims) = claim_map.project(&old.layout_claims, true) else {
                     self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
                     self.release_retained_view(&kept);
                     self.stash_prebuilt_gaps(parts);
@@ -261,7 +253,7 @@ impl Window {
                 && !self.force_view_cache_refresh && states.is_empty();
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
-                claims: [gap_start..self.claim_log_len(), 0..0], states, node: None,
+                claims: LayoutClaimBlocks::request(gap_start..self.claim_log_len()), states, node: None,
             }));
             if !compatible {
                 self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
@@ -277,7 +269,7 @@ impl Window {
             return None;
         }
         Some(ViewSplice {
-            anchor, kept, placement, parts, claims: [start..self.claim_log_len(), 0..0],
+            anchor, kept, placement, parts, claims: LayoutClaimBlocks::request(start..self.claim_log_len()),
             states: self.view_layout_state_range(states_start),
         })
     }
@@ -370,23 +362,6 @@ fn replay_prepaint(
     if !source.is_empty() {
         relocated.push((source, target));
     }
-}
-
-fn relocate_clean_claims(
-    claims: &LayoutClaimSpans, anchor: &Range<usize>, excluded: &[(Range<usize>, usize)], target: &Range<usize>,
-) -> Option<LayoutClaimSpans> {
-    let span = &claims[0];
-    if !claims[1].is_empty() || span.is_empty() || span.start < anchor.start || span.end > anchor.end {
-        return None;
-    }
-    let index = excluded.partition_point(|(gap, _)| gap.end <= span.start);
-    if excluded.get(index).is_some_and(|(gap, _)| gap.start < span.end) {
-        return None;
-    }
-    let removed = index.checked_sub(1).map_or(0, |i| excluded[i].1);
-    let start = target.start.checked_add(span.start.checked_sub(anchor.start)?.checked_sub(removed)?)?;
-    let end = start.checked_add(span.len())?;
-    (end <= target.end).then_some([start..end, 0..0])
 }
 
 fn relocate_dispatch(

@@ -11,7 +11,7 @@
 
 use super::draw_reuse::{rebase_paint_range, rebase_prepaint_range};
 use super::*;
-use crate::layout::LayoutClaimSpans;
+use crate::layout::{ClaimBlockMap, LayoutClaimBlocks};
 
 /// Identity and effective inherited values at RequestLayout, distinct from Prepaint.
 pub(crate) struct ViewRebuild {
@@ -27,7 +27,7 @@ pub(crate) struct RetainedViewRecord {
     /// The view's committed layout root, still owned by the layered layout engine.
     pub(crate) layout_root: LayoutId,
     /// Every persistent node the subtree claimed, in claim order.
-    pub(crate) layout_claims: LayoutClaimSpans,
+    pub(crate) layout_claims: LayoutClaimBlocks,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
@@ -55,7 +55,7 @@ pub(crate) struct ViewRetentionSlot(usize);
 
 pub(crate) struct ViewRetentionCommit {
     pub(crate) layout_root: LayoutId,
-    pub(crate) layout_claims: LayoutClaimSpans,
+    pub(crate) layout_claims: LayoutClaimBlocks,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
@@ -170,7 +170,7 @@ impl Window {
     /// here, so the original own entry must also be carried.
     pub(super) fn commit_spliced_clean(
         &mut self, slot: &ViewRetentionSlot, nested: Range<usize>,
-        source: &RetainedViewRecord, claims: LayoutClaimSpans,
+        source: &RetainedViewRecord, claims: LayoutClaimBlocks,
         prepaint: Range<PrepaintStateIndex>, paint: Range<PaintIndex>,
         states: Range<usize>,
     ) {
@@ -207,7 +207,7 @@ impl Window {
         view_id: EntityId,
         application_id: Option<&GlobalElementId>,
         cx: &App,
-    ) -> Option<(RetainedViewRecord, LayoutClaimSpans)> {
+    ) -> Option<(RetainedViewRecord, LayoutClaimBlocks)> {
         if !self.view_retention_eligible(view_id, cx) {
             return None;
         }
@@ -237,7 +237,7 @@ impl Window {
     }
 
     /// Gives the admitted layout back so the view can be built normally.
-    pub(crate) fn release_retained_view(&mut self, claims: &LayoutClaimSpans) {
+    pub(crate) fn release_retained_view(&mut self, claims: &LayoutClaimBlocks) {
         self.layout_engine
             .as_mut()
             .expect("layout engine is installed while a frame is drawn")
@@ -349,7 +349,7 @@ impl Window {
         mut commit: ViewRetentionCommit,
     ) {
         commit.layout_claims = self.layout_engine.as_ref().expect("layout engine installed")
-            .resolve_claim_spans(&commit.layout_claims);
+            .resolve_claim_blocks(&commit.layout_claims);
         commit.layout_state_range = self.prebuilt_state_relocations.resolve(&commit.layout_state_range);
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {
@@ -396,12 +396,13 @@ impl Window {
         &mut self,
         source: &RetainedViewRecord,
         target_nested: &Range<usize>,
-        target_claims: &LayoutClaimSpans,
+        target_claims: &LayoutClaimBlocks,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
         target_states: &Range<usize>,
         target_scene_segments: &Range<usize>,
     ) {
+        let Some(claim_map) = ClaimBlockMap::between(&source.layout_claims, target_claims) else { return; };
         for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
             let Some(nested) = entry.record.clone() else {
                 continue;
@@ -437,7 +438,7 @@ impl Window {
             let Some(descendants) = rebase_span(&nested.nested, &source.nested, target_nested) else {
                 continue;
             };
-            let Some(layout_claims) = rebase_claims(&nested.layout_claims, &source.layout_claims, target_claims) else {
+            let Some(layout_claims) = claim_map.project(&nested.layout_claims, true) else {
                 continue;
             };
             let Some(scene_segments) = rebase_span(&nested.scene_segments, &source.scene_segments, target_scene_segments) else {
@@ -469,13 +470,3 @@ fn rebase_span(range: &Range<usize>, source: &Range<usize>, target: &Range<usize
 }
 
 
-fn rebase_claims(claims: &LayoutClaimSpans, source: &LayoutClaimSpans, target: &LayoutClaimSpans) -> Option<LayoutClaimSpans> {
-    let rebase = |range: &Range<usize>| {
-        if range.is_empty() {
-            return Some(target[0].start..target[0].start);
-        }
-        rebase_span(range, &source[0], &target[0])
-            .or_else(|| rebase_span(range, &source[1], &target[1]))
-    };
-    Some([rebase(&claims[0])?, rebase(&claims[1])?])
-}

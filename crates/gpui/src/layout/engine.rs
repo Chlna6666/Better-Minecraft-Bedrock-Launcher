@@ -11,7 +11,7 @@ use std::{
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
-    LayoutClaimSpans, SpanRelocations,
+    ClaimBlockMap, LayoutClaimBlocks, SpanRelocations,
     convert::ToTaffy,
     fingerprint::{
         hash_absolute_length, hash_display, hash_edges_absolute_length, hash_edges_definite_length,
@@ -595,14 +595,17 @@ impl TaffyLayoutEngine {
     /// Preserve tombstones and order for normal retained-span rebasing.
     pub(crate) fn try_keep_retained(
         &mut self,
-        spans: &LayoutClaimSpans,
+        spans: &LayoutClaimBlocks,
         root: LayoutId,
-    ) -> Option<LayoutClaimSpans> {
+    ) -> Option<LayoutClaimBlocks> {
         let start = self.claimed_key_log.len();
-        let first_len = spans[0].len();
-        let kept = self.try_keep_intervals(spans, root)?;
+        let first_len: usize = spans.request_blocks().iter().map(Range::len).sum();
+        let intervals: smallvec::SmallVec<[Range<usize>; 4]> = spans.iter().cloned().collect();
+        let kept = self.try_keep_intervals(&intervals, root)?;
         let middle = start + first_len;
-        Some([start..middle, middle..kept.end])
+        let mut result = LayoutClaimBlocks::request(start..middle);
+        result.push_prepaint(middle..kept.end);
+        Some(result)
     }
 
     fn claims_valid(&self, claims: &[Option<LayoutClaim>]) -> bool {
@@ -613,6 +616,12 @@ impl TaffyLayoutEngine {
     }
 
     fn try_keep_intervals(&mut self, intervals: &[Range<usize>], root: LayoutId) -> Option<Range<usize>> {
+        // Reject overlapping blocks before claiming any nodes.
+        let mut ordered: smallvec::SmallVec<[&Range<usize>; 4]> = intervals.iter().collect();
+        ordered.sort_unstable_by_key(|range| range.start);
+        if ordered.windows(2).any(|pair| pair[0].end > pair[1].start) {
+            return None;
+        }
         let mut has_root = false;
         for interval in intervals {
             let claims = self.committed_claim_log.get(interval.clone())?;
@@ -657,7 +666,7 @@ impl TaffyLayoutEngine {
     /// second copy of its geometry; the native compute boundary captures it
     /// only when a candidate actually recomputes layout.
     pub(crate) fn capture_splice_placement(
-        &mut self, kept: &LayoutClaimSpans, gaps: &[(LayoutClaimSpans, LayoutId)],
+        &mut self, kept: &LayoutClaimBlocks, gaps: &[(LayoutClaimBlocks, LayoutId)],
     ) -> Option<NativePlacementProof> {
         if !self.pending_replays.is_empty() {
             return None;
@@ -744,40 +753,62 @@ impl TaffyLayoutEngine {
         (self.layout_changes, self.remeasures, self.anonymous_nodes.len(), self.pending_replays.len())
     }
 
-    /// Atomically claim the complement of disjoint dirty layout intervals,
-    /// ordered by their native claim start. Dirty roots must still belong to
-    /// the anchor's native tree. Lazy
-    /// prepaint claims are excluded until their separate phase can be spliced.
+    /// Claim the complement of disjoint dirty blocks and publish the exact
+    /// source-to-candidate map for clean records and intermediate ancestors.
     pub(crate) fn try_keep_around_gaps(
         &mut self,
-        anchor: &LayoutClaimSpans,
-        gaps: &[(LayoutClaimSpans, LayoutId)],
+        anchor: &LayoutClaimBlocks,
+        gaps: &[(LayoutClaimBlocks, LayoutId)],
         root: LayoutId,
-    ) -> Option<LayoutClaimSpans> {
-        if !anchor[1].is_empty() || gaps.is_empty() {
+    ) -> Option<(LayoutClaimBlocks, ClaimBlockMap)> {
+        if !anchor.prepaint_blocks().is_empty() || gaps.is_empty() {
             return None;
         }
-        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
-        let mut cursor = anchor[0].start;
+        let mut excluded = smallvec::SmallVec::<[Range<usize>; 4]>::new();
         for (gap, gap_root) in gaps {
-            if !gap[1].is_empty() || gap[0].is_empty()
-                || gap[0].start < cursor || gap[0].end > anchor[0].end
+            if !gap.prepaint_blocks().is_empty() || gap.request_blocks().is_empty()
                 || !self.layout_reaches(root, *gap_root)
             {
                 return None;
             }
-            let old_gap = self.committed_claim_log.get(gap[0].clone())?;
-            if !self.claims_valid(old_gap)
-                || !old_gap.iter().flatten().any(|claim| claim.id == *gap_root)
-            {
-                return None;
+            let mut has_root = false;
+            for span in gap.request_blocks() {
+                let old_gap = self.committed_claim_log.get(span.clone())?;
+                if !self.claims_valid(old_gap) { return None; }
+                has_root |= old_gap.iter().flatten().any(|claim| claim.id == *gap_root);
+                excluded.push(span.clone());
             }
-            kept.push(cursor..gap[0].start);
-            cursor = gap[0].end;
+            if !has_root { return None; }
         }
-        kept.push(cursor..anchor[0].end);
+        excluded.sort_unstable_by_key(|range| range.start);
+        if excluded.windows(2).any(|pair| pair[0].end > pair[1].start) {
+            return None;
+        }
+        let mut anchors: smallvec::SmallVec<[Range<usize>; 4]> = anchor.request_blocks().iter().cloned().collect();
+        anchors.sort_unstable_by_key(|range| range.start);
+        if anchors.windows(2).any(|pair| pair[0].end > pair[1].start) { return None; }
+        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
+        let mut gaps = excluded.iter().peekable();
+        for block in anchors {
+            let mut cursor = block.start;
+            while let Some(gap) = gaps.peek() {
+                if gap.start >= block.end { break; }
+                if gap.start < cursor || gap.end > block.end { return None; }
+                if cursor < gap.start { kept.push(cursor..gap.start); }
+                cursor = gap.end;
+                gaps.next();
+            }
+            if cursor < block.end { kept.push(cursor..block.end); }
+        }
+        if gaps.next().is_some() { return None; }
+        let mut map = ClaimBlockMap::default();
+        let mut target = self.claimed_key_log.len();
+        for span in &kept {
+            map.record(span.clone(), target);
+            target += span.len();
+        }
         let kept = self.try_keep_intervals(&kept, root)?;
-        Some([kept, 0..0])
+        Some((LayoutClaimBlocks::request(kept), map))
     }
 
     /// Transfer a prebuilt subtree into its caller's open interval.
@@ -806,15 +837,15 @@ impl TaffyLayoutEngine {
         Some(start..self.claimed_key_log.len())
     }
 
-    pub(crate) fn resolve_claim_spans(&self, spans: &LayoutClaimSpans) -> LayoutClaimSpans {
-        spans.clone().map(|span| self.claim_relocations.resolve(&span))
+    pub(crate) fn resolve_claim_blocks(&self, spans: &LayoutClaimBlocks) -> LayoutClaimBlocks {
+        spans.resolve(&self.claim_relocations)
     }
 
     /// Cancel exactly the speculative claims made by admission, without
     /// scanning unrelated nodes or allocating a temporary set.
-    pub(crate) fn release_kept(&mut self, spans: &LayoutClaimSpans) {
+    pub(crate) fn release_kept(&mut self, spans: &LayoutClaimBlocks) {
         let frame = self.request_frame;
-        for span in self.resolve_claim_spans(spans) {
+        for span in self.resolve_claim_blocks(spans).iter().cloned() {
             for entry in &mut self.claimed_key_log[span] {
                 let Some(claim) = entry.take() else { continue; };
                 if let Some(node) = self.persistent_nodes.get_mut(&claim.key)
@@ -1630,11 +1661,12 @@ mod tests {
         let start = engine.claim_log_len();
         engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
         let end = engine.claim_log_len();
-        let claims = [0..start, start..end];
+        let mut claims = LayoutClaimBlocks::request(0..start);
+        claims.push_prepaint(start..end);
         assert_eq!(end, 2);
         engine.clear();
 
-        assert!(engine.try_keep_retained(&[0..end+1, 0..0], first).is_none());
+        assert!(engine.try_keep_retained(&LayoutClaimBlocks::request(0..end+1), first).is_none());
         assert_eq!(engine.claimed_this_frame, 0);
         let kept = engine.try_keep_retained(&claims, first).unwrap();
         assert!(engine.try_keep_retained(&claims, first).is_none());
@@ -1655,10 +1687,10 @@ mod tests {
         let gap = engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]);
         let root = engine.request_layout(Some(owner(&root_owner)), Style::default(), crate::px(16.), 1., &[gap]);
         engine.clear();
-        let anchor = [0..2, 0..0];
-        let gap_span = [0..1, 0..0];
+        let anchor = LayoutClaimBlocks::request(0..2);
+        let gap_span = LayoutClaimBlocks::request(0..1);
         let stamp = engine.splice_layout_stamp();
-        let kept = engine.try_keep_around_gaps(&anchor, &[(gap_span, gap)], root).unwrap();
+        let (kept, _) = engine.try_keep_around_gaps(&anchor, &[(gap_span, gap)], root).unwrap();
         assert_eq!(engine.claimed_this_frame, 1);
         assert_eq!(engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]), gap);
         assert_eq!(engine.splice_layout_stamp(), stamp);
@@ -1673,7 +1705,7 @@ mod tests {
         let root = list_id();
         let start = engine.claim_log_len();
         let id = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
-        let claims = [start..engine.claim_log_len(), 0..0];
+        let claims = LayoutClaimBlocks::request(start..engine.claim_log_len());
         engine.clear();
         engine.robbed_parents.insert(id);
         assert!(engine.try_keep_retained(&claims, id).is_none());
@@ -1744,7 +1776,7 @@ mod tests {
         assert_eq!(engine.taffy.total_node_count(), 0);
         let start = engine.claim_log_len();
         let id = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
-        let claims = [start..engine.claim_log_len(), 0..0];
+        let claims = LayoutClaimBlocks::request(start..engine.claim_log_len());
         engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
         assert!(engine.try_keep_retained(&claims, id).is_none());

@@ -4,6 +4,7 @@ use crate::{
     Window,
 };
 use anyhow::Result;
+use crate::layout::LayoutClaimBlocks;
 use std::{any::TypeId, fmt, ops::Range, rc::Rc};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
@@ -141,7 +142,7 @@ impl ViewRequestLayout {
     /// states resolve relocated offsets at release/commit.
     pub(crate) fn adopt_prebuilt_layout(
         &mut self, window: &mut Window,
-        claims: &crate::layout::LayoutClaimSpans, states: &Range<usize>,
+        claims: &LayoutClaimBlocks, states: &Range<usize>,
     ) -> bool {
         let ViewRequestLayoutKind::Built { layout_root, layout_claims, layout_state_range, .. } = &mut self.kind else {
             return false;
@@ -163,7 +164,7 @@ enum ViewRequestLayoutKind {
     /// finds that what it inherits changed.
     Retained {
         admission: crate::window::RetainedViewRecord,
-        layout_claims: crate::layout::LayoutClaimSpans,
+        layout_claims: LayoutClaimBlocks,
         layout_state_range: Range<usize>,
         retention: RetentionDraft,
         reused: Option<ReusedView>,
@@ -179,7 +180,7 @@ enum ViewRequestLayoutKind {
     Built {
         element: AnyElement,
         layout_root: LayoutId,
-        layout_claims: crate::layout::LayoutClaimSpans,
+        layout_claims: LayoutClaimBlocks,
         prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
         context: Option<Rc<crate::window::RetainedPaintContext>>,
         layout_state_range: Range<usize>,
@@ -267,7 +268,7 @@ impl Element for ViewElement {
             (layout_id, element)
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
-        let layout_claims = [claim_start..window.claim_log_len(), 0..0];
+        let layout_claims = LayoutClaimBlocks::request(claim_start..window.claim_log_len());
         let layout_state_range = window.view_layout_state_range(element_state_start);
         (
             layout_id,
@@ -303,7 +304,7 @@ impl Element for ViewElement {
                 let anchor = window.abandon_view_splice(*splice.take().expect("pending splice"));
                 let empty = window.begin_view_element_states();
                 state.kind = ViewRequestLayoutKind::Retained {
-                    admission: anchor, layout_claims: [0..0, 0..0], layout_state_range: empty..empty,
+                    admission: anchor, layout_claims: LayoutClaimBlocks::default(), layout_state_range: empty..empty,
                     retention: RetentionDraft::default(), reused: None, allow_reuse: false,
                 };
             }
@@ -362,11 +363,11 @@ impl Element for ViewElement {
                         );
                         rebuilt_root
                     });
-                    let mut layout_claims = [0..0, claim_start..window.claim_log_len()];
+                    let mut layout_claims = LayoutClaimBlocks::prepaint(claim_start..window.claim_log_len());
                     if rebuilt_root != layout_root {
                         // The parent still references the admitted root. Do not publish
                         // a reusable record for that root after replacing its subtree.
-                        layout_claims = [0..0, 0..0];
+                        layout_claims = LayoutClaimBlocks::default();
                     }
                     state.kind = ViewRequestLayoutKind::Built {
                         element,
@@ -382,7 +383,7 @@ impl Element for ViewElement {
                     let splice = splice.as_mut().expect("admitted splice");
                     let start = window.claim_log_len();
                     window.prepaint_view_splice(splice, cx);
-                    splice.claims[1] = start..window.claim_log_len();
+                    splice.claims.push_prepaint(start..window.claim_log_len());
                     *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
                     *recorded_context = Some(context);
                     *draft = retention.take().expect("view retention slot");
@@ -397,7 +398,7 @@ impl Element for ViewElement {
                 } => {
                     let claim_start = window.claim_log_len();
                     element.prepaint(window, cx);
-                    layout_claims[1] = claim_start..window.claim_log_len();
+                    layout_claims.push_prepaint(claim_start..window.claim_log_len());
                     *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
                     *recorded_context = Some(context);
                     *state_retention = retention.take().expect("view retention slot");

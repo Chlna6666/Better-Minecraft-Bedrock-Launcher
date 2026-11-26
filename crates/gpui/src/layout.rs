@@ -18,8 +18,130 @@ pub use builders::{absolute_fill, center, h_stack, relative_fill, v_stack};
 pub(crate) use convert::snap_logical_to_device_pixel;
 pub use engine::TaffyLayoutEngine;
 pub(crate) use engine::{MeasurementKey, NativePlacementProof, SizeMeasurement};
-/// Request-layout and prepaint claims in the double-buffered native log.
-pub(crate) type LayoutClaimSpans = [std::ops::Range<usize>; 2];
+use std::ops::Range;
+
+/// References into the double-buffered native claim log, not copies of nodes.
+/// Each lifecycle phase can own any number of disjoint blocks. The common
+/// request/prepaint pair stays inline.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayoutClaimBlocks {
+    blocks: smallvec::SmallVec<[Range<usize>; 2]>,
+    request_count: usize,
+}
+
+impl LayoutClaimBlocks {
+    pub(crate) fn request(range: Range<usize>) -> Self {
+        let mut result = Self::default();
+        result.push_request(range);
+        result
+    }
+
+    pub(crate) fn prepaint(range: Range<usize>) -> Self {
+        let mut result = Self::default();
+        result.push_prepaint(range);
+        result
+    }
+
+    pub(crate) fn request_blocks(&self) -> &[Range<usize>] {
+        &self.blocks[..self.request_count]
+    }
+
+    pub(crate) fn prepaint_blocks(&self) -> &[Range<usize>] {
+        &self.blocks[self.request_count..]
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Range<usize>> {
+        self.blocks.iter()
+    }
+
+    pub(crate) fn push_request(&mut self, range: Range<usize>) {
+        assert_eq!(self.request_count, self.blocks.len());
+        if !range.is_empty() {
+            self.blocks.push(range);
+            self.request_count += 1;
+        }
+    }
+
+    pub(crate) fn push_prepaint(&mut self, range: Range<usize>) {
+        if !range.is_empty() {
+            self.blocks.push(range);
+        }
+    }
+
+    pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {
+        let mut result = Self::default();
+        for span in self.request_blocks() {
+            result.push_request(moves.resolve(span));
+        }
+        for span in self.prepaint_blocks() {
+            result.push_prepaint(moves.resolve(span));
+        }
+        result
+    }
+}
+
+/// An affine mapping per copied native block. A nested record can cross any
+/// number of source blocks, and its target need not be contiguous.
+#[derive(Default)]
+pub(crate) struct ClaimBlockMap {
+    segments: smallvec::SmallVec<[(Range<usize>, usize); 4]>,
+}
+
+impl ClaimBlockMap {
+    pub(crate) fn record(&mut self, source: Range<usize>, target: usize) {
+        if !source.is_empty() {
+            self.segments.push((source, target));
+        }
+    }
+
+    pub(crate) fn between(source: &LayoutClaimBlocks, target: &LayoutClaimBlocks) -> Option<Self> {
+        let mut result = Self::default();
+        for (sources, targets) in [
+            (source.request_blocks(), target.request_blocks()),
+            (source.prepaint_blocks(), target.prepaint_blocks()),
+        ] {
+            let (mut i, mut j, mut a, mut b) = (0, 0, 0, 0);
+            while let (Some(s), Some(t)) = (sources.get(i), targets.get(j)) {
+                let len = (s.len() - a).min(t.len() - b);
+                result.record(s.start + a..s.start + a + len, t.start + b);
+                a += len;
+                b += len;
+                if a == s.len() { i += 1; a = 0; }
+                if b == t.len() { j += 1; b = 0; }
+            }
+            if i != sources.len() || j != targets.len() {
+                return None;
+            }
+        }
+        result.segments.sort_unstable_by_key(|(source, _)| source.start);
+        Some(result)
+    }
+
+    pub(crate) fn project(&self, claims: &LayoutClaimBlocks, complete: bool) -> Option<LayoutClaimBlocks> {
+        let mut result = LayoutClaimBlocks::default();
+        for (prepaint, spans) in [(false, claims.request_blocks()), (true, claims.prepaint_blocks())] {
+            for span in spans {
+                let mut copied = 0;
+                let index = self.segments.partition_point(|(source, _)| source.end <= span.start);
+                for (source, target) in &self.segments[index..] {
+                    if source.start >= span.end { break; }
+                    let start = source.start.max(span.start);
+                    let end = source.end.min(span.end);
+                    if start >= end { continue; }
+                    copied += end - start;
+                    let range = target + start - source.start..target + end - source.start;
+                    if prepaint {
+                        result.push_prepaint(range);
+                    } else {
+                        result.push_request(range);
+                    }
+                }
+                if complete && copied != span.len() { return None; }
+            }
+        }
+        Some(result)
+    }
+}
 
 /// Candidate-only offsets for adopted prebuilt subtrees. Nested lifecycle
 /// states resolve old spans at consumption instead of walking the arena.

@@ -582,7 +582,7 @@ impl Window {
             self.next_frame.view_retention_records.truncate(view_records);
             if let (Some(start), Some(engine)) = (claim_start, self.layout_engine.as_mut()) {
                 let end = engine.claim_log_len();
-                engine.release_kept(&[start..end, 0..0]);
+                engine.release_kept(&crate::layout::LayoutClaimBlocks::request(start..end));
             }
         }
         result
