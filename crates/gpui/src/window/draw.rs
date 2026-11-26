@@ -822,7 +822,7 @@ impl Window {
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
         let mut entities = mem::take(&mut cx.entities.frame_entity_scratch);
-        let (log, live_entities) = cx.entities.finish_frame_read_log();
+        let (log, live_entities) = cx.entities.finish_frame_dependencies();
         self.invalidator.commit_frame_dependencies(
             log,
             &mut entities,

@@ -190,7 +190,7 @@ mod dependency_tests {
             assert!(cx.try_global::<Absent>().is_none());
             let _ = cx.global::<Present>();
             assert!(cx.try_global::<Present>().is_some());
-            let dependencies = cx.entities.finish_frame_read_log().0.into_sets();
+            let dependencies = cx.entities.finish_frame_dependencies().0.into_sets();
             let reads = &dependencies[&Some(owner.entity_id())].globals;
             for key in [
                 (TypeId::of::<Present>(), Some(true)),

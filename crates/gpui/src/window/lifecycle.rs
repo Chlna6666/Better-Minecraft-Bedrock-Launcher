@@ -112,7 +112,7 @@ struct WindowInvalidatorInner {
     pub dirty_views: FxHashSet<EntityId>,
     // Last successfully committed Render read owners. An unknown owner
     // requires the conservative window-wide fallback.
-    view_reads: FxHashMap<Option<EntityId>, crate::ViewReadSet>,
+    view_reads: FxHashMap<Option<EntityId>, crate::RenderDependencies>,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -244,7 +244,7 @@ impl WindowInvalidator {
     /// The reverse indexes are derived here, not merged with the previous indexes.
     pub(in crate::window) fn commit_frame_dependencies(
         &self,
-        log: &mut crate::FrameReadLog,
+        log: &mut crate::AppDependencies,
         entities: &mut FxHashSet<EntityId>,
         replayed: &FxHashSet<EntityId>,
         mut is_live: impl FnMut(EntityId) -> bool,
@@ -568,7 +568,7 @@ mod view_invalidation_tests {
         let removed = EntityId::from(14);
         let global = TypeId::of::<u32>();
         let mut entities = FxHashSet::default();
-        let mut log = crate::FrameReadLog::default();
+        let mut log = crate::AppDependencies::default();
         for owner in [replayed, rebuilt, removed] {
             log.entity(Some(owner), model);
             log.global(Some(owner), (global, None));
@@ -592,7 +592,7 @@ mod view_invalidation_tests {
         let value_reader = EntityId::from(1);
         let present_reader = EntityId::from(2);
         let absent_reader = EntityId::from(3);
-        let mut log = crate::FrameReadLog::default();
+        let mut log = crate::AppDependencies::default();
         log.global(Some(value_reader), (global, None));
         log.global(Some(present_reader), (global, Some(true)));
         log.global(Some(absent_reader), (global, Some(false)));
@@ -615,7 +615,7 @@ mod view_invalidation_tests {
         let owner = EntityId::from(1);
         let model = EntityId::from(2);
         let global = TypeId::of::<u32>();
-        let mut log = crate::FrameReadLog::default();
+        let mut log = crate::AppDependencies::default();
         log.entity(None, model);
         log.global(None, (global, None));
         invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
@@ -639,7 +639,7 @@ mod view_invalidation_tests {
             let model = EntityId::from(101);
             let first = EntityId::from(102);
             let second = EntityId::from(103);
-            let mut log = crate::FrameReadLog::default();
+            let mut log = crate::AppDependencies::default();
             log.entity(Some(first), model);
             log.entity(Some(second), model);
             invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);

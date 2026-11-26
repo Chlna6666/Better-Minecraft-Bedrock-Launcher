@@ -3,8 +3,9 @@
 //! Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
 //! SPDX-License-Identifier: Apache-2.0
 
-use collections::FxHashSet;
-use std::rc::Rc;
+use crate::EntityId;
+use collections::{FxHashMap, FxHashSet};
+use std::{any::TypeId, ops::Range, rc::Rc};
 
 /// Lists of what retained subtrees read, each kept once and shared by every
 /// subtree that read the same: a view built again reads what it read last
@@ -99,3 +100,139 @@ pub(crate) fn merge_sorted<T: Ord + Copy>(a: &Rc<[T]>, b: &Rc<[T]>) -> Rc<[T]> {
     merged.into()
 }
 
+
+// The upstream recording model uses contiguous logs with range boundaries.
+// Until RetainedSubtree owns dependencies, publish the own-read ranges through
+// the existing window notification routes. No owner is stored per read.
+#[derive(Default)]
+pub(crate) struct AppDependencies {
+    entity_log: Vec<EntityId>,
+    global_log: Vec<(TypeId, Option<bool>)>,
+    recording: DependencyRecording,
+    ranges: Vec<LogRanges>,
+    scratch_entities: Vec<EntityId>,
+    scratch_globals: Vec<(TypeId, Option<bool>)>,
+    interned_entities: Interned<EntityId>,
+    interned_globals: Interned<(TypeId, Option<bool>)>,
+}
+
+#[derive(Default)]
+struct DependencyRecording {
+    owner: Option<EntityId>,
+    entities: usize,
+    globals: usize,
+}
+
+struct LogRanges {
+    owner: Option<EntityId>,
+    entities: Range<usize>,
+    globals: Range<usize>,
+}
+
+/// The entity and global portion of Fast's RenderDependencies. Global presence
+/// is still represented by the existing notification API's observed boolean.
+#[derive(Clone, Default)]
+pub(crate) struct RenderDependencies {
+    pub(crate) entities: Rc<[EntityId]>,
+    pub(crate) globals: Rc<[(TypeId, Option<bool>)]>,
+}
+
+impl AppDependencies {
+    #[inline]
+    pub(crate) fn note_access(&mut self, entity_id: EntityId) {
+        // From Fast note_access: an equal adjacent read may be elided only
+        // within the same recording boundary.
+        if self.entity_log.len() > self.recording.entities
+            && self.entity_log.last() == Some(&entity_id)
+        {
+            return;
+        }
+        self.entity_log.push(entity_id);
+    }
+
+    #[inline]
+    pub(crate) fn note_global_read(&mut self, global: (TypeId, Option<bool>)) {
+        if self.global_log.len() > self.recording.globals
+            && self.global_log.last() == Some(&global)
+        {
+            return;
+        }
+        self.global_log.push(global);
+    }
+
+    fn close_recording(&mut self) {
+        let entities = self.recording.entities..self.entity_log.len();
+        let globals = self.recording.globals..self.global_log.len();
+        if !entities.is_empty() || !globals.is_empty() {
+            self.recording.entities = entities.end;
+            self.recording.globals = globals.end;
+            self.ranges.push(LogRanges {
+                owner: self.recording.owner,
+                entities,
+                globals,
+            });
+        }
+    }
+
+    pub(crate) fn set_owner(&mut self, owner: Option<EntityId>) -> Option<EntityId> {
+        let previous = self.recording.owner;
+        if previous != owner {
+            self.close_recording();
+            self.recording.owner = owner;
+        }
+        previous
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entity_log.clear();
+        self.global_log.clear();
+        self.ranges.clear();
+        self.recording = DependencyRecording::default();
+    }
+
+    /// Finish each owner's disjoint ranges with the upstream scratch,
+    /// sort_unique, intern and merge_sorted path. Sort recording boundaries,
+    /// not the full frame of (owner, read) tuples.
+    pub(crate) fn append_to(
+        &mut self,
+        reads: &mut FxHashMap<Option<EntityId>, RenderDependencies>,
+    ) {
+        self.close_recording();
+        self.ranges.sort_unstable_by_key(|range| range.owner);
+        for group in self.ranges.chunk_by(|a, b| a.owner == b.owner) {
+            self.scratch_entities.clear();
+            self.scratch_globals.clear();
+            for range in group {
+                self.scratch_entities.extend_from_slice(&self.entity_log[range.entities.clone()]);
+                self.scratch_globals.extend_from_slice(&self.global_log[range.globals.clone()]);
+            }
+            sort_unique(&mut self.scratch_entities);
+            sort_unique(&mut self.scratch_globals);
+            let entities = self.interned_entities.get(&self.scratch_entities);
+            let globals = self.interned_globals.get(&self.scratch_globals);
+            let target = reads.entry(group[0].owner).or_default();
+            target.entities = merge_sorted(&target.entities, &entities);
+            target.globals = merge_sorted(&target.globals, &globals);
+        }
+        self.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entity(&mut self, owner: Option<EntityId>, entity: EntityId) {
+        self.set_owner(owner);
+        self.note_access(entity);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn global(&mut self, owner: Option<EntityId>, key: (TypeId, Option<bool>)) {
+        self.set_owner(owner);
+        self.note_global_read(key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_sets(&mut self) -> FxHashMap<Option<EntityId>, RenderDependencies> {
+        let mut sets = FxHashMap::default();
+        self.append_to(&mut sets);
+        sets
+    }
+}

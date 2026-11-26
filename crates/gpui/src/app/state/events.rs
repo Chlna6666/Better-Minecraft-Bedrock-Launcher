@@ -241,7 +241,7 @@ mod tests {
             let _ = model.read(cx);
             cx.entities.set_render_dependency_owner(None);
             let _ = other.read(cx);
-            let dependencies = cx.entities.finish_frame_read_log().0.into_sets();
+            let dependencies = cx.entities.finish_frame_dependencies().0.into_sets();
             assert_eq!(dependencies[&Some(first.entity_id())].entities.len(), 2);
             assert_eq!(dependencies[&Some(second.entity_id())].entities.as_ref(), &[model.entity_id()]);
             assert_eq!(dependencies[&None].entities.as_ref(), &[other.entity_id()]);
@@ -258,7 +258,7 @@ mod tests {
             let _ = first.read(cx);
             let _ = first.read(cx);
             let _ = second.read(cx);
-            let reads = cx.entities.finish_frame_read_log().0.into_sets();
+            let reads = cx.entities.finish_frame_dependencies().0.into_sets();
             let frame_accesses = &reads[&None].entities;
             assert_eq!(frame_accesses.len(), 2);
             assert!(frame_accesses.contains(&first.entity_id()));
