@@ -574,9 +574,16 @@ impl Window {
     pub fn transact<T, U>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, U>) -> Result<T, U> {
         self.invalidator.debug_assert_prepaint();
         let index = self.prepaint_index();
+        let view_records = self.next_frame.view_retention_records.len();
+        let claim_start = self.layout_engine.as_ref().map(|engine| engine.claim_log_len());
         let result = f(self);
         if result.is_err() {
             self.truncate_prepaint_to(index);
+            self.next_frame.view_retention_records.truncate(view_records);
+            if let (Some(start), Some(engine)) = (claim_start, self.layout_engine.as_mut()) {
+                let end = engine.claim_log_len();
+                engine.release_kept(&[start..end, 0..0]);
+            }
         }
         result
     }

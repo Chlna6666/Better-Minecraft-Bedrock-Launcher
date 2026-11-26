@@ -134,7 +134,7 @@ pub(crate) use frame::{
     RetainedPaintContext, RetainedSceneSegment,
 };
 pub(crate) use view_retention::{
-    RetainedViewRecord, ViewRetentionCommit, ViewRetentionSlot,
+    RetainedViewRecord, ViewRebuild, ViewRetentionCommit, ViewRetentionSlot,
 };
 pub use frame_clock::FrameClock;
 use frame_clock::{FrameClockRequest, FrameClockState, ReceivedPlatformFrame};

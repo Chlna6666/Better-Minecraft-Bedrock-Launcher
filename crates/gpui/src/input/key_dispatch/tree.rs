@@ -265,6 +265,7 @@ impl DispatchTree {
         ReusedSubtree { old_range, new_range, contains_focus }
     }
 
+    #[cfg(test)]
     pub fn reuse_subtree(
         &mut self,
         old_range: Range<usize>,
@@ -276,16 +277,29 @@ impl DispatchTree {
     }
 
     pub fn truncate(&mut self, index: usize) {
-        for node in &self.nodes[index..] {
-            if let Some(focus_id) = node.focus_id {
-                self.focusable_node_ids.remove(&focus_id);
-            }
-
-            if let Some(view_id) = node.view_id {
-                self.view_node_ids.remove(&view_id);
+        while self.active_node_id().is_some_and(|node| node.0 >= index) {
+            self.pop_node();
+        }
+        let restore_focus = self.nodes[index..].iter().any(|node| node.focus_id.is_some());
+        let restore_views = self.nodes[index..].iter().any(|node| node.view_id.is_some());
+        self.nodes.truncate(index);
+        // Removed nodes may shadow earlier occurrences of the same ID.
+        if restore_focus {
+            self.focusable_node_ids.clear();
+            for (index, node) in self.nodes.iter().enumerate() {
+                if let Some(id) = node.focus_id {
+                    self.focusable_node_ids.insert(id, DispatchNodeId(index));
+                }
             }
         }
-        self.nodes.truncate(index);
+        if restore_views {
+            self.view_node_ids.clear();
+            for (index, node) in self.nodes.iter().enumerate() {
+                if let Some(id) = node.view_id {
+                    self.view_node_ids.insert(id, DispatchNodeId(index));
+                }
+            }
+        }
     }
 
     pub fn on_key_event(&mut self, listener: KeyListener) {

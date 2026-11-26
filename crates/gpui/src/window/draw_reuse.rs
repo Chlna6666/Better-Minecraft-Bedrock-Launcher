@@ -180,6 +180,9 @@ impl Window {
         self.next_frame
             .dispatch_tree
             .truncate(index.dispatch_tree_index);
+        self.next_frame.focus = self.focus.filter(|focus| {
+            self.next_frame.dispatch_tree.focusable_node_id(*focus).is_some()
+        });
         self.next_frame
             .accessed_element_states
             .truncate(index.accessed_element_states_index);
@@ -233,6 +236,16 @@ impl Window {
 
     /// The view admission already validated both phase ranges.
     pub(crate) fn replay_validated_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+        let parent = self.next_frame.dispatch_tree.active_node_id();
+        self.replay_prepaint_segment(range, |_| parent);
+    }
+
+    /// Replay a validated phase segment; external parents may be in earlier segments.
+    fn replay_prepaint_segment(
+        &mut self,
+        range: Range<PrepaintStateIndex>,
+        external_parent: impl FnMut(Option<DispatchNodeId>) -> Option<DispatchNodeId>,
+    ) {
         let _work = super::element_work::begin_named(
             "reuse_prepaint_range",
             super::element_work::ElementWorkPhase::Replay,
@@ -251,10 +264,11 @@ impl Window {
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
 
-        let reused_subtree = self.next_frame.dispatch_tree.reuse_subtree(
+        let reused_subtree = self.next_frame.dispatch_tree.replay_segment(
             range.start.dispatch_tree_index..range.end.dispatch_tree_index,
             &self.rendered_frame.dispatch_tree,
             self.focus,
+            external_parent,
         );
 
         if reused_subtree.contains_focus() {
@@ -475,6 +489,8 @@ impl Window {
             opacity: self.element_opacity,
             scale: self.element_visual_transform.scale,
             translation: self.element_visual_transform.translation,
+            element_offset: self.element_offset_stack.last().copied().unwrap_or_default(),
+            text_raster_scale: self.scene_text_raster_scale,
             content_mask: self.content_mask(),
             visual_content_mask: self.visual_content_mask(),
             text_style: self.text_style(),
@@ -488,6 +504,8 @@ impl Window {
             && previous.opacity == self.element_opacity
             && previous.scale == self.element_visual_transform.scale
             && previous.translation == self.element_visual_transform.translation
+            && previous.element_offset == self.element_offset_stack.last().copied().unwrap_or_default()
+            && previous.text_raster_scale == self.scene_text_raster_scale
             && previous.content_mask == self.content_mask()
             && previous.visual_content_mask == self.visual_content_mask()
             && previous.rem_size == self.rem_size()

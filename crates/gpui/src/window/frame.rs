@@ -43,6 +43,8 @@ pub(crate) struct RetainedPaintContext {
     pub(crate) opacity: f32,
     pub(crate) scale: f32,
     pub(crate) translation: Point<Pixels>,
+    pub(crate) element_offset: Point<Pixels>,
+    pub(crate) text_raster_scale: f32,
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) visual_content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,

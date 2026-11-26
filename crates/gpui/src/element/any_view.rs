@@ -132,6 +132,7 @@ impl IntoElement for ViewElement {
 #[doc(hidden)]
 pub struct ViewRequestLayout {
     kind: ViewRequestLayoutKind,
+    rebuild: Option<Rc<crate::window::ViewRebuild>>,
 }
 
 enum ViewRequestLayoutKind {
@@ -181,20 +182,21 @@ impl Element for ViewElement {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
         if let Some(global_id) = window.current_retained_element_id()
-            && let Some((admission, layout_claims)) = window.admit_retained_view(&global_id, entity_id, cx)
+            && let Some((admission, layout_claims)) = window.admit_retained_view(&global_id, entity_id, id, cx)
         {
             let layout_root = admission.layout_root;
             let layout_state_range = window.replay_view_layout_states(&admission.layout_state_range);
             return (
                 layout_root,
                 ViewRequestLayout {
+                    rebuild: admission.rebuild.clone(),
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
                         layout_claims,
@@ -205,6 +207,7 @@ impl Element for ViewElement {
                 },
             );
         }
+        let rebuild = window.capture_view_rebuild(&self.view, id);
         let claim_start = window.claim_log_len();
         let element_state_start = window.begin_view_element_states();
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
@@ -221,6 +224,7 @@ impl Element for ViewElement {
         (
             layout_id,
             ViewRequestLayout {
+                rebuild,
                 kind: ViewRequestLayoutKind::Built {
                     element,
                     layout_root: layout_id,
@@ -273,6 +277,8 @@ impl Element for ViewElement {
                     // nodes back and draw the content into the slot the parent allocated.
                     window.release_retained_view(layout_claims);
                     window.cancel_view_layout_states(layout_state_range);
+                    // A layout rebuilt in Prepaint cannot vouch for RequestLayout inheritance.
+                    state.rebuild = None;
                     let layout_root = admission.layout_root;
                     let claim_start = window.claim_log_len();
                     let element_state_start = window.begin_view_element_states();
@@ -389,6 +395,7 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: reused.context.clone(),
+                        rebuild: state.rebuild.clone(),
                         layout_state_range: layout_state_range.clone(),
                         reused: Some(admission.clone()),
                     },
@@ -422,6 +429,7 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: context.clone(),
+                        rebuild: state.rebuild.clone(),
                         layout_state_range: layout_state_range.clone(),
                         reused: None,
                     },
@@ -481,6 +489,10 @@ pub struct AnyWeakView {
 }
 
 impl AnyWeakView {
+    pub(crate) fn entity_id(&self) -> EntityId {
+        self.entity.entity_id
+    }
+
     /// Upgrade to a strong type-erased view handle.
     pub fn upgrade(&self) -> Option<AnyView> {
         Some(AnyView {

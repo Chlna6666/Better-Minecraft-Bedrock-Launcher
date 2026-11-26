@@ -13,6 +13,14 @@ use super::draw_reuse::{rebase_paint_range, rebase_prepaint_range};
 use super::*;
 use crate::layout::LayoutClaimSpans;
 
+/// Identity and effective inherited values at RequestLayout, distinct from Prepaint.
+pub(crate) struct ViewRebuild {
+    view: crate::AnyWeakView,
+    application_id: GlobalElementId,
+    layout: RetainedPaintContext,
+    splice_supported: bool,
+}
+
 /// Everything needed to draw one view subtree again without building it.
 #[derive(Clone)]
 pub(crate) struct RetainedViewRecord {
@@ -25,6 +33,7 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) bounds: Bounds<Pixels>,
     /// The inherited context the ranges were recorded under.
     pub(crate) context: Rc<RetainedPaintContext>,
+    pub(crate) rebuild: Option<Rc<ViewRebuild>>,
     /// Descendant span in the frame's prepaint-order view table.
     pub(crate) nested: Range<usize>,
     /// Only states taken during request layout. Prepaint and paint replay their own spans.
@@ -48,12 +57,31 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) context: Rc<RetainedPaintContext>,
+    pub(crate) rebuild: Option<Rc<ViewRebuild>>,
     pub(crate) layout_state_range: Range<usize>,
     /// The retained source this frame copied, when the view was reused.
     pub(crate) reused: Option<RetainedViewRecord>,
 }
 
 impl Window {
+    fn splice_context_supported(&self) -> bool {
+        self.image_cache_stack.is_empty() && self.scene_animation.is_none()
+    }
+
+    /// Keep a weak view handle, so a committed frame does not extend entity lifetimes.
+    pub(crate) fn capture_view_rebuild(
+        &self,
+        view: &crate::AnyView,
+        application_id: Option<&GlobalElementId>,
+    ) -> Option<Rc<ViewRebuild>> {
+        Some(Rc::new(ViewRebuild {
+            view: view.downgrade(),
+            application_id: application_id?.clone(),
+            layout: self.current_retained_paint_context(),
+            splice_supported: self.splice_context_supported(),
+        }))
+    }
+
     /// Whether a view may be drawn again from the committed frame at all.
     ///
     /// The per-view dirty scope already carries every dependency edge: a notified view, a view
@@ -76,6 +104,7 @@ impl Window {
         &mut self,
         key: &GlobalElementId,
         view_id: EntityId,
+        application_id: Option<&GlobalElementId>,
         cx: &App,
     ) -> Option<(RetainedViewRecord, LayoutClaimSpans)> {
         if !self.view_retention_eligible(view_id, cx) {
@@ -83,6 +112,14 @@ impl Window {
         }
         let index = *self.rendered_frame.view_retentions.get(key)?;
         let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?.clone();
+        let rebuild = record.rebuild.as_ref()?;
+        if rebuild.view.entity_id() != view_id
+            || Some(&rebuild.application_id) != application_id
+            || rebuild.splice_supported != self.splice_context_supported()
+            || !self.retained_paint_context_matches(&rebuild.layout)
+        {
+            return None;
+        }
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
             || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
@@ -227,6 +264,7 @@ impl Window {
                 paint_range: commit.paint_range,
                 bounds: commit.bounds,
                 context: commit.context,
+                rebuild: commit.rebuild,
                 nested,
                 layout_state_range: commit.layout_state_range,
         });
