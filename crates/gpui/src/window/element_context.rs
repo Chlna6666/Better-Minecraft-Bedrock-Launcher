@@ -702,7 +702,7 @@ mod layout_identity_tests {
         let fixed = ElementId::from("fixed");
         let parent = mix(LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT);
         let first = mix(parent, mix(0, 2));
-        let named = NativeElementId::from_path(&[fixed]).key;
+        let named = crate::fast::layout_key::key_for_path(&[fixed]);
         let second = mix(parent, mix(1, 2));
         assert_ne!(first, named);
         assert_ne!(second, named);
