@@ -28,6 +28,7 @@ mod reactive;
 mod resize;
 mod retained_color;
 mod root_resize;
+mod tile_raster;
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
@@ -236,7 +237,7 @@ fn verify(backend: RendererBackend) {
         .iter()
         .map(|stream| stream.gpu_capacity_bytes)
         .sum();
-    assert_eq!(initial_bytes, 1_445_456);
+    assert_eq!(initial_bytes, 1_445_408 + 2 * GLOBAL_UPLOAD_BYTES as u64);
     let red = scene(&renderer, 0xff0000);
     let green = scene(&renderer, 0x00ff00);
     let first_bytes = upload(

@@ -1,5 +1,23 @@
 use super::*;
 
+/// Packs the static GlobalParams WGSL ABI. The viewport is the content extent,
+/// even when rendering into a smaller pixel-exact attachment.
+pub(super) fn pack_global_params(
+    viewport: DrawableSize,
+    premultiplied_alpha: bool,
+    target_origin: [f32; 2],
+) -> [u8; GLOBAL_UPLOAD_BYTES] {
+    let mut params = [0; GLOBAL_UPLOAD_BYTES];
+    params[0..4].copy_from_slice(&(viewport.width as f32).to_ne_bytes());
+    params[4..8].copy_from_slice(&(viewport.height as f32).to_ne_bytes());
+    params[8..12].copy_from_slice(&u32::from(premultiplied_alpha).to_ne_bytes());
+    // 12..16: indexed animation flag; 16..24: frame-owned presentation clock.
+    // Both are populated by their existing upload paths after static encoding.
+    params[24..28].copy_from_slice(&target_origin[0].to_ne_bytes());
+    params[28..32].copy_from_slice(&target_origin[1].to_ne_bytes());
+    params
+}
+
 #[cfg(test)]
 pub(super) fn write_animation_binding(
     bytes: &mut Vec<u8>,
