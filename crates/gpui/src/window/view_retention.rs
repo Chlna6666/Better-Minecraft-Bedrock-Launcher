@@ -108,28 +108,28 @@ impl Window {
             && self.view_dirty_scope(view_id).is_none()
     }
 
-    /// Select one directly dirty leaf in a traversal-only anchor. Reject a
-    /// missing record rather than assuming its subtree was clean. Broader
-    /// gap sets require independent phase-range remapping.
-    pub(crate) fn single_dirty_gap(
-        &self,
-        anchor: &RetainedViewRecord,
-    ) -> Option<usize> {
-        let records = &self.rendered_frame.view_retention_records;
-        let entries = records.get(anchor.nested.clone())?;
-        if entries.len() != 1 {
+    /// Select all directly dirty leaf records in prepaint order. Until
+    /// clean descendant records can be relocated independently, an anchor
+    /// containing a clean/intermediate record must use ordinary traversal.
+    pub(super) fn dirty_leaf_gaps(&self, anchor: &RetainedViewRecord) -> Option<Range<usize>> {
+        let entries = self.rendered_frame.view_retention_records.get(anchor.nested.clone())?;
+        if entries.is_empty() {
             return None;
         }
-        let entry = &entries[0];
-        let gap = entry.record.as_ref()?;
-        let owner = gap.rebuild.as_ref()?.view.entity_id();
-        if !self.direct_dirty_views.contains(&owner)
-            || !gap.nested.is_empty()
-            || !gap.rebuild.as_ref()?.splice_supported
-        {
-            return None;
+        let mut owners = FxHashSet::default();
+        for (offset, entry) in entries.iter().enumerate() {
+            let record = entry.record.as_ref()?;
+            let rebuild = record.rebuild.as_ref()?;
+            let owner = rebuild.view.entity_id();
+            if !self.direct_dirty_views.contains(&owner)
+                || !record.nested.is_empty() || !rebuild.splice_supported
+                || !owners.insert(owner)
+                || self.rendered_frame.view_retentions.get(&entry.key).copied() != Some(anchor.nested.start + offset)
+            {
+                return None;
+            }
         }
-        Some(anchor.nested.start)
+        Some(anchor.nested.clone())
     }
 
     /// Claims the committed layout of `key` and returns its record, or `None` when the view has to

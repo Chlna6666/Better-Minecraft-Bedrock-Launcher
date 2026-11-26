@@ -220,22 +220,43 @@ impl DispatchTree {
         self.node_stack.pop();
     }
 
-    /// The gap wrapper must be in the clean prefix. No copied suffix node
-    /// may have its parent in the removed dispatch interval.
-    pub(crate) fn can_splice_gap(&self, outer: Range<usize>, gap: Range<usize>, owner: EntityId) -> bool {
-        if outer.start >= gap.start || gap.start > gap.end || gap.end > outer.end || outer.end > self.nodes.len() {
+    /// Validate disjoint removed dispatch intervals and the wrapper of each
+    /// gap. Every copied parent must be in the clean partition or the anchor.
+    pub(crate) fn can_splice_gaps(&self, outer: Range<usize>, gaps: &[(Range<usize>, EntityId)]) -> bool {
+        if outer.start > outer.end || outer.end > self.nodes.len() || gaps.is_empty() {
             return false;
         }
-        let wrapper = DispatchNodeId(gap.start - 1);
         let anchor = outer.start.checked_sub(1).map(DispatchNodeId);
-        self.nodes[wrapper.0].view_id == Some(owner)
-            && self.view_node_ids.get(&owner) == Some(&wrapper)
-            && self.nodes[outer.start..gap.start].iter().all(|node| {
-                node.parent == anchor || node.parent.is_some_and(|parent| (outer.start..gap.start).contains(&parent.0))
-            })
-            && self.nodes[gap.end..outer.end].iter().all(|node| {
-                node.parent == anchor || node.parent.is_some_and(|parent| outer.contains(&parent.0) && !gap.contains(&parent.0))
-            })
+        let mut cursor = outer.start;
+        for (gap, owner) in gaps {
+            if cursor >= gap.start || gap.start > gap.end || gap.end > outer.end {
+                return false;
+            }
+            let wrapper = DispatchNodeId(gap.start - 1);
+            if self.nodes[wrapper.0].view_id != Some(*owner)
+                || self.view_node_ids.get(owner) != Some(&wrapper)
+            {
+                return false;
+            }
+            cursor = gap.end;
+        }
+        let mut excluded = gaps.iter().peekable();
+        for index in outer.clone() {
+            while excluded.peek().is_some_and(|(gap, _)| gap.end <= index) {
+                excluded.next();
+            }
+            if excluded.peek().is_some_and(|(gap, _)| gap.contains(&index)) {
+                continue;
+            }
+            let parent = self.nodes[index].parent;
+            if parent != anchor && !parent.is_some_and(|parent| {
+                outer.contains(&parent.0) && parent.0 < index
+                    && !gaps.iter().any(|(gap, _)| gap.contains(&parent.0))
+            }) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Append a contiguous dispatch segment, translating in-segment parents
@@ -444,7 +465,7 @@ mod retained_dispatch_replay_tests {
         source.pop_node();
         source.pop_node();
         source.pop_node();
-        assert!(source.can_splice_gap(1..5, 3..4, owner));
+        assert!(source.can_splice_gaps(1..5, &[(3..4, owner)]));
         let root = target.push_node();
         target.replay_segment(1..3, &source, None, |_| Some(root));
         target.set_active_node(DispatchNodeId(2));

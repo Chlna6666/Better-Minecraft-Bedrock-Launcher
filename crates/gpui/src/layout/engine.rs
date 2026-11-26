@@ -570,42 +570,52 @@ impl TaffyLayoutEngine {
         self.claimed_key_log.len()
     }
 
-    /// Validate both committed spans before claiming anything. Preserve tombstones
-    /// so descendant spans can be rebased without a secondary mapping table.
+    /// Validate every committed interval before taking any ownership.
+    /// Preserve tombstones and order for normal retained-span rebasing.
     pub(crate) fn try_keep_retained(
         &mut self,
         spans: &LayoutClaimSpans,
         root: LayoutId,
     ) -> Option<LayoutClaimSpans> {
-        let first = self.committed_claim_log.get(spans[0].clone())?;
-        let second = self.committed_claim_log.get(spans[1].clone())?;
-        if !first.iter().chain(second).flatten().any(|claim| claim.id == root) {
-            return None;
+        let start = self.claimed_key_log.len();
+        let first_len = spans[0].len();
+        let kept = self.try_keep_intervals(spans, root)?;
+        let middle = start + first_len;
+        Some([start..middle, middle..kept.end])
+    }
+
+    fn claims_valid(&self, claims: &[Option<LayoutClaim>]) -> bool {
+        claims.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+            node.id == claim.id && node.claimed_in_frame != self.request_frame
+                && !node.offscreen && !self.robbed_parents.contains(&node.id)
+        }))
+    }
+
+    fn try_keep_intervals(&mut self, intervals: &[Range<usize>], root: LayoutId) -> Option<Range<usize>> {
+        let mut has_root = false;
+        for interval in intervals {
+            let claims = self.committed_claim_log.get(interval.clone())?;
+            if !self.claims_valid(claims) {
+                return None;
+            }
+            has_root |= claims.iter().flatten().any(|claim| claim.id == root);
         }
-        let frame = self.request_frame;
-        if !first.iter().chain(second).flatten().all(|claim| {
-            self.persistent_nodes.get(&claim.key).is_some_and(|node| {
-                node.id == claim.id
-                    && node.claimed_in_frame != frame
-                    && !node.offscreen
-                    && !self.robbed_parents.contains(&node.id)
-            })
-        }) {
+        if !has_root {
             return None;
         }
         let start = self.claimed_key_log.len();
-        for claim in first.iter().chain(second).flatten() {
-            let node = self.persistent_nodes.get_mut(&claim.key)
-                .expect("validated retained layout claim");
-            if node.claimed_in_frame != frame {
-                node.claimed_in_frame = frame;
-                self.claimed_this_frame += 1;
+        for interval in intervals {
+            let claims = &self.committed_claim_log[interval.clone()];
+            for claim in claims.iter().flatten() {
+                let node = self.persistent_nodes.get_mut(&claim.key).expect("validated layout claim");
+                if node.claimed_in_frame != self.request_frame {
+                    node.claimed_in_frame = self.request_frame;
+                    self.claimed_this_frame += 1;
+                }
             }
+            self.claimed_key_log.extend_from_slice(claims);
         }
-        self.claimed_key_log.extend_from_slice(first);
-        let middle = self.claimed_key_log.len();
-        self.claimed_key_log.extend_from_slice(second);
-        Some([start..middle, middle..self.claimed_key_log.len()])
+        Some(start..self.claimed_key_log.len())
     }
 
     /// A gap must be a strict descendant of the anchor's native layout root.
@@ -628,35 +638,47 @@ impl TaffyLayoutEngine {
         (self.layout_changes, self.remeasures, self.anonymous_nodes.len(), self.pending_replays.len())
     }
 
-    /// Claim the clean prefix and suffix atomically. This first splice path
-    /// accepts a contiguous request-layout gap only; lazy Prepaint claims
-    /// need a separate phase transaction.
-    pub(crate) fn try_keep_around_gap(
+    /// Atomically claim the complement of disjoint dirty layout intervals.
+    /// Dirty roots must still belong to the anchor's native tree. Lazy
+    /// prepaint claims are excluded until their separate phase can be spliced.
+    pub(crate) fn try_keep_around_gaps(
         &mut self,
         anchor: &LayoutClaimSpans,
-        gap: &LayoutClaimSpans,
+        gaps: &[(LayoutClaimSpans, LayoutId)],
         root: LayoutId,
-        gap_root: LayoutId,
     ) -> Option<LayoutClaimSpans> {
-        if !anchor[1].is_empty() || !gap[1].is_empty()
-            || gap[0].is_empty()
-            || gap[0].start < anchor[0].start || gap[0].end > anchor[0].end
-        {
+        if !anchor[1].is_empty() || gaps.is_empty() {
             return None;
         }
-        let source = [anchor[0].start..gap[0].start, gap[0].end..anchor[0].end];
-        // Reject a stale gap root before claiming any of the anchor.
-        let old_gap = self.committed_claim_log.get(gap[0].clone())?;
-        if !old_gap.iter().flatten().any(|claim| claim.id == gap_root)
-            || !old_gap.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
-                node.id == claim.id && node.claimed_in_frame != self.request_frame && !node.offscreen
-                    && !self.robbed_parents.contains(&node.id)
-            }))
-            || !self.layout_reaches(root, gap_root)
-        {
-            return None;
+        let mut excluded = smallvec::SmallVec::<[Range<usize>; 4]>::new();
+        for (gap, gap_root) in gaps {
+            if !gap[1].is_empty() || gap[0].is_empty()
+                || gap[0].start < anchor[0].start || gap[0].end > anchor[0].end
+                || !self.layout_reaches(root, *gap_root)
+            {
+                return None;
+            }
+            let old_gap = self.committed_claim_log.get(gap[0].clone())?;
+            if !self.claims_valid(old_gap)
+                || !old_gap.iter().flatten().any(|claim| claim.id == *gap_root)
+            {
+                return None;
+            }
+            excluded.push(gap[0].clone());
         }
-        self.try_keep_retained(&source, root)
+        excluded.sort_unstable_by_key(|range| range.start);
+        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
+        let mut cursor = anchor[0].start;
+        for range in excluded {
+            if range.start < cursor {
+                return None;
+            }
+            kept.push(cursor..range.start);
+            cursor = range.end;
+        }
+        kept.push(cursor..anchor[0].end);
+        let kept = self.try_keep_intervals(&kept, root)?;
+        Some([kept, 0..0])
     }
 
     /// Cancel exactly the speculative claims made by admission, without
@@ -1506,7 +1528,7 @@ mod tests {
         let anchor = [0..2, 0..0];
         let gap_span = [0..1, 0..0];
         let stamp = engine.splice_layout_stamp();
-        let kept = engine.try_keep_around_gap(&anchor, &gap_span, root, gap).unwrap();
+        let kept = engine.try_keep_around_gaps(&anchor, &[(gap_span, gap)], root).unwrap();
         assert_eq!(engine.claimed_this_frame, 1);
         assert_eq!(engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]), gap);
         assert_eq!(engine.splice_layout_stamp(), stamp);
