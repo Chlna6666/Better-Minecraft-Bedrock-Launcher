@@ -91,7 +91,7 @@ impl StateAccessBlocks {
 pub(crate) struct ViewRebuild {
     pub(super) view: crate::AnyWeakView,
     pub(super) application_id: GlobalElementId,
-    pub(super) native_scope: NativeElementScope,
+    pub(super) parent_layout_key: Option<u64>,
     pub(super) layout: RetainedPaintContext,
     pub(super) splice_supported: bool,
 }
@@ -151,7 +151,7 @@ impl Window {
         Some(Rc::new(ViewRebuild {
             view: view.downgrade(),
             application_id: application_id?.clone(),
-            native_scope: self.native_element_scope?,
+            parent_layout_key: crate::fast::layout_key::parent_layout_key(self),
             layout: self.current_retained_paint_context(),
             splice_supported: self.splice_context_supported(),
         }))
@@ -296,7 +296,7 @@ impl Window {
         let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = record.rebuild.as_ref()?;
         if rebuild.view.entity_id() != view_id
-            || self.native_element_scope != Some(rebuild.native_scope)
+            || crate::fast::layout_key::parent_layout_key(self) != rebuild.parent_layout_key
             || Some(&rebuild.application_id) != application_id
             || rebuild.splice_supported != self.splice_context_supported()
             || !self.retained_paint_context_matches(&rebuild.layout)

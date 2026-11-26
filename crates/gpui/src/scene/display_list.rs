@@ -135,11 +135,11 @@ impl Scene {
     /// candidate. The current frame can still capture and render the layer normally.
     pub(crate) fn blur_content_for(
         &self,
-        layer_id: &crate::NativeElementId,
+        layer_id: &u64,
     ) -> Option<std::sync::Arc<Scene>> {
         fn visit(
             scene: &Scene,
-            layer_id: &crate::NativeElementId,
+            layer_id: &u64,
             found: &mut Option<std::sync::Arc<Scene>>,
             ambiguous: &mut bool,
         ) {

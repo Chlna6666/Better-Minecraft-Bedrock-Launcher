@@ -274,7 +274,7 @@ impl PaintOperation {
 pub(crate) struct BlurCapture {
     pub(crate) animation_id: Option<SceneAnimationId>,
     /// Structural retained identity. None when an element has no stable path.
-    pub(crate) layer_id: Option<crate::NativeElementId>,
+    pub(crate) layer_id: Option<u64>,
     pub(crate) bounds: Bounds<ScaledPixels>,
     pub(crate) content_mask: ContentMask<ScaledPixels>,
     pub(crate) radius: ScaledPixels,
@@ -297,7 +297,7 @@ pub(crate) fn blur_influence_radius(radius: ScaledPixels) -> ScaledPixels {
 pub(crate) struct PaintBlur {
     pub order: DrawOrder,
     /// Structural retained identity independent of the layer's paint-order index.
-    pub layer_id: Option<crate::NativeElementId>,
+    pub layer_id: Option<u64>,
     /// Renderer-owned visual animation promoted from the captured subtree. The child scene keeps
     /// its raster/filter geometry static; only this final composite primitive is sampled per frame.
     pub animation_id: Option<SceneAnimationId>,

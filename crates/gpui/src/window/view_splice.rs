@@ -66,16 +66,24 @@ impl SplicePart {
 }
 
 impl Window {
-    // Restore application state identity and the absolute native scope without
-    // remounting an element or reconstructing a retained path.
+    /// Re-enter a retained view using Fast's parent key and the view's own element id.
     fn with_gap_scope<R>(
-        &mut self, scope: NativeElementScope, application_id: &GlobalElementId,
+        &mut self,
+        parent_layout_key: Option<u64>,
+        application_id: &GlobalElementId,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let application = mem::replace(
-            &mut self.element_id_stack, ElementIdStack::from_prefix(application_id.clone()),
+            &mut self.element_id_stack,
+            ElementIdStack::from_prefix(application_id.clone()),
         );
-        let result = self.with_native_element_scope(scope, f);
+        let element_id = application_id.last().expect("retained view element id");
+        let result = self.with_parent_layout_key(parent_layout_key, |window| {
+            crate::fast::layout_key::push_layout_key(window, Some(element_id));
+            let result = f(window);
+            crate::fast::layout_key::pop_layout_key(window);
+            result
+        });
         self.element_id_stack = application;
         result
     }
@@ -90,7 +98,7 @@ impl Window {
         }
         // A colliding key must not consume another subtree's speculative claims.
         let rebuild = self.prebuilt_gaps.get(&key)?.old.rebuild.as_ref()?;
-        if self.native_element_scope != Some(rebuild.native_scope) { return None; }
+        if crate::fast::layout_key::parent_layout_key(self) != rebuild.parent_layout_key { return None; }
         let mut gap = self.prebuilt_gaps.remove(&key)?;
         let compatible = gap.old.rebuild.as_ref().is_some_and(|rebuild| {
             rebuild.view.entity_id() == owner
@@ -182,7 +190,7 @@ impl Window {
         let rebuild = anchor.rebuild.as_ref()?;
         if !anchor.splice_safe || !rebuild.splice_supported
             || rebuild.view.entity_id() != owner || id != Some(&rebuild.application_id)
-            || self.native_element_scope != Some(rebuild.native_scope)
+            || crate::fast::layout_key::parent_layout_key(self) != rebuild.parent_layout_key
             || !self.retained_paint_context_matches(&rebuild.layout)
             || !anchor.layout_state_range.iter().all(|span| self.rendered_frame.accessed_element_states.get(span.clone()).is_some())
             || !self.can_reuse_prepaint(&anchor.prepaint_range)
@@ -370,11 +378,11 @@ impl Window {
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
             let rebuild = old.rebuild.as_ref().expect("validated gap");
-            let (layout_id, state) = self.with_gap_scope(rebuild.native_scope, &rebuild.application_id, |window| {
-                window.with_retained_child_scope(|window| {
-                    view.request_layout(Some(&rebuild.application_id), None, window, cx)
-                })
-            });
+            let (layout_id, state) = self.with_gap_scope(
+                rebuild.parent_layout_key,
+                &rebuild.application_id,
+                |window| view.request_layout(Some(&rebuild.application_id), None, window, cx),
+            );
             self.splice_building = false;
             let states = self.view_layout_state_range(state_start);
             let compatible = layout_id == old.layout_root
@@ -487,7 +495,7 @@ impl Window {
                     let node = relocate_dispatch(Some(wrapper), parent, relocated).expect("validated gap wrapper");
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(rebuild.native_scope, &rebuild.application_id, |window| {
+                    self.with_gap_scope(rebuild.parent_layout_key, &rebuild.application_id, |window| {
                         gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
@@ -540,7 +548,7 @@ impl Window {
                     let old = &gap.old;
                     self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(rebuild.native_scope, &rebuild.application_id, |window| {
+                    self.with_gap_scope(rebuild.parent_layout_key, &rebuild.application_id, |window| {
                         window.record_debug_element_paint(old.bounds, cx);
                         gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
                     });

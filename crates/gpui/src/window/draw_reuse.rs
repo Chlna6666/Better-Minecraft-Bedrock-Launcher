@@ -6,7 +6,8 @@ use super::*;
 impl Window {
     pub(super) fn prepaint_deferred_draws(&mut self, cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
-        assert!(self.native_element_scope.is_none());
+        assert!(self.fast_layout.is_empty());
+        assert!(self.paint_layout_key.is_none());
 
         // Deferred prepaint must stay in the same vector coordinate space captured by
         // PrepaintStateIndex. Processing in place also allows a deferred child to enqueue another
@@ -42,7 +43,6 @@ impl Window {
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                     self.element_id_stack.restore_prefix(deferred_draw.element_prefix.take());
-                    self.native_element_scope = deferred_draw.native_scope;
                     mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
                     mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
                     mem::swap(
@@ -75,7 +75,6 @@ impl Window {
 
                 let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                 deferred_draw.element_prefix = self.element_id_stack.take_prefix();
-                self.native_element_scope = None;
                 mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
                 mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
                 mem::swap(
@@ -91,7 +90,6 @@ impl Window {
             }
 
             self.element_id_stack.clear();
-            self.native_element_scope = None;
             self.text_style_stack.clear();
             self.element_visual_transform = ElementVisualTransform::identity();
             self.content_mask_stack.clear();
@@ -100,7 +98,6 @@ impl Window {
         }
 
         self.element_id_stack.clear();
-        self.native_element_scope = None;
         self.text_style_stack.clear();
         self.element_visual_transform = ElementVisualTransform::identity();
         self.content_mask_stack.clear();
@@ -116,7 +113,8 @@ impl Window {
 
     pub(super) fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
-        assert!(self.native_element_scope.is_none());
+        assert!(self.fast_layout.is_empty());
+        assert!(self.paint_layout_key.is_none());
 
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
@@ -127,7 +125,6 @@ impl Window {
 
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
             self.element_id_stack.restore_prefix(deferred_draw.element_prefix.take());
-            self.native_element_scope = deferred_draw.native_scope;
             self.element_visual_transform = deferred_draw.element_visual_transform;
             mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
             mem::swap(
@@ -150,7 +147,6 @@ impl Window {
                 false
             };
             deferred_draw.element_prefix = self.element_id_stack.take_prefix();
-            self.native_element_scope = None;
             mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
             mem::swap(
                 &mut self.visual_content_mask_stack,
@@ -164,7 +160,6 @@ impl Window {
         }
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
-        self.native_element_scope = None;
         self.element_visual_transform = ElementVisualTransform::identity();
         self.content_mask_stack.clear();
         self.visual_content_mask_stack.clear();
