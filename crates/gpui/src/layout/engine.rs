@@ -249,29 +249,32 @@ struct NativeLayoutMutationLog {
 struct NativeLayoutMutation {
     epoch: usize,
     previous: taffy::tree::Layout,
-    older: Option<usize>,
+    // usize::MAX is the end of the per-node chain.
+    older: usize,
 }
 
 impl NativeLayoutMutationLog {
+    const END: usize = usize::MAX;
     fn begin_compute(&mut self) {
         self.epoch += 1;
     }
 
     fn record(&mut self, id: LayoutId, previous: &taffy::tree::Layout) {
-        let older = self.heads.get(&id).copied();
-        if older.is_some_and(|index| self.entries[index].epoch == self.epoch) {
+        let head = self.heads.entry(id).or_insert(Self::END);
+        if *head != Self::END && self.entries[*head].epoch == self.epoch {
             return;
         }
         let index = self.entries.len();
-        self.entries.push(NativeLayoutMutation { epoch: self.epoch, previous: *previous, older });
-        self.heads.insert(id, index);
+        self.entries.push(NativeLayoutMutation { epoch: self.epoch, previous: *previous, older: *head });
+        *head = index;
     }
 
     fn previous_since(&self, id: LayoutId, epoch: usize) -> Option<&taffy::tree::Layout> {
-        let mut cursor = self.heads.get(&id).copied();
+        if epoch == self.epoch { return None; }
+        let mut cursor = self.heads.get(&id).copied()?;
         let mut previous = None;
-        while let Some(index) = cursor {
-            let entry = &self.entries[index];
+        while cursor != Self::END {
+            let entry = &self.entries[cursor];
             if entry.epoch <= epoch { break; }
             previous = Some(&entry.previous);
             cursor = entry.older;
@@ -608,7 +611,10 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.node_layout_metadata.len()));
         self.layout_bounds_scratch_space
             .shrink_to(floor.max(self.layout_bounds_scratch_space.len()));
+        self.layout_mutations.entries.shrink_to(floor.max(self.layout_mutations.entries.len()));
+        self.layout_mutations.heads.shrink_to(floor.max(self.layout_mutations.heads.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            self.splice_placements.shrink_to_fit();
             self.anonymous_nodes.shrink_to_fit();
             self.claimed_key_log.shrink_to_fit();
             self.committed_claim_log.shrink_to_fit();

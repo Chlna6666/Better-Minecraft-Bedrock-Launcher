@@ -398,7 +398,7 @@ where
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
         let previous = &mut self.taffy.nodes[node_id.into()].unrounded_layout;
         if let Some(observer) = self.layout_observer.as_mut() {
-            if previous != layout {
+            if *previous != *layout {
                 observer(node_id, previous);
             }
         }
