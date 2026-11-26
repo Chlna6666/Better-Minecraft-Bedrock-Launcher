@@ -186,46 +186,36 @@ struct GlyphSubpixelBin {
     variant: u8,
 }
 
+// GPUI Fast's glyph quantization is invariant under whole-device-pixel
+// translation, including across zero (fast/glyphs.rs, 1100a214).
+// Keep Nova's existing positive-coordinate Cosmic Text tie rule rather than
+// changing the glyph atlas's established subpixel phase at positive origins.
+#[inline]
 fn glyph_subpixel_bin(position: f32) -> GlyphSubpixelBin {
-    let trunc = position as i32;
-    let fract = position - trunc as f32;
-
-    let (integer_position, variant) = if position.is_sign_negative() {
-        if fract > -0.125 {
-            (trunc, 0)
-        } else if fract > -0.375 {
-            (trunc - 1, 3)
-        } else if fract > -0.625 {
-            (trunc - 1, 2)
-        } else if fract > -0.875 {
-            (trunc - 1, 1)
-        } else {
-            (trunc - 1, 0)
-        }
-    } else if fract < 0.125 {
-        (trunc, 0)
+    let whole = position.floor();
+    let fract = position - whole;
+    let base = whole as i32;
+    let (integer_position, variant) = if fract < 0.125 {
+        (base, 0)
     } else if fract < 0.375 {
-        (trunc, 1)
+        (base, 1)
     } else if fract < 0.625 {
-        (trunc, 2)
+        (base, 2)
     } else if fract < 0.875 {
-        (trunc, 3)
+        (base, 3)
     } else {
-        (trunc + 1, 0)
+        (base.saturating_add(1), 0)
     };
-
-    GlyphSubpixelBin {
-        integer_position,
-        variant,
-    }
+    GlyphSubpixelBin { integer_position, variant }
 }
 
+#[inline]
 fn glyph_y_subpixel_bin(position: f32) -> GlyphSubpixelBin {
     if SUBPIXEL_VARIANTS_Y == 1 {
-        GlyphSubpixelBin {
-            integer_position: position.round() as i32,
-            variant: 0,
-        }
+        let whole = position.floor();
+        let integer_position = (whole as i32)
+            .saturating_add(i32::from(position - whole >= 0.5));
+        GlyphSubpixelBin { integer_position, variant: 0 }
     } else {
         glyph_subpixel_bin(position)
     }
@@ -449,7 +439,7 @@ mod titlebar_gesture_tests {
     }
 
     #[test]
-    fn glyph_subpixel_bins_match_cosmic_text_boundaries() {
+    fn glyph_subpixel_bins_keep_positive_cosmic_text_boundaries() {
         assert_eq!(
             glyph_subpixel_bin(0.124),
             GlyphSubpixelBin {
@@ -481,17 +471,37 @@ mod titlebar_gesture_tests {
         assert_eq!(
             glyph_subpixel_bin(-0.125),
             GlyphSubpixelBin {
-                integer_position: -1,
-                variant: 3
+                integer_position: 0,
+                variant: 0
             }
         );
         assert_eq!(
             glyph_subpixel_bin(-0.875),
             GlyphSubpixelBin {
                 integer_position: -1,
-                variant: 0
+                variant: 1
             }
         );
+    }
+
+    #[test]
+    fn scroll_glyph_quantization_is_invariant_across_zero() {
+        // Eighth-pixel inputs exercise all four X tie boundaries and
+        // the whole-pixel Y tie. Include interior bins as well.
+        for eighths in -32..=32 {
+            let position = eighths as f32 / 8.;
+            for shift in -16..=16 {
+                let translated = position + shift as f32;
+                let original_x = glyph_subpixel_bin(position);
+                let moved_x = glyph_subpixel_bin(translated);
+                assert_eq!(moved_x.variant, original_x.variant);
+                assert_eq!(moved_x.integer_position, original_x.integer_position + shift);
+                let original_y = glyph_y_subpixel_bin(position);
+                let moved_y = glyph_y_subpixel_bin(translated);
+                assert_eq!(moved_y.variant, original_y.variant);
+                assert_eq!(moved_y.integer_position, original_y.integer_position + shift);
+            }
+        }
     }
 
     #[test]
