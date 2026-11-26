@@ -546,6 +546,12 @@ impl Window {
             }
             self.next_frame.input_handlers.push(handler.take());
         }
+        super::scroll_dependencies::carry_scroll_sources(
+            &self.rendered_frame.mounted_scroll_sources,
+            &mut self.next_frame.mounted_scroll_sources,
+            range.start.mouse_listeners_index..range.end.mouse_listeners_index,
+            self.next_frame.mouse_listeners.len(),
+        );
         self.next_frame.mouse_listeners.extend(
             self.rendered_frame.mouse_listeners
                 [range.start.mouse_listeners_index..range.end.mouse_listeners_index]

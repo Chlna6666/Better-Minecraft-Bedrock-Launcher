@@ -135,6 +135,7 @@ pub(crate) struct Frame {
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     pub(super) accessed_element_states: Vec<(GlobalElementId, TypeId)>,
     pub(crate) mouse_listeners: Vec<MouseListener>,
+    pub(super) mounted_scroll_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     /// Whether the completed frame contains an application listener that needs every MouseMove
     /// sample, even when the hit-test result did not change. Computed once when the frame finishes
     /// so high-report-rate mice do not scan the full listener array for every hardware event.
@@ -356,6 +357,7 @@ impl Frame {
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
             mouse_listeners: Vec::new(),
+            mounted_scroll_sources: Vec::new(),
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
             painter: crate::scene::Painter::default(),
@@ -405,6 +407,7 @@ impl Frame {
         self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();
+        self.mounted_scroll_sources.clear();
         self.has_continuous_mouse_move_listener = false;
         self.dispatch_tree.clear();
         if let Some(paint) = self.paint.take() {
@@ -578,6 +581,7 @@ impl Frame {
             + self.accessed_element_states.capacity()
             + self.dispatch_tree.retained_capacity()
             + self.mouse_listeners.capacity()
+            + self.mounted_scroll_sources.capacity()
             + self.hitboxes.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
@@ -614,6 +618,11 @@ impl Frame {
         self.dispatch_tree.trim_retained_capacity(false);
         trim_frame_vec_capacity(
             &mut self.mouse_listeners,
+            FRAME_MIN_RETAINED_CAPACITY,
+            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        trim_frame_vec_capacity(
+            &mut self.mounted_scroll_sources,
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -719,6 +728,7 @@ impl Frame {
         trim_vec_against!(accessed_element_states);
         self.dispatch_tree.trim_for_reuse(&current.dispatch_tree);
         trim_vec_against!(mouse_listeners);
+        trim_vec_against!(mounted_scroll_sources);
         trim_vec_against!(hitboxes);
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
@@ -787,6 +797,7 @@ impl Frame {
                 self.dispatch_tree
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 self.mouse_listeners.shrink_to(floor);
+                self.mounted_scroll_sources.shrink_to(floor);
                 self.hitboxes.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);

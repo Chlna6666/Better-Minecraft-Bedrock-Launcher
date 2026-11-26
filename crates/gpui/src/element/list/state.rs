@@ -366,7 +366,7 @@ impl StateInner {
             scroll_handler(&event, window, cx);
         }
 
-        cx.notify(current_view);
+        window.invalidate_native_scroll(current_view);
     }
 
     #[cfg(test)]
@@ -433,7 +433,7 @@ impl StateInner {
         })
     }
 
-    fn logical_scroll_top(&self) -> ListOffset {
+    pub(super) fn logical_scroll_top(&self) -> ListOffset {
         self.logical_scroll_top
             .unwrap_or_else(|| match self.alignment {
                 ListAlignment::Top => ListOffset {

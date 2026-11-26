@@ -46,6 +46,57 @@ pub(crate) struct ScrollRead {
 
 pub(crate) type ScrollReads = FxHashMap<EntityId, Vec<ScrollRead>>;
 
+// A native scroll source belongs to the same immutable frame span as its
+// wheel listener. Keep it sparse, rather than adding another index to every
+// PaintIndex or retaining an element metadata tree.
+#[derive(Clone)]
+pub(crate) struct MountedScrollSource {
+    listener_index: usize,
+    owner: EntityId,
+    probe: Rc<dyn Fn() -> Probe>,
+}
+
+impl MountedScrollSource {
+    fn new<S: 'static, T: PartialEq + 'static>(
+        listener_index: usize,
+        owner: EntityId,
+        state: &Rc<RefCell<S>>,
+        read: impl Fn(&S) -> T + 'static,
+    ) -> Self {
+        let value = read(&state.borrow());
+        let state = Rc::downgrade(state);
+        Self {
+            listener_index,
+            owner,
+            probe: Rc::new(move || {
+                let Some(state) = state.upgrade() else { return Probe::Dead; };
+                let Ok(state) = state.try_borrow() else { return Probe::Unchanged; };
+                if read(&state) == value { Probe::Unchanged } else { Probe::Changed }
+            }),
+        }
+    }
+}
+
+/// Copy only the sources belonging to a replayed listener span. Indices
+/// stay ordered and speculative frames never mutate the committed probes.
+pub(crate) fn carry_scroll_sources(
+    source: &[MountedScrollSource],
+    target: &mut Vec<MountedScrollSource>,
+    listeners: std::ops::Range<usize>,
+    target_start: usize,
+) {
+    if source.is_empty() || listeners.is_empty() {
+        return;
+    }
+    let start = source.partition_point(|entry| entry.listener_index < listeners.start);
+    let end = source.partition_point(|entry| entry.listener_index < listeners.end);
+    target.extend(source[start..end].iter().map(|entry| MountedScrollSource {
+        listener_index: target_start + (entry.listener_index - listeners.start),
+        owner: entry.owner,
+        probe: Rc::clone(&entry.probe),
+    }));
+}
+
 thread_local! {
     static CAPTURE: RefCell<Option<Vec<ScrollRead>>> = const { RefCell::new(None) };
 }
@@ -112,30 +163,58 @@ fn merge_reads(target: &mut Vec<ScrollRead>, incoming: Vec<ScrollRead>) {
 
 impl Window {
     pub(crate) fn record_scroll_reads(&mut self, owner: EntityId, reads: Vec<ScrollRead>) {
-        if !reads.is_empty() {
-            merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
-        }
+        // Even an empty set is a new Render result. Keeping the previous
+        // getters in that case resurrects dependencies Render stopped reading.
+        merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
     }
 
     pub(in crate::window) fn commit_scroll_reads(&mut self) {
         if self.replayed_dependency_ranges {
             for (owner, reads) in self.scroll_reads.drain() {
                 if self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some() {
-                    merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
+                    self.next_scroll_reads.entry(owner).or_insert(reads);
                 }
             }
         }
+        self.next_scroll_reads.retain(|_, reads| !reads.is_empty());
         std::mem::swap(&mut self.scroll_reads, &mut self.next_scroll_reads);
         self.next_scroll_reads.clear();
     }
 
-    /// Poll only observed properties at existing App/UI frame boundaries.
+    /// Register immediately before the native wheel listener is appended.
+    /// Its committed snapshot survives whole-view and deferred paint replay.
+    pub(crate) fn watch_mounted_scroll<S: 'static, T: PartialEq + 'static>(
+        &mut self,
+        owner: EntityId,
+        state: &Rc<RefCell<S>>,
+        read: impl Fn(&S) -> T + 'static,
+    ) {
+        self.next_frame.mounted_scroll_sources.push(MountedScrollSource::new(
+            self.next_frame.mouse_listeners.len(), owner, state, read,
+        ));
+    }
+
+    /// Scrolling is window-owned state, not a write to an application entity.
+    /// Real model writes or user notifications still travel through App.
+    pub(crate) fn invalidate_native_scroll(&mut self, owner: EntityId) {
+        self.record_frame_request_reason(super::state::FrameRequestReason::Input);
+        if self.invalidator.invalidate_dependent_views(std::iter::once(owner)) {
+            self.schedule_dirty_frame();
+        }
+    }
+
+    /// Poll mounted sources and actual Render reads at existing frame boundaries.
     /// No timer, new platform event, strong handle ownership or Notify effect.
     pub(crate) fn invalidate_scroll_reads(&mut self) {
-        if self.scroll_reads.is_empty() || !self.invalidator.not_drawing() {
+        if !self.invalidator.not_drawing() {
             return;
         }
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
+        for source in &self.rendered_frame.mounted_scroll_sources {
+            if (source.probe)() == Probe::Changed && !changed.contains(&source.owner) {
+                changed.push(source.owner);
+            }
+        }
         self.scroll_reads.retain(|&owner, reads| {
             let mut dirty = false;
             reads.retain(|entry| match (entry.probe)() {
@@ -143,7 +222,7 @@ impl Window {
                 Probe::Changed => { dirty = true; true }
                 Probe::Unchanged => true,
             });
-            if dirty { changed.push(owner); }
+            if dirty && !changed.contains(&owner) { changed.push(owner); }
             !reads.is_empty()
         });
         self.invalidator.invalidate_dependent_views(changed);

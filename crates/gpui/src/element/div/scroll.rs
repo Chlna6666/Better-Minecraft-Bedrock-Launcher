@@ -50,13 +50,13 @@ pub(crate) struct ScrollHandleState {
     pub(crate) active_item: Option<ScrollActiveItem>,
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct ScrollActiveItem {
     pub(crate) index: usize,
     pub(crate) strategy: ScrollStrategy,
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ScrollStrategy {
     #[default]
     FirstVisible,
@@ -347,7 +347,14 @@ impl Interactivity {
                 .unwrap_or_else(|| self.scroll_max(bounds, style, window));
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
-            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if let Some(handle) = self.tracked_scroll_handle.as_ref() {
+                window.watch_mounted_scroll(current_view, &handle.0, |state| {
+                    (*state.offset.borrow(), state.scroll_to_bottom, state.active_item)
+                });
+            } else {
+                window.watch_mounted_scroll(current_view, &scroll_offset, |offset| *offset);
+            }
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, _cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
                     let old_scroll_offset = *scroll_offset;
@@ -396,10 +403,12 @@ impl Interactivity {
                     {
                         return;
                     }
-                    scroll_offset.y += delta_y;
-                    scroll_offset.x += delta_x;
-                    if *scroll_offset != old_scroll_offset {
-                        cx.notify(current_view);
+                    scroll_offset.y = (old_scroll_offset.y + delta_y).clamp(-scroll_max.height, px(0.));
+                    scroll_offset.x = (old_scroll_offset.x + delta_x).clamp(-scroll_max.width, px(0.));
+                    let changed = *scroll_offset != old_scroll_offset;
+                    drop(scroll_offset);
+                    if changed {
+                        window.invalidate_native_scroll(current_view);
                     }
                 }
             });
