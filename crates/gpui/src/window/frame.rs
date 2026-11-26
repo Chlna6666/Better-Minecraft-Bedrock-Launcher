@@ -71,6 +71,20 @@ struct ScrollInputGeometry {
     viewport: ContentMask<Pixels>,
 }
 
+/// Scroll content ranges refer only to the frame that owns them. A record
+/// is eligible for future layer admission only after both phases complete.
+pub(super) struct LayerRecord {
+    hitbox: HitboxId,
+    owner: EntityId,
+    viewport: ContentMask<Pixels>,
+    offset: Point<Pixels>,
+    offset_read: crate::StateRead,
+    prepaint: Range<PrepaintStateIndex>,
+    paint: Option<Range<PaintIndex>>,
+    /// A carried prepaint must be paired with the same committed paint.
+    replayed: bool,
+}
+
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -89,6 +103,9 @@ pub(crate) struct Frame {
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(super) layer_inputs: Vec<LayerInput>,
+    pub(super) layer_records: Vec<LayerRecord>,
+    layer_record_slots: FxHashMap<HitboxId, usize>,
+    painted_layers: Vec<usize>,
     pub(crate) input_clip_epoch: u64,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -167,7 +184,7 @@ impl PrepaintStateIndex {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct PaintIndex {
     pub(super) scene_index: usize,
     #[cfg(any(test, feature = "test-support"))]
@@ -296,6 +313,9 @@ impl Frame {
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
             layer_inputs: Vec::new(),
+            layer_records: Vec::new(),
+            layer_record_slots: FxHashMap::default(),
+            painted_layers: Vec::new(),
             input_clip_epoch: 0,
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -358,6 +378,9 @@ impl Frame {
         self.view_retention_records.clear();
         self.hitboxes.clear();
         self.layer_inputs.clear();
+        self.layer_records.clear();
+        self.layer_record_slots.clear();
+        self.painted_layers.clear();
         self.input_clip_epoch = 0;
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -402,6 +425,109 @@ impl Frame {
                 })),
             })
             .into_inner()
+    }
+
+    /// Start a record after the container's own hitbox and its contents have
+    /// prepainted. The span includes the container hitbox, so rollback can
+    /// distinguish empty contents from an enclosing transaction.
+    pub(crate) fn record_layer_prepaint(
+        &mut self,
+        hitbox: HitboxId,
+        owner: EntityId,
+        viewport: ContentMask<Pixels>,
+        offset: Point<Pixels>,
+        version: &crate::StateVersion,
+        prepaint: Range<PrepaintStateIndex>,
+    ) {
+        self.push_layer_record(LayerRecord {
+            hitbox, owner, viewport, offset,
+            offset_read: crate::StateRead::new(version),
+            prepaint, paint: None, replayed: false,
+        });
+    }
+
+    fn push_layer_record(&mut self, record: LayerRecord) {
+        let index = self.layer_records.len();
+        self.layer_record_slots.insert(record.hitbox, index);
+        self.layer_records.push(record);
+    }
+
+    pub(crate) fn record_layer_paint(&mut self, hitbox: HitboxId, paint: Range<PaintIndex>) {
+        if let Some(&index) = self.layer_record_slots.get(&hitbox) {
+            let record = &mut self.layer_records[index];
+            if !record.replayed && record.paint.is_none() {
+                record.paint = Some(paint);
+                self.painted_layers.push(index);
+            }
+        }
+    }
+
+    pub(super) fn truncate_layer_records(&mut self, hitbox_end: usize) {
+        let keep = self.layer_records.partition_point(|record| record.prepaint.end.hitboxes_index <= hitbox_end);
+        for record in self.layer_records.drain(keep..) {
+            self.layer_record_slots.remove(&record.hitbox);
+        }
+        self.painted_layers.retain(|&index| index < keep);
+    }
+
+    /// Only exact copies of every phase stream may rebase a layer's ranges.
+    /// A split enclosing record is deliberately not reconstructed from gaps.
+    pub(super) fn carry_layer_prepaint(
+        &mut self, previous: &Self,
+        source: &Range<PrepaintStateIndex>, target: &Range<PrepaintStateIndex>,
+    ) {
+        if source.end.rebased_from(&source.start, &target.start).as_ref() != Some(&target.end) {
+            return;
+        }
+        let first = previous.layer_records.partition_point(|record| record.prepaint.end.hitboxes_index <= source.start.hitboxes_index);
+        for record in previous.layer_records[first..].iter()
+            .take_while(|record| record.prepaint.end.hitboxes_index <= source.end.hitboxes_index)
+        {
+            if record.paint.is_none()
+                || record.offset_read.status() != crate::StateReadStatus::Unchanged
+                || source.end.rebased_from(&record.prepaint.end, &PrepaintStateIndex::default()).is_none()
+                || self.layer_record_slots.contains_key(&record.hitbox)
+            {
+                continue;
+            }
+            let Some(prepaint) = super::draw_reuse::rebase_prepaint_range(&record.prepaint, source, target) else { continue; };
+            self.push_layer_record(LayerRecord {
+                hitbox: record.hitbox, owner: record.owner,
+                viewport: record.viewport, offset: record.offset,
+                offset_read: record.offset_read.clone(),
+                prepaint, paint: None, replayed: true,
+            });
+        }
+    }
+
+    pub(super) fn carry_layer_paint(
+        &mut self, previous: &Self,
+        source: &Range<PaintIndex>, target: &Range<PaintIndex>,
+    ) {
+        if source.end.rebased_from(&source.start, &target.start).as_ref() != Some(&target.end) {
+            return;
+        }
+        // Paint closes in draw order; the operation end is monotonic even
+        // for nested or empty captures. Other phase streams prove containment.
+        let first = previous.painted_layers.partition_point(|&index| {
+            previous.layer_records[index].paint.as_ref().unwrap().end.scene_index < source.start.scene_index
+        });
+        for &index in &previous.painted_layers[first..] {
+            let old = &previous.layer_records[index];
+            let paint = old.paint.as_ref().unwrap();
+            if paint.end.scene_index > source.end.scene_index { break; }
+            let Some(&slot) = self.layer_record_slots.get(&old.hitbox) else { continue; };
+            let record = &mut self.layer_records[slot];
+            if !record.replayed || record.paint.is_some()
+                || source.end.rebased_from(&paint.end, &PaintIndex::default()).is_none()
+            {
+                continue;
+            }
+            if let Some(paint) = super::draw_reuse::rebase_paint_range(paint, source, target) {
+                record.paint = Some(paint);
+                self.painted_layers.push(slot);
+            }
+        }
     }
 
     /// Admit only a range whose actual input masks prove containment.
@@ -659,6 +785,9 @@ impl Frame {
             + self.mounted_scroll_sources.capacity()
             + self.hitboxes.capacity()
             + self.layer_inputs.capacity()
+            + self.layer_records.capacity()
+            + self.layer_record_slots.capacity()
+            + self.painted_layers.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
             + self.input_handlers.capacity()
@@ -697,6 +826,11 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
+        trim_frame_vec_capacity(&mut self.layer_records, FRAME_MIN_RETAINED_CAPACITY, FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
+        trim_frame_vec_capacity(&mut self.painted_layers, FRAME_MIN_RETAINED_CAPACITY, FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
+        if self.layer_record_slots.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(self.layer_record_slots.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.layer_record_slots.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
+        }
         trim_frame_vec_capacity(
             &mut self.layer_inputs,
             FRAME_MIN_RETAINED_CAPACITY,
@@ -788,6 +922,11 @@ impl Frame {
         trim_vec_against!(mounted_scroll_sources);
         trim_vec_against!(hitboxes);
         trim_vec_against!(layer_inputs);
+        trim_vec_against!(layer_records);
+        trim_vec_against!(painted_layers);
+        if self.layer_record_slots.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(current.layer_record_slots.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.layer_record_slots.shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(current.layer_record_slots.len()));
+        }
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
         trim_vec_against!(input_handlers);
@@ -840,6 +979,9 @@ impl Frame {
                 self.mounted_scroll_sources.shrink_to(floor);
                 self.hitboxes.shrink_to(floor);
                 self.layer_inputs.shrink_to(floor);
+                self.layer_records.shrink_to(floor);
+                self.painted_layers.shrink_to(floor);
+                self.layer_record_slots.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);
                 self.input_handlers.shrink_to(floor);

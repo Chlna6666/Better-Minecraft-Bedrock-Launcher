@@ -207,6 +207,7 @@ impl Interactivity {
                         window.with_content_mask(
                             style.overflow_mask(bounds, window.rem_size()),
                             |window| {
+                                let layer_start = self.scroll_offset.as_ref().map(|_| window.prepaint_index());
                                 let hitbox = if self.should_insert_hitbox(&style, window, cx) {
                                     Some(window.insert_hitbox(bounds, self.hitbox_behavior))
                                 } else {
@@ -221,11 +222,26 @@ impl Interactivity {
                                 });
                                 let clip_epoch = window.next_frame.input_clip_epoch;
                                 let visual_scale = window.visual_scale();
+                                let layer_hitbox = hitbox.as_ref().map(|hitbox| hitbox.id);
                                 let result = f(&style, scroll_offset, hitbox, window, cx);
-                                if let Some(viewport) = viewport {
-                                    window.next_frame.record_scroll_layer_input(
-                                        input_start, viewport, scroll_offset, visual_scale, clip_epoch,
-                                    );
+                                if let (Some(viewport), Some(offset)) = (viewport, self.scroll_offset.as_ref()) {
+                                    let final_offset = *offset.borrow();
+                                    // UniformList can resolve a deferred scroll inside the
+                                    // callback. Do not publish a false geometry proof.
+                                    if final_offset == scroll_offset {
+                                        window.next_frame.record_scroll_layer_input(
+                                            input_start, viewport, scroll_offset, visual_scale, clip_epoch,
+                                        );
+                                    } else {
+                                        window.next_frame.record_layer_input(input_start, viewport.bounds);
+                                    }
+                                    if let (Some(start), Some(hitbox)) = (layer_start, layer_hitbox) {
+                                        let prepaint = start..window.prepaint_index();
+                                        let owner = window.current_view();
+                                        window.next_frame.record_layer_prepaint(
+                                            hitbox, owner, viewport, final_offset, &offset.version, prepaint,
+                                        );
+                                    }
                                 }
                                 (result, element_state)
                             },
@@ -325,7 +341,13 @@ impl Interactivity {
                                             }
 
                                             self.paint_keyboard_listeners(window, cx);
+                                            let layer = hitbox.filter(|_| self.scroll_offset.is_some())
+                                                .map(|hitbox| (hitbox.id, window.paint_index()));
                                             f(&style, window, cx);
+                                            if let Some((id, start)) = layer {
+                                                let paint = start..window.paint_index();
+                                                window.next_frame.record_layer_paint(id, paint);
+                                            }
 
                                             if let Some(_hitbox) = hitbox {
                                                 #[cfg(any(
