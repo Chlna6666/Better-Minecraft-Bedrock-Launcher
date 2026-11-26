@@ -91,7 +91,7 @@ impl InteractiveText {
 }
 
 impl Element for InteractiveText {
-    type RequestLayoutState = ();
+    type RequestLayoutState = LayoutId;
     type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
@@ -150,7 +150,7 @@ impl Element for InteractiveText {
         global_id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut Self::RequestLayoutState,
+        state: &mut Self::RequestLayoutState,
         hitbox: &mut Hitbox,
         window: &mut Window,
         cx: &mut App,
@@ -305,7 +305,7 @@ impl Element for InteractiveText {
                 }
 
                 self.text
-                    .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+                    .paint(None, inspector_id, bounds, state, &mut (), window, cx);
 
                 ((), interactive_state)
             },
