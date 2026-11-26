@@ -30,6 +30,10 @@ pub(super) fn line(
         let scale_factor = window.scale_factor();
         let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
         let baseline_offset = point(px(0.), padding_top + layout.ascent);
+        let glyph_context = window.glyph_paint_context();
+        let has_line_decoration = decoration_runs.iter().any(|run| {
+            run.underline.is_some() || run.strikethrough.is_some()
+        });
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;
@@ -54,7 +58,9 @@ pub(super) fn line(
         let mut max_glyph_size = size(px(0.), px(0.));
         let mut first_glyph_x = origin.x;
         for (run_ix, run) in layout.runs.iter().enumerate() {
-            max_glyph_size = text_system.bounding_box(run.font_id, layout.font_size).size;
+            if has_line_decoration {
+                max_glyph_size = text_system.bounding_box(run.font_id, layout.font_size).size;
+            }
 
             for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
                 glyph_origin.x += glyph.position.x - prev_glyph_position.x;
@@ -205,22 +211,26 @@ pub(super) fn line(
                     + point(glyph.render_offset.x, glyph.render_offset.y)
                     + point(px(0.), snapped_baseline_offset_y);
 
-                if glyph.is_emoji {
-                    window.paint_emoji(
-                        glyph_paint_origin,
-                        run.font_id,
-                        glyph.id,
-                        glyph.font_size,
-                    )?;
-                } else {
-                    window.paint_glyph(
-                        glyph_paint_origin,
-                        run.font_id,
-                        glyph.id,
-                        glyph.font_size,
-                        color,
-                        glyph.uses_stable_vertical_raster_frame(),
-                    )?;
+                if let Some(context) = glyph_context.as_ref() {
+                    if glyph.is_emoji {
+                        window.paint_emoji_in_line(
+                            glyph_paint_origin,
+                            run.font_id,
+                            glyph.id,
+                            glyph.font_size,
+                            context,
+                        )?;
+                    } else {
+                        window.paint_glyph_in_line(
+                            glyph_paint_origin,
+                            run.font_id,
+                            glyph.id,
+                            glyph.font_size,
+                            color,
+                            glyph.uses_stable_vertical_raster_frame(),
+                            context,
+                        )?;
+                    }
                 }
             }
         }

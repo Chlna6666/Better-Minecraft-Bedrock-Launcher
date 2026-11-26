@@ -100,6 +100,20 @@ pub fn outline(
     }
 }
 
+/// Inherited glyph rendering inputs are invariant while one shaped line paints.
+/// Adapted from GPUI Fast's LineGlyphPainter (fd15f82), Apache-2.0.
+/// This is a stack value, not a second atlas or raster cache.
+#[derive(Clone, Copy)]
+pub(crate) struct GlyphPaintContext {
+    scale_factor: f32,
+    raster_scale_factor: f32,
+    scene_text_raster_scale: f32,
+    opacity: f32,
+    content_mask: ContentMask<ScaledPixels>,
+    animation_id: Option<SceneAnimationId>,
+    grayscale_antialiasing: bool,
+}
+
 impl Window {
     /// Defers the drawing of the given element, scheduling it to be painted on top of the currently-drawn tree
     /// at a later time. The `priority` parameter determines the drawing order relative to other deferred elements,
@@ -518,51 +532,70 @@ impl Window {
         color: Hsla,
         is_cjk: bool,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
-
-        let element_opacity = self.element_opacity();
-        let scale_factor = self.scale_factor();
-        let text_raster_scale = self.text_raster_scale();
-        let scene_text_raster_scale = self.scene_text_raster_scale();
-        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, text_raster_scale)
-        else {
+        let Some(context) = self.glyph_paint_context() else {
             return Ok(());
         };
-        let visual_origin = self.visual_point(origin);
-        let (_, subpixel_variant) =
-            glyph_device_origin(visual_origin, Point::default(), scale_factor);
+        self.paint_glyph_in_line(origin, font_id, glyph_id, font_size, color, is_cjk, &context)
+    }
+
+    pub(crate) fn glyph_paint_context(&self) -> Option<GlyphPaintContext> {
+        self.invalidator.debug_assert_paint();
+        let scale_factor = self.scale_factor();
+        let raster_scale_factor = glyph_raster_scale_factor(scale_factor, self.text_raster_scale())?;
         let geometry_animation = self.scene_animation_id_for(&[
             crate::TransitionProperty::Scale,
             crate::TransitionProperty::Transform,
             crate::TransitionProperty::Translation,
         ]);
-        let params = RenderGlyphParams {
-            font_id,
-            glyph_id,
-            font_size,
-            subpixel_variant,
-            scale_factor: raster_scale_factor,
+        let animation_id = geometry_animation.or_else(|| self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+        ]));
+        Some(GlyphPaintContext {
+            scale_factor,
+            raster_scale_factor,
+            scene_text_raster_scale: self.scene_text_raster_scale(),
+            opacity: self.element_opacity(),
+            content_mask: self.visual_content_mask().scale(scale_factor),
+            animation_id,
             grayscale_antialiasing: glyphs_require_grayscale_antialiasing(
                 self.platform_window.background_appearance(),
                 self.next_frame.painter.is_capturing_blur(),
                 self.text_rendering_mode.get(),
                 geometry_animation.is_some(),
             ),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_glyph_in_line(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        is_cjk: bool,
+        context: &GlyphPaintContext,
+    ) -> Result<()> {
+        let visual_origin = self.visual_point(origin);
+        let (baseline_origin, subpixel_variant) =
+            glyph_device_origin(visual_origin, Point::default(), context.scale_factor);
+        let params = RenderGlyphParams {
+            font_id,
+            glyph_id,
+            font_size,
+            subpixel_variant,
+            scale_factor: context.raster_scale_factor,
+            grayscale_antialiasing: context.grayscale_antialiasing,
             is_emoji: false,
             is_cjk,
         };
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
         if !raster_bounds.is_zero() {
-            let (baseline_origin, _) =
-                glyph_device_origin(visual_origin, Point::default(), scale_factor);
-            let content_mask = self.visual_content_mask().scale(scale_factor);
-            let animation_id = self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]);
+            let content_mask = context.content_mask;
+            let animation_id = context.animation_id;
+            let scene_text_raster_scale = context.scene_text_raster_scale;
             let raster_visual_bounds = glyph_clip_bounds(
                 baseline_origin
                     + raster_bounds
@@ -607,7 +640,7 @@ impl Window {
                 animation_id,
                 bounds,
                 content_mask,
-                color: color.opacity(element_opacity).into(),
+                color: color.opacity(context.opacity).into(),
                 tile,
                 transformation: TransformationMatrix::unit(),
             });
@@ -630,24 +663,30 @@ impl Window {
         glyph_id: GlyphId,
         font_size: Pixels,
     ) -> Result<()> {
-        self.invalidator.debug_assert_paint();
-
-        let scale_factor = self.scale_factor();
-        let text_raster_scale = self.text_raster_scale();
-        let scene_text_raster_scale = self.scene_text_raster_scale();
-        let Some(raster_scale_factor) = glyph_raster_scale_factor(scale_factor, text_raster_scale)
-        else {
+        let Some(context) = self.glyph_paint_context() else {
             return Ok(());
         };
+        self.paint_emoji_in_line(origin, font_id, glyph_id, font_size, &context)
+    }
+
+    pub(crate) fn paint_emoji_in_line(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        context: &GlyphPaintContext,
+    ) -> Result<()> {
+        let scene_text_raster_scale = context.scene_text_raster_scale;
         let visual_origin = self.visual_point(origin);
-        let glyph_origin = visual_origin.scale(scale_factor);
+        let glyph_origin = visual_origin.scale(context.scale_factor);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
             font_size,
             // We don't render emojis with subpixel variants.
             subpixel_variant: Default::default(),
-            scale_factor: raster_scale_factor,
+            scale_factor: context.raster_scale_factor,
             grayscale_antialiasing: true,
             is_emoji: true,
             is_cjk: false,
@@ -659,13 +698,8 @@ impl Window {
                 + raster_bounds
                     .origin
                     .map(|value| downsample_raster_pixel(value, scene_text_raster_scale));
-            let content_mask = self.visual_content_mask().scale(scale_factor);
-            let animation_id = self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]);
+            let content_mask = context.content_mask;
+            let animation_id = context.animation_id;
             if glyph_is_clipped(
                 glyph_clip_bounds(raster_origin, raster_bounds.size, scene_text_raster_scale),
                 content_mask.bounds,
@@ -693,7 +727,7 @@ impl Window {
                     .size
                     .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
-            let opacity = self.element_opacity();
+            let opacity = context.opacity;
 
             self.next_frame.painter.insert_primitive(PolychromeSprite {
                 order: 0,
