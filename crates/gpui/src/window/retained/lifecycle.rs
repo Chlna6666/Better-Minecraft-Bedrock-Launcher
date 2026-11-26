@@ -9,7 +9,6 @@ impl RetainedPaint {
         self.replay_quad_indices.clear();
         self.finished = false;
         self.revision = 0;
-        self.sources.clear();
     }
 
     pub(crate) fn retained_capacity(&self) -> usize {
@@ -17,7 +16,6 @@ impl RetainedPaint {
             + self.prepared_retained_quad_chunks.capacity()
             + self.prepared_retained_monochrome_sprite_chunks.capacity()
             + self.replay_quad_indices.capacity()
-            + self.sources.capacity()
     }
 
     /// Adapts empty scratch allocations to the current frame without touching shared snapshots.
@@ -42,10 +40,6 @@ impl RetainedPaint {
         }
         if self.replay_quad_indices.capacity() > prepared_floor.saturating_mul(2) {
             self.replay_quad_indices.shrink_to(prepared_floor);
-        }
-        let source_floor = current.sources.len().max(24);
-        if self.sources.capacity() > source_floor.saturating_mul(2) {
-            self.sources.shrink_to(source_floor);
         }
     }
 }

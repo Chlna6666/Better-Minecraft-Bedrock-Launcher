@@ -63,15 +63,13 @@ impl RetainedPaint {
         self.revision = scene.revision;
     }
 
-    /// Borrows ranges for this exact Paint generation, including independently captured sources.
-    /// An unpaired generation is never allowed to consume stale prepared indices.
+    /// Borrows ranges for the paired Paint generation only.
+    /// Independently captured or unpaired scenes use ordinary drawing.
     pub(crate) fn chunks_for(&self, scene: &Scene) -> &[PreparedRetainedQuadChunk] {
         if self.finished && self.revision == scene.revision {
             &self.prepared_retained_quad_chunks
         } else {
-            self.sources
-                .get(&scene.revision)
-                .map_or(&[], |chunks| chunks.quads.as_slice())
+            &[]
         }
     }
 
@@ -82,9 +80,7 @@ impl RetainedPaint {
         if self.finished && self.revision == scene.revision {
             &self.prepared_retained_monochrome_sprite_chunks
         } else {
-            self.sources
-                .get(&scene.revision)
-                .map_or(&[], |chunks| chunks.monochrome_sprites.as_slice())
+            &[]
         }
     }
 
@@ -119,12 +115,6 @@ impl RetainedPaint {
 
     /// Carries only candidates fully contained in a draw-order-preserving Paint replay.
     pub(crate) fn replay(&mut self, range: Range<usize>, previous: &Self, replay_start: usize) {
-        self.sources.extend(
-            previous
-                .sources
-                .iter()
-                .map(|(revision, chunks)| (*revision, std::sync::Arc::clone(chunks))),
-        );
         let candidates = &previous.retained_chunk_candidates;
         // Completed retention sorts its existing candidate storage by
         // paint-operation start. Retained fragment replays only inspect

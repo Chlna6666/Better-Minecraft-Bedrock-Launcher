@@ -7,11 +7,6 @@ mod identity;
 pub(crate) use identity::RetainedChunkId;
 mod lifecycle;
 
-struct PreparedRetainedChunks {
-    quads: Vec<PreparedRetainedQuadChunk>,
-    monochrome_sprites: Vec<PreparedRetainedMonochromeSpriteChunk>,
-}
-
 /// Window-owned retention metadata for one immutable Paint generation.
 /// GPU consumers borrow prepared ranges without owning Paint payloads or UI Fragment state.
 #[derive(Default)]
@@ -23,7 +18,6 @@ pub(crate) struct RetainedPaint {
     replay_quad_indices: Vec<usize>,
     finished: bool,
     revision: u64,
-    sources: collections::FxHashMap<u64, std::sync::Arc<PreparedRetainedChunks>>,
 }
 
 #[cfg(test)]
