@@ -393,14 +393,11 @@ impl Window {
                 .animation_engine
                 .borrow()
                 .animation_needs_completion_check(animation_id)
-            && let (Some(view_id), Some(retained_id)) = (
-                self.current_view_or_root(),
-                self.current_retained_element_id(),
-            )
+            && let Some(view_id) = self.current_view_or_root()
         {
             self.animation_engine
                 .borrow_mut()
-                .set_animation_completion_check(animation_id, view_id, retained_id);
+                .set_animation_completion_check(animation_id, view_id);
         }
 
         let text_raster_scale = match completed_text_raster_scale {
@@ -719,16 +716,8 @@ impl Window {
         }
         self.next_frame.dispatch_tree.set_focus_id(focus_handle.id);
 
-        if let Some(retained_id) = self.current_retained_element_id()
-            && let Some(view_id) = self.rendered_entity_stack.last().copied()
-        {
-            self.focus_retained_targets.insert(
-                focus_handle.id,
-                FocusRetainedTarget {
-                    view_id,
-                    retained_id,
-                },
-            );
+        if let Some(view_id) = self.rendered_entity_stack.last().copied() {
+            self.focus_retained_targets.insert(focus_handle.id, view_id);
         }
     }
 

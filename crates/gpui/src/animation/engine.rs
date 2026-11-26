@@ -58,13 +58,7 @@ struct AnimationTimeline {
     scene_animation_generation: u64,
     endpoint_text_raster_scale: Option<f32>,
     needs_endpoint_reraster: bool,
-    completion_invalidation: Option<CompletionInvalidationTarget>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CompletionInvalidationTarget {
-    view_id: crate::EntityId,
-    retained_id: GlobalElementId,
+    completion_invalidation: Option<crate::EntityId>,
 }
 
 /// UI invalidation to process after a renderer-owned scene animation reaches its endpoint.
@@ -78,8 +72,6 @@ pub(crate) struct SceneAnimationCompletion {
     pub(crate) generation: u64,
     /// Owning view identified when the animation was committed.
     pub(crate) view_id: Option<crate::EntityId>,
-    /// Retained element path that must be refreshed on the UI owner.
-    pub(crate) retained_id: Option<GlobalElementId>,
 }
 
 impl AnimationTimeline {
@@ -734,7 +726,6 @@ impl AnimationEngine {
         &mut self,
         animation_id: SceneAnimationId,
         view_id: crate::EntityId,
-        retained_id: GlobalElementId,
     ) -> bool {
         let mut updated = false;
         for timeline in self.timelines.values_mut().filter(|timeline| {
@@ -743,10 +734,7 @@ impl AnimationEngine {
                 .is_some_and(|animation| animation.id == animation_id)
         }) {
             if timeline.completion_invalidation.is_none() {
-                timeline.completion_invalidation = Some(CompletionInvalidationTarget {
-                    view_id,
-                    retained_id: retained_id.clone(),
-                });
+                timeline.completion_invalidation = Some(view_id);
                 updated = true;
             }
         }
@@ -767,13 +755,12 @@ impl AnimationEngine {
                 .then(|| (key.clone(), timeline.clone()))
         })?;
         let animation = timeline.scene_animation?;
-        let target = timeline.completion_invalidation.as_ref();
+        let target = timeline.completion_invalidation;
         let current_completion = SceneAnimationCompletion {
             animation_id: animation.id,
             property: key.property,
             generation: timeline.scene_animation_generation,
-            view_id: target.map(|target| target.view_id),
-            retained_id: target.map(|target| target.retained_id.clone()),
+            view_id: target,
         };
         if &current_completion != completion {
             return None;
@@ -989,14 +976,7 @@ impl AnimationEngine {
                             animation_id: animation.id,
                             property: key.property,
                             generation: timeline.scene_animation_generation,
-                            view_id: timeline
-                                .completion_invalidation
-                                .as_ref()
-                                .map(|target| target.view_id),
-                            retained_id: timeline
-                                .completion_invalidation
-                                .as_ref()
-                                .map(|target| target.retained_id.clone()),
+                            view_id: timeline.completion_invalidation,
                         }),
                     })
             })
@@ -1117,14 +1097,7 @@ impl AnimationEngine {
                         animation_id: animation.id,
                         property: key.property,
                         generation: timeline.scene_animation_generation,
-                        view_id: timeline
-                            .completion_invalidation
-                            .as_ref()
-                            .map(|target| target.view_id),
-                        retained_id: timeline
-                            .completion_invalidation
-                            .as_ref()
-                            .map(|target| target.retained_id.clone()),
+                        view_id: timeline.completion_invalidation,
                     });
                 }
             }

@@ -114,19 +114,15 @@ impl Window {
     /// caller with a non-refresh redraw fallback; they should occur only before the first complete
     /// frame or after the focusable element has disappeared.
     fn invalidate_focus_retained_target(&mut self, focus_id: FocusId) -> bool {
-        let Some(target) = self.focus_retained_targets.get(&focus_id).cloned() else {
+        let Some(view_id) = self.focus_retained_targets.get(&focus_id).copied() else {
             return false;
         };
 
-        // Damage the nearest retained view instead of maintaining a second
-        // per-element bounds map. Unknown owners conservatively redraw the window.
-        let bounds = self.rendered_frame.view_retention_records.iter()
-            .filter(|entry| entry.record.is_some() && target.retained_id.0.starts_with(entry.key.0.as_ref()))
-            .max_by_key(|entry| entry.key.0.len())
-            .and_then(|entry| entry.record.as_ref().map(|record| record.bounds));
-        if let Some(bounds) = bounds {
-            if !bounds.is_empty() {
-                self.animation_dirty_region.push(bounds.scale(self.scale_factor));
+        // Use the same committed visual damage index as ordinary view
+        // invalidation; no retained path scan or coordinate reconversion.
+        if let Some(entry) = self.rendered_frame.retained_scene_index.get(&view_id) {
+            if !entry.bounds.is_empty() {
+                self.animation_dirty_region.push(entry.bounds);
             }
         } else {
             self.force_full_redraw.set(true);
@@ -135,7 +131,7 @@ impl Window {
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
         self.invalidator
-            .invalidate_owned_view(target.view_id)
+            .invalidate_owned_view(view_id)
     }
 
     /// Bound the persistent focus-target lookup when applications create and discard many unique

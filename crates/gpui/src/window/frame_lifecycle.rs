@@ -140,8 +140,7 @@ impl Window {
             self.animation_engine_frame_driver.set(None);
         }
 
-        if let (Some(view_id), Some(_retained_id)) =
-            (completion.view_id, completion.retained_id.as_ref())
+        if let Some(view_id) = completion.view_id
             && self
                 .invalidator
                 .invalidate_owned_view(view_id)
@@ -1071,9 +1070,7 @@ impl Window {
             }
         };
         for completion in &tick.completion_events {
-            if let (Some(view_id), Some(_retained_id)) =
-                (completion.view_id, completion.retained_id.as_ref())
-            {
+            if let Some(view_id) = completion.view_id {
                 let _ = self
                     .invalidator
                     .invalidate_owned_view(view_id);

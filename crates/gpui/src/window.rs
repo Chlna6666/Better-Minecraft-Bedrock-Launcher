@@ -160,7 +160,7 @@ pub use paint_resources::{ImagePaintProgress, ImagePaintRequest, ImageSampling};
 pub use prompts::*;
 pub use state::{DispatchEventResult, Window};
 use state::{
-    AnimatedImageSlotKey, DirtyFrameDiagnostics, FocusRetainedTarget, FrameGenerationStats,
+    AnimatedImageSlotKey, DirtyFrameDiagnostics, FrameGenerationStats,
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{

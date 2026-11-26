@@ -224,17 +224,6 @@ pub(crate) struct ElementStateBox {
     pub(crate) type_name: &'static str,
 }
 
-/// Persistent lookup from a focus handle to the retained rendering identity that owns it.
-///
-/// Unlike `GlobalElementId`, this identity also exists for anonymous elements through internal
-/// `InstanceSlot` path segments. Keeping the lookup on the window lets a focus transition target
-/// the old and new repaint boundaries even when either subtree was replayed in an intervening frame.
-#[derive(Clone, Debug)]
-pub(crate) struct FocusRetainedTarget {
-    pub(crate) view_id: EntityId,
-    pub(crate) retained_id: GlobalElementId,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ElementVisualTransform {
     pub(crate) scale: f32,
@@ -656,7 +645,7 @@ pub struct Window {
     pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
     pub(crate) focus: Option<FocusId>,
     /// Persistent focus-to-retained-boundary lookup used to avoid `focus()/blur() -> refresh()`.
-    pub(crate) focus_retained_targets: FxHashMap<FocusId, FocusRetainedTarget>,
+    pub(crate) focus_retained_targets: FxHashMap<FocusId, EntityId>,
     pub(super) focus_enabled: bool,
     pub(super) pending_input: Option<PendingInput>,
     pub(super) pending_modifier: ModifierState,

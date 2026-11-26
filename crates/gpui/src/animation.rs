@@ -214,7 +214,6 @@ mod tests {
     fn presentation_timeline_emits_completion_for_its_ui_target() {
         let started_at = Instant::now();
         let element_id = test_global_element_id("presentation-completion");
-        let retained_id = test_global_element_id("retained-target");
         let view_id = crate::EntityId::from(91);
         let mut engine = AnimationEngine::new();
         engine.start_transition(
@@ -233,7 +232,6 @@ mod tests {
         assert!(engine.set_animation_completion_check(
             crate::SceneAnimationId(101),
             view_id,
-            retained_id.clone(),
         ));
 
         let mut timeline = engine
@@ -248,7 +246,6 @@ mod tests {
             .expect("completed timeline identifies the UI invalidation target");
         assert_eq!(completion.animation_id, crate::SceneAnimationId(101));
         assert_eq!(completion.view_id, Some(view_id));
-        assert_eq!(completion.retained_id, Some(retained_id));
     }
 
     #[test]
@@ -282,7 +279,6 @@ mod tests {
 
         assert_eq!(completion.animation_id, animation_id);
         assert_eq!(completion.view_id, None);
-        assert_eq!(completion.retained_id, None);
         assert_eq!(
             engine.complete_scene_animation(&completion),
             Some(completion)
