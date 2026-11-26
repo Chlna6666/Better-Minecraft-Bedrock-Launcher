@@ -967,7 +967,7 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         if self.animating {
-            let layout_key = window.current_retained_element_key()
+            let layout_key = crate::fast::layout_key::layout_key(window)
                 .expect("layout animation target must have a native key");
             window.request_layout_animation_frame(layout_key);
         }
@@ -1275,7 +1275,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
-        let layout_key = window.current_retained_element_key()
+        let layout_key = crate::fast::layout_key::layout_key(window)
             .expect("AnimationElement must have a native key");
         window.with_element_state(global_id, |state, window| {
             let now = window.animation_time();

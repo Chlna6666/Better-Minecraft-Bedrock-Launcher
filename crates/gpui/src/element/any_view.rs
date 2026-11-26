@@ -216,7 +216,7 @@ impl Element for ViewElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
         let splice_safe = window.splice_context_supported();
-        let retained_key = window.current_retained_element_key();
+        let retained_key = crate::fast::layout_key::layout_key(window);
         if let Some(key) = retained_key {
             if let Some(prebuilt) = window.take_prebuilt_gap(key, id, entity_id) {
                 return prebuilt;

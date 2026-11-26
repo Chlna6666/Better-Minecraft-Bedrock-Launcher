@@ -1,5 +1,5 @@
 use crate::{
-    App, AvailableSpace, Bounds, ContentMask, Edges, ElementId, Pixels, Point, Window, px, size,
+    App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size,
 };
 use sum_tree::{Bias, SumTree};
 
@@ -9,8 +9,6 @@ use crate::element::list::{
     layout::{ItemLayout, LayoutItemsResponse},
     tree::Count,
 };
-
-const RETAINED_LIST_ITEM_KEY: &str = "__gpui_retained_list_item";
 
 // gpui-fast #170 limits speculative work rather than paying for every
 // overscan row after a content change. Here only unknown sizes require a
@@ -22,10 +20,7 @@ fn with_item_retained_key<R>(
     item_index: usize,
     f: impl FnOnce(&mut Window) -> R,
 ) -> R {
-    window.with_retained_child_key(
-        ElementId::named_usize(RETAINED_LIST_ITEM_KEY, item_index),
-        f,
-    )
+    window.with_list_item_layout_key(item_index, f)
 }
 
 impl StateInner {

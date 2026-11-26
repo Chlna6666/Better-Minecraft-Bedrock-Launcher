@@ -25,8 +25,6 @@ pub use scroll::{
 
 use super::ListHorizontalSizingBehavior;
 
-const RETAINED_UNIFORM_ROW_KEY: &str = "__gpui_retained_uniform_row";
-
 /// uniform_list provides lazy rendering for a set of items that are of uniform height.
 /// When rendered into a container with overflow-y: hidden and a fixed (or max) height,
 /// uniform_list will only render the visible subset of items.
@@ -232,7 +230,7 @@ impl Element for UniformList {
                 // counter established by its request-layout scope has already been popped. Give the
                 // lazy item/decorations tree its own deterministic parent-local namespace so item
                 // roots cannot collide with unrelated ancestor slots or all collapse to slot zero.
-                window.with_retained_child_scope(|window| {
+                window.with_layout_key_of_prepainting_element(|window| {
                     if self.item_count > 0 {
                         let content_height =
                             item_height * self.item_count + padding.top + padding.bottom;

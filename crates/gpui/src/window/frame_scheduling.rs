@@ -286,7 +286,7 @@ impl Window {
     #[track_caller]
     pub fn request_animation_engine_frame(&self, driver: AnimationDriver) {
         if matches!(driver, AnimationDriver::Layout) {
-            if let Some(layout_key) = self.current_retained_element_key() {
+            if let Some(layout_key) = crate::fast::layout_key::current_layout_key(self) {
                 self.request_layout_animation_frame(layout_key);
             } else {
                 self.request_animation_frame();

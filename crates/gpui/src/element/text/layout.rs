@@ -104,7 +104,7 @@ impl TextLayout {
         // invalidate the ancestors' layout.
         let intrinsic_only = text_style.white_space == WhiteSpace::Nowrap
             && text_style.text_overflow.is_none()
-            && window.has_layout_owner();
+            && crate::fast::layout_key::layout_key(window).is_some();
 
         let state_ready = self.0.borrow().as_ref().is_some_and(|layout| {
             layout.cache_key == cache_key && layout.paint_key == paint_key && layout.size.is_some()
