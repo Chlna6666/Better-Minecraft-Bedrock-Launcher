@@ -4,6 +4,73 @@ enum ShadowReplay {
     Shared(usize),
     Rebind(usize),
 }
+/// Candidate-local sample references. Small sample tables use an inline
+/// mask; larger tables allocate only if an animated primitive is encountered.
+enum ReplayAnimationReferences {
+    None,
+    Inline(u16),
+    Many(FxHashSet<SceneAnimationId>),
+}
+
+impl ReplayAnimationReferences {
+    fn new(previous: &Scene) -> Self {
+        match previous.animation_values.len() {
+            0 => Self::None,
+            1..=16 => Self::Inline(0),
+            _ => Self::Many(FxHashSet::default()),
+        }
+    }
+
+    fn record(&mut self, primitive: &Primitive, previous: &Scene) {
+        if matches!(self, Self::None) {
+            return;
+        }
+        let Some(id) = primitive.animation_id() else { return; };
+        match self {
+            Self::None => {}
+            Self::Inline(mask) => {
+                for (index, value) in previous.animation_values.iter().enumerate() {
+                    if value.animation_id == id {
+                        *mask |= 1 << index;
+                    }
+                }
+            }
+            Self::Many(ids) => { ids.insert(id); }
+        }
+    }
+
+    fn append(self, previous: &Scene, current: &mut Vec<SceneAnimationValue>) {
+        // Keep the original source sample order and the destination's newer
+        // values. An identical id/property pair is emitted at most once.
+        match self {
+            Self::None | Self::Inline(0) => {}
+            Self::Inline(mask) => {
+                for (index, value) in previous.animation_values.iter().enumerate() {
+                    if mask & (1 << index) != 0
+                        && !current.iter().any(|old| {
+                            old.animation_id == value.animation_id && old.property == value.property
+                        })
+                    {
+                        current.push(*value);
+                    }
+                }
+            }
+            Self::Many(ids) => {
+                if ids.is_empty() {
+                    return;
+                }
+                let mut emitted: FxHashSet<_> = current.iter()
+                    .map(|value| (value.animation_id, value.property))
+                    .collect();
+                current.extend(previous.animation_values.iter().filter(|value| {
+                    ids.contains(&value.animation_id)
+                        && emitted.insert((value.animation_id, value.property))
+                }).copied());
+            }
+        }
+    }
+}
+
 impl Painter {
     fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
         // A retained-order proof belongs to the exact ordering prefix that produced it.
@@ -112,38 +179,6 @@ impl Painter {
         }
     }
 
-    fn replay_animation_values(&mut self, range: Range<usize>, previous: &Scene) {
-        if previous.animation_values.is_empty() {
-            return;
-        }
-        let referenced: FxHashSet<_> = previous
-            .paint_operations
-            .range(range)
-            .iter()
-            .filter_map(|operation| match operation {
-                PaintOperation::Primitive(primitive) => primitive.animation_id(),
-                _ => None,
-            })
-            .collect();
-        let mut emitted: FxHashSet<_> = self
-            .animation_values
-            .iter()
-            .map(|value| (value.animation_id, value.property))
-            .collect();
-        // Samples are part of the replayed content's binding proof. Keep a freshly
-        // emitted sample when an executing wrapper retargets the same stable id.
-        self.scene.animation_values.extend(
-            previous
-                .animation_values
-                .iter()
-                .filter(|value| {
-                    referenced.contains(&value.animation_id)
-                        && emitted.insert((value.animation_id, value.property))
-                })
-                .copied(),
-        );
-    }
-
     /// Replays Paint operations and reports whether their draw-order mapping was preserved.
     /// Retention owners use this result to decide whether separately owned Chunk metadata is reusable.
     /// Quad spans must be qualified against this exact source generation by the caller;
@@ -154,7 +189,7 @@ impl Painter {
         prev_scene: &Scene,
         quad_spans: impl IntoIterator<Item = super::QuadReplay>,
     ) -> bool {
-        self.replay_animation_values(range.clone(), prev_scene);
+        let mut animation_references = ReplayAnimationReferences::new(prev_scene);
         self.scene.revision = 0;
         let range_end = range.end;
         let retain_order = !self.retained_prefix_invalid
@@ -210,6 +245,10 @@ impl Painter {
             index += 1;
             match operation {
                 PaintOperation::Primitive(primitive) => {
+                    // Shared Quad and Shadow runs are qualified as static.
+                    // All remaining operations are visited here exactly once,
+                    // including primitives that are subsequently clipped out.
+                    animation_references.record(primitive, prev_scene);
                     if self.blur_captures.last().is_some() {
                         let (captured_primitive, capture_prefix_invalid) = {
                             let capture = self.blur_captures.last_mut().unwrap();
@@ -262,6 +301,7 @@ impl Painter {
                 PaintOperation::EndBlur => self.end_blur(),
             }
         }
+        animation_references.append(prev_scene, &mut self.scene.animation_values);
         if retain_order
             && !self.retained_prefix_invalid
             && self.scene.paint_operations.len() == range_end

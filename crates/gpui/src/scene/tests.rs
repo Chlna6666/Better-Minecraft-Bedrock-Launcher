@@ -1832,3 +1832,41 @@ fn retained_quad_replay_rejects_a_proof_from_another_scene_revision() {
     assert_eq!(current.len(), other.len());
     assert!(!std::ptr::eq(&current.paint_operations[0], &other.paint_operations[0]));
 }
+
+#[test]
+fn replay_animation_samples_keep_source_order_for_inline_and_large_tables() {
+    let clip = bounds(point(px(0.), px(0.)), size(px(100.), px(100.))).scale(1.);
+    let quad = Quad { bounds: clip, content_mask: ContentMask::new(clip), ..Default::default() };
+    let sample = |id, progress| SceneAnimationValue {
+        animation_id: SceneAnimationId(id),
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.; 4],
+        to: [1., 0., 0., 0.],
+    };
+    for count in [4, 16, 17, 40] {
+        let mut previous = crate::scene::Painter::default();
+        previous.insert_animated_primitive(quad, SceneAnimationId(2));
+        previous.insert_primitive(quad);
+        previous.insert_animated_primitive(quad, SceneAnimationId(1));
+        previous.insert_animated_primitive(quad, SceneAnimationId(2));
+        previous.insert_animated_primitive(quad, SceneAnimationId(3));
+        for id in 0..count {
+            previous.push_animation_value(sample(id, 0.25));
+        }
+        let mut current = crate::scene::Painter::default();
+        current.push_animation_value(sample(1, 0.75));
+        current.replay(0..4, &previous, []);
+        assert_eq!(current.animation_values, vec![sample(1, 0.75), sample(2, 0.25)]);
+        current.replay(0..4, &previous, []);
+        assert_eq!(current.animation_values, vec![sample(1, 0.75), sample(2, 0.25)]);
+        current.replay(4..5, &previous, []);
+        assert_eq!(current.animation_values, vec![sample(1, 0.75), sample(2, 0.25), sample(3, 0.25)]);
+        let mut static_only = crate::scene::Painter::default();
+        static_only.replay(1..2, &previous, []);
+        assert!(static_only.animation_values.is_empty());
+        let mut ordered = crate::scene::Painter::default();
+        ordered.replay(0..4, &previous, []);
+        assert_eq!(ordered.animation_values, vec![sample(1, 0.25), sample(2, 0.25)]);
+    }
+}
