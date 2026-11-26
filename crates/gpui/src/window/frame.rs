@@ -53,7 +53,8 @@ pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-    pub(super) accessed_element_states: Vec<(GlobalElementId, TypeId)>,
+    // Tombstones cancel speculative layout-state replay without shifting frame ranges.
+    pub(super) accessed_element_states: Vec<Option<(GlobalElementId, TypeId)>>,
     pub(crate) mouse_listeners: Vec<MouseListener>,
     pub(super) mounted_scroll_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     /// Whether the completed frame contains an application listener that needs every MouseMove
@@ -424,7 +425,10 @@ impl Frame {
                 .sum::<usize>()
                 == self.retained_scene_segments.len()
         );
-        for element_state_key in &self.accessed_element_states {
+        for element_state_key in self.accessed_element_states.iter().flatten() {
+            if prev_frame.element_states.is_empty() {
+                break;
+            }
             if let Some((element_state_key, element_state)) =
                 prev_frame.element_states.remove_entry(element_state_key)
             {
@@ -811,7 +815,7 @@ mod publication_tests {
         candidate
             .element_states
             .insert(key.clone(), test_cached_slot(20));
-        candidate.accessed_element_states.push(key.clone());
+        candidate.accessed_element_states.push(Some(key.clone()));
         candidate.finish(&mut old);
         assert_eq!(test_cached_value(&candidate.element_states[&key]), Some(20));
         assert!(!old.element_states.contains_key(&key));

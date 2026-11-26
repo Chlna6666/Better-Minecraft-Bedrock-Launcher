@@ -224,7 +224,7 @@ impl Window {
         state_type: TypeId,
     ) -> ((GlobalElementId, TypeId), Option<ElementStateBox>) {
         let key = (global_id.clone(), state_type);
-        self.next_frame.accessed_element_states.push(key.clone());
+        self.next_frame.accessed_element_states.push(Some(key.clone()));
         let state = self
             .next_frame
             .element_states

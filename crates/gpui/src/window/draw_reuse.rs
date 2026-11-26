@@ -250,7 +250,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (id.clone(), *type_id)),
+                .cloned(),
         );
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -444,7 +444,7 @@ impl Window {
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
-                .map(|(id, type_id)| (id.clone(), *type_id)),
+                .cloned(),
         );
         self.next_frame.tab_stops.replay(
             &self.rendered_frame.tab_stops.insertion_history

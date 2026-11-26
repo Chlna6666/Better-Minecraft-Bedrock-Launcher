@@ -27,8 +27,8 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) context: Rc<RetainedPaintContext>,
     /// Views drawn inside this one, in post-order.
     pub(crate) nested: SmallVec<[GlobalElementId; 4]>,
-    /// Element states the subtree took while its layout was requested and prepainted.
-    pub(crate) element_state_range: Range<usize>,
+    /// Only states taken during request layout. Prepaint and paint replay their own spans.
+    pub(crate) layout_state_range: Range<usize>,
 }
 
 /// Where the view's own record is inserted once it has painted.
@@ -41,7 +41,7 @@ pub(crate) struct ViewRetentionCommit {
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) context: Rc<RetainedPaintContext>,
-    pub(crate) element_state_range: Range<usize>,
+    pub(crate) layout_state_range: Range<usize>,
     /// The retained source this frame copied, when the view was reused.
     pub(crate) reused: Option<RetainedViewRecord>,
 }
@@ -77,6 +77,7 @@ impl Window {
         let record = self.rendered_frame.view_retentions.get(key)?.clone();
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
+            || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
             || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
         {
             return None;
@@ -149,25 +150,24 @@ impl Window {
     }
 
     /// The element states taken since `start`, in access order.
-    pub(crate) fn view_element_state_range(&self, start: usize) -> Range<usize> {
+    pub(crate) fn view_layout_state_range(&self, start: usize) -> Range<usize> {
         start..self.next_frame.accessed_element_states.len()
     }
 
-    /// Carries the states a reused view's subtree took while it was built.
-    ///
-    /// The prepaint copy only replays the states taken during prepaint; a text layout takes its
-    /// state while its layout is requested, before the copied range begins.
-    fn keep_reused_view_element_states(&mut self, range: &Range<usize>) {
-        let Some(source) = self
-            .rendered_frame
-            .accessed_element_states
-            .get(range.clone())
-        else {
-            return;
-        };
-        self.next_frame
-            .accessed_element_states
-            .extend(source.iter().map(|(id, type_id)| (id.clone(), *type_id)));
+    /// Request-layout replay happens at admission, while the parent's layout
+    /// span is still open. This keeps nested layout state ranges contiguous.
+    pub(crate) fn replay_view_layout_states(&mut self, source: &Range<usize>) -> Range<usize> {
+        let start = self.next_frame.accessed_element_states.len();
+        self.next_frame.accessed_element_states.extend_from_slice(
+            &self.rendered_frame.accessed_element_states[source.clone()],
+        );
+        start..self.next_frame.accessed_element_states.len()
+    }
+
+    /// An admitted view that rebuilds in prepaint no longer owns its
+    /// speculative layout accesses. Keep the offsets stable for its ancestors.
+    pub(crate) fn cancel_view_layout_states(&mut self, range: &Range<usize>) {
+        self.next_frame.accessed_element_states[range.clone()].fill(None);
     }
 
     /// Reserves this frame's record position for a view before its subtree runs.
@@ -234,20 +234,14 @@ impl Window {
         commit: ViewRetentionCommit,
     ) {
         let index = slot.0;
-        let element_state_range = if let Some(source) = commit.reused.as_ref() {
+        if let Some(source) = commit.reused.as_ref() {
             for key in std::iter::once(&self.next_frame.view_retention_order[index]).chain(source.nested.iter()) {
                 if let Some(ElementId::View(owner)) = key.0.last() {
                     self.replayed_view_owners.insert(*owner);
                 }
             }
-            let start = self.next_frame.accessed_element_states.len();
-            self.keep_reused_view_element_states(&source.element_state_range);
-            let states = start..self.next_frame.accessed_element_states.len();
-            self.copy_nested_view_records(source, &commit.prepaint_range, &commit.paint_range, &states);
-            states
-        } else {
-            commit.element_state_range
-        };
+            self.copy_nested_view_records(source, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
+        }
         let key = self.next_frame.view_retention_order[index].clone();
         self.next_frame.view_retentions.insert(
             key,
@@ -259,7 +253,7 @@ impl Window {
                 bounds: commit.bounds,
                 context: commit.context,
                 nested,
-                element_state_range,
+                layout_state_range: commit.layout_state_range,
             },
         );
     }
@@ -287,27 +281,40 @@ impl Window {
             else {
                 continue;
             };
-            let old_states = &nested.element_state_range;
-            if old_states.start < source.element_state_range.start
-                || old_states.end > source.element_state_range.end
-                || old_states.start > old_states.end
+            let old_states = &nested.layout_state_range;
+            let source_prepaint_states = source.prepaint_range.start.accessed_element_states_index
+                ..source.prepaint_range.end.accessed_element_states_index;
+            let target_prepaint_states = target_prepaint.start.accessed_element_states_index
+                ..target_prepaint.end.accessed_element_states_index;
+            // Lazy view layout can run inside the enclosing view's prepaint.
+            // Rebase it against that phase, not against the initial layout span.
+            let layout_states = if old_states.is_empty() {
+                target_states.start..target_states.start
+            } else if let Some(range) = rebase_layout_states(old_states, &source.layout_state_range, target_states)
+                .or_else(|| rebase_layout_states(old_states, &source_prepaint_states, &target_prepaint_states))
             {
+                range
+            } else {
                 continue;
-            }
-            let start = target_states.start + (old_states.start - source.element_state_range.start);
-            let end = target_states.start + (old_states.end - source.element_state_range.start);
-            if end > target_states.end {
-                continue;
-            }
+            };
             self.next_frame.view_retentions.insert(
                 key.clone(),
                 RetainedViewRecord {
                     prepaint_range: prepaint,
                     paint_range: paint,
-                    element_state_range: start..end,
+                    layout_state_range: layout_states,
                     ..nested
                 },
             );
         }
     }
+}
+
+fn rebase_layout_states(range: &Range<usize>, source: &Range<usize>, target: &Range<usize>) -> Option<Range<usize>> {
+    if range.start > range.end || range.start < source.start || range.end > source.end {
+        return None;
+    }
+    let start = target.start.checked_add(range.start - source.start)?;
+    let end = target.start.checked_add(range.end - source.start)?;
+    (end <= target.end).then_some(start..end)
 }

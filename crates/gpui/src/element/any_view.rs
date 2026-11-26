@@ -140,6 +140,7 @@ enum ViewRequestLayoutKind {
     /// finds that what it inherits changed.
     Retained {
         admission: crate::window::RetainedViewRecord,
+        layout_state_range: Range<usize>,
         retention: RetentionDraft,
         reused: Option<ReusedView>,
     },
@@ -150,7 +151,7 @@ enum ViewRequestLayoutKind {
         layout_claims: Rc<[crate::layout::LayoutClaim]>,
         prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
         context: Option<Rc<crate::window::RetainedPaintContext>>,
-        element_state_start: usize,
+        layout_state_range: Range<usize>,
         retention: RetentionDraft,
     },
 }
@@ -190,11 +191,13 @@ impl Element for ViewElement {
             && let Some(admission) = window.admit_retained_view(&global_id, entity_id, cx)
         {
             let layout_root = admission.layout_root;
+            let layout_state_range = window.replay_view_layout_states(&admission.layout_state_range);
             return (
                 layout_root,
                 ViewRequestLayout {
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
+                        layout_state_range,
                         retention: RetentionDraft::default(),
                         reused: None,
                     },
@@ -213,6 +216,7 @@ impl Element for ViewElement {
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
         let layout_claims = window.finish_view_record_claims(claim_start);
+        let layout_state_range = window.view_layout_state_range(element_state_start);
         (
             layout_id,
             ViewRequestLayout {
@@ -222,7 +226,7 @@ impl Element for ViewElement {
                     layout_claims,
                     prepaint_range: None,
                     context: None,
-                    element_state_start,
+                    layout_state_range,
                     retention: RetentionDraft::default(),
                 },
             },
@@ -253,6 +257,7 @@ impl Element for ViewElement {
             match &mut state.kind {
                 ViewRequestLayoutKind::Retained {
                     admission,
+                    layout_state_range,
                     reused,
                     ..
                 } => {
@@ -265,6 +270,7 @@ impl Element for ViewElement {
                     // The committed layout no longer describes what this view inherits. Give the
                     // nodes back and draw the content into the slot the parent allocated.
                     window.release_retained_view(admission);
+                    window.cancel_view_layout_states(layout_state_range);
                     let layout_root = admission.layout_root;
                     let claim_start = window.begin_view_record();
                     let element_state_start = window.begin_view_element_states();
@@ -299,7 +305,7 @@ impl Element for ViewElement {
                         layout_claims,
                         prepaint_range: Some(prepaint_start.clone()..window.prepaint_index()),
                         context: Some(context),
-                        element_state_start,
+                        layout_state_range: element_state_start..element_state_start,
                         retention: retention.take().expect("view retention slot"),
                     };
                 }
@@ -359,7 +365,7 @@ impl Element for ViewElement {
         let entity_id = self.view.entity_id();
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
-            ViewRequestLayoutKind::Retained { admission, retention, reused } => {
+            ViewRequestLayoutKind::Retained { admission, layout_state_range, retention, reused } => {
                 let Some(reused) = reused.as_ref() else {
                     unreachable!("an admitted view is either drawn again or rebuilt in prepaint")
                 };
@@ -380,7 +386,7 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: reused.context.clone(),
-                        element_state_range: 0..0,
+                        layout_state_range: layout_state_range.clone(),
                         reused: Some(admission.clone()),
                     },
                 );
@@ -391,7 +397,7 @@ impl Element for ViewElement {
                 layout_claims,
                 prepaint_range,
                 context,
-                element_state_start,
+                layout_state_range,
                 retention,
                 ..
             } => {
@@ -413,7 +419,7 @@ impl Element for ViewElement {
                         paint_range: start..end,
                         bounds,
                         context: context.clone(),
-                        element_state_range: window.view_element_state_range(*element_state_start),
+                        layout_state_range: layout_state_range.clone(),
                         reused: None,
                     },
                 );
