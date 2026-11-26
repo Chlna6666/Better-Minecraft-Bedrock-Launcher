@@ -343,15 +343,15 @@ impl Painter {
                 return false;
             }
         } else {
-            // Outside a layer, rebuild the order tree in original paint
-            // order. Do not scan the range separately for type validation.
-            for operation in operations.iter() {
-                let PaintOperation::Primitive(primitive) = operation else {
-                    unreachable!("qualified static Quad operation")
-                };
-                self.primitive_bounds
-                    .insert_ordered(Self::ordering_bounds(primitive), primitive.order());
-            }
+            // The qualified typed range has exactly the same leaves as the
+            // operation range. Build a balanced subtree without per-leaf
+            // searches through the destination's existing ordering tree.
+            self.primitive_bounds.extend_ordered(
+                operations.len(),
+                previous.quads.slices(span.quad_range.clone()).flatten().map(|quad| {
+                    (quad.bounds.intersect(&quad.content_mask.bounds), quad.order)
+                }),
+            );
         }
         #[cfg(test)]
         assert!(operations.iter().all(|operation| matches!(operation,
@@ -411,13 +411,12 @@ impl Painter {
         }
         let paint_range = range.start..range.start + count;
         if self.layer_stack.is_empty() {
-            for operation in previous.paint_operations.range(paint_range.clone()).iter() {
-                let PaintOperation::Primitive(primitive) = operation else {
-                    unreachable!()
-                };
-                self.primitive_bounds
-                    .insert_ordered(Self::ordering_bounds(primitive), primitive.order());
-            }
+            self.primitive_bounds.extend_ordered(
+                count,
+                previous.shadows.slices(start..end).flatten().map(|shadow| {
+                    (shadow.bounds.intersect(&shadow.content_mask.bounds), shadow.order)
+                }),
+            );
         }
         self.scene
             .paint_operations

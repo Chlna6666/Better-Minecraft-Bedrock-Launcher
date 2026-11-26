@@ -56,6 +56,58 @@ where
         self.insert_internal(new_bounds, Some(order))
     }
 
+    /// Import already proven orders as a balanced subtree. Future order
+    /// queries depend on leaf bounds and maximum orders, not insertion shape.
+    /// Only the subtree root needs to descend through the existing tree.
+    pub(crate) fn extend_ordered(
+        &mut self,
+        count: usize,
+        mut leaves: impl Iterator<Item = (Bounds<U>, u32)>,
+    ) {
+        if count == 0 {
+            return;
+        }
+        if count == 1 {
+            let (bounds, order) = leaves.next().expect("qualified ordering leaf");
+            self.insert_ordered(bounds, order);
+            return;
+        }
+        self.nodes.reserve(count.saturating_mul(2));
+        let subtree = self.build_ordered_subtree(count, &mut leaves);
+        debug_assert!(leaves.next().is_none());
+        let Some(mut index) = self.root else {
+            self.root = Some(subtree);
+            return;
+        };
+        let bounds = self.nodes[subtree].bounds().clone();
+        let order = self.nodes[subtree].max_ordering();
+        while let Node::Internal { left, right, bounds: node_bounds, .. } = &mut self.nodes[index] {
+            let left = *left;
+            let right = *right;
+            *node_bounds = node_bounds.union(&bounds);
+            self.stack.push(index);
+            let left_cost = bounds.union(self.nodes[left].bounds()).half_perimeter();
+            let right_cost = bounds.union(self.nodes[right].bounds()).half_perimeter();
+            index = if left_cost < right_cost { left } else { right };
+        }
+        self.attach_subtree(index, subtree, order);
+    }
+
+    fn build_ordered_subtree(
+        &mut self,
+        count: usize,
+        leaves: &mut impl Iterator<Item = (Bounds<U>, u32)>,
+    ) -> usize {
+        if count == 1 {
+            let (bounds, order) = leaves.next().expect("qualified ordering leaf");
+            return self.push_leaf(bounds, order);
+        }
+        let left_count = count / 2;
+        let left = self.build_ordered_subtree(left_count, leaves);
+        let right = self.build_ordered_subtree(count - left_count, leaves);
+        self.push_internal(left, right)
+    }
+
     fn insert_internal(&mut self, new_bounds: Bounds<U>, retained_order: Option<u32>) -> u32 {
         // If the tree is empty, make the root the new leaf.
         if self.root.is_none() {
@@ -122,7 +174,12 @@ where
 
         let ordering = retained_order.unwrap_or(max_intersecting_ordering + 1);
         let new_node = self.push_leaf(new_bounds, ordering);
-        let new_parent = self.push_internal(sibling, new_node);
+        self.attach_subtree(sibling, new_node, ordering);
+        ordering
+    }
+
+    fn attach_subtree(&mut self, sibling: usize, subtree: usize, ordering: u32) {
+        let new_parent = self.push_internal(sibling, subtree);
 
         // If there was an old parent, we need to update its children indices.
         if let Some(old_parent) = self.stack.last().copied() {
@@ -153,8 +210,6 @@ where
             }
             *max_ordering = ordering;
         }
-
-        ordering
     }
 
     fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
@@ -360,6 +415,41 @@ mod tests {
                 // Insert the AABB into the tree and collect intersections.
                 let actual_ordering = tree.insert(bounds);
                 assert_eq!(actual_ordering, expected_ordering);
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_subtrees_preserve_future_intersection_orders() {
+        for seed in 0..100 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut tree = BoundsTree::default();
+            let mut reference = Vec::<(Bounds<f32>, u32)>::new();
+            let mut random_bounds = || Bounds::new(
+                Point { x: rng.random_range(-100.0..100.0), y: rng.random_range(-100.0..100.0) },
+                Size { width: rng.random_range(1.0..40.0), height: rng.random_range(1.0..40.0) },
+            );
+            for count in [0, 1, 2, 7, 32, 3, 64, 11] {
+                let mut batch = Vec::new();
+                for _ in 0..count {
+                    let bounds = random_bounds();
+                    let order = reference.iter()
+                        .filter(|(old, _)| old.intersects(&bounds))
+                        .map(|(_, order)| *order)
+                        .max().unwrap_or(0) + 1;
+                    reference.push((bounds, order));
+                    batch.push((bounds, order));
+                }
+                tree.extend_ordered(batch.len(), batch.into_iter());
+                for _ in 0..8 {
+                    let bounds = random_bounds();
+                    let expected = reference.iter()
+                        .filter(|(old, _)| old.intersects(&bounds))
+                        .map(|(_, order)| *order)
+                        .max().unwrap_or(0) + 1;
+                    assert_eq!(tree.insert(bounds), expected, "seed={seed}");
+                    reference.push((bounds, expected));
+                }
             }
         }
     }
