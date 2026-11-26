@@ -215,7 +215,7 @@ impl Element for ViewElement {
 
     fn request_layout(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
@@ -274,7 +274,7 @@ impl Element for ViewElement {
 
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<crate::Pixels>,
         state: &mut Self::RequestLayoutState,

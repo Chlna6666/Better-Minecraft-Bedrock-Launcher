@@ -694,29 +694,6 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
-                // Only the built-in plain text and Div layout state can publish
-                // a semantic descriptor. Specialization by TypeId lets each
-                // Drawable instantiation skip the entire metadata path when
-                // it cannot produce one (custom elements, Views, images, etc.).
-                if TypeId::of::<E>() == TypeId::of::<SharedString>()
-                    || TypeId::of::<E>() == TypeId::of::<&'static str>()
-                    || TypeId::of::<E::RequestLayoutState>() == TypeId::of::<crate::DivLayout>()
-                {
-                    let _work = crate::window::element_work::begin_named(
-                        "layout_retained_metadata",
-                        crate::window::element_work::ElementWorkPhase::Layout,
-                    );
-                    let plain_text_semantics =
-                        retained_plain_text_semantics(&self.element as &dyn Any, window);
-                    window.register_retained_layout_semantics(
-                        &mount.retained_id,
-                        &mount.retained_segment,
-                        layout_id,
-                        &mut request_layout as &mut dyn Any,
-                        plain_text_semantics,
-                        mount.retained_identity_stable,
-                    );
-                }
                 if mount.global_id.is_some() {
                     window.element_id_stack.pop();
                 }
