@@ -82,27 +82,41 @@ impl LayoutClaimBlocks {
         if self.request_blocks().len() <= 1 && self.prepaint_blocks().len() <= 1 {
             return;
         }
-        let mut result = Self::default();
-        for (prepaint, spans) in [(false, self.request_blocks()), (true, self.prepaint_blocks())] {
-            let mut ordered: smallvec::SmallVec<[Range<usize>; 4]> = spans.iter().cloned().collect();
-            ordered.sort_unstable_by_key(|span| span.start);
-            let mut pending: Option<Range<usize>> = None;
-            for span in ordered {
-                if let Some(last) = pending.as_mut()
-                    && last.end == span.start
-                {
-                    last.end = span.end;
-                    continue;
-                }
-                if let Some(last) = pending.replace(span) {
-                    if prepaint { result.push_prepaint(last); } else { result.push_request(last); }
+
+        // Both phases occupy disjoint input spans. Compact each into the
+        // existing storage, never overwriting an unread block or merging
+        // claims across the request/prepaint boundary.
+        fn compact(
+            blocks: &mut [Range<usize>],
+            input: Range<usize>,
+            output: usize,
+        ) -> usize {
+            blocks[input.clone()].sort_unstable_by_key(|span| span.start);
+            let mut written = output;
+            for index in input {
+                let span = blocks[index].clone();
+                if written > output && blocks[written - 1].end == span.start {
+                    blocks[written - 1].end = span.end;
+                } else {
+                    blocks[written] = span;
+                    written += 1;
                 }
             }
-            if let Some(last) = pending {
-                if prepaint { result.push_prepaint(last); } else { result.push_request(last); }
-            }
+            written
         }
-        *self = result;
+
+        let old_request_count = self.request_count;
+        let old_len = self.blocks.len();
+        self.request_count = compact(&mut self.blocks, 0..old_request_count, 0);
+        let len = compact(&mut self.blocks, old_request_count..old_len, self.request_count);
+        self.blocks.truncate(len);
+        // A heavily merged record should not retain a large spilled buffer
+        // for its entire lifetime. The common two-span case returns inline.
+        if self.blocks.spilled()
+            && (len <= 2 || self.blocks.capacity() > len.saturating_mul(2))
+        {
+            self.blocks.shrink_to_fit();
+        }
     }
 
     pub(crate) fn resolve(&self, moves: &SpanRelocations) -> Self {

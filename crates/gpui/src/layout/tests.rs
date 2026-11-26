@@ -466,3 +466,30 @@ fn native_taffy_recomputes_when_root_constraints_change(cx: &mut TestAppContext)
         })
         .unwrap();
 }
+
+#[test]
+fn claim_normalization_compacts_phases_without_crossing_the_boundary() {
+    use super::LayoutClaimBlocks;
+
+    let mut claims = LayoutClaimBlocks::default();
+    for span in [4..6, 0..2, 2..4, 10..12, 11..13] {
+        claims.push_request(span);
+    }
+    for span in [15..17, 13..15, 6..7] {
+        claims.push_prepaint(span);
+    }
+    claims.normalize();
+    assert_eq!(claims.request_blocks(), &[0..6, 10..12, 11..13]);
+    assert_eq!(claims.prepaint_blocks(), &[6..7, 13..17]);
+
+    let mut merged = LayoutClaimBlocks::default();
+    for index in (0..32).rev() {
+        merged.push_request(index..index + 1);
+        merged.push_prepaint(index + 32..index + 33);
+    }
+    assert!(merged.blocks.spilled());
+    merged.normalize();
+    assert_eq!(merged.request_blocks(), &[0..32]);
+    assert_eq!(merged.prepaint_blocks(), &[32..64]);
+    assert!(!merged.blocks.spilled());
+}
