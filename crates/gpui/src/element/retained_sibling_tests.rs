@@ -404,12 +404,17 @@ impl Element for PrepaintReplayBarrier {
 
 struct BarrierChild {
     builds: Rc<Cell<usize>>,
+    last_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl Render for BarrierChild {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.builds.set(self.builds.get() + 1);
-        crate::div().w(px(32.)).h(px(32.)).bg(crate::white())
+        let last_bounds = self.last_bounds.clone();
+        crate::canvas(move |bounds, _, _| last_bounds.set(Some(bounds)), |_, (), _, _| {})
+            .w(px(32.))
+            .h(px(32.))
+            .bg(crate::white())
     }
 }
 
@@ -421,12 +426,15 @@ struct BarrierRoot {
 
 impl Render for BarrierRoot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        crate::div().flex().flex_row().w(px(100.)).h(px(40.))
-            .child(PrepaintReplayBarrier {
-                child: Some(self.child.clone().into_any_element()),
-                enabled: self.barrier,
-            })
-            .child(self.sibling.clone())
+        crate::div().relative().w(px(200.)).h(px(140.)).child(
+            crate::div().absolute().left(px(40.)).top(px(60.))
+                .flex().flex_row().w(px(100.)).h(px(40.))
+                .child(PrepaintReplayBarrier {
+                    child: Some(self.child.clone().into_any_element()),
+                    enabled: self.barrier,
+                })
+                .child(self.sibling.clone()),
+        )
     }
 }
 
@@ -434,9 +442,16 @@ impl Render for BarrierRoot {
 fn prepaint_barrier_revokes_layout_admission_without_invalidating_sibling(cx: &mut TestAppContext) {
     let child_builds = Rc::new(Cell::new(0));
     let sibling_builds = Rc::new(Cell::new(0));
+    let child_bounds = Rc::new(Cell::new(None));
     let (root, window) = cx.update(|cx| {
-        let child = cx.new(|_| BarrierChild { builds: child_builds.clone() });
-        let sibling = cx.new(|_| BarrierChild { builds: sibling_builds.clone() });
+        let child = cx.new(|_| BarrierChild {
+            builds: child_builds.clone(),
+            last_bounds: child_bounds.clone(),
+        });
+        let sibling = cx.new(|_| BarrierChild {
+            builds: sibling_builds.clone(),
+            last_bounds: Rc::new(Cell::new(None)),
+        });
         let window = cx.open_window(WindowOptions::default(), |_, cx| {
             cx.new(|_| BarrierRoot { child, sibling, barrier: false })
         }).unwrap();
@@ -445,6 +460,8 @@ fn prepaint_barrier_revokes_layout_admission_without_invalidating_sibling(cx: &m
 
     draw_window(window, cx);
     let initial = (child_builds.get(), sibling_builds.get());
+    let initial_bounds = child_bounds.get().expect("initial child bounds");
+    assert!(initial_bounds.origin.x >= px(40.) && initial_bounds.origin.y >= px(60.));
     assert!(initial.0 > 0 && initial.1 > 0);
     root.update(cx, |_, cx| cx.notify());
     draw_window(window, cx);
@@ -455,4 +472,6 @@ fn prepaint_barrier_revokes_layout_admission_without_invalidating_sibling(cx: &m
     draw_window(window, cx);
     assert!(child_builds.get() > initial.0, "Prepaint binding changes revoke an earlier layout admission");
     assert_eq!(sibling_builds.get(), initial.1, "the barrier must remain subtree-local");
+    assert_eq!(child_bounds.get(), Some(initial_bounds),
+        "rebuilding an admitted native root must preserve its parent's position");
 }

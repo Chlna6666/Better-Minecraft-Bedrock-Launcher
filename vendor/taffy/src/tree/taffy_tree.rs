@@ -944,6 +944,16 @@ impl<NodeContext> TaffyTree<NodeContext> {
         &self.nodes[node.into()].unrounded_layout
     }
 
+    /// Restores the parent-assigned location and order after computing a subtree
+    /// as a root. Only valid when rounding is disabled. This does not restore
+    /// its measurement cache or overwrite its newly computed box dimensions.
+    pub fn restore_unrounded_layout_placement(&mut self, node: NodeId, placement: &Layout) {
+        assert!(!self.config.use_rounding);
+        let layout = &mut self.nodes[node.into()].unrounded_layout;
+        layout.location = placement.location;
+        layout.order = placement.order;
+    }
+
     /// Get the "detailed layout info" for a node.
     ///
     /// Currently this is only implemented for CSS Grid containers where it contains

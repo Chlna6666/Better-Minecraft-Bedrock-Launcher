@@ -175,6 +175,19 @@ impl Window {
         self.layout_engine = Some(layout_engine);
     }
 
+    pub(crate) fn relayout_retained_root(
+        &mut self,
+        id: LayoutId,
+        available_space: Size<AvailableSpace>,
+        cx: &mut App,
+    ) -> bool {
+        self.invalidator.debug_assert_prepaint();
+        let mut engine = self.layout_engine.take().expect("layout engine installed");
+        let changed = engine.relayout_retained_root(id, available_space, self, cx);
+        self.layout_engine = Some(engine);
+        changed
+    }
+
     pub(crate) fn settle_text_measure(&mut self, id: LayoutId, cx: &mut App) {
         let mut engine = self.layout_engine.take().expect("layout engine installed");
         engine.settle_text_measure(id, self, cx);

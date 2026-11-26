@@ -1291,6 +1291,47 @@ impl TaffyLayoutEngine {
         }
     }
 
+    /// Rebuild a retained subtree in its already allocated parent slot.
+    /// Adapted from GPUI Fast's relayout_in_place (fd15f82), Apache-2.0.
+    /// A paint-only rebuild need not invoke Taffy at all.
+    pub(crate) fn relayout_retained_root(
+        &mut self,
+        id: LayoutId,
+        available_space: Size<AvailableSpace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.replay_pending_measures(window, cx);
+        if !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE)
+            && !self.robbed_parents.contains(&id)
+        {
+            return false;
+        }
+
+        let placement = *self.taffy.unrounded_layout(id.into());
+        let original = self.taffy.style(id.into()).expect(EXPECT_MESSAGE).clone();
+        let mut held = original.clone();
+        // Retain the actual device-pixel border box, including a size assigned
+        // by flex/grid stretch rather than the subtree's intrinsic size.
+        held.size = taffy::geometry::Size {
+            width: taffy::style::Dimension::length(placement.size.width),
+            height: taffy::style::Dimension::length(placement.size.height),
+        };
+        held.min_size = taffy::geometry::Size {
+            width: taffy::style::LengthPercentageAuto::length(placement.size.width),
+            height: taffy::style::LengthPercentageAuto::length(placement.size.height),
+        };
+        held.max_size = held.min_size;
+        held.box_sizing = taffy::style::BoxSizing::BorderBox;
+        self.taffy.set_style(id.into(), held).expect(EXPECT_MESSAGE);
+        self.compute_layout(id, available_space, window, cx);
+        self.taffy.set_style(id.into(), original).expect(EXPECT_MESSAGE);
+        self.taffy.restore_unrounded_layout_placement(id.into(), &placement);
+        self.bounds_mutations.push(BoundsMutation { id, moved: true });
+        self.invalidate_changed_bounds();
+        true
+    }
+
     #[cfg_attr(feature = "stacker", stacksafe::stacksafe)]
     pub fn compute_layout(
         &mut self,

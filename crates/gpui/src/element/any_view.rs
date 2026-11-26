@@ -345,15 +345,25 @@ impl Element for ViewElement {
                     };
                     let rebuilt_root = window.with_layout_key_of_prepainting_element(|window| {
                         let rebuilt_root = element.request_layout(window, cx);
-                        element.prepaint_as_root(
-                            bounds.origin,
-                            crate::size(
-                                crate::AvailableSpace::Definite(bounds.size.width),
-                                crate::AvailableSpace::Definite(bounds.size.height),
-                            ),
-                            window,
-                            cx,
+                        let available_space = crate::size(
+                            crate::AvailableSpace::Definite(bounds.size.width),
+                            crate::AvailableSpace::Definite(bounds.size.height),
                         );
+                        if rebuilt_root == layout_root {
+                            // The parent has already positioned this native node.
+                            // Do not lay it out as an independent root and add its
+                            // absolute position again.
+                            if window.relayout_retained_root(rebuilt_root, available_space, cx) {
+                                window.request_animation_frame();
+                            }
+                            element.prepaint(window, cx);
+                        } else {
+                            element.layout_as_root(available_space, window, cx);
+                            let native_origin =
+                                window.layout_bounds(rebuilt_root).origin - window.element_offset();
+                            element.prepaint_at(bounds.origin - native_origin, window, cx);
+                            window.request_animation_frame();
+                        }
                         rebuilt_root
                     });
                     let mut layout_claims = LayoutClaimBlocks::prepaint(claim_start..window.claim_log_len());
