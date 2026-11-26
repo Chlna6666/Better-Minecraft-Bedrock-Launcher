@@ -117,8 +117,11 @@ impl Window {
                 changed.push(source.owner);
             }
         }
-        self.invalidator.changed_state_owners(&mut changed);
-        self.invalidator.invalidate_dependent_views(changed);
+        if self.invalidator.changed_state_owners(&mut changed) {
+            self.invalidator.set_dirty(true);
+        } else {
+            self.invalidator.invalidate_dependent_views(changed);
+        }
     }
 }
 

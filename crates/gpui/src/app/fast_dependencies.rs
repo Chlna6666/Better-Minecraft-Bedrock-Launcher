@@ -354,6 +354,17 @@ fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
     if states.len() <= 1 {
         return Rc::from(states);
     }
+    // Repeated getters commonly record the same handle dozens of times.
+    // Keep its earliest snapshot without allocating a hash table.
+    if states.iter().skip(1).all(|state| state.id() == states[0].id()) {
+        return Rc::from(&states[..1]);
+    }
+    if states.len() <= 8 {
+        return states.iter().enumerate()
+            .filter(|(index, state)| !states[..*index].iter().any(|old| old.id() == state.id()))
+            .map(|(_, state)| state.clone())
+            .collect();
+    }
     let mut seen = FxHashSet::with_capacity_and_hasher(states.len(), Default::default());
     states.iter().filter(|state| seen.insert(state.id())).cloned().collect()
 }
@@ -371,5 +382,28 @@ impl StateReadRecording {
 impl Drop for StateReadRecording {
     fn drop(&mut self) {
         STATE_READ_LOG.with(|current| { current.replace(self.0.take()); });
+    }
+}
+
+#[cfg(test)]
+mod state_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn dedup_preserves_earliest_snapshot_in_small_and_repeated_logs() {
+        let first = StateVersion::default();
+        let second = StateVersion::default();
+        let a = StateRead::new(&first);
+        first.bump();
+        let b = StateRead::new(&first);
+        let c = StateRead::new(&second);
+        let repeated = std::iter::once(a.clone()).chain(std::iter::repeat_n(b.clone(), 64)).collect::<Vec<_>>();
+        let reads = unique_states(&repeated);
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].status(), StateReadStatus::Changed);
+        let reads = unique_states(&[a, c.clone(), b, c]);
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].status(), StateReadStatus::Changed);
+        assert_eq!(reads[1].status(), StateReadStatus::Unchanged);
     }
 }

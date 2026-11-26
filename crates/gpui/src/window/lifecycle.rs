@@ -319,20 +319,37 @@ impl WindowInvalidator {
         changed
     }
 
-    pub(in crate::window) fn changed_state_owners(&self, changed: &mut SmallVec<[EntityId; 4]>) {
+    /// Poll the committed state reads once. Like entity and global reads,
+    /// a changed read without a resolved route requires a full traversal.
+    /// Returns whether scoped invalidation is insufficient.
+    pub(in crate::window) fn changed_state_owners(&self, changed: &mut SmallVec<[EntityId; 4]>) -> bool {
         let mut inner = self.inner.borrow_mut();
-        for (owner, entry) in &mut inner.view_reads {
-            let reads = &mut entry.reads;
-            if reads.states.iter().any(|read| read.status() == crate::StateReadStatus::Changed)
-                && let Some(owner) = *owner
-                && !changed.contains(&owner)
-            {
-                changed.push(owner);
+        let mut unscoped = false;
+        for entry in inner.view_reads.values_mut() {
+            let mut has_change = false;
+            let mut has_dead = false;
+            for read in entry.reads.states.iter() {
+                match read.status() {
+                    crate::StateReadStatus::Changed => has_change = true,
+                    crate::StateReadStatus::Dead => has_dead = true,
+                    crate::StateReadStatus::Unchanged => {}
+                }
             }
-            if reads.states.iter().any(|read| read.status() == crate::StateReadStatus::Dead) {
-                reads.states = reads.states.iter().filter(|read| read.status() != crate::StateReadStatus::Dead).cloned().collect();
+            if has_change {
+                match entry.route {
+                    Some(owner) if !changed.contains(&owner) => changed.push(owner),
+                    Some(_) => {}
+                    None => unscoped = true,
+                }
+            }
+            if has_dead {
+                entry.reads.states = entry.reads.states.iter()
+                    .filter(|read| read.status() != crate::StateReadStatus::Dead)
+                    .cloned()
+                    .collect();
             }
         }
+        unscoped
     }
 
     /// Global notifications are already dispatched by the App effect queue.
@@ -667,6 +684,43 @@ mod view_invalidation_tests {
             &mut log, &mut entities, &FxHashSet::default(), |_| true, |_| false,
         ));
         assert!(invalidator.inner.borrow().render_dependencies.is_empty());
+    }
+
+    #[test]
+    fn state_reads_invalidate_resolved_routes_and_fall_back_for_unscoped_reads() {
+        let invalidator = WindowInvalidator::new();
+        let scoped = crate::StateVersion::default();
+        let unscoped = crate::StateVersion::default();
+        let orphaned = crate::StateVersion::default();
+        let owner = EntityId::from(1);
+        let orphan = EntityId::from(2);
+        let mut log = crate::AppDependencies::default();
+        let recording = log.begin_state_reads();
+        unscoped.read();
+        log.set_owner(Some(owner));
+        scoped.read();
+        log.set_owner(Some(orphan));
+        orphaned.read();
+        drop(recording);
+        invalidator.commit_frame_dependencies(
+            &mut log, &mut FxHashSet::default(), &FxHashSet::default(),
+            |_| true, |id| id != orphan,
+        );
+
+        let mut changed = SmallVec::new();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert!(changed.is_empty());
+        scoped.bump();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owner]);
+
+        orphaned.bump();
+        assert!(invalidator.changed_state_owners(&mut changed));
+        drop(orphaned);
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        unscoped.bump();
+        assert!(invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owner]);
     }
 
     #[test]
