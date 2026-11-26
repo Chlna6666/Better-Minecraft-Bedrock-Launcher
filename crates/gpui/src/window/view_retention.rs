@@ -31,6 +31,13 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) layout_state_range: Range<usize>,
 }
 
+/// Prepaint order is also record order. A reservation without a paint commit
+/// remains a hole, and cannot be selected as a rebuild/replay source.
+pub(crate) struct ViewRecordSlot {
+    pub(crate) key: GlobalElementId,
+    pub(crate) record: Option<RetainedViewRecord>,
+}
+
 /// Where the view's own record is inserted once it has painted.
 pub(crate) struct ViewRetentionSlot(usize);
 
@@ -74,11 +81,12 @@ impl Window {
         if !self.view_retention_eligible(view_id, cx) {
             return None;
         }
-        let record = self.rendered_frame.view_retentions.get(key)?.clone();
+        let index = *self.rendered_frame.view_retentions.get(key)?;
+        let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?.clone();
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
             || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
-            || self.rendered_frame.view_retention_order.get(record.nested.clone()).is_none()
+            || self.rendered_frame.view_retention_records.get(record.nested.clone()).is_none()
         {
             return None;
         }
@@ -134,8 +142,10 @@ impl Window {
         }
         // Reserve nested view positions during prepaint, not paint. Ancestors
         // finish collecting their descendant order before paint begins.
-        self.next_frame.view_retention_order.extend_from_slice(
-            &self.rendered_frame.view_retention_order[record.nested.clone()],
+        self.next_frame.view_retention_records.extend(
+            self.rendered_frame.view_retention_records[record.nested.clone()].iter().map(|slot| {
+                ViewRecordSlot { key: slot.key.clone(), record: None }
+            }),
         );
         Some(start..end)
     }
@@ -171,8 +181,9 @@ impl Window {
     /// Positions are allocated in prepaint order, so everything a view prepaints takes a later
     /// position than the view itself and forms one span.
     pub(crate) fn reserve_view_retention(&mut self, key: GlobalElementId) -> ViewRetentionSlot {
-        self.next_frame.view_retention_order.push(key);
-        ViewRetentionSlot(self.next_frame.view_retention_order.len() - 1)
+        let index = self.next_frame.view_retention_records.len();
+        self.next_frame.view_retention_records.push(ViewRecordSlot { key, record: None });
+        ViewRetentionSlot(index)
     }
 
     /// The contiguous descendants this view prepainted, without copying their keys.
@@ -180,7 +191,7 @@ impl Window {
         &self,
         slot: &ViewRetentionSlot,
     ) -> Range<usize> {
-        slot.0 + 1..self.next_frame.view_retention_order.len()
+        slot.0 + 1..self.next_frame.view_retention_records.len()
     }
 
     pub(crate) fn claim_log_len(&self) -> usize {
@@ -199,18 +210,17 @@ impl Window {
     ) {
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {
-            let source_keys = &self.rendered_frame.view_retention_order[source.nested.clone()];
-            for key in std::iter::once(&self.next_frame.view_retention_order[index]).chain(source_keys) {
-                if let Some(ElementId::View(owner)) = key.0.last() {
+            let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
+            for entry in std::iter::once(&self.next_frame.view_retention_records[index]).chain(source_slots) {
+                if let Some(ElementId::View(owner)) = entry.key.0.last() {
                     self.replayed_view_owners.insert(*owner);
                 }
             }
             self.copy_nested_view_records(source, &nested, &commit.layout_claims, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
         }
-        let key = self.next_frame.view_retention_order[index].clone();
-        self.next_frame.view_retentions.insert(
-            key,
-            RetainedViewRecord {
+        let entry = &mut self.next_frame.view_retention_records[index];
+        self.next_frame.view_retentions.insert(entry.key.clone(), index);
+        entry.record = Some(RetainedViewRecord {
                 layout_root: commit.layout_root,
                 layout_claims: commit.layout_claims,
                 prepaint_range: commit.prepaint_range,
@@ -219,8 +229,7 @@ impl Window {
                 context: commit.context,
                 nested,
                 layout_state_range: commit.layout_state_range,
-            },
-        );
+        });
     }
 
     fn copy_nested_view_records(
@@ -232,8 +241,8 @@ impl Window {
         target_paint: &Range<PaintIndex>,
         target_states: &Range<usize>,
     ) {
-        for key in &self.rendered_frame.view_retention_order[source.nested.clone()] {
-            let Some(nested) = self.rendered_frame.view_retentions.get(key).cloned() else {
+        for (offset, entry) in self.rendered_frame.view_retention_records[source.nested.clone()].iter().enumerate() {
+            let Some(nested) = entry.record.clone() else {
                 continue;
             };
             let Some(prepaint) = rebase_prepaint_range(
@@ -270,17 +279,17 @@ impl Window {
             let Some(layout_claims) = rebase_claims(&nested.layout_claims, &source.layout_claims, target_claims) else {
                 continue;
             };
-            self.next_frame.view_retentions.insert(
-                key.clone(),
-                RetainedViewRecord {
+            let index = target_nested.start + offset;
+            let entry = &mut self.next_frame.view_retention_records[index];
+            self.next_frame.view_retentions.insert(entry.key.clone(), index);
+            entry.record = Some(RetainedViewRecord {
                     prepaint_range: prepaint,
                     paint_range: paint,
                     layout_state_range: layout_states,
                     nested: descendants,
                     layout_claims,
                     ..nested
-                },
-            );
+            });
         }
     }
 }

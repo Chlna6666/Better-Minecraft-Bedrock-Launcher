@@ -120,10 +120,10 @@ impl Window {
 
         // Damage the nearest retained view instead of maintaining a second
         // per-element bounds map. Unknown owners conservatively redraw the window.
-        let bounds = self.rendered_frame.view_retentions.iter()
-            .filter(|(key, _)| target.retained_id.0.starts_with(key.0.as_ref()))
-            .max_by_key(|(key, _)| key.0.len())
-            .map(|(_, record)| record.bounds);
+        let bounds = self.rendered_frame.view_retention_records.iter()
+            .filter(|entry| entry.record.is_some() && target.retained_id.0.starts_with(entry.key.0.as_ref()))
+            .max_by_key(|entry| entry.key.0.len())
+            .and_then(|entry| entry.record.as_ref().map(|record| record.bounds));
         if let Some(bounds) = bounds {
             if !bounds.is_empty() {
                 self.animation_dirty_region.push(bounds.scale(self.scale_factor));

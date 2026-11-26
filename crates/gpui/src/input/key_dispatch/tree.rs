@@ -220,73 +220,59 @@ impl DispatchTree {
         self.node_stack.pop();
     }
 
-    /// Candidate-frame replay must not drain listeners from the committed
-    /// tree: a degraded draw may discard the candidate before publication.
-    /// All three listener types use Rc callbacks, so cloning is shallow.
-    fn replay_node(&mut self, source: &DispatchNode) {
-        self.push_node();
-        if let Some(context) = source.context.clone() {
-            self.set_key_context(context);
+    /// Append a contiguous dispatch segment, translating in-segment parents
+    /// by offset. The caller resolves parents outside the segment (including
+    /// across splice gaps). No active key-context or view stack is traversed.
+    /// Committed callbacks remain owned by the source until publication.
+    pub(crate) fn replay_segment(
+        &mut self,
+        old_range: Range<usize>,
+        source: &Self,
+        focus: Option<FocusId>,
+        mut external_parent: impl FnMut(Option<DispatchNodeId>) -> Option<DispatchNodeId>,
+    ) -> ReusedSubtree {
+        let start = self.nodes.len();
+        let new_range = start..start + old_range.len();
+        let mut contains_focus = false;
+        self.nodes.reserve(old_range.len());
+        for (offset, node) in source.nodes[old_range.clone()].iter().enumerate() {
+            let id = DispatchNodeId(start + offset);
+            let parent = match node.parent {
+                Some(parent) if old_range.contains(&parent.0) => {
+                    debug_assert!(parent.0 < old_range.start + offset);
+                    Some(DispatchNodeId(start + parent.0 - old_range.start))
+                }
+                parent => external_parent(parent),
+            };
+            debug_assert!(parent.is_none_or(|parent| parent.0 < id.0));
+            if let Some(focus_id) = node.focus_id {
+                self.focusable_node_ids.insert(focus_id, id);
+                contains_focus |= Some(focus_id) == focus;
+            }
+            if let Some(view_id) = node.view_id {
+                self.view_node_ids.insert(view_id, id);
+            }
+            self.nodes.push(DispatchNode {
+                key_listeners: node.key_listeners.clone(),
+                action_listeners: node.action_listeners.clone(),
+                modifiers_changed_listeners: node.modifiers_changed_listeners.clone(),
+                context: node.context.clone(),
+                focus_id: node.focus_id,
+                view_id: node.view_id,
+                parent,
+            });
         }
-        if let Some(focus_id) = source.focus_id {
-            self.set_focus_id(focus_id);
-        }
-        if let Some(view_id) = source.view_id {
-            self.set_view_id(view_id);
-        }
-
-        let target = self.active_node();
-        target.key_listeners.clone_from(&source.key_listeners);
-        target.action_listeners.clone_from(&source.action_listeners);
-        target
-            .modifiers_changed_listeners
-            .clone_from(&source.modifiers_changed_listeners);
+        ReusedSubtree { old_range, new_range, contains_focus }
     }
 
     pub fn reuse_subtree(
         &mut self,
         old_range: Range<usize>,
-        source: &mut Self,
+        source: &Self,
         focus: Option<FocusId>,
     ) -> ReusedSubtree {
-        let new_range = self.nodes.len()..self.nodes.len() + old_range.len();
-
-        let mut contains_focus = false;
-        let mut source_stack = vec![];
-        for (source_node_id, source_node) in source
-            .nodes
-            .iter()
-            .enumerate()
-            .skip(old_range.start)
-            .take(old_range.len())
-        {
-            let source_node_id = DispatchNodeId(source_node_id);
-            while let Some(source_ancestor) = source_stack.last() {
-                if source_node.parent == Some(*source_ancestor) {
-                    break;
-                } else {
-                    source_stack.pop();
-                    self.pop_node();
-                }
-            }
-
-            source_stack.push(source_node_id);
-            if source_node.focus_id.is_some() && source_node.focus_id == focus {
-                contains_focus = true;
-            }
-            self.replay_node(source_node);
-        }
-
-        while !source_stack.is_empty() {
-            source_stack.pop();
-            self.pop_node();
-        }
-
-        ReusedSubtree {
-            old_range,
-            new_range,
-            contains_focus,
-        }
+        let parent = self.active_node_id();
+        self.replay_segment(old_range, source, focus, |_| parent)
     }
 
     pub fn truncate(&mut self, index: usize) {
@@ -421,7 +407,7 @@ mod retained_dispatch_replay_tests {
         committed.on_action(TypeId::of::<u8>(), Rc::new(|_, _, _, _| {}));
         committed.pop_node();
 
-        candidate.reuse_subtree(0..1, &mut committed, None);
+        candidate.reuse_subtree(0..1, &committed, None);
         for tree in [&committed, &candidate] {
             assert_eq!(tree.nodes[0].key_listeners.len(), 1);
             assert_eq!(tree.nodes[0].modifiers_changed_listeners.len(), 1);

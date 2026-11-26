@@ -253,7 +253,7 @@ impl Window {
 
         let reused_subtree = self.next_frame.dispatch_tree.reuse_subtree(
             range.start.dispatch_tree_index..range.end.dispatch_tree_index,
-            &mut self.rendered_frame.dispatch_tree,
+            &self.rendered_frame.dispatch_tree,
             self.focus,
         );
 

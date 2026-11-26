@@ -77,12 +77,9 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
     retained_scene_index_spill_capacity: usize,
-    /// Whole-view retained records. One entry per view drawn into this frame, keyed by its
-    /// element path. A view that is drawn again from the committed frame is copied from here
-    /// without running `Render` or walking its subtree.
-    pub(crate) view_retentions: FxHashMap<GlobalElementId, super::view_retention::RetainedViewRecord>,
-    /// Prepaint-order keys of [`Self::view_retentions`], so one view's descendants form one span.
-    pub(crate) view_retention_order: Vec<GlobalElementId>,
+    /// Path lookup only; the actual records are stored in prepaint order.
+    pub(crate) view_retentions: FxHashMap<GlobalElementId, usize>,
+    pub(crate) view_retention_records: Vec<super::view_retention::ViewRecordSlot>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -284,7 +281,7 @@ impl Frame {
             retained_scene_index: FxHashMap::default(),
             retained_scene_index_spill_capacity: 0,
             view_retentions: FxHashMap::default(),
-            view_retention_order: Vec::new(),
+            view_retention_records: Vec::new(),
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
@@ -334,7 +331,7 @@ impl Frame {
         self.retained_scene_index.clear();
         self.retained_scene_index_spill_capacity = 0;
         self.view_retentions.clear();
-        self.view_retention_order.clear();
+        self.view_retention_records.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -493,7 +490,7 @@ impl Frame {
             + self.retained_scene_index.capacity()
             + self.retained_scene_index_spill_capacity
             + self.view_retentions.capacity()
-            + self.view_retention_order.capacity()
+            + self.view_retention_records.capacity()
             + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
     }
@@ -570,7 +567,7 @@ impl Frame {
         if self.view_retentions.capacity() > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
             self.view_retentions.shrink_to(view_target);
         }
-        trim_frame_vec_capacity(&mut self.view_retention_order, FRAME_MIN_RETAINED_CAPACITY,
+        trim_frame_vec_capacity(&mut self.view_retention_records, FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
         self.tab_stops.trim_retained_capacity(false);
     }
@@ -621,7 +618,7 @@ impl Frame {
             self.retained_scene_index.shrink_to(index_target);
         }
 
-        trim_vec_against!(view_retention_order);
+        trim_vec_against!(view_retention_records);
         let view_target = FRAME_MIN_RETAINED_CAPACITY.max(current.view_retentions.len());
         if self.view_retentions.capacity()
             > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
@@ -635,9 +632,9 @@ impl Frame {
     /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
     pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
         self.view_retentions.capacity()
-            .saturating_mul(std::mem::size_of::<(GlobalElementId, super::view_retention::RetainedViewRecord)>())
-            .saturating_add(self.view_retention_order.capacity()
-                .saturating_mul(std::mem::size_of::<GlobalElementId>()))
+            .saturating_mul(std::mem::size_of::<(GlobalElementId, usize)>())
+            .saturating_add(self.view_retention_records.capacity()
+                .saturating_mul(std::mem::size_of::<super::view_retention::ViewRecordSlot>()))
 
     }
 
@@ -667,7 +664,7 @@ impl Frame {
                 self.retained_scene_segments.shrink_to(floor);
                 self.trim_retained_scene_index(floor);
                 self.view_retentions.shrink_to(floor.max(self.view_retentions.len()));
-                self.view_retention_order.shrink_to(floor.max(self.view_retention_order.len()));
+                self.view_retention_records.shrink_to(floor.max(self.view_retention_records.len()));
                 self.tab_stops
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 #[cfg(any(test, feature = "test-support"))]

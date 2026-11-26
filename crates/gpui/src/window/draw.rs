@@ -397,7 +397,7 @@ impl Window {
             self.handle.window_id().as_u64(),
             self.rendered_frame.retained_metadata_inline_bytes(),
             self.next_frame.retained_metadata_inline_bytes(),
-            self.rendered_frame.view_retentions.len(),
+            self.rendered_frame.view_retention_records.len(),
             std::mem::size_of::<super::view_retention::RetainedViewRecord>(),
         );
         self.viewport_dependent_views
