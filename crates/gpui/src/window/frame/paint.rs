@@ -26,6 +26,7 @@ pub(crate) struct Paint {
     pub(crate) scene: Scene,
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) geometry: PaintGeometry,
+    pub(crate) layers: SceneLayers,
 }
 
 impl Paint {
@@ -38,6 +39,7 @@ impl Paint {
             scene,
             retained_paint,
             geometry,
+            layers: SceneLayers::default(),
         }
     }
 }

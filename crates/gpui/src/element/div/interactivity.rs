@@ -208,6 +208,7 @@ impl Interactivity {
                             style.overflow_mask(bounds, window.rem_size()),
                             |window| {
                                 let layer_start = self.scroll_offset.as_ref().map(|_| window.prepaint_index());
+                                let layer_key = layer_start.as_ref().and_then(|_| crate::fast::layout_key::current_layout_key(window));
                                 let hitbox = if self.should_insert_hitbox(&style, window, cx) {
                                     Some(window.insert_hitbox(bounds, self.hitbox_behavior))
                                 } else {
@@ -239,7 +240,7 @@ impl Interactivity {
                                         let prepaint = start..window.prepaint_index();
                                         let owner = window.current_view();
                                         window.next_frame.record_layer_prepaint(
-                                            hitbox, owner, viewport,
+                                            hitbox, owner, layer_key, viewport,
                                             crate::window::LayerScrollPosition::Pixels(final_offset),
                                             &offset.version, prepaint,
                                         );

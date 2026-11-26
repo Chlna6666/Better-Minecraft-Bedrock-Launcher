@@ -125,6 +125,7 @@ impl Element for List {
         style.refine(&self.style);
 
         let layer_start = window.prepaint_index();
+        let layer_key = crate::fast::layout_key::current_layout_key(window);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
         if state
@@ -167,7 +168,7 @@ impl Element for List {
         let prepaint = layer_start..window.prepaint_index();
         let owner = window.current_view();
         window.next_frame.record_layer_prepaint(
-            hitbox.id, owner, viewport,
+            hitbox.id, owner, layer_key, viewport,
             crate::window::LayerScrollPosition::List(layout.scroll_top),
             &state.version, prepaint,
         );
@@ -186,6 +187,7 @@ impl Element for List {
     ) {
         let current_view = window.current_view();
         let layer_start = window.paint_index();
+        let layer_hitbox = prepaint.hitbox.id;
         window.with_content_mask(
             Some(ContentMask {
                 bounds,
@@ -193,7 +195,10 @@ impl Element for List {
             }),
             |window| {
                 for item in &mut prepaint.layout.item_layouts {
+                    let start = window.next_frame.painter.len();
                     item.element.paint(window, cx);
+                    let end = window.next_frame.painter.len();
+                    window.next_frame.record_layer_row(layer_hitbox, item.index, start, end);
                 }
             },
         );

@@ -3,6 +3,9 @@ use super::*;
 
 mod paint;
 mod retained_scene_index;
+mod layers;
+pub(crate) use layers::SceneLayers;
+use layers::LayerPart;
 pub(crate) use paint::{Paint, PaintGeometry};
 use retained_scene_index::Entry;
 
@@ -73,7 +76,7 @@ struct ScrollInputGeometry {
 
 /// A variable-height list has a stable logical position, not a stable
 /// absolute pixel offset when item measurements change.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) enum LayerScrollPosition {
     Pixels(Point<Pixels>),
     List(crate::ListOffset),
@@ -84,11 +87,13 @@ pub(crate) enum LayerScrollPosition {
 pub(super) struct LayerRecord {
     hitbox: HitboxId,
     owner: EntityId,
+    layout_key: Option<u64>,
     viewport: ContentMask<Pixels>,
     offset: LayerScrollPosition,
     offset_read: crate::StateRead,
     prepaint: Range<PrepaintStateIndex>,
     paint: Option<Range<PaintIndex>>,
+    rows: Vec<LayerPart>,
     /// A carried prepaint must be paired with the same committed paint.
     replayed: bool,
 }
@@ -114,6 +119,7 @@ pub(crate) struct Frame {
     pub(super) layer_records: Vec<LayerRecord>,
     layer_record_slots: FxHashMap<HitboxId, usize>,
     painted_layers: Vec<usize>,
+    pending_scene_layers: SceneLayers,
     pub(crate) input_clip_epoch: u64,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -291,11 +297,13 @@ impl Frame {
     /// Move finalized drawing storage into its sole publication, then share that publication.
     pub(crate) fn publish(&mut self, geometry: PaintGeometry) -> Arc<Paint> {
         assert!(self.paint.is_none(), "Paint may only be published once");
-        let paint = Arc::new(Paint::new(
+        let mut paint = Paint::new(
             self.painter.take_scene(),
             Arc::clone(&self.retained_paint),
             geometry,
-        ));
+        );
+        paint.layers = std::mem::take(&mut self.pending_scene_layers);
+        let paint = Arc::new(paint);
         self.paint = Some(Arc::clone(&paint));
         paint
     }
@@ -324,6 +332,7 @@ impl Frame {
             layer_records: Vec::new(),
             layer_record_slots: FxHashMap::default(),
             painted_layers: Vec::new(),
+            pending_scene_layers: SceneLayers::default(),
             input_clip_epoch: 0,
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -389,6 +398,7 @@ impl Frame {
         self.layer_records.clear();
         self.layer_record_slots.clear();
         self.painted_layers.clear();
+        self.pending_scene_layers = SceneLayers::default();
         self.input_clip_epoch = 0;
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -442,6 +452,7 @@ impl Frame {
         &mut self,
         hitbox: HitboxId,
         owner: EntityId,
+        layout_key: Option<u64>,
         viewport: ContentMask<Pixels>,
         offset: LayerScrollPosition,
         version: &crate::StateVersion,
@@ -455,9 +466,9 @@ impl Frame {
             return;
         }
         self.push_layer_record(LayerRecord {
-            hitbox, owner, viewport, offset,
+            hitbox, owner, layout_key, viewport, offset,
             offset_read: crate::StateRead::new(version),
-            prepaint, paint: None, replayed: false,
+            prepaint, paint: None, rows: Vec::new(), replayed: false,
         });
     }
 
@@ -465,6 +476,23 @@ impl Frame {
         let index = self.layer_records.len();
         self.layer_record_slots.insert(record.hitbox, index);
         self.layer_records.push(record);
+    }
+
+    /// Capture a list row's logical identity and the operations it emitted.
+    /// No primitive payload or row element is copied.
+    pub(crate) fn record_layer_row(
+        &mut self,
+        hitbox: HitboxId,
+        row: usize,
+        start: usize,
+        end: usize,
+    ) {
+        if let Some(&index) = self.layer_record_slots.get(&hitbox) {
+            let record = &mut self.layer_records[index];
+            if !record.replayed && record.paint.is_none() {
+                record.rows.push(LayerPart { row: Some(row), operations: start..end });
+            }
+        }
     }
 
     pub(crate) fn record_layer_paint(&mut self, hitbox: HitboxId, paint: Range<PaintIndex>) {
@@ -507,10 +535,10 @@ impl Frame {
             }
             let Some(prepaint) = super::draw_reuse::rebase_prepaint_range(&record.prepaint, source, target) else { continue; };
             self.push_layer_record(LayerRecord {
-                hitbox: record.hitbox, owner: record.owner,
+                hitbox: record.hitbox, owner: record.owner, layout_key: record.layout_key,
                 viewport: record.viewport, offset: record.offset,
                 offset_read: record.offset_read.clone(),
-                prepaint, paint: None, replayed: true,
+                prepaint, paint: None, rows: Vec::new(), replayed: true,
             });
         }
     }
@@ -539,6 +567,15 @@ impl Frame {
                 continue;
             }
             if let Some(paint) = super::draw_reuse::rebase_paint_range(paint, source, target) {
+                let old_start = old.paint.as_ref().unwrap().start.scene_index;
+                let new_start = paint.start.scene_index;
+                record.rows.extend(old.rows.iter().filter_map(|part| {
+                    let start = part.operations.start.checked_sub(old_start)?.checked_add(new_start)?;
+                    let end = part.operations.end.checked_sub(old_start)?.checked_add(new_start)?;
+                    (end <= paint.end.scene_index).then_some(LayerPart {
+                        row: part.row, operations: start..end,
+                    })
+                }));
                 record.paint = Some(paint);
                 self.painted_layers.push(slot);
             }
@@ -767,6 +804,13 @@ impl Frame {
                 same_paint,
             );
         }
+        // Freeze the exact source fragments after the authoritative Scene
+        // and its shared operation segments are finalized.
+        self.pending_scene_layers = SceneLayers::capture(
+            &self.painter.scene,
+            &self.layer_records,
+            prev_frame.paint.as_ref().map(|paint| &paint.layers),
+        );
     }
 
     /// Abort a candidate generation without dropping IME handlers still
