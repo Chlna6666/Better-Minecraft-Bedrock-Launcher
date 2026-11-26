@@ -1,4 +1,3 @@
-use super::lifecycle::RetainedInvalidationScope;
 use super::*;
 
 impl Window {
@@ -13,13 +12,9 @@ impl Window {
         targets: impl IntoIterator<Item = (EntityId, Option<GlobalElementId>)>,
     ) {
         let mut any = false;
-        for (entity_id, retained_id) in targets {
+        for (entity_id, _) in targets {
             any = true;
-            let _ = self.invalidator.invalidate_retained_path_scoped(
-                entity_id,
-                retained_id.as_ref(),
-                RetainedInvalidationScope::InvalidateSubtree,
-            );
+            let _ = self.invalidator.invalidate_owned_view(entity_id);
         }
         if any {
             self.schedule_image_ready_frame();

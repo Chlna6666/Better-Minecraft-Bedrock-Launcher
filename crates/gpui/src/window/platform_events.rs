@@ -1,4 +1,3 @@
-use super::lifecycle::RetainedInvalidationScope;
 use super::*;
 
 /// Actual scene dependencies, not the Win32 modal-loop flag, determine
@@ -160,12 +159,7 @@ impl Window {
                 // fingerprint and frame-local input ranges unchanged. Views
                 // reading Window::viewport_size/bounds are explicitly dirty
                 // below even if their outer bounds happen to stay fixed.
-                let scope = if text_rasterization_changed {
-                    RetainedInvalidationScope::RelayoutSubtree
-                } else {
-                    RetainedInvalidationScope::ReconcileSubtree
-                };
-                self.invalidator.invalidate_scoped_view(root_id, cx, scope);
+                self.invalidator.invalidate_view(root_id, cx);
             } else {
                 self.invalidator.invalidate_view(root_id, cx);
             }

@@ -2159,39 +2159,11 @@ fn completed_asset_load_invalidates_its_retained_subtree(cx: &mut TestAppContext
         window.draw(app).clear();
     });
     cx.update(|window, _| window.invalidator.set_dirty(false));
-    let view_id = view.entity_id();
-    let target = retained_target
-        .borrow()
-        .clone()
-        .expect("asset view records the retained image identity");
-    let mut sibling_path = target.0.to_vec();
-    *sibling_path
-        .last_mut()
-        .expect("retained target has an element path") = ElementId::from("asset-sibling");
-    let sibling = GlobalElementId::from_path(&sibling_path);
+    assert!(retained_target.borrow().is_some());
     cx.background_executor
         .advance_clock(Duration::from_millis(1));
     cx.run_until_parked();
 
-    cx.update(|window, _| {
-        if !window.invalidator.active_targeted_replay() {
-            window.invalidator.set_dirty(false);
-        }
-    });
-    cx.update(|window, _| {
-        assert!(window.invalidator.active_targeted_replay());
-        assert!(
-            window
-                .invalidator
-                .retained_route_path_is_dirty(&target, &|owner| owner == view_id)
-        );
-        assert!(
-            !window
-                .invalidator
-                .retained_route_path_is_dirty(&sibling, &|owner| owner == view_id)
-        );
-        assert!(!window.invalidator.active_generic_view_is_dirty(view_id));
-    });
     if !asset_ready.get() {
         cx.update(|window, app| {
             window.draw(app).clear();

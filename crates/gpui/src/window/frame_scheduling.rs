@@ -174,17 +174,13 @@ impl Window {
         self.enqueue_next_frame_callback(
             FrameRequestReason::LayoutAnimation,
             move |window, _cx| {
-                let Some(scope) = window
+                let Some(_scope) = window
                     .invalidator
                     .take_layout_animation_frame(entity, &retained_id)
                 else {
                     return;
                 };
-                if window.invalidator.invalidate_retained_path_scoped(
-                    entity,
-                    Some(&retained_id),
-                    scope,
-                ) {
+                if window.invalidator.invalidate_owned_view(entity) {
                     // This callback already runs inside the platform frame requested by the
                     // layout cadence. Marking the target dirty is enough for the current
                     // evaluate_frame_work pass; scheduling here would queue a redundant frame.
@@ -229,11 +225,7 @@ impl Window {
                 ) {
                     return;
                 }
-                if window.invalidator.invalidate_retained_path_scoped(
-                    entity,
-                    Some(&retained_id),
-                    RetainedInvalidationScope::RelayoutSubtree,
-                ) {
+                if window.invalidator.invalidate_owned_view(entity) {
                     window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
                     window.schedule_interactive_animation_frame();
                 }

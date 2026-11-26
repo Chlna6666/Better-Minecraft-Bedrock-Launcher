@@ -180,19 +180,9 @@ impl Window {
         // Defensive: an unwound draw could leave stale frames behind.
         self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
-        // A window-level dirty edge that names no view has no provenance at all: there is
-        // nothing to prove any committed subtree still matches, so the conservative barrier
-        // stays. A dirty edge that does name views does not need it: each element still has
-        // to prove itself through its layout fingerprint, semantic descriptor and interaction
-        // side effects, and a view that was actually notified rebuilds its own render.
-        //
-        // This used to fire for every non-targeted dirty frame, which disabled all reuse on
-        // exactly the frames a generic `Context::notify` produces — the common case.
-        if was_dirty
-            && !self.invalidator.active_targeted_replay()
-            && directly_dirty_views.is_empty()
-            && self.dirty_views.is_empty()
-        {
+        // Unknown window changes may invalidate inherited context even when
+        // another view-scoped notification was queued in the same frame.
+        if was_dirty && !self.invalidator.active_view_scoped() {
             self.force_view_cache_refresh = true;
         }
         // Establish abort eligibility exactly once, before any Prepaint/Paint
@@ -247,15 +237,11 @@ impl Window {
         self.rendered_frame
             .rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
-        let targeted_retry = self.invalidator.retry_aborted_frame();
+        self.invalidator.set_dirty(true);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
-        // The committed retained ranges and dispatch listeners remain intact
-        // after the speculative rollback. A targeted generation can retry
-        // with its original dirty dependency scope, leaving unrelated
-        // committed cache ranges replayable. Unknown/global invalidation or
-        // an intervening notification still forces the previous safe barrier.
-        self.force_view_cache_refresh |= !targeted_retry;
+        // Layout claims were discarded by the abort; rebuild from native nodes.
+        self.force_view_cache_refresh = true;
         self.recovering_degraded_draw = true;
         self.frame_can_degrade = false;
         self.draw_deadline = None;

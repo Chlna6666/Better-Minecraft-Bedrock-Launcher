@@ -1,4 +1,3 @@
-use super::lifecycle::RetainedInvalidationScope;
 use super::*;
 
 impl Window {
@@ -11,16 +10,9 @@ impl Window {
     /// the following frame. Callers without retained provenance keep the conservative full-window
     /// fallback.
     pub fn refresh_map_image_uploads(&mut self) {
-        if let (Some(retained_id), Some(view_id)) = (
-            self.current_retained_element_id(),
-            self.current_view_or_root(),
-        ) {
+        if let Some(view_id) = self.current_view_or_root() {
             self.on_next_progressive_frame(move |window, _cx| {
-                let _ = window.invalidator.invalidate_retained_path_scoped(
-                    view_id,
-                    Some(&retained_id),
-                    RetainedInvalidationScope::InvalidateSubtree,
-                );
+                let _ = window.invalidator.invalidate_owned_view(view_id);
             });
             return;
         }

@@ -140,11 +140,11 @@ impl Window {
             self.animation_engine_frame_driver.set(None);
         }
 
-        if let (Some(view_id), Some(retained_id)) =
+        if let (Some(view_id), Some(_retained_id)) =
             (completion.view_id, completion.retained_id.as_ref())
             && self
                 .invalidator
-                .invalidate_retained_path(view_id, Some(retained_id), true)
+                .invalidate_owned_view(view_id)
         {
             self.request_platform_frame(PlatformFrameRequest::ui_commit());
         }
@@ -1071,12 +1071,12 @@ impl Window {
             }
         };
         for completion in &tick.completion_events {
-            if let (Some(view_id), Some(retained_id)) =
+            if let (Some(view_id), Some(_retained_id)) =
                 (completion.view_id, completion.retained_id.as_ref())
             {
                 let _ = self
                     .invalidator
-                    .invalidate_retained_path(view_id, Some(retained_id), true);
+                    .invalidate_owned_view(view_id);
             }
         }
         let presentation_animation_damage = {
