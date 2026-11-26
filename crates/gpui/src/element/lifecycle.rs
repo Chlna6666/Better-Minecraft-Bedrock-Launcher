@@ -303,119 +303,6 @@ fn prepare_inspector_id(
     window.build_inspector_element_id(path)
 }
 
-struct RetainedElementMount {
-    global_id: Option<GlobalElementId>,
-    fast_layout_key: u64,
-    inspector_id: Option<InspectorElementId>,
-}
-
-#[inline(never)]
-fn begin_retained_element_mount(
-    element_id: Option<ElementId>,
-    element_source_location: Option<&'static core::panic::Location<'static>>,
-    window: &mut Window,
-) -> RetainedElementMount {
-    let _work = crate::window::element_work::begin_named(
-        "layout_retained_mount",
-        crate::window::element_work::ElementWorkPhase::Layout,
-    );
-    let fast_layout_key = crate::fast::layout_key::push_layout_key(window, element_id.as_ref());
-    let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
-
-    let inspector_id;
-    #[cfg(any(feature = "inspector", debug_assertions))]
-    {
-        inspector_id = if window.inspector_enabled() {
-            element_source_location.map(|source| prepare_inspector_id(source, window))
-        } else {
-            None
-        };
-    }
-    #[cfg(not(any(feature = "inspector", debug_assertions)))]
-    {
-        inspector_id = None;
-    }
-
-    RetainedElementMount {
-        global_id,
-        fast_layout_key,
-        inspector_id,
-    }
-}
-
-#[inline(never)]
-fn run_element_prepaint(
-    element_id: Option<ElementId>,
-    global_id: Option<&GlobalElementId>,
-    fast_layout_key: u64,
-    window: &mut Window,
-    callback: &mut dyn FnMut(&mut Window),
-) -> DispatchNodeId {
-    if let Some(element_id) = element_id {
-        window.element_id_stack.push(element_id);
-        debug_assert!(window.element_id_stack.matches(
-            global_id.expect("element id must have a corresponding global id").0.as_ref()
-        ));
-    }
-
-    let node_id = window.next_frame.dispatch_tree.push_node();
-    let scope = crate::fast::layout_key::enter_prepaint_scope(window, fast_layout_key);
-    callback(window);
-    crate::fast::layout_key::exit_prepaint_scope(window, scope);
-    window.next_frame.dispatch_tree.pop_node();
-
-    if global_id.is_some() {
-        window.element_id_stack.pop();
-    }
-
-    node_id
-}
-
-#[inline(never)]
-fn run_element_paint(
-    element_id: Option<ElementId>,
-    global_id: Option<&GlobalElementId>,
-    node_id: DispatchNodeId,
-    fast_layout_key: u64,
-    bounds: Bounds<Pixels>,
-    window: &mut Window,
-    cx: &mut App,
-    callback: &mut dyn FnMut(&mut Window, &mut App),
-) {
-    if let Some(element_id) = element_id {
-        window.element_id_stack.push(element_id);
-        debug_assert!(window.element_id_stack.matches(
-            global_id.expect("element id must have a corresponding global id").0.as_ref()
-        ));
-    }
-
-    window.record_debug_element_paint(bounds, cx);
-    window.next_frame.dispatch_tree.set_active_node(node_id);
-    let previous = window.paint_layout_key.replace(fast_layout_key);
-    callback(window, cx);
-    window.paint_layout_key = previous;
-}
-
-#[inline(never)]
-fn finish_element_paint(global_id: Option<&GlobalElementId>, window: &mut Window) {
-    if global_id.is_some() {
-        window.element_id_stack.pop();
-    }
-}
-
-#[inline(never)]
-fn compute_element_root_layout(
-    layout_id: LayoutId,
-    available_space: Size<AvailableSpace>,
-    previous_available_space: Option<Size<AvailableSpace>>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if previous_available_space != Some(available_space) {
-        window.compute_layout(layout_id, available_space, cx);
-    }
-}
-
 /// A wrapper around an implementer of [`Element`] that allows it to be drawn in a window.
 impl<E: Element> Drawable<E> {
     pub(crate) fn new(element: E) -> Self {
@@ -445,29 +332,36 @@ impl<E: Element> Drawable<E> {
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
-                let element_source_location = self.element.source_location();
-                let mount = begin_retained_element_mount(
-                    self.element.id(),
-                    element_source_location,
-                    window,
-                );
+                let element_id = self.element.id();
+                let fast_layout_key =
+                    crate::fast::layout_key::push_layout_key(window, element_id.as_ref());
+                let global_id = element_id.map(|id| prepare_element_id(id, window));
+
+                #[cfg(any(feature = "inspector", debug_assertions))]
+                let inspector_id = if window.inspector_enabled() {
+                    self.element.source_location().map(|source| prepare_inspector_id(source, window))
+                } else {
+                    None
+                };
+                #[cfg(not(any(feature = "inspector", debug_assertions)))]
+                let inspector_id = None;
 
                 let (layout_id, request_layout) = self.element.request_layout(
-                    mount.global_id.as_ref(),
-                    mount.inspector_id.as_ref(),
+                    global_id.as_ref(),
+                    inspector_id.as_ref(),
                     window,
                     cx,
                 );
-                if mount.global_id.is_some() {
+                if global_id.is_some() {
                     window.element_id_stack.pop();
                 }
                 crate::fast::layout_key::pop_layout_key(window);
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
-                    global_id: mount.global_id,
-                    fast_layout_key: mount.fast_layout_key,
-                    inspector_id: mount.inspector_id,
+                    global_id,
+                    fast_layout_key,
+                    inspector_id,
                     request_layout,
                 };
                 layout_id
@@ -494,36 +388,29 @@ impl<E: Element> Drawable<E> {
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
-                let mut prepaint = None;
-                let element_type = std::any::type_name::<E>();
-                let prepaint_element_id = self.element.id();
-                let element = &mut self.element;
-                let node_id = run_element_prepaint(
-                    prepaint_element_id,
-                    global_id.as_ref(),
-                    fast_layout_key,
-                    window,
-                    &mut |window| {
-                        prepaint = Some(crate::window::element_work::measure_named(
-                            element_type,
-                            crate::window::element_work::ElementWorkPhase::Prepaint,
-                            window,
-                            cx,
-                            |window, cx| {
-                                element.prepaint(
-                                    global_id.as_ref(),
-                                    inspector_id.as_ref(),
-                                    bounds,
-                                    &mut request_layout,
-                                    window,
-                                    cx,
-                                )
-                            },
-                        ));
-                    },
-                );
-                let prepaint =
-                    prepaint.expect("element prepaint callback must execute exactly once");
+                if let Some(element_id) = self.element.id() {
+                    window.element_id_stack.push(element_id);
+                    debug_assert!(window.element_id_stack.matches(
+                        global_id.as_ref().expect("element id must have a corresponding global id").0.as_ref()
+                    ));
+                }
+                let node_id = window.next_frame.dispatch_tree.push_node();
+                let scope = crate::fast::layout_key::enter_prepaint_scope(window, fast_layout_key);
+                let prepaint = {
+                    let _work = crate::window::element_work::begin_named(
+                        std::any::type_name::<E>(),
+                        crate::window::element_work::ElementWorkPhase::Prepaint,
+                    );
+                    self.element.prepaint(
+                        global_id.as_ref(), inspector_id.as_ref(), bounds,
+                        &mut request_layout, window, cx,
+                    )
+                };
+                crate::fast::layout_key::exit_prepaint_scope(window, scope);
+                window.next_frame.dispatch_tree.pop_node();
+                if global_id.is_some() {
+                    window.element_id_stack.pop();
+                }
 
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
@@ -550,38 +437,29 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 mut prepaint,
             } => {
-                let paint_element_type = std::any::type_name::<E>();
-                let paint_element_id = self.element.id();
-                let element = &mut self.element;
-                run_element_paint(
-                    paint_element_id,
-                    global_id.as_ref(),
-                    node_id,
-                    fast_layout_key,
-                    bounds,
-                    window,
-                    cx,
-                    &mut |window, cx| {
-                        crate::window::element_work::measure_named(
-                            paint_element_type,
-                            crate::window::element_work::ElementWorkPhase::Paint,
-                            window,
-                            cx,
-                            |window, cx| {
-                                element.paint(
-                                    global_id.as_ref(),
-                                    inspector_id.as_ref(),
-                                    bounds,
-                                    &mut request_layout,
-                                    &mut prepaint,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        );
-                    },
-                );
-                finish_element_paint(global_id.as_ref(), window);
+                if let Some(element_id) = self.element.id() {
+                    window.element_id_stack.push(element_id);
+                    debug_assert!(window.element_id_stack.matches(
+                        global_id.as_ref().expect("element id must have a corresponding global id").0.as_ref()
+                    ));
+                }
+                window.record_debug_element_paint(bounds, cx);
+                window.next_frame.dispatch_tree.set_active_node(node_id);
+                let previous = window.paint_layout_key.replace(fast_layout_key);
+                {
+                    let _work = crate::window::element_work::begin_named(
+                        std::any::type_name::<E>(),
+                        crate::window::element_work::ElementWorkPhase::Paint,
+                    );
+                    self.element.paint(
+                        global_id.as_ref(), inspector_id.as_ref(), bounds,
+                        &mut request_layout, &mut prepaint, window, cx,
+                    );
+                }
+                window.paint_layout_key = previous;
+                if global_id.is_some() {
+                    window.element_id_stack.pop();
+                }
 
                 self.phase = ElementDrawPhase::Painted;
                 #[cfg(any(test, feature = "test-support"))]
@@ -645,13 +523,9 @@ impl<E: Element> Drawable<E> {
             _ => panic!("cannot measure after painting"),
         };
 
-        compute_element_root_layout(
-            layout_id,
-            available_space,
-            previous_available_space,
-            window,
-            cx,
-        );
+        if previous_available_space != Some(available_space) {
+            window.compute_layout(layout_id, available_space, cx);
+        }
         self.phase = ElementDrawPhase::LayoutComputed {
             layout_id,
             global_id,
