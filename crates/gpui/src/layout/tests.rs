@@ -30,7 +30,7 @@ fn taffy_014_leaf_layout_applies_fixed_size_without_measure_context(cx: &mut Tes
             style.size.width = px(80.).into();
             style.size.height = px(30.).into();
 
-            let root = engine.request_layout(None, style, px(16.), 1.0, &[]);
+            let root = engine.request_layout(None, false,style, px(16.), 1.0, &[]);
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
             engine.layout_bounds(root, 1.0)
         })
@@ -53,7 +53,7 @@ fn taffy_014_measured_leaf_keeps_style_constraints(cx: &mut TestAppContext) {
             style.size.width = px(80.).into();
             style.min_size.height = px(30.).into();
 
-            let root = engine.request_measured_layout(None, style, px(16.), 1.0, |_, _, _, _| {
+            let root = engine.request_measured_layout(None, false,style, px(16.), 1.0, |_, _, _, _| {
                 size(px(20.), px(12.))
             });
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);

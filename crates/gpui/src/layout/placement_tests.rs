@@ -56,13 +56,13 @@ fn measured_root_bounds_follow_later_parent_placement(cx: &mut TestAppContext) {
             let mut child_style = Style::default();
             child_style.size.width = px(20.).into();
             child_style.size.height = px(10.).into();
-            let child = engine.request_layout(None, child_style, px(16.), 1., &[]);
+            let child = engine.request_layout(None, false,child_style, px(16.), 1., &[]);
             engine.compute_layout(child, AvailableSpace::min_size(), window, cx);
             assert_eq!(engine.layout_bounds(child, 1.).origin.x, px(0.));
 
             let mut parent_style = Style::default();
             parent_style.padding.left = px(15.).into();
-            let parent = engine.request_layout(None, parent_style, px(16.), 1., &[child]);
+            let parent = engine.request_layout(None, false,parent_style, px(16.), 1., &[child]);
             engine.compute_layout(parent, AvailableSpace::min_size(), window, cx);
             assert_eq!(engine.layout_bounds(child, 1.).origin.x, px(15.));
             assert_eq!(
@@ -85,10 +85,10 @@ fn standalone_child_compute_invalidates_cached_parent_placement(cx: &mut TestApp
             let mut child_style = Style::default();
             child_style.size.width = px(20.).into();
             child_style.size.height = px(10.).into();
-            let child = engine.request_layout(None, child_style, px(16.), 1., &[]);
+            let child = engine.request_layout(None, false,child_style, px(16.), 1., &[]);
             let mut parent_style = Style::default();
             parent_style.padding.left = px(15.).into();
-            let parent = engine.request_layout(None, parent_style, px(16.), 1., &[child]);
+            let parent = engine.request_layout(None, false,parent_style, px(16.), 1., &[child]);
             engine.compute_layout(parent, AvailableSpace::min_size(), window, cx);
             assert_eq!(engine.layout_bounds(child, 1.).origin.x, px(15.));
 
