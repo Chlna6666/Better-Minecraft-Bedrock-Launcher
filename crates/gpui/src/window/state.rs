@@ -521,7 +521,7 @@ pub struct Window {
     pub(super) replayed_view_owners: FxHashSet<EntityId>,
     pub(super) prebuilt_gaps: FxHashMap<GlobalElementId, super::view_splice::PrebuiltGap>,
     pub(crate) prebuilt_adoption_serial: u64,
-    pub(super) splice_building: bool,
+    pub(crate) splice_requests: Option<u32>,
     pub(crate) input_dependency_owner: Option<EntityId>,
     pub(super) input_readers: FxHashMap<EntityId, u8>,
     pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,

@@ -5,6 +5,7 @@ use crate::{
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use std::{
     hash::{Hash, Hasher},
+    ops::Range,
     time::{Duration, Instant},
 };
 use taffy::{TaffyTree, TraversePartialTree as _};
@@ -735,6 +736,31 @@ impl TaffyLayoutEngine {
         kept.push(cursor..anchor[0].end);
         let kept = self.try_keep_intervals(&kept, root)?;
         Some([kept, 0..0])
+    }
+
+    /// Move a prebuilt leaf's claims into its new owner's open interval.
+    /// The old offsets become tombstones; the actual native ownership and
+    /// claim counter do not change. Nested View states must be rebased by
+    /// their caller before moving a non-leaf span.
+    pub(crate) fn adopt_claim_span(
+        &mut self, span: &Range<usize>, root: LayoutId,
+    ) -> Option<Range<usize>> {
+        let source = self.claimed_key_log.get(span.clone())?;
+        let frame = self.request_frame;
+        if !source.iter().flatten().any(|claim| claim.id == root)
+            || !source.iter().flatten().all(|claim| self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+                node.id == claim.id && node.claimed_in_frame == frame && !node.offscreen
+            }))
+        {
+            return None;
+        }
+        let start = self.claimed_key_log.len();
+        self.claimed_key_log.reserve(span.len());
+        for index in span.clone() {
+            let entry = self.claimed_key_log[index].take();
+            self.claimed_key_log.push(entry);
+        }
+        Some(start..self.claimed_key_log.len())
     }
 
     /// Cancel exactly the speculative claims made by admission, without

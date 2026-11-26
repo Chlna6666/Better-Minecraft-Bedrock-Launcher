@@ -251,7 +251,8 @@ impl DispatchTree {
             let parent = self.nodes[index].parent;
             if parent != anchor && !parent.is_some_and(|parent| {
                 outer.contains(&parent.0) && parent.0 < index
-                    && !gaps.iter().any(|(gap, _)| gap.contains(&parent.0))
+                    && !gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
+                        .is_some_and(|(gap, _)| gap.contains(&parent.0))
             }) {
                 return false;
             }

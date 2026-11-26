@@ -137,6 +137,28 @@ pub struct ViewRequestLayout {
     splice_safe: bool,
 }
 
+impl ViewRequestLayout {
+    /// No nested RequestLayout states may retain the old offsets when moving
+    /// a leaf gap. The surrounding request now owns the relocated interval.
+    pub(crate) fn adopt_prebuilt_layout(
+        &mut self, window: &mut Window,
+        claims: &crate::layout::LayoutClaimSpans, states: &Range<usize>,
+    ) -> bool {
+        let ViewRequestLayoutKind::Built { layout_root, layout_claims, layout_state_range, .. } = &mut self.kind else {
+            return false;
+        };
+        if layout_claims != claims || layout_state_range != states {
+            return false;
+        }
+        let Some((moved_claims, moved_states)) = window.adopt_gap_layout_spans(*layout_root, claims, states) else {
+            return false;
+        };
+        *layout_claims = moved_claims;
+        *layout_state_range = moved_states;
+        true
+    }
+}
+
 enum ViewRequestLayoutKind {
     /// The view's committed layout was claimed and its subtree is drawn again unless prepaint
     /// finds that what it inherits changed.
@@ -197,6 +219,9 @@ impl Element for ViewElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
+        if let Some(requests) = &mut window.splice_requests {
+            *requests = requests.saturating_add(1);
+        }
         let adoption_serial = window.prebuilt_adoption_serial;
         let splice_safe = window.splice_context_supported();
         let retained_id = window.current_retained_element_id();

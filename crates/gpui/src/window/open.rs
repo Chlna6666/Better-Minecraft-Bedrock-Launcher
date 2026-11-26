@@ -523,7 +523,7 @@ impl Window {
             replayed_view_owners: FxHashSet::default(),
             prebuilt_gaps: FxHashMap::default(),
             prebuilt_adoption_serial: 0,
-            splice_building: false,
+            splice_requests: None,
             input_dependency_owner: None,
             input_readers: FxHashMap::default(),
             next_input_readers: RefCell::new(FxHashMap::default()),
