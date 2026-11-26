@@ -490,11 +490,10 @@ pub struct Window {
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: ElementIdStack,
     pub(crate) global_ids: RefCell<GlobalIdCache>,
-    /// Absolute native identity; application state keeps its separate exact path.
-    pub(crate) native_element_scope: Option<NativeElementScope>,
-    /// Window-owned native layout key scopes; no per-thread identity tables.
-    pub(crate) layout_key_scopes: SmallVec<[super::element_context::LayoutKeyScope; 32]>,
-    pub(crate) layout_root_index: u32,
+    /// GPUI Fast's native element-to-layout identity path.
+    pub(crate) fast_layout: WindowLayout,
+    /// The element currently painting, used by renderer-owned captured layers.
+    pub(crate) paint_layout_key: Option<u64>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     /// Cached result of resolving `text_style_stack` over the window's default style.
     ///

@@ -1,6 +1,6 @@
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
-    Pixels, Size, Window, NativeElementScope,
+    Pixels, Size, Window,
 };
 use derive_more::Deref;
 use smallvec::SmallVec;
@@ -260,14 +260,14 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     RequestLayout {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
-        retained_scope: NativeElementScope,
+        fast_layout_key: u64,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
     LayoutComputed {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
-        retained_scope: NativeElementScope,
+        fast_layout_key: u64,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
         request_layout: RequestLayoutState,
@@ -275,7 +275,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     Prepaint {
         node_id: DispatchNodeId,
         global_id: Option<GlobalElementId>,
-        retained_scope: NativeElementScope,
+        fast_layout_key: u64,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: RequestLayoutState,
@@ -305,7 +305,7 @@ fn prepare_inspector_id(
 
 struct RetainedElementMount {
     global_id: Option<GlobalElementId>,
-    retained_scope: NativeElementScope,
+    fast_layout_key: u64,
     inspector_id: Option<InspectorElementId>,
 }
 
@@ -319,7 +319,7 @@ fn begin_retained_element_mount(
         "layout_retained_mount",
         crate::window::element_work::ElementWorkPhase::Layout,
     );
-    let retained_scope = window.push_layout_key(element_id.as_ref());
+    let fast_layout_key = crate::fast::layout_key::push_layout_key(window, element_id.as_ref());
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
     let inspector_id;
@@ -338,7 +338,7 @@ fn begin_retained_element_mount(
 
     RetainedElementMount {
         global_id,
-        retained_scope,
+        fast_layout_key,
         inspector_id,
     }
 }
@@ -347,7 +347,7 @@ fn begin_retained_element_mount(
 fn run_element_prepaint(
     element_id: Option<ElementId>,
     global_id: Option<&GlobalElementId>,
-    retained_scope: NativeElementScope,
+    fast_layout_key: u64,
     window: &mut Window,
     callback: &mut dyn FnMut(&mut Window),
 ) -> DispatchNodeId {
@@ -359,7 +359,9 @@ fn run_element_prepaint(
     }
 
     let node_id = window.next_frame.dispatch_tree.push_node();
-    window.with_native_element_scope(retained_scope, |window| callback(window));
+    let scope = crate::fast::layout_key::enter_prepaint_scope(window, fast_layout_key);
+    callback(window);
+    crate::fast::layout_key::exit_prepaint_scope(window, scope);
     window.next_frame.dispatch_tree.pop_node();
 
     if global_id.is_some() {
@@ -374,7 +376,7 @@ fn run_element_paint(
     element_id: Option<ElementId>,
     global_id: Option<&GlobalElementId>,
     node_id: DispatchNodeId,
-    retained_scope: NativeElementScope,
+    fast_layout_key: u64,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -389,7 +391,9 @@ fn run_element_paint(
 
     window.record_debug_element_paint(bounds, cx);
     window.next_frame.dispatch_tree.set_active_node(node_id);
-    window.with_native_element_scope(retained_scope, |window| callback(window, cx));
+    let previous = window.paint_layout_key.replace(fast_layout_key);
+    callback(window, cx);
+    window.paint_layout_key = previous;
 }
 
 #[inline(never)]
@@ -457,12 +461,12 @@ impl<E: Element> Drawable<E> {
                 if mount.global_id.is_some() {
                     window.element_id_stack.pop();
                 }
-                window.pop_layout_key();
+                crate::fast::layout_key::pop_layout_key(window);
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
                     global_id: mount.global_id,
-                    retained_scope: mount.retained_scope,
+                    fast_layout_key: mount.fast_layout_key,
                     inspector_id: mount.inspector_id,
                     request_layout,
                 };
@@ -477,14 +481,14 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 mut request_layout,
             }
             | ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 mut request_layout,
                 ..
@@ -497,7 +501,7 @@ impl<E: Element> Drawable<E> {
                 let node_id = run_element_prepaint(
                     prepaint_element_id,
                     global_id.as_ref(),
-                    retained_scope,
+                    fast_layout_key,
                     window,
                     &mut |window| {
                         prepaint = Some(crate::window::element_work::measure_named(
@@ -524,7 +528,7 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
                     global_id,
-                    retained_scope,
+                    fast_layout_key,
                     inspector_id,
                     bounds,
                     request_layout,
@@ -540,7 +544,7 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::Prepaint {
                 node_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 bounds,
                 mut request_layout,
@@ -553,7 +557,7 @@ impl<E: Element> Drawable<E> {
                     paint_element_id,
                     global_id.as_ref(),
                     node_id,
-                    retained_scope,
+                    fast_layout_key,
                     bounds,
                     window,
                     cx,
@@ -604,7 +608,7 @@ impl<E: Element> Drawable<E> {
         let (
             layout_id,
             global_id,
-            retained_scope,
+            fast_layout_key,
             inspector_id,
             previous_available_space,
             request_layout,
@@ -612,13 +616,13 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 request_layout,
             } => (
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 None,
                 request_layout,
@@ -626,14 +630,14 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 available_space: previous_available_space,
                 request_layout,
             } => (
                 layout_id,
                 global_id,
-                retained_scope,
+                fast_layout_key,
                 inspector_id,
                 Some(previous_available_space),
                 request_layout,
@@ -651,7 +655,7 @@ impl<E: Element> Drawable<E> {
         self.phase = ElementDrawPhase::LayoutComputed {
             layout_id,
             global_id,
-            retained_scope,
+            fast_layout_key,
             inspector_id,
             available_space,
             request_layout,

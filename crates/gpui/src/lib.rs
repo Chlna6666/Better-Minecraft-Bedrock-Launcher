@@ -9,6 +9,7 @@ extern crate self as gpui;
 #[macro_use]
 mod input;
 mod app;
+mod fast;
 
 mod animation;
 mod assets;
