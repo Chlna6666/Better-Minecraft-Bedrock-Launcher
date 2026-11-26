@@ -175,9 +175,10 @@ impl Painter {
             return;
         };
 
+        let start = capture.operation_start;
         let mut content = *capture.scene;
         let Some(content_bounds) = content.bounds_for_range(0..content.len()) else {
-            self.scene.paint_operations.push(PaintOperation::EndBlur);
+            self.close_capture_group(start, &capture.config);
             return;
         };
         let mut config = capture.config;
@@ -236,11 +237,17 @@ impl Painter {
         } else {
             let primitive = Primitive::from(blur);
             let Some(order) = self.order_for_primitive(&primitive) else {
-                self.scene.paint_operations.push(PaintOperation::EndBlur);
+                self.close_capture_group(start, &config);
                 return;
             };
             self.push_ordered_primitive(primitive, order, false);
         }
+        self.close_capture_group(start, &config);
+    }
+
+    fn close_capture_group(&mut self, start: usize, config: &BlurCapture) {
+        let group = super::geometry::CaptureGroup::close(&self.scene, start, config);
+        self.scene.capture_groups.push(group);
         self.scene.paint_operations.push(PaintOperation::EndBlur);
     }
 

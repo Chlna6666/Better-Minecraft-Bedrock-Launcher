@@ -1,6 +1,5 @@
 use super::blur_influence_radius;
 use crate::{BlurCapture, Bounds, PaintOperation, ScaledPixels, Scene};
-use smallvec::SmallVec;
 use std::ops::Range;
 
 use super::Quad;
@@ -24,7 +23,51 @@ pub(crate) fn is_solid_quad(quad: &Quad) -> bool {
         && quad.corner_radii.is_zero()
 }
 
+/// A completed isolated layer's source range and conservative output extent.
+/// Recorded once when its capture closes, in increasing end order.
+pub(super) struct CaptureGroup {
+    pub(super) range: Range<usize>,
+    pub(super) bounds: Bounds<ScaledPixels>,
+}
+
+impl CaptureGroup {
+    pub(super) fn close(scene: &Scene, start: usize, config: &BlurCapture) -> Self {
+        let end = scene.len();
+        let mut bounds = config.bounds;
+        // The old traversal also included all raw source primitive bounds
+        // and the expanded bounds of nested captures. Keep that conservative
+        // behavior, but only visit this capture's source, once at close.
+        for operation in scene.paint_operations.range(start + 1..end).iter() {
+            if let PaintOperation::Primitive(primitive) = operation {
+                bounds = bounds.union(&primitive.visual_bounds());
+            }
+        }
+        let first = scene.capture_groups.partition_point(|group| group.range.end <= start);
+        for group in &scene.capture_groups[first..] {
+            bounds = bounds.union(&group.bounds);
+        }
+        Self {
+            range: start..end + 1,
+            bounds: bounds.dilate(blur_influence_radius(config.radius))
+                .intersect(&config.content_mask.bounds),
+        }
+    }
+}
+
 pub(crate) fn for_each_capture_group(
+    scene: &Scene,
+    mut visit: impl FnMut(Range<usize>, Bounds<ScaledPixels>),
+) {
+    if scene.blurs.is_empty() {
+        return;
+    }
+    for group in &scene.capture_groups {
+        visit(group.range.clone(), group.bounds);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn scan_capture_groups(
     scene: &Scene,
     mut visit: impl FnMut(Range<usize>, Bounds<ScaledPixels>),
 ) {
@@ -35,7 +78,7 @@ pub(crate) fn for_each_capture_group(
     if scene.blurs.is_empty() {
         return;
     }
-    let mut stack = SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
+    let mut stack = smallvec::SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
 
     for (index, operation) in scene.paint_operations.iter().enumerate() {
         match operation {

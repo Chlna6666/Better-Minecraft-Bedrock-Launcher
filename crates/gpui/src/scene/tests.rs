@@ -1673,3 +1673,44 @@ fn backdrop_source_damage_propagates_through_overlapping_filter_chain() {
         assert_eq!(damage.next().is_some(), index < 3, "filter {index}");
     }
 }
+
+#[test]
+fn completed_capture_groups_match_legacy_scan_after_replay_and_clear() {
+    let viewport = bounds(point(ScaledPixels(0.), ScaledPixels(0.)), size(ScaledPixels(500.), ScaledPixels(400.)));
+    let inner = bounds(point(ScaledPixels(50.), ScaledPixels(60.)), size(ScaledPixels(80.), ScaledPixels(90.)));
+    let mut painter = crate::scene::Painter::default();
+    let config = |bounds, radius| BlurCapture {
+        animation_id: None, layer_id: None, bounds,
+        content_mask: ContentMask::new(viewport), radius: ScaledPixels(radius), opacity: 1.,
+    };
+    painter.insert_primitive(Quad { bounds: viewport, content_mask: ContentMask::new(viewport), ..Default::default() });
+    painter.begin_blur(config(viewport, 3.));
+    painter.begin_blur(config(inner, 0.));
+    painter.insert_primitive(Quad { bounds: inner, content_mask: ContentMask::new(viewport), ..Default::default() });
+    painter.end_blur();
+    painter.end_blur();
+    let verify = |scene: &Scene| {
+        let mut expected = Vec::new();
+        geometry::scan_capture_groups(scene, |range, bounds| expected.push((range, bounds)));
+        let mut actual = Vec::new();
+        geometry::for_each_capture_group(scene, |range, bounds| actual.push((range, bounds)));
+        assert_eq!(actual, expected);
+        for start in 0..=scene.len() {
+            for end in start..=scene.len() {
+                let mut expected_bounds: Option<Bounds<ScaledPixels>> = None;
+                for bounds in scene.paint_operations.range(start..end).iter().filter_map(PaintOperation::visual_bounds)
+                    .chain(expected.iter().filter(|(range, _)| range.start < end && start < range.end).map(|(_, bounds)| *bounds)) {
+                    expected_bounds = Some(expected_bounds.map_or(bounds, |old| old.union(&bounds)));
+                }
+                assert_eq!(scene.bounds_for_range(start..end), expected_bounds);
+            }
+        }
+    };
+    verify(&painter);
+    painter.finish();
+    let mut replayed = crate::scene::Painter::default();
+    replayed.replay(0..painter.len(), &painter, []);
+    verify(&replayed);
+    replayed.clear();
+    assert!(replayed.capture_groups.is_empty());
+}

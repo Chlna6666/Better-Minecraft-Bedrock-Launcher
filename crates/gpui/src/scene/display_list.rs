@@ -24,6 +24,7 @@ pub(crate) struct Scene {
     pub(crate) surfaces: Vec<PaintSurface>,
     pub(crate) backdrop_blurs: Vec<PaintBackdropBlur>,
     pub(crate) blurs: Vec<PaintBlur>,
+    pub(super) capture_groups: Vec<super::geometry::CaptureGroup>,
     pub(crate) renderer_extensions: Vec<PaintRendererExtension>,
     pub(crate) animation_values: Vec<SceneAnimationValue>,
     pub(crate) prepared_batches: PreparedSceneBatches,
@@ -110,14 +111,17 @@ impl Scene {
                 });
             }
         }
-        crate::scene::geometry::for_each_capture_group(&self, |group_range, group_bounds| {
-            if group_range.start < range.end && range.start < group_range.end {
-                bounds = Some(match bounds {
-                    Some(bounds) => bounds.union(&group_bounds),
-                    None => group_bounds,
-                });
+        if !self.blurs.is_empty() {
+            let first = self.capture_groups.partition_point(|group| group.range.end <= range.start);
+            for group in &self.capture_groups[first..] {
+                if group.range.start < range.end {
+                    bounds = Some(match bounds {
+                        Some(bounds) => bounds.union(&group.bounds),
+                        None => group.bounds,
+                    });
+                }
             }
-        });
+        }
         bounds
     }
 

@@ -22,6 +22,7 @@ impl Painter {
         self.scene.surfaces.clear();
         self.scene.backdrop_blurs.clear();
         self.scene.blurs.clear();
+        self.scene.capture_groups.clear();
         self.scene.renderer_extensions.clear();
         self.scene.animation_values.clear();
         self.next_scene_animation_id = 0;
@@ -144,6 +145,7 @@ impl Painter {
         trim_vec_against!(surfaces);
         trim_vec_against!(backdrop_blurs);
         trim_vec_against!(blurs);
+        trim_vec_against!(capture_groups);
         trim_vec_against!(renderer_extensions);
         trim_vec_against!(animation_values);
 
@@ -227,6 +229,12 @@ impl Painter {
         trim_vec_capacity(
             &mut self.scene.blurs,
             primitive_floor,
+            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
+        );
+        let group_floor = SCENE_MIN_RETAINED_CAPACITY.max(self.scene.capture_groups.len());
+        trim_vec_capacity(
+            &mut self.scene.capture_groups,
+            group_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         trim_vec_capacity(
