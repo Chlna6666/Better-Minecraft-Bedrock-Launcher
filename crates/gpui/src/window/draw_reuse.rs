@@ -652,6 +652,7 @@ impl Window {
             return None;
         }
 
+        let plain_text_key = plain_text_key?;
         let targeted_replay = self.retained_replay_is_targeted();
         let current_view = if targeted_replay {
             self.current_view_or_root()
@@ -681,11 +682,11 @@ impl Window {
             .rendered_frame
             .retained_element_ranges
             .get(retained_id)?;
-        let plain_text_proven = plain_text_key
-            .zip(retained.plain_text_key.as_deref())
-            .is_some_and(|(current, previous)| {
-                current == previous && plain_text_range_is_side_effect_free(retained)
-            });
+        if retained.plain_text_key.as_deref() != Some(plain_text_key)
+            || !plain_text_range_is_side_effect_free(retained)
+        {
+            return None;
+        }
         // A dirty route must be rebuilt unless its exact text output is unchanged.
         if targeted_replay
             && self.invalidator.requires_reconciliation_for_route(
@@ -695,7 +696,6 @@ impl Window {
         {
             if retained.layout_fingerprint.is_none()
                 || retained.layout_fingerprint != layout_fingerprint
-                || !plain_text_proven
             {
                 return None;
             }
@@ -704,20 +704,6 @@ impl Window {
         if !self.retained_paint_context_matches(retained.paint_context.as_ref()) {
             return None;
         }
-        if targeted_replay {
-            if !retained.identity_stable || !retained.subtree_stable {
-                if !plain_text_proven {
-                    return None;
-                }
-            } else if retained_id_is_anonymous(retained_id)
-                && retained_range_has_frame_interactivity(retained)
-            {
-                return None;
-            }
-        } else if !plain_text_proven {
-            return None;
-        }
-
         if retained.bounds.size != bounds.size
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
@@ -730,7 +716,7 @@ impl Window {
         }
         let delta = bounds.origin - retained.bounds.origin;
         if delta != Point::default() {
-            let static_row_proven = (plain_text_proven && retained.identity_stable)
+            let static_row_proven = retained.identity_stable
                 && retained_id.0.iter().any(|segment| {
                 matches!(segment, ElementId::NamedInteger(name, _)
                     if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
@@ -763,7 +749,6 @@ impl Window {
         metadata_start: usize,
         plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
-        subtree_stable: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = match self.next_frame.last_retained_paint_context.as_ref() {
@@ -777,9 +762,9 @@ impl Window {
         // Most elements have neither optional payload. Keep the frame-map
         // records compact and share exact unchanged text proofs across
         // generations rather than deep-cloning them during speculative replay.
-        let previous = self.rendered_frame.retained_element_ranges.get(&retained_id);
         let plain_text_key = plain_text_key.map(|key| {
-            previous.and_then(|range| range.plain_text_key.as_ref())
+            self.rendered_frame.retained_element_ranges.get(&retained_id)
+                .and_then(|range| range.plain_text_key.as_ref())
                 .filter(|old| old.as_ref() == &key)
                 .cloned()
                 .unwrap_or_else(|| Rc::new(key))
@@ -798,15 +783,8 @@ impl Window {
                 paint_context,
                 plain_text_key,
                 identity_stable,
-                subtree_stable,
             },
         );
-        if !identity_stable {
-            self.next_frame.retained_unstable_identity_count = self
-                .next_frame
-                .retained_unstable_identity_count
-                .saturating_add(1);
-        }
     }
 
     /// Carries every descendant reconciliation record of a replayed subtree into the current
@@ -927,10 +905,6 @@ impl Window {
 
 }
 
-fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
-    matches!(retained_id.0.last(), Some(ElementId::InstanceSlot(_)))
-}
-
 fn plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool {
     let prepaint = &retained.prepaint_range;
     let paint = &retained.paint_range;
@@ -947,12 +921,6 @@ fn plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool
         && paint.start.window_control_hitboxes_index == paint.end.window_control_hitboxes_index
         && paint.start.accessed_element_states_index == paint.end.accessed_element_states_index
         && paint.start.tab_handle_index == paint.end.tab_handle_index
-}
-
-fn retained_range_has_frame_interactivity(retained: &RetainedElementRange) -> bool {
-    retained.prepaint_range.start.dispatch_tree_index != retained.prepaint_range.end.dispatch_tree_index
-        || retained.prepaint_range.start.hitboxes_index != retained.prepaint_range.end.hitboxes_index
-        || retained_range_has_stateful_effects(retained)
 }
 
 pub(crate) fn rebase_prepaint_range(

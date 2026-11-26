@@ -401,7 +401,6 @@ fn begin_retained_element_mount(
 #[inline(never)]
 fn try_reuse_retained_element(
     outer_replay_safe: bool,
-    identity_stable: bool,
     retained_segment: &ElementId,
     retained_id: &GlobalElementId,
     bounds: Bounds<Pixels>,
@@ -415,7 +414,7 @@ fn try_reuse_retained_element(
     Range<PrepaintStateIndex>,
     Point<Pixels>,
 )> {
-    if !outer_replay_safe || (!identity_stable && plain_text_key.is_none()) {
+    if !outer_replay_safe || plain_text_key.is_none() {
         return None;
     }
 
@@ -478,7 +477,6 @@ fn run_element_prepaint(
 
 struct RetainedPaintRun {
     metadata_start: usize,
-    unstable_identity_start: usize,
     paint_range: Range<PaintIndex>,
 }
 
@@ -505,7 +503,6 @@ fn run_element_paint(
     }
 
     let metadata_start = window.retained_element_metadata_len();
-    let unstable_identity_start = window.next_frame.retained_unstable_identity_count;
     let paint_start = window.paint_index();
     window.record_debug_element_paint(bounds, cx);
     window.next_frame.dispatch_tree.set_active_node(node_id);
@@ -514,7 +511,6 @@ fn run_element_paint(
 
     RetainedPaintRun {
         metadata_start,
-        unstable_identity_start,
         paint_range: paint_start..paint_end,
     }
 }
@@ -536,13 +532,8 @@ fn record_retained_painted_element(
     metadata_start: usize,
     plain_text_key: Option<RetainedPlainTextKey>,
     identity_stable: bool,
-    outer_replay_safe: bool,
-    unstable_identity_start: usize,
     window: &mut Window,
 ) {
-    let subtree_stable = identity_stable
-        && outer_replay_safe
-        && window.next_frame.retained_unstable_identity_count == unstable_identity_start;
     window.record_retained_element_range(
         retained_id,
         bounds,
@@ -552,19 +543,8 @@ fn record_retained_painted_element(
         metadata_start,
         plain_text_key,
         identity_stable,
-        subtree_stable,
     );
 
-    // Reuse the existing O(1) subtree-stability propagation counter for explicit replay barriers
-    // as well as ambiguous identities. Ancestors snapshot this counter before painting children,
-    // so a frame-local cache boundary prevents an unrelated ancestor from replaying across it while
-    // the boundary's own internal cache remains usable.
-    if !outer_replay_safe {
-        window.next_frame.retained_unstable_identity_count = window
-            .next_frame
-            .retained_unstable_identity_count
-            .saturating_add(1);
-    }
 }
 
 #[inline(never)]
@@ -703,14 +683,13 @@ impl<E: Element> Drawable<E> {
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
-                let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
-                let identity_stable = retained_identity_stable;
                 // Text replay needs exact shaped output; other elements use view retention.
-                let mut plain_text_key = retained_plain_text_key(
+                let plain_text_key = retained_plain_text_key(
                     &self.element as &dyn Any,
                     &request_layout as &dyn Any,
                     window,
                 );
+                let layout_fingerprint = plain_text_key.as_ref().and_then(|_| window.retained_layout_fingerprint(layout_id));
                 if let Some((
                     source_prepaint_range,
                     source_paint_range,
@@ -719,7 +698,6 @@ impl<E: Element> Drawable<E> {
                     translation,
                 )) = try_reuse_retained_element(
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
-                    identity_stable,
                     &retained_segment,
                     &retained_id,
                     bounds,
@@ -845,8 +823,6 @@ impl<E: Element> Drawable<E> {
                     paint_run.metadata_start,
                     plain_text_key,
                     identity_stable,
-                    E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
-                    paint_run.unstable_identity_start,
                     window,
                 );
                 finish_element_paint(global_id.as_ref(), window);

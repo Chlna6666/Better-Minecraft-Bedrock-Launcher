@@ -89,8 +89,6 @@ pub(crate) struct RetainedElementRange {
     pub(crate) plain_text_key: Option<Rc<RetainedPlainTextKey>>,
     /// Whether this element's retained address is unambiguous in the frame that produced it.
     pub(crate) identity_stable: bool,
-    /// Whether this element and every retained descendant have unambiguous identities.
-    pub(crate) subtree_stable: bool,
 }
 
 /// Minimal replay handle returned after a retained element has passed all semantic, layout and
@@ -141,9 +139,6 @@ pub(crate) struct Frame {
     /// Consecutive records typically inherit identical clip/text/transform state.
     /// Share that immutable context instead of storing a full copy in each record.
     pub(crate) last_retained_paint_context: Option<Rc<RetainedPaintContext>>,
-    /// Number of ambiguous retained identities painted into this frame. Drawable snapshots this
-    /// counter before and after child paint to derive subtree stability in O(1).
-    pub(crate) retained_unstable_identity_count: usize,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -350,7 +345,6 @@ impl Frame {
             view_retentions: FxHashMap::default(),
             view_retention_order: Vec::new(),
             last_retained_paint_context: None,
-            retained_unstable_identity_count: 0,
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
@@ -404,7 +398,6 @@ impl Frame {
         self.view_retentions.clear();
         self.view_retention_order.clear();
         self.last_retained_paint_context = None;
-        self.retained_unstable_identity_count = 0;
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
