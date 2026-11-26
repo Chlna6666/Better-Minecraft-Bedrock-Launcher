@@ -5,7 +5,7 @@ use crate::{
 };
 
 impl Element for &'static str {
-    type RequestLayoutState = TextLayout;
+    type RequestLayoutState = (LayoutId, TextLayout);
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -23,7 +23,8 @@ impl Element for &'static str {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        TextLayout::layout_plain(SharedString::new_static(self), window, cx)
+        let (id, layout) = TextLayout::layout_plain(SharedString::new_static(self), window, cx);
+        (id, (id, layout))
     }
 
     fn prepaint(
@@ -32,10 +33,10 @@ impl Element for &'static str {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         text_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
+        window: &mut Window,
+        cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        text_layout.1.prepaint(bounds, self, text_layout.0, window, cx)
     }
 
     fn paint(
@@ -43,12 +44,12 @@ impl Element for &'static str {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        text_layout: &mut TextLayout,
+        text_layout: &mut Self::RequestLayoutState,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
-        text_layout.paint(self, window, cx)
+        text_layout.1.paint(self, window, cx)
     }
 }
 
@@ -69,7 +70,7 @@ impl IntoElement for String {
 }
 
 impl Element for SharedString {
-    type RequestLayoutState = TextLayout;
+    type RequestLayoutState = (LayoutId, TextLayout);
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -87,7 +88,8 @@ impl Element for SharedString {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        TextLayout::layout_plain(self.clone(), window, cx)
+        let (id, layout) = TextLayout::layout_plain(self.clone(), window, cx);
+        (id, (id, layout))
     }
 
     fn prepaint(
@@ -96,10 +98,10 @@ impl Element for SharedString {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         text_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
+        window: &mut Window,
+        cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self.as_ref())
+        text_layout.1.prepaint(bounds, self.as_ref(), text_layout.0, window, cx)
     }
 
     fn paint(
@@ -112,7 +114,7 @@ impl Element for SharedString {
         window: &mut Window,
         cx: &mut App,
     ) {
-        text_layout.paint(self.as_ref(), window, cx)
+        text_layout.1.paint(self.as_ref(), window, cx)
     }
 }
 

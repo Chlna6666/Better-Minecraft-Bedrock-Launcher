@@ -153,23 +153,56 @@ fn boxed_measure(
 
 // Adapted from longbridge/gpui-fast fast/layout.rs (Apache-2.0).
 // Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge.
-// Until final-width state adoption is available, only a single distinct
-// constraint can vouch for a fresh stateful text measurement.
-#[derive(Clone, Copy, Default)]
+// Keep one entry inline; allocate only when Taffy actually asks for more
+// constraints. A conflicting result or overflow cannot vouch for its cache.
+type MeasureEntry = (Size<Option<Pixels>>, Size<AvailableSpace>, Size<Pixels>);
+const MEASURE_LOG_CAPACITY: usize = 16;
+
+#[derive(Default)]
 enum MeasureLog {
     #[default]
     Empty,
-    Single(Size<Option<Pixels>>, Size<AvailableSpace>, Size<Pixels>),
-    Multiple,
+    Single(MeasureEntry),
+    Multiple(Vec<MeasureEntry>),
+    Invalid,
 }
 
 impl MeasureLog {
+    fn entries(&self) -> &[MeasureEntry] {
+        match self {
+            Self::Single(entry) => std::slice::from_ref(entry),
+            Self::Multiple(entries) => entries,
+            _ => &[],
+        }
+    }
+
     fn record(&mut self, known: Size<Option<Pixels>>, available: Size<AvailableSpace>, measured: Size<Pixels>) {
-        match *self {
-            Self::Empty => *self = Self::Single(known, available, measured),
-            Self::Single(k, a, size) if k == known && a == available && size == measured => {}
-            Self::Single(..) => *self = Self::Multiple,
-            Self::Multiple => {}
+        let entry = (known, available, measured);
+        match self {
+            Self::Empty => *self = Self::Single(entry),
+            Self::Single(old) => {
+                if old.0 == known && old.1 == available {
+                    if old.2 != measured {
+                        *self = Self::Invalid;
+                    }
+                } else {
+                    *self = Self::Multiple(vec![*old, entry]);
+                }
+            }
+            Self::Multiple(entries) => {
+                if let Some(index) = entries.iter().position(|old| old.0 == known && old.1 == available) {
+                    if entries[index].2 != measured {
+                        *self = Self::Invalid;
+                        return;
+                    }
+                    entries.remove(index);
+                } else if entries.len() == MEASURE_LOG_CAPACITY {
+                    *self = Self::Invalid;
+                    return;
+                }
+                entries.push(entry);
+            }
+            Self::Invalid => {}
         }
     }
 }
@@ -697,10 +730,10 @@ impl TaffyLayoutEngine {
                     }
                     let replay = !reusable && same_inputs
                         && request.replayable && old_context.replayable
-                        && matches!(old_context.measure_log, MeasureLog::Single(..));
+                        && !old_context.measure_log.entries().is_empty();
                     let mut context = request.into_context();
                     if reusable || replay {
-                        context.measure_log = old_context.measure_log;
+                        context.measure_log = std::mem::take(&mut old_context.measure_log);
                     }
                     if replay {
                         context.replay_pending = true;
@@ -993,19 +1026,37 @@ impl TaffyLayoutEngine {
             if !std::mem::take(&mut context.replay_pending) {
                 continue;
             }
-            let MeasureLog::Single(known, available, previous) = context.measure_log else {
-                self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
-                continue;
-            };
-            let actual = context.measure(known, available, window.scale_factor(), window, cx);
-            if actual != previous {
-                context.measure_log = MeasureLog::Empty;
+            let log = std::mem::take(&mut context.measure_log);
+            let scale = window.scale_factor();
+            let stands = !log.entries().is_empty() && log.entries().iter().all(|&(known, available, previous)| {
+                context.measure(known, available, scale, window, cx) == previous
+            });
+            if stands {
+                context.measure_log = log;
+            } else {
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                 self.layout_changes = self.layout_changes.wrapping_add(1);
                 self.remeasures = self.remeasures.wrapping_add(1);
             }
         }
         self.pending_replays = pending;
+    }
+
+    /// Settle text at its final native content width, not a cached sizing probe.
+    /// This prepares paint state only; it must not record a new Taffy measurement.
+    pub(crate) fn settle_text_measure(&mut self, id: LayoutId, window: &mut Window, cx: &mut App) {
+        let scale = window.scale_factor();
+        let Ok(layout) = self.taffy.layout(id.into()) else { return; };
+        let content = size(
+            Pixels((layout.size.width - layout.padding.left - layout.padding.right
+                - layout.border.left - layout.border.right).max(0.) / scale),
+            Pixels((layout.size.height - layout.padding.top - layout.padding.bottom
+                - layout.border.top - layout.border.bottom).max(0.) / scale),
+        );
+        let Some(context) = self.taffy.get_node_context_mut(id.into()) else { return; };
+        if context.replayable {
+            context.measure(content.map(Some), content.map(AvailableSpace::Definite), scale, window, cx);
+        }
     }
 
     #[cfg_attr(feature = "stacker", stacksafe::stacksafe)]
@@ -1350,16 +1401,21 @@ mod tests {
     }
 
     #[test]
-    fn measure_log_requires_one_consistent_constraint() {
+    fn measure_log_keeps_distinct_constraints_and_rejects_conflicts() {
         let mut log = MeasureLog::default();
         let known = Size::default();
         let available = crate::size(AvailableSpace::MinContent, AvailableSpace::MinContent);
         let measured = crate::size(crate::px(20.), crate::px(10.));
         log.record(known, available, measured);
         log.record(known, available, measured);
-        assert!(matches!(log, MeasureLog::Single(..)));
+        assert_eq!(log.entries().len(), 1);
+        let second = crate::size(AvailableSpace::Definite(crate::px(30.)), AvailableSpace::MinContent);
+        log.record(known, second, measured);
+        assert_eq!(log.entries().len(), 2);
+        log.record(known, available, measured);
+        assert_eq!(log.entries()[1].1, available);
         log.record(known, available, crate::size(crate::px(20.), crate::px(12.)));
-        assert!(matches!(log, MeasureLog::Multiple));
+        assert!(matches!(log, MeasureLog::Invalid));
     }
 
     #[test]

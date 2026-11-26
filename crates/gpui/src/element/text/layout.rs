@@ -24,6 +24,7 @@ struct TextLayoutInner {
     lines: SmallVec<[WrappedLine; 1]>,
     line_height: Pixels,
     wrap_width: Option<Pixels>,
+    wraps: bool,
     truncate_width: Option<Pixels>,
     size: Option<Size<Pixels>>,
     bounds: Option<Bounds<Pixels>>,
@@ -208,6 +209,7 @@ impl TextLayout {
                         len: 0,
                         line_height,
                         wrap_width,
+                        wraps: text_style.white_space == WhiteSpace::Normal && text_style.text_overflow.is_none(),
                         truncate_width,
                         size: Some(Size::default()),
                         bounds: None,
@@ -229,6 +231,7 @@ impl TextLayout {
                     len,
                     line_height,
                     wrap_width,
+                    wraps: text_style.white_space == WhiteSpace::Normal && text_style.text_overflow.is_none(),
                     truncate_width,
                     size: Some(size),
                     bounds: None,
@@ -253,7 +256,15 @@ impl TextLayout {
         }
     }
 
-    pub(super) fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
+    pub(super) fn prepaint(&self, bounds: Bounds<Pixels>, text: &str, id: LayoutId, window: &mut Window, cx: &mut App) {
+        // Taffy can reuse the final placement but still take a different sizing
+        // probe. Restore the text's paint state before it is consumed.
+        let needs_settle = self.0.borrow().as_ref().is_none_or(|layout| {
+            layout.wraps && layout.wrap_width != Some(bounds.size.width)
+        });
+        if needs_settle {
+            window.settle_text_measure(id, cx);
+        }
         let mut element_state = self.0.borrow_mut();
         let element_state = element_state.as_mut().unwrap_or_else(|| {
             panic!("measurement has not been performed on {text}");

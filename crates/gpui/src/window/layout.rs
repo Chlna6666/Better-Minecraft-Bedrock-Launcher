@@ -161,6 +161,12 @@ impl Window {
         self.layout_engine = Some(layout_engine);
     }
 
+    pub(crate) fn settle_text_measure(&mut self, id: LayoutId, cx: &mut App) {
+        let mut engine = self.layout_engine.take().expect("layout engine installed");
+        engine.settle_text_measure(id, self, cx);
+        self.layout_engine = Some(engine);
+    }
+
     /// Obtain the bounds computed for the given LayoutId relative to the window. This method will usually be invoked by
     /// GPUI itself automatically in order to pass your element its `Bounds` automatically.
     ///

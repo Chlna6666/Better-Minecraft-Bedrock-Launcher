@@ -110,7 +110,7 @@ impl StyledText {
 }
 
 impl Element for StyledText {
-    type RequestLayoutState = ();
+    type RequestLayoutState = LayoutId;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -138,7 +138,7 @@ impl Element for StyledText {
         let layout_id = self
             .layout
             .layout(self.text.clone(), runs, true, window, cx);
-        (layout_id, ())
+        (layout_id, layout_id)
     }
 
     fn prepaint(
@@ -146,11 +146,11 @@ impl Element for StyledText {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
+        layout_id: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
     ) {
-        self.layout.prepaint(bounds, &self.text)
+        self.layout.prepaint(bounds, &self.text, *layout_id, window, cx)
     }
 
     fn paint(
