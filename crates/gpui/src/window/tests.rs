@@ -300,6 +300,75 @@ fn child_invalidation_marks_parent_for_traversal_only(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+struct SpliceTestLeaf {
+    renders: Rc<Cell<usize>>,
+    width: Rc<Cell<Pixels>>,
+    changed: Rc<Cell<bool>>,
+}
+
+impl Render for SpliceTestLeaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        crate::div().w(self.width.get()).h(px(20.)).bg(if self.changed.get() {
+            crate::blue()
+        } else {
+            crate::red()
+        })
+    }
+}
+
+struct SpliceTestAnchor {
+    renders: Rc<Cell<usize>>,
+    child: Entity<SpliceTestLeaf>,
+}
+
+impl Render for SpliceTestAnchor {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        crate::div().size_full().bg(crate::black()).child(self.child.clone())
+    }
+}
+
+#[gpui::test]
+fn stable_dirty_leaf_splices_and_changed_layout_adopts_prebuilt(cx: &mut TestAppContext) {
+    let anchor_renders = Rc::new(Cell::new(0));
+    let leaf_renders = Rc::new(Cell::new(0));
+    let width = Rc::new(Cell::new(px(40.)));
+    let changed = Rc::new(Cell::new(false));
+    let (child, window) = cx.update(|app| {
+        let child = app.new(|_| SpliceTestLeaf {
+            renders: leaf_renders.clone(), width: width.clone(), changed: changed.clone(),
+        });
+        let window = app.open_window(WindowOptions::default(), |_, app| {
+            app.new(|_| SpliceTestAnchor { renders: anchor_renders.clone(), child: child.clone() })
+        }).unwrap();
+        (child, AnyWindowHandle::from(window))
+    });
+    cx.update_window(window, |_, window, app| {
+        window.draw(app).clear();
+        let anchor_before = anchor_renders.get();
+        let leaf_before = leaf_renders.get();
+        changed.set(true);
+        window.invalidator.set_dirty(false);
+        window.force_view_cache_refresh = false;
+        window.mark_view_dirty(child.entity_id());
+        window.draw(app).clear();
+        assert_eq!(anchor_renders.get(), anchor_before, "stable leaf must skip ancestor Render");
+        assert_eq!(leaf_renders.get(), leaf_before + 1);
+
+        width.set(px(64.));
+        window.invalidator.set_dirty(false);
+        window.force_view_cache_refresh = false;
+        window.mark_view_dirty(child.entity_id());
+        window.draw(app).clear();
+        assert_eq!(anchor_renders.get(), anchor_before + 1, "native layout change must rebuild the ancestor");
+        assert_eq!(leaf_renders.get(), leaf_before + 2, "fallback must take over the prebuilt gap");
+        assert!(window.prebuilt_gaps.is_empty());
+        assert!(window.rendered_frame.scene().quads.iter().any(|quad|
+            quad.bounds.size.width == px(64.).scale(window.scale_factor)));
+    }).unwrap();
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct PaintedTestView;

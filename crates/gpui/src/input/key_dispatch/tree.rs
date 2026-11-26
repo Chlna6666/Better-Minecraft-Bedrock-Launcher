@@ -226,8 +226,16 @@ impl DispatchTree {
         if outer.start >= gap.start || gap.start > gap.end || gap.end > outer.end || outer.end > self.nodes.len() {
             return false;
         }
-        self.nodes[gap.start - 1].view_id == Some(owner)
-            && self.nodes[gap.end..outer.end].iter().all(|node| node.parent.is_none_or(|parent| !gap.contains(&parent.0)))
+        let wrapper = DispatchNodeId(gap.start - 1);
+        let anchor = outer.start.checked_sub(1).map(DispatchNodeId);
+        self.nodes[wrapper.0].view_id == Some(owner)
+            && self.view_node_ids.get(&owner) == Some(&wrapper)
+            && self.nodes[outer.start..gap.start].iter().all(|node| {
+                node.parent == anchor || node.parent.is_some_and(|parent| (outer.start..gap.start).contains(&parent.0))
+            })
+            && self.nodes[gap.end..outer.end].iter().all(|node| {
+                node.parent == anchor || node.parent.is_some_and(|parent| outer.contains(&parent.0) && !gap.contains(&parent.0))
+            })
     }
 
     /// Append a contiguous dispatch segment, translating in-segment parents
@@ -417,6 +425,41 @@ impl DispatchTree {
 #[cfg(test)]
 mod retained_dispatch_replay_tests {
     use super::*;
+
+    #[test]
+    fn split_dispatch_replay_relocates_suffix_parent() {
+        let keymap = Rc::new(RefCell::new(Keymap::default()));
+        let actions = Rc::new(ActionRegistry::default());
+        let mut source = DispatchTree::new(keymap.clone(), actions.clone());
+        let mut target = DispatchTree::new(keymap, actions);
+        source.push_node();
+        let clean = source.push_node();
+        let owner = EntityId::from(7_u64);
+        source.push_node();
+        source.set_view_id(owner);
+        source.push_node();
+        source.pop_node();
+        source.pop_node();
+        source.push_node();
+        source.pop_node();
+        source.pop_node();
+        source.pop_node();
+        assert!(source.can_splice_gap(1..5, 3..4, owner));
+        let root = target.push_node();
+        target.replay_segment(1..3, &source, None, |_| Some(root));
+        target.set_active_node(DispatchNodeId(2));
+        target.push_node();
+        target.pop_node();
+        target.push_node();
+        target.pop_node();
+        target.set_active_node(root);
+        target.replay_segment(4..5, &source, None, |parent| {
+            assert_eq!(parent, Some(clean));
+            Some(DispatchNodeId(1))
+        });
+        assert_eq!(target.nodes[5].parent, Some(DispatchNodeId(1)));
+        assert_eq!(target.active_node_id(), Some(root));
+    }
 
     #[test]
     fn retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort() {

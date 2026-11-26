@@ -1496,6 +1496,26 @@ mod tests {
     }
 
     #[test]
+    fn gap_claim_keeps_only_native_prefix_and_suffix() {
+        let mut engine = TaffyLayoutEngine::new();
+        let gap_owner = row_id(2);
+        let root_owner = list_id();
+        let gap = engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]);
+        let root = engine.request_layout(Some(owner(&root_owner)), Style::default(), crate::px(16.), 1., &[gap]);
+        engine.clear();
+        let anchor = [0..2, 0..0];
+        let gap_span = [0..1, 0..0];
+        let stamp = engine.splice_layout_stamp();
+        let kept = engine.try_keep_around_gap(&anchor, &gap_span, root, gap).unwrap();
+        assert_eq!(engine.claimed_this_frame, 1);
+        assert_eq!(engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]), gap);
+        assert_eq!(engine.splice_layout_stamp(), stamp);
+        engine.release_kept(&kept);
+        assert_eq!(engine.claimed_this_frame, 1);
+        assert_eq!(engine.request_layout(Some(owner(&root_owner)), Style::default(), crate::px(16.), 1., &[gap]), root);
+    }
+
+    #[test]
     fn subtree_claim_refuses_robbed_layout_nodes() {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();

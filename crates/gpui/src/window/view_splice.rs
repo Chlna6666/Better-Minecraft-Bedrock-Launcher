@@ -123,6 +123,9 @@ impl Window {
         let slot = &self.rendered_frame.view_retention_records[gap_index];
         let old = slot.record.as_ref()?.clone();
         let gap_key = slot.key.clone();
+        if self.rendered_frame.view_retentions.get(&gap_key).copied() != Some(gap_index) {
+            return None;
+        }
         let gap_rebuild = old.rebuild.as_ref()?.clone();
         if !old.splice_safe || !old.layout_state_range.is_empty()
             || gap_rebuild.layout != rebuild.layout || old.context != anchor.context
