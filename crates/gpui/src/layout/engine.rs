@@ -20,6 +20,7 @@ use super::{
         hash_size_definite_length, hash_size_length,
     },
     metrics::{AvailableSpace, AvailableSpaceKey, LayoutId},
+    layout_bounds::LayoutIdMap,
 };
 
 #[cfg(feature = "stacker")]
@@ -422,8 +423,8 @@ pub struct TaffyLayoutEngine {
     remeasures: u64,
     robbed_parents: FxHashSet<LayoutId>,
     default_measured_style: Option<DefaultMeasuredStyle>,
-    pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
-    unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
+    pub(super) absolute_layout_bounds: LayoutIdMap<Bounds<Pixels>>,
+    unrounded_layout_origins: LayoutIdMap<(f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     // Taffy stores device-pixel geometry; equal logical constraints at a new
@@ -486,8 +487,8 @@ impl TaffyLayoutEngine {
             remeasures: 0,
             robbed_parents: FxHashSet::default(),
             default_measured_style: None,
-            absolute_layout_bounds: FxHashMap::default(),
-            unrounded_layout_origins: FxHashMap::default(),
+            absolute_layout_bounds: LayoutIdMap::default(),
+            unrounded_layout_origins: LayoutIdMap::default(),
             computed_layouts: FxHashSet::default(),
             node_layout_metadata: FxHashMap::default(),
             root_constraints: FxHashMap::default(),
@@ -595,8 +596,7 @@ impl TaffyLayoutEngine {
         // Observe the frame that just finished before clearing it. This is the real active layout
         // working set and lets a large-to-small page transition return excess buckets without
         // disturbing stable large pages.
-        let absolute_layout_count = self.absolute_layout_bounds.len();
-        let unrounded_origin_count = self.unrounded_layout_origins.len();
+        let bounds_were_empty = self.absolute_layout_bounds.is_empty() && self.unrounded_layout_origins.is_empty();
         let computed_layout_count = self.computed_layouts.len();
         let metadata_count = self.node_layout_metadata.len();
         let node_working_set = self.nodes_requested;
@@ -649,8 +649,10 @@ impl TaffyLayoutEngine {
                 }
             }};
         }
-        trim_to_working_set!(self.absolute_layout_bounds, absolute_layout_count);
-        trim_to_working_set!(self.unrounded_layout_origins, unrounded_origin_count);
+        if bounds_were_empty {
+            self.absolute_layout_bounds.trim_empty(Self::MIN_RETAINED_CAPACITY);
+            self.unrounded_layout_origins.trim_empty(Self::MIN_RETAINED_CAPACITY);
+        }
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
         trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
@@ -676,10 +678,8 @@ impl TaffyLayoutEngine {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => 0,
         };
-        self.absolute_layout_bounds
-            .shrink_to(floor.max(self.absolute_layout_bounds.len()));
-        self.unrounded_layout_origins
-            .shrink_to(floor.max(self.unrounded_layout_origins.len()));
+        self.absolute_layout_bounds.trim_empty(floor);
+        self.unrounded_layout_origins.trim_empty(floor);
         self.computed_layouts
             .shrink_to(floor.max(self.computed_layouts.len()));
         self.node_layout_metadata
@@ -1564,8 +1564,8 @@ impl TaffyLayoutEngine {
                 let moved = previous.location != current.location;
                 // A cached descendant implies a cached origin for every ancestor.
                 // No cached origin means there is no cached subtree to invalidate.
-                if (moved && origins.contains_key(&id))
-                    || (previous.size != current.size && bounds.contains_key(&id))
+                if (moved && origins.get(&id).is_some())
+                    || (previous.size != current.size && bounds.get(&id).is_some())
                 {
                     changed_bounds.push(BoundsMutation { id, moved });
                 }

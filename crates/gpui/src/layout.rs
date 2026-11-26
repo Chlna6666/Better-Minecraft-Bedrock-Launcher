@@ -3,6 +3,7 @@ mod convert;
 mod engine;
 mod fingerprint;
 mod key;
+mod layout_bounds;
 mod metrics;
 
 #[cfg(test)]
