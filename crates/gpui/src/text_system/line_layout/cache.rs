@@ -27,6 +27,7 @@ pub(crate) struct LineLayoutCache {
     font_generation: Arc<AtomicU64>,
     cached_font_generation: AtomicU64,
     frame_metrics: LineLayoutCacheMetrics,
+    number_shaping: RefCell<crate::fast::number_shaping::NumberShaping>,
 }
 
 const LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY: usize = 64;
@@ -288,6 +289,7 @@ impl LineLayoutCache {
             font_generation,
             cached_font_generation: AtomicU64::new(cached_font_generation),
             frame_metrics: LineLayoutCacheMetrics::default(),
+            number_shaping: RefCell::default(),
         }
     }
 
@@ -305,6 +307,7 @@ impl LineLayoutCache {
         if self.cached_font_generation.load(Ordering::Acquire) != generation {
             current_frame.clear();
             previous_frame.clear();
+            self.number_shaping.borrow_mut().clear();
             self.cached_font_generation
                 .store(generation, Ordering::Release);
         }
@@ -397,6 +400,7 @@ impl LineLayoutCache {
         let mut previous_frame = self.previous_frame.borrow_mut();
         previous_frame.clear();
         current_frame.clear();
+        self.number_shaping.borrow_mut().clear();
     }
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
@@ -405,6 +409,9 @@ impl LineLayoutCache {
         let mut previous_frame = self.previous_frame.borrow_mut();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
+        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
+            self.number_shaping.borrow_mut().clear();
+        }
     }
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
@@ -562,9 +569,13 @@ impl LineLayoutCache {
         let platform_identity = platform_text_system_identity(&self.platform_text_system);
         let layout =
             LINE_LAYOUT_SINGLEFLIGHT.shape(platform_identity, font_generation, key.clone(), || {
-                let mut layout = self
-                    .platform_text_system
-                    .layout_line(&text, font_size, runs);
+                let mut layout = if force_width.is_none() {
+                    self.number_shaping.borrow_mut().shape(
+                        self.platform_text_system.as_ref(), &text, font_size, runs, font_generation,
+                    )
+                } else {
+                    None
+                }.unwrap_or_else(|| self.platform_text_system.layout_line(&text, font_size, runs));
 
                 if let Some(force_width) = force_width {
                     apply_force_width_to_layout(&mut layout, force_width);
