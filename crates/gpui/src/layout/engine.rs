@@ -86,6 +86,35 @@ pub(super) struct NodeContext {
     replay_pending: bool,
 }
 
+// Keep the new callback on the stack until native adoption has failed.
+struct MeasureRequest<F> {
+    key: Option<MeasurementKey>,
+    replayable: bool,
+    state_ready: bool,
+    build: F,
+}
+
+impl<F: FnOnce() -> NodeMeasureFn> MeasureRequest<F> {
+    fn into_context(self) -> NodeContext {
+        NodeContext {
+            measure: (self.build)(),
+            key: self.key,
+            replayable: self.replayable,
+            measure_log: MeasureLog::Empty,
+            replay_pending: false,
+        }
+    }
+}
+
+fn boxed_measure(
+    measure: impl FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels> + 'static,
+) -> NodeMeasureFn {
+    let measure = Box::new(measure) as Box<MeasureFn>;
+    #[cfg(feature = "stacker")]
+    let measure = StackSafe::new(measure);
+    measure
+}
+
 // Adapted from longbridge/gpui-fast fast/layout.rs (Apache-2.0).
 // Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge.
 // Until final-width state adoption is available, only a single distinct
@@ -527,7 +556,7 @@ impl TaffyLayoutEngine {
         &mut self,
         owner: Option<(u64, GlobalElementId)>,
         children: &[LayoutId],
-        measure: Option<NodeContext>,
+        measure: Option<MeasureRequest<impl FnOnce() -> NodeMeasureFn>>,
         style_fingerprint: Option<u64>,
         build_style: impl FnOnce() -> taffy::Style,
     ) -> LayoutId {
@@ -539,7 +568,7 @@ impl TaffyLayoutEngine {
         // for every request, including the fingerprint-hit path that never calls it.
         let Some((key, element)) = owner else {
             let style = build_style();
-            let id = self.create_taffy_node(style, children, measure);
+            let id = self.create_taffy_node(style, children, measure.map(MeasureRequest::into_context));
             self.anonymous_nodes.push(id);
             return id;
         };
@@ -548,7 +577,7 @@ impl TaffyLayoutEngine {
         // slot is transient for this request; do not overwrite or leak its owner.
         if let Some(node) = self.persistent_nodes.get_mut(&key) {
             if node.element != element || node.claimed_in_frame == self.request_frame {
-                let id = self.create_taffy_node(build_style(), children, measure);
+                let id = self.create_taffy_node(build_style(), children, measure.map(MeasureRequest::into_context));
                 self.anonymous_nodes.push(id);
                 return id;
             }
@@ -611,25 +640,27 @@ impl TaffyLayoutEngine {
                 self.taffy.set_style(id.into(), style).expect(EXPECT_MESSAGE);
                 self.layout_changes = self.layout_changes.wrapping_add(1);
             }
-            if let Some(mut context) = measure {
+            if let Some(request) = measure {
                 if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
-                    let reusable = same_style && !requires_style && child_order_unchanged
-                        && context.key.zip(old_context.key).is_some_and(|(new, old)| new.compatible(old));
-                    if reusable && context.key.zip(old_context.key).is_some_and(|(new, old)| new.adopts(old)) {
+                    let same_inputs = same_style && !requires_style && child_order_unchanged
+                        && !old_context.replay_pending;
+                    let keys = request.key.zip(old_context.key);
+                    let reusable = same_inputs && request.state_ready
+                        && keys.is_some_and(|(new, old)| new.compatible(old));
+                    if reusable && keys.is_some_and(|(new, old)| new.adopts(old)) {
                         // Same live text state and unchanged non-truncated inputs: the
                         // existing closure and native cache can both be adopted.
                         self.persistent_layout_reuses += 1;
                         return id;
                     }
-                    let replay = !reusable && same_style && !requires_style && child_order_unchanged
-                        && context.replayable && old_context.replayable
-                        && !old_context.replay_pending
+                    let replay = !reusable && same_inputs
+                        && request.replayable && old_context.replayable
                         && matches!(old_context.measure_log, MeasureLog::Single(..));
-                    if reusable {
+                    let mut context = request.into_context();
+                    if reusable || replay {
                         context.measure_log = old_context.measure_log;
                     }
                     if replay {
-                        context.measure_log = old_context.measure_log;
                         context.replay_pending = true;
                         self.pending_replays.push(id);
                     }
@@ -641,7 +672,7 @@ impl TaffyLayoutEngine {
                     }
                 } else {
                     self.taffy
-                        .set_node_context(id.into(), Some(context))
+                        .set_node_context(id.into(), Some(request.into_context()))
                         .expect(EXPECT_MESSAGE);
                     self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                     self.layout_changes = self.layout_changes.wrapping_add(1);
@@ -653,7 +684,7 @@ impl TaffyLayoutEngine {
             id
         } else {
             let is_measured = measure.is_some();
-            let id = self.create_taffy_node(build_style(), children, measure);
+            let id = self.create_taffy_node(build_style(), children, measure.map(MeasureRequest::into_context));
             self.claimed_this_frame += 1;
             self.claimed_key_log.push(Some(LayoutClaim { key, id }));
             self.persistent_nodes.insert(
@@ -746,7 +777,7 @@ impl TaffyLayoutEngine {
         let layout_id = self.request_persistent_node(
             owner,
             children,
-            None,
+            None::<MeasureRequest<fn() -> NodeMeasureFn>>,
             Some(style_fingerprint),
             move || pending_style.to_taffy(rem_size, scale_factor),
         );
@@ -796,22 +827,18 @@ impl TaffyLayoutEngine {
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let style_fingerprint = style_hasher.finish();
-        let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
-        let measure = Box::new(measure) as Box<MeasureFn>;
-        #[cfg(feature = "stacker")]
-        let measure = StackSafe::new(measure);
+        let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
             &[],
-            Some(NodeContext {
-                measure,
+            Some(MeasureRequest {
                 key: fingerprint_seed.map(MeasurementKey::Value),
                 replayable: false,
-                measure_log: MeasureLog::Empty,
-                replay_pending: false,
+                state_ready: true,
+                build: move || boxed_measure(measure),
             }),
             Some(style_fingerprint),
-            move || taffy_style,
+            move || pending_style.to_taffy(rem_size, scale_factor),
         );
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
@@ -824,6 +851,7 @@ impl TaffyLayoutEngine {
         scale_factor: f32,
         key: Option<MeasurementKey>,
         replayable: bool,
+        state_ready: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
@@ -847,13 +875,13 @@ impl TaffyLayoutEngine {
             });
         }
         let cached = self.default_measured_style.as_ref().expect("default measured style");
-        self.request_impure_measured_node(
+        self.request_native_measured_node(
             owner, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
-            rem_size, scale_factor, key, replayable, measure,
+            rem_size, scale_factor, key, replayable, state_ready, measure,
         )
     }
 
-    fn request_impure_measured_node(
+    fn request_native_measured_node(
         &mut self,
         owner: Option<(u64, GlobalElementId)>,
         layout_style: LayoutStyle,
@@ -863,6 +891,7 @@ impl TaffyLayoutEngine {
         scale_factor: f32,
         key: Option<MeasurementKey>,
         replayable: bool,
+        state_ready: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
@@ -876,18 +905,14 @@ impl TaffyLayoutEngine {
         );
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
-        let measure = Box::new(measure) as Box<MeasureFn>;
-        #[cfg(feature = "stacker")]
-        let measure = StackSafe::new(measure);
         let layout_id = self.request_persistent_node(
             owner,
             &[],
-            Some(NodeContext {
-                measure,
+            Some(MeasureRequest {
                 key,
                 replayable,
-                measure_log: MeasureLog::Empty,
-                replay_pending: false,
+                state_ready,
+                build: move || boxed_measure(measure),
             }),
             Some(style_fingerprint),
             move || taffy_style,

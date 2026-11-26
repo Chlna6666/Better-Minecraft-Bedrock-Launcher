@@ -121,6 +121,7 @@ impl Window {
         &mut self,
         key: Option<crate::layout::MeasurementKey>,
         replayable: bool,
+        state_ready: bool,
         mut measure: F,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
@@ -137,6 +138,7 @@ impl Window {
                 scale_factor,
                 key,
                 replayable,
+                state_ready,
                 move |known, available, window, cx| {
                     snap_measured_size_to_device_pixels(
                         measure(known, available, window, cx),

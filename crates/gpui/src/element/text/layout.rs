@@ -118,6 +118,9 @@ impl TextLayout {
             && text_style.text_overflow.is_none()
             && window.current_stable_layout_element_id().is_some();
 
+        let state_ready = self.0.borrow().as_ref().is_some_and(|layout| {
+            layout.cache_key == cache_key && layout.paint_key == paint_key && layout.size.is_some()
+        });
         let replayable_measure = text_style.text_overflow.is_none();
         let measurement_key = (!require_measure).then(|| crate::layout::MeasurementKey::Text {
             state: Rc::as_ptr(&self.0) as usize,
@@ -260,7 +263,7 @@ impl TextLayout {
                 move |_, _, _, _| measured,
             )
         } else {
-            window.request_default_measured_layout(measurement_key, replayable_measure, measure)
+            window.request_default_measured_layout(measurement_key, replayable_measure, state_ready, measure)
         }
     }
 
