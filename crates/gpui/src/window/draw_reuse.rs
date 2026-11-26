@@ -261,6 +261,17 @@ impl Window {
         self.next_frame.hitboxes.extend_from_slice(
             &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
+        self.replay_prepaint_records(range, external_parent);
+    }
+
+    /// Carry non-geometric prepaint records independently of hitbox placement.
+    /// A caller replacing hitbox geometry must still preserve dispatch, focus,
+    /// element-state ownership and text layout lifetimes.
+    pub(super) fn replay_prepaint_records(
+        &mut self,
+        range: Range<PrepaintStateIndex>,
+        external_parent: impl FnMut(Option<DispatchNodeId>) -> Option<DispatchNodeId>,
+    ) {
         // Tooltip ranges are excluded at admission; there are no owners to move.
         self.next_frame.accessed_element_states.extend(
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
@@ -408,13 +419,21 @@ impl Window {
     /// not change afterwards, so paint must not pay for the validation again (and a required text
     /// layout was already pinned by the prepaint copy).
     pub(crate) fn replay_validated_paint(&mut self, range: Range<PaintIndex>) {
+        self.replay_validated_paint_records(&range);
+        self.replay_validated_scene(range.start.scene_index..range.end.scene_index);
+    }
+
+    /// Carry the input and state records without replaying any scene operations.
+    /// Retained compositor content must not replay its primitives into the root
+    /// painter merely to keep listeners, focus/IME and layout resources alive.
+    /// The caller must validate the range before using this method.
+    pub(super) fn replay_validated_paint_records(&mut self, range: &Range<PaintIndex>) {
         #[cfg(any(test, feature = "test-support"))]
         {
-            let records: Vec<_> = self.rendered_frame.debug_bounds_records
+            for (selector, bounds) in &self.rendered_frame.debug_bounds_records
                 [range.start.debug_bounds_index..range.end.debug_bounds_index]
-                .to_vec();
-            for (selector, bounds) in records {
-                self.next_frame.record_debug_bounds(selector, bounds);
+            {
+                self.next_frame.record_debug_bounds(selector.clone(), *bounds);
             }
         }
 
@@ -469,7 +488,11 @@ impl Window {
 
         self.text_system
             .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
-        let old_scene_range = range.start.scene_index..range.end.scene_index;
+    }
+
+    /// Replay only the visual fragment; the independent record carry is
+    /// responsible for input, element states, tab stops and text layouts.
+    pub(super) fn replay_validated_scene(&mut self, old_scene_range: Range<usize>) {
         let replay_start = self.next_frame.painter.len();
         let spans = self
             .rendered_frame
