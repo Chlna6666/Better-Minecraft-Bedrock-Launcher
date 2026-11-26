@@ -2,6 +2,8 @@ use super::chunk_upload::{ChunkUploadPlan, RetainedChunkLayout, RetainedChunkLay
 
 mod auto_static;
 mod color;
+mod work;
+use work::{REPAINT_COST, WorkBudget};
 use auto_static::auto_capture_static_background;
 mod sharing;
 use super::*;
@@ -470,6 +472,8 @@ struct RootColorAdmission {
     high_damage_frames: u8,
     low_damage_frames: u8,
     demoted: bool,
+    work: WorkBudget,
+    frame: u64,
 }
 
 impl RootColorAdmission {
@@ -493,6 +497,21 @@ impl RootColorAdmission {
         } else {
             f64::from(damage.area()) / surface_area
         };
+        // Use Fast's actual bounded rolling-work estimator on this root
+        // capture while the native tile path is being migrated. Damage area
+        // is a proxy for source raster work, not a measured GPU duration.
+        // Count distinct scene commits; repeated presentation of the same
+        // revision does not repeat this estimate.
+        self.frame = self.frame.wrapping_add(1);
+        if !self.demoted {
+            let work = fraction.clamp(0.0, 1.0) as f32 * REPAINT_COST;
+            self.work.note(self.frame, work);
+            self.work.note_refresh(self.frame, work);
+            if self.work.over_budget() {
+                self.demoted = true;
+                self.low_damage_frames = 0;
+            }
+        }
         if fraction >= 0.60 {
             self.high_damage_frames = self.high_damage_frames.saturating_add(1);
             self.low_damage_frames = 0;
@@ -503,7 +522,10 @@ impl RootColorAdmission {
             self.low_damage_frames = self.low_damage_frames.saturating_add(1);
             self.high_damage_frames = 0;
             if self.low_damage_frames >= Self::PROMOTE_AFTER {
-                self.demoted = false;
+                if self.demoted {
+                    self.work = WorkBudget::default();
+                    self.demoted = false;
+                }
             }
         } else {
             self.high_damage_frames = 0;
