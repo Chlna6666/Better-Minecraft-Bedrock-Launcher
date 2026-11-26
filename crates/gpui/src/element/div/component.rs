@@ -331,6 +331,12 @@ impl Element for Div {
             }
             state.version.bump_if(changed);
             (child_max - child_min).into()
+        } else if self.interactivity.scroll_offset.is_none()
+            && !has_prepaint_listener && inspector_id.is_none()
+        {
+            // No scroll clamp, child-bounds observer or inspector consumes
+            // the aggregate. Avoid a second geometry lookup per child.
+            bounds.size
         } else {
             for child_layout_id in &request_layout.child_layout_ids {
                 let child_bounds = window.layout_bounds(*child_layout_id);

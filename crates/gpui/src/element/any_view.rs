@@ -300,7 +300,7 @@ impl Element for ViewElement {
         let entity_id = self.view.entity_id();
         state.splice_safe &= window.splice_context_supported();
         if let ViewRequestLayoutKind::Spliced { splice, .. } = &mut state.kind {
-            if !window.can_prepaint_view_splice(splice.as_ref().expect("pending splice"), bounds) {
+            if !window.can_prepaint_view_splice(splice.as_mut().expect("pending splice"), bounds) {
                 let anchor = window.abandon_view_splice(*splice.take().expect("pending splice"));
                 state.kind = ViewRequestLayoutKind::Retained {
                     admission: anchor, layout_claims: LayoutClaimBlocks::default(), layout_state_range: crate::window::StateAccessBlocks::default(),

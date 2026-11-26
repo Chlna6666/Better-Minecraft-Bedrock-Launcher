@@ -454,7 +454,7 @@ impl<E: Element> Drawable<E> {
                 mut request_layout,
                 ..
             } => {
-                let bounds = window.layout_bounds(layout_id);
+                let bounds = window.element_layout_bounds(layout_id);
                 let mut prepaint = None;
                 let element_type = std::any::type_name::<E>();
                 let prepaint_element_id = self.element.id();

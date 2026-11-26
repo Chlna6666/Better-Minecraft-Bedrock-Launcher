@@ -172,6 +172,13 @@ impl Window {
     ///
     /// This method should only be called as part of element drawing.
     pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
+        self.next_frame.has_explicit_layout_reads = true;
+        self.element_layout_bounds(layout_id)
+    }
+
+    // The framework's own slot lookup is consumed immediately by that
+    // element's lifecycle, unlike a public cross-element geometry query.
+    pub(crate) fn element_layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
         self.invalidator.debug_assert_prepaint();
 
         let scale_factor = self.scale_factor();

@@ -394,6 +394,7 @@ impl Window {
 
     /// Keep state values in the frame map and replay only ownership references.
     pub(crate) fn replay_view_layout_states(&mut self, source: &StateAccessBlocks) -> StateAccessBlocks {
+        self.next_frame.has_explicit_layout_reads |= self.rendered_frame.has_explicit_layout_reads;
         let start = self.next_frame.accessed_element_states.len();
         for span in source.iter() {
             self.next_frame.accessed_element_states.extend_from_slice(
