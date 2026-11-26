@@ -69,12 +69,13 @@ impl LayoutClaimBlocks {
 
     /// Committed blocks are phase-local, sorted and disjoint. Validate
     /// containment before an intermediate ancestor inherits a rebuilt gap.
-    pub(crate) fn covers_request(&self, child: &Self) -> bool {
-        let parent = self.request_blocks();
-        child.request_blocks().iter().all(|span| {
-            let index = parent.partition_point(|block| block.end <= span.start);
-            parent.get(index).is_some_and(|block| block.start <= span.start && block.end >= span.end)
-        })
+    pub(crate) fn covers(&self, child: &Self) -> bool {
+        [(self.request_blocks(), child.request_blocks()),
+         (self.prepaint_blocks(), child.prepaint_blocks())]
+            .into_iter().all(|(parent, child)| child.iter().all(|span| {
+                let index = parent.partition_point(|block| block.end <= span.start);
+                parent.get(index).is_some_and(|block| block.start <= span.start && block.end >= span.end)
+            }))
     }
 
     pub(crate) fn normalize(&mut self) {

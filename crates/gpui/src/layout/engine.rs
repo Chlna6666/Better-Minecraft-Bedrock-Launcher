@@ -849,9 +849,13 @@ impl TaffyLayoutEngine {
         if gaps.is_empty() {
             return None;
         }
-        let mut excluded = smallvec::SmallVec::<[Range<usize>; 4]>::new();
+        let mut excluded_request = smallvec::SmallVec::<[Range<usize>; 4]>::new();
+        let mut excluded_prepaint = smallvec::SmallVec::<[Range<usize>; 4]>::new();
         for (gap, gap_root) in gaps {
-            if !gap.prepaint_blocks().is_empty() || gap.request_blocks().is_empty()
+            // Only a root already allocated by the enclosing RequestLayout
+            // can be rebuilt early. Its lazy prepaint descendants may be
+            // reclaimed later in their original lifecycle.
+            if gap.request_blocks().is_empty() || !anchor.covers(gap)
                 || !self.layout_reaches(root, *gap_root)
             {
                 return None;
@@ -861,35 +865,22 @@ impl TaffyLayoutEngine {
                 let old_gap = self.committed_claim_log.get(span.clone())?;
                 if !self.claims_valid(old_gap) { return None; }
                 has_root |= old_gap.iter().flatten().any(|claim| claim.id == *gap_root);
-                excluded.push(span.clone());
+                excluded_request.push(span.clone());
             }
             if !has_root { return None; }
-        }
-        excluded.sort_unstable_by_key(|range| range.start);
-        if excluded.windows(2).any(|pair| pair[0].end > pair[1].start) {
-            return None;
-        }
-        let mut anchors: smallvec::SmallVec<[Range<usize>; 4]> = anchor.request_blocks().iter().cloned().collect();
-        anchors.sort_unstable_by_key(|range| range.start);
-        if anchors.windows(2).any(|pair| pair[0].end > pair[1].start) { return None; }
-        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
-        let mut gaps = excluded.iter().peekable();
-        for block in anchors {
-            let mut cursor = block.start;
-            while let Some(gap) = gaps.peek() {
-                if gap.start >= block.end { break; }
-                if gap.start < cursor || gap.end > block.end { return None; }
-                if cursor < gap.start { kept.push(cursor..gap.start); }
-                cursor = gap.end;
-                gaps.next();
+            for span in gap.prepaint_blocks() {
+                if !self.claims_valid(self.committed_claim_log.get(span.clone())?) {
+                    return None;
+                }
+                excluded_prepaint.push(span.clone());
             }
-            if cursor < block.end { kept.push(cursor..block.end); }
         }
-        if gaps.next().is_some() { return None; }
-        // Old dirty prepaint blocks are still rejected above. Clean lazy
-        // claims, however, can be adopted without rerunning their lifecycle.
+        // Each phase independently subtracts its dirty blocks. The source
+        // ranges may be interleaved physically after previous splices.
+        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
+        Self::subtract_claim_blocks(anchor.request_blocks(), &mut excluded_request, &mut kept)?;
         let request_len: usize = kept.iter().map(Range::len).sum();
-        kept.extend(anchor.prepaint_blocks().iter().cloned());
+        Self::subtract_claim_blocks(anchor.prepaint_blocks(), &mut excluded_prepaint, &mut kept)?;
         let start = self.claimed_key_log.len();
         let mut map = ClaimBlockMap::default();
         let mut target = start;
@@ -903,6 +894,31 @@ impl TaffyLayoutEngine {
         let mut blocks = LayoutClaimBlocks::request(start..middle);
         blocks.push_prepaint(middle..kept.end);
         Some((blocks, map))
+    }
+
+    fn subtract_claim_blocks(
+        anchors: &[Range<usize>], excluded: &mut [Range<usize>],
+        kept: &mut smallvec::SmallVec<[Range<usize>; 5]>,
+    ) -> Option<()> {
+        excluded.sort_unstable_by_key(|range| range.start);
+        if excluded.windows(2).any(|pair| pair[0].end > pair[1].start)
+            || anchors.windows(2).any(|pair| pair[0].end > pair[1].start)
+        {
+            return None;
+        }
+        let mut gaps = excluded.iter().peekable();
+        for block in anchors {
+            let mut cursor = block.start;
+            while let Some(gap) = gaps.peek() {
+                if gap.start >= block.end { break; }
+                if gap.start < cursor || gap.end > block.end { return None; }
+                if cursor < gap.start { kept.push(cursor..gap.start); }
+                cursor = gap.end;
+                gaps.next();
+            }
+            if cursor < block.end { kept.push(cursor..block.end); }
+        }
+        gaps.next().is_none().then_some(())
     }
 
     /// Adopt every prebuilt request block atomically. Old slots become

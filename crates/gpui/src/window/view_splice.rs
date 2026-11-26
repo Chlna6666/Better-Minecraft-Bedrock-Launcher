@@ -204,10 +204,9 @@ impl Window {
             let dirty = scope == Some(ViewDirtyScope::Direct);
             let ancestor = scope == Some(ViewDirtyScope::TraversalAncestor);
             if !old.layout_state_range.is_empty()
-                || (dirty && !old.layout_claims.prepaint_blocks().is_empty())
                 || (scope.is_some() && !old.splice_safe)
                 || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context
-                    || open.iter().any(|ancestor| !ancestor.layout_claims.covers_request(&old.layout_claims))))
+                    || open.iter().any(|ancestor| !ancestor.layout_claims.covers(&old.layout_claims))))
                 || self.rendered_frame.retained_scene_segments.get(old.scene_segments.clone()).is_none()
                 || !self.splice_fragment_supported(&prepaint, &old.prepaint_range.start, &paint, &old.paint_range.start)
                 || !self.can_reuse_prepaint(&old.prepaint_range)
