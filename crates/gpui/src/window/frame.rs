@@ -448,10 +448,14 @@ impl Frame {
             .mouse_listeners
             .iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
-        self.painter.finish_against(prev_frame.scene());
-        Arc::get_mut(&mut self.retained_paint)
-            .expect("unpublished paint retention")
-            .finish(&mut self.painter.scene);
+        let same_paint = self.painter.finish_against(prev_frame.scene());
+        let retention = Arc::get_mut(&mut self.retained_paint)
+            .expect("unpublished paint retention");
+        if same_paint {
+            retention.finish_against(&mut self.painter.scene, &prev_frame.retained_paint);
+        } else {
+            retention.finish(&mut self.painter.scene);
+        }
     }
 
     /// Abort a candidate generation without dropping IME handlers still

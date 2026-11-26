@@ -30,6 +30,15 @@ pub(crate) struct PreparedRetainedMonochromeSpriteChunk {
 
 impl RetainedPaint {
     pub(crate) fn finish(&mut self, scene: &mut Scene) {
+        self.finish_with_previous(scene, None);
+    }
+
+    /// The caller must have proved exact Paint equality during Scene finish.
+    pub(crate) fn finish_against(&mut self, scene: &mut Scene, previous: &Self) {
+        self.finish_with_previous(scene, Some(previous));
+    }
+
+    fn finish_with_previous(&mut self, scene: &mut Scene, previous: Option<&Self>) {
         // Preserve one candidate authority and sort it in place. Recording
         // remains cheap append-only during Paint; finished retention permits
         // O(log chunks + locally overlapping chunks) replay lookups.
@@ -49,18 +58,50 @@ impl RetainedPaint {
                 .windows(2)
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
-        self.prepare_retained_chunks(scene);
-        self.replay_quad_indices.clear();
-        self.replay_quad_indices
-            .extend(0..self.prepared_retained_quad_chunks.len());
-        self.replay_quad_indices.sort_unstable_by_key(|index| {
-            self.prepared_retained_quad_chunks[*index].paint_range.start
-        });
+        if !previous.is_some_and(|previous| self.reuse_prepared_chunks(scene, previous)) {
+            self.prepare_retained_chunks(scene);
+            self.replay_quad_indices.clear();
+            self.replay_quad_indices
+                .extend(0..self.prepared_retained_quad_chunks.len());
+            self.replay_quad_indices.sort_unstable_by_key(|index| {
+                self.prepared_retained_quad_chunks[*index].paint_range.start
+            });
+        }
         scene.quads.compact();
         scene.paint_operations.compact();
 
         self.finished = true;
         self.revision = scene.revision;
+    }
+
+    /// Whole-Paint equality is not enough on its own: new candidate
+    /// ownership or a different split can change exclusive chunk selection.
+    /// Reuse the finished proof only when every candidate was carried at
+    /// the same position with the same identity.
+    fn reuse_prepared_chunks(&mut self, scene: &Scene, previous: &Self) -> bool {
+        if !previous.finished
+            || scene.revision == 0
+            || scene.revision != previous.revision
+            || self.retained_chunk_candidates.len() != previous.retained_chunk_candidates.len()
+            || !self.retained_chunk_candidates.iter().zip(&previous.retained_chunk_candidates)
+                .all(|(current, old)| current.replayed
+                    && current.id == old.id
+                    && current.scene_range == old.scene_range)
+        {
+            return false;
+        }
+
+        self.prepared_retained_quad_chunks.clone_from(&previous.prepared_retained_quad_chunks);
+        for chunk in &mut self.prepared_retained_quad_chunks {
+            chunk.replayed = true;
+        }
+        self.prepared_retained_monochrome_sprite_chunks
+            .clone_from(&previous.prepared_retained_monochrome_sprite_chunks);
+        for chunk in &mut self.prepared_retained_monochrome_sprite_chunks {
+            chunk.replayed = true;
+        }
+        self.replay_quad_indices.clone_from(&previous.replay_quad_indices);
+        true
     }
 
     /// Borrows ranges for the paired Paint generation only.
@@ -277,6 +318,40 @@ mod retained_order_coverage_tests {
 mod tests {
     use super::*;
     use crate::{Bounds, Quad, ScaledPixels};
+    #[test]
+    fn unchanged_paint_reuses_prepared_chunks_only_for_identical_candidates() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(32.), ScaledPixels(32.)),
+        );
+        let mut previous = crate::window::retained::PaintFixture::default();
+        for _ in 0..32 {
+            previous.insert_primitive(Quad {
+                bounds, content_mask: crate::ContentMask::new(bounds), ..Quad::default()
+            });
+        }
+        previous.record(GlobalElementId::from_path(&["same".into()]), 1, 0..32);
+        previous.finish();
+        assert_eq!(previous.chunks().len(), 1);
+
+        let mut current = crate::window::retained::PaintFixture::default();
+        current.replay(0..32, &previous);
+        assert!(current.paint.finish_against(&previous.paint));
+        assert!(current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
+        assert_eq!(current.retention.prepared_retained_quad_chunks[0].id, previous.chunks()[0].id);
+        assert!(current.retention.prepared_retained_quad_chunks[0].replayed);
+        assert_eq!(current.retention.replay_quad_indices, previous.retention.replay_quad_indices);
+        current.retention.finish_against(&mut current.paint.scene, &previous.retention);
+        assert_eq!(current.chunks().len(), 1);
+
+        // An identical Scene with a different owner or candidate split must
+        // still go through normal chunk qualification.
+        current.record(GlobalElementId::from_path(&["different".into()]), 1, 0..32);
+        assert!(!current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
+        current.retention.finish_against(&mut current.paint.scene, &previous.retention);
+        assert_eq!(current.chunks().len(), 1);
+    }
+
     #[test]
     fn retained_fragment_replay_copies_only_contained_sorted_chunks() {
         let bounds = Bounds::new(
