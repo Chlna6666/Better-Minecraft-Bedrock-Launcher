@@ -1,5 +1,20 @@
-//! Native node slots derived from the already incremental retained element path.
-//! No second path stack or frame-wide ordinal table is required.
+//! Native node slots, using GPUI Fast's integer key ownership model.
+//! Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
+//! Adapted from longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
+//! SPDX-License-Identifier: Apache-2.0
+
+/// A native node is identified by its running path/slot hash. Row retention
+/// is scope metadata, not a second element identity or an owned path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeLayoutKey {
+    pub key: u64,
+    pub lingers: bool,
+}
+
+pub(crate) fn is_list_row_segment(segment: &crate::ElementId) -> bool {
+    matches!(segment, crate::ElementId::NamedInteger(name, _)
+        if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
+}
 
 /// Mixes `value` into `state` with the SplitMix64 finalizer, so paths built from small child
 /// indices do not collide in practice.

@@ -1,5 +1,5 @@
 use crate::{
-    App, Bounds, DefiniteLength, ElementId, GlobalElementId, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
+    App, Bounds, DefiniteLength, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
     Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
@@ -11,7 +11,7 @@ use std::{
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
-    ClaimBlockMap, LayoutClaimBlocks, SpanRelocations,
+    ClaimBlockMap, LayoutClaimBlocks, NativeLayoutKey, SpanRelocations,
     convert::ToTaffy,
     fingerprint::{
         hash_absolute_length, hash_display, hash_edges_absolute_length, hash_edges_definite_length,
@@ -327,8 +327,6 @@ impl NativeLayoutMutationLog {
 
 struct PersistentLayoutNode {
     id: LayoutId,
-    /// Structural equality guards key collisions; no frame metadata lookup.
-    element: GlobalElementId,
     measured: bool,
     claimed_in_frame: u64,
     lingers: bool,
@@ -339,13 +337,6 @@ struct PersistentLayoutNode {
     /// representation is not free. Keeping the fingerprint lets an unchanged request skip
     /// that conversion and the full-struct comparison entirely.
     style_fingerprint: Option<u64>,
-}
-
-fn is_list_row(path: &[ElementId]) -> bool {
-    path.iter().any(|segment| {
-        matches!(segment, ElementId::NamedInteger(name, _)
-            if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
-    })
 }
 
 // Keep the youngest complete age buckets. Dropping a whole tied bucket avoids
@@ -992,7 +983,7 @@ impl TaffyLayoutEngine {
     /// changed styles/child edges/measure inputs dirty Taffy's cached layouts.
     fn request_persistent_node(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         children: &[LayoutId],
         measure: Option<MeasureRequest<impl FnOnce() -> Option<NodeMeasureFn>>>,
         style_fingerprint: Option<u64>,
@@ -1004,23 +995,23 @@ impl TaffyLayoutEngine {
         );
         // Keep the lazy conversion monomorphized. Boxing this closure allocated
         // for every request, including the fingerprint-hit path that never calls it.
-        let Some((key, element)) = owner else {
+        let Some(NativeLayoutKey { key, lingers }) = owner else {
             let style = build_style();
             let id = self.create_taffy_node(style, children, measure.map(MeasureRequest::into_context));
             self.anonymous_nodes.push(id);
             return id;
         };
-        // As in Fast's claim path, resolve the native node with one map probe.
-        // Unlike a hash-only identity, keep the full collision check. A collided
-        // slot is transient for this request; do not overwrite or leak its owner.
+        // Fast's integer-key claim: duplicate keys in the same frame use a
+        // transient node rather than sharing mutable native layout state.
         if let Some(node) = self.persistent_nodes.get_mut(&key) {
-            if node.element != element || node.claimed_in_frame == self.request_frame {
+            if node.claimed_in_frame == self.request_frame {
                 let id = self.create_taffy_node(build_style(), children, measure.map(MeasureRequest::into_context));
                 self.anonymous_nodes.push(id);
                 return id;
             }
             // A claimed row is active and no longer eligible for idle trim.
             node.offscreen = false;
+            node.lingers |= lingers;
             node.claimed_in_frame = self.request_frame;
             self.claimed_this_frame += 1;
             let id = node.id;
@@ -1131,8 +1122,7 @@ impl TaffyLayoutEngine {
                 key,
                 PersistentLayoutNode {
                     id,
-                    lingers: is_list_row(&element.0),
-                    element,
+                    lingers,
                     measured: is_measured,
                     claimed_in_frame: self.request_frame,
                     offscreen: false,
@@ -1195,7 +1185,7 @@ impl TaffyLayoutEngine {
 
     pub fn request_layout(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1225,7 +1215,7 @@ impl TaffyLayoutEngine {
 
     pub fn request_measured_layout(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1244,10 +1234,10 @@ impl TaffyLayoutEngine {
     }
 
     /// Obtain the previous plain text state only for an unclaimed matching slot.
-    /// A duplicate owner or a hash collision must never alias mutable text.
-    pub(crate) fn previous_plain_text(&mut self, owner: &(u64, GlobalElementId)) -> Option<crate::TextLayout> {
-        let node = self.persistent_nodes.get(&owner.0)?;
-        if node.claimed_in_frame == self.request_frame || node.element != owner.1 {
+    /// A slot already claimed in this frame cannot lend its mutable text.
+    pub(crate) fn previous_plain_text(&mut self, owner: &NativeLayoutKey) -> Option<crate::TextLayout> {
+        let node = self.persistent_nodes.get(&owner.key)?;
+        if node.claimed_in_frame == self.request_frame {
             return None;
         }
         self.taffy.get_node_context_mut(node.id.into())?.plain_text.clone()
@@ -1263,7 +1253,7 @@ impl TaffyLayoutEngine {
 
     pub(crate) fn request_size_layout(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1277,7 +1267,7 @@ impl TaffyLayoutEngine {
 
     fn request_measured_node(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1307,7 +1297,7 @@ impl TaffyLayoutEngine {
 
     pub(crate) fn request_default_measured_layout(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         rem_size: Pixels,
         scale_factor: f32,
         key: Option<MeasurementKey>,
@@ -1344,7 +1334,7 @@ impl TaffyLayoutEngine {
 
     fn request_native_measured_node(
         &mut self,
-        owner: Option<(u64, GlobalElementId)>,
+        owner: Option<NativeLayoutKey>,
         layout_style: LayoutStyle,
         taffy_style: taffy::Style,
         style_fingerprint: u64,
@@ -1774,6 +1764,7 @@ impl TaffyLayoutEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ElementId, GlobalElementId};
 
     fn row_id(index: usize) -> GlobalElementId {
         GlobalElementId::from_path(&[
@@ -1787,11 +1778,13 @@ mod tests {
         GlobalElementId::from_path(&[ElementId::from("list")])
     }
 
-    /// The owner pair the engine now takes: an integer path hash plus the full identifier.
-    fn owner(id: &GlobalElementId) -> (u64, GlobalElementId) {
+    fn owner(id: &GlobalElementId) -> NativeLayoutKey {
         let mut hasher = collections::FxHasher::default();
         std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-        (std::hash::Hasher::finish(&hasher), id.clone())
+        NativeLayoutKey {
+            key: std::hash::Hasher::finish(&hasher),
+            lingers: id.0.iter().any(crate::layout::is_list_row_segment),
+        }
     }
 
     #[test]
@@ -1877,8 +1870,9 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         let owner_id = list_id();
         let request = |engine: &mut TaffyLayoutEngine, slot| {
-            let (path, id) = owner(&owner_id);
-            engine.request_layout(Some((crate::layout::layout_node_key(path, slot), id)),
+            let mut key = owner(&owner_id);
+            key.key = crate::layout::layout_node_key(key.key, slot);
+            engine.request_layout(Some(key),
                 Style::default(), crate::px(16.), 1., &[])
         };
         let first = request(&mut engine, 0);

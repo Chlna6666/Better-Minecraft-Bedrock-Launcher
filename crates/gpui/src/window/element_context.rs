@@ -4,12 +4,13 @@ use crate::TransformOrigin;
 // Adapt the identified/positional key rules of longbridge/gpui-fast
 // 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout_key.rs (Apache-2.0).
 // Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
-// Keep the structural path for collision checking and view identity, separate
-// from the application element-state path.
+// Structural paths remain for retained view/interaction identities only;
+// the native layout hot path consumes integer keys and scope metadata.
 #[derive(Default)]
 pub(crate) struct LayoutKeyScope {
     next_unidentified_child: u32,
     next_layout_slot: u32,
+    lingers: bool,
 }
 
 fn layout_segment(id: Option<ElementId>, next_unidentified_child: &mut u32) -> ElementId {
@@ -42,8 +43,19 @@ impl Window {
             .unwrap_or(&mut self.layout_root_index);
         let segment = layout_segment(id, next_child);
         self.retained_element_id_stack.push(segment.clone());
-        self.layout_key_scopes.push(LayoutKeyScope::default());
+        self.push_layout_scope();
         segment
+    }
+
+    fn push_layout_scope(&mut self) {
+        let path = &self.retained_element_id_stack;
+        // A resumed prepaint or gap can enter with no request scope. Scan
+        // its prefix once; ordinary child requests inherit the bit in O(1).
+        let lingers = self.layout_key_scopes.last().map_or_else(
+            || path.iter().any(crate::layout::is_list_row_segment),
+            |parent| parent.lingers || path.last().is_some_and(crate::layout::is_list_row_segment),
+        );
+        self.layout_key_scopes.push(LayoutKeyScope { lingers, ..Default::default() });
     }
 
     pub(crate) fn end_retained_element(&mut self) {
@@ -64,7 +76,9 @@ impl Window {
     /// Callers that retry a transactional prepaint must create a new scope for every attempt so the
     /// same logical children receive the same slots after rollback.
     pub(crate) fn with_retained_child_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.layout_key_scopes.push(LayoutKeyScope::default());
+        // The path may have been restored independently for a dirty gap.
+        let lingers = self.retained_element_id_stack.iter().any(crate::layout::is_list_row_segment);
+        self.layout_key_scopes.push(LayoutKeyScope { lingers, ..Default::default() });
         let result = f(self);
         self.layout_key_scopes.pop();
         result
@@ -83,7 +97,7 @@ impl Window {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.retained_element_id_stack.push(key.into());
-        self.layout_key_scopes.push(LayoutKeyScope::default());
+        self.push_layout_scope();
         let result = f(self);
         self.layout_key_scopes.pop();
         self.retained_element_id_stack.pop();
@@ -118,20 +132,21 @@ impl Window {
 
     /// Inspect the next native slot without claiming it. Plain text uses this
     /// to adopt the state before constructing its measurement callback.
-    pub(crate) fn next_layout_owner(&self) -> Option<(u64, GlobalElementId)> {
+    pub(crate) fn next_layout_owner(&self) -> Option<crate::layout::NativeLayoutKey> {
         let path = &self.retained_element_id_stack;
-        let slot = self.layout_key_scopes.last()?.next_layout_slot;
+        let scope = self.layout_key_scopes.last()?;
+        let slot = scope.next_layout_slot;
         if path.is_empty() || slot == u32::MAX {
             return None;
         }
-        Some((
-            crate::layout::layout_node_key(path.hash(), slot),
-            self.global_ids.borrow_mut().get(path),
-        ))
+        Some(crate::layout::NativeLayoutKey {
+            key: crate::layout::layout_node_key(path.hash(), slot),
+            lingers: scope.lingers,
+        })
     }
 
     /// Derive and consume the native layout slot.
-    pub(crate) fn current_stable_layout_owner(&mut self) -> Option<(u64, GlobalElementId)> {
+    pub(crate) fn current_stable_layout_owner(&mut self) -> Option<crate::layout::NativeLayoutKey> {
         let owner = self.next_layout_owner()?;
         self.layout_key_scopes.last_mut()?.next_layout_slot += 1;
         Some(owner)

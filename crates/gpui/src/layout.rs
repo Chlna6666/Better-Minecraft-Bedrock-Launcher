@@ -255,5 +255,6 @@ impl SpanRelocations {
         self.moves.clear();
     }
 }
-pub(crate) use key::layout_node_key;
+pub use key::NativeLayoutKey;
+pub(crate) use key::{is_list_row_segment, layout_node_key};
 pub use metrics::{AvailableSpace, LayoutId};

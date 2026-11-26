@@ -1,13 +1,13 @@
-/// The owner pair the layout engine keys its nodes by.
-fn owner(name: &'static str) -> Option<(u64, crate::GlobalElementId)> {
+/// The integer key the layout engine claims.
+fn owner(name: &'static str) -> Option<super::NativeLayoutKey> {
     let id = crate::GlobalElementId::from_path(&[crate::ElementId::from(name)]);
     let mut hasher = collections::FxHasher::default();
     std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-    Some((std::hash::Hasher::finish(&hasher), id))
+    Some(super::NativeLayoutKey { key: std::hash::Hasher::finish(&hasher), lingers: false })
 }
 
 use super::engine::{EXPECT_MESSAGE, TaffyLayoutEngine};
-use crate::{AlignItems, Display, ElementId, FlexDirection, GlobalElementId, JustifyContent, Style, px, relative, size};
+use crate::{AlignItems, Display, FlexDirection, JustifyContent, Style, px, relative, size};
 
 #[test]
 fn centered_child_keeps_equal_device_margins_at_fractional_scale() {

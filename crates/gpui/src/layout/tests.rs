@@ -5,17 +5,17 @@ use crate::{
 };
 use std::{cell::Cell, rc::Rc};
 
-/// The full structural identity used for collision checks.
+/// Test identity for the native key.
 fn element_identity(name: &'static str) -> GlobalElementId {
     GlobalElementId::from_path(&[ElementId::from(name)])
 }
 
-/// The owner pair the layout engine keys its nodes by.
-fn layout_identity(name: &'static str) -> Option<(u64, GlobalElementId)> {
+/// The integer key the layout engine claims.
+fn layout_identity(name: &'static str) -> Option<super::NativeLayoutKey> {
     let id = element_identity(name);
     let mut hasher = collections::FxHasher::default();
     std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-    Some((std::hash::Hasher::finish(&hasher), id))
+    Some(super::NativeLayoutKey { key: std::hash::Hasher::finish(&hasher), lingers: false })
 }
 
 #[gpui::test]
