@@ -12,11 +12,8 @@ pub(crate) struct RetainedChunkId {
 impl RetainedChunkId {
     pub(crate) fn fresh(depth: usize) -> Self {
         static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
-        let token = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1).filter(|next| *next < (1u64 << 63))
-            })
-            .expect("retained chunk identity exhausted");
+        let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+        assert!(token != 0 && token < (1u64 << 63), "retained chunk identity exhausted");
         Self { token, depth }
     }
 

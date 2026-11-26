@@ -2206,7 +2206,6 @@ mod tests {
             property: crate::TransitionProperty::Opacity,
             generation,
             view_id: None,
-            retained_id: None,
         };
         let mut published = SmallVec::new();
         let mut deferred = SmallVec::new();

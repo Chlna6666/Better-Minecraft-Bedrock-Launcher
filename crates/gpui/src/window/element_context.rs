@@ -56,12 +56,18 @@ pub(crate) struct LayoutKeyScope {
     parent: Option<NativeElementScope>,
 }
 
-fn layout_segment(id: Option<ElementId>, next_unidentified_child: &mut u32) -> ElementId {
-    id.unwrap_or_else(|| {
-        let index = *next_unidentified_child;
-        *next_unidentified_child = index.checked_add(1).expect("layout child index overflow");
-        ElementId::InstanceSlot(index)
-    })
+fn layout_segment<'a>(
+    id: Option<&'a ElementId>,
+    next_unidentified_child: &mut u32,
+) -> std::borrow::Cow<'a, ElementId> {
+    match id {
+        Some(id) => std::borrow::Cow::Borrowed(id),
+        None => {
+            let index = *next_unidentified_child;
+            *next_unidentified_child = index.checked_add(1).expect("layout child index overflow");
+            std::borrow::Cow::Owned(ElementId::InstanceSlot(index))
+        }
+    }
 }
 
 impl Window {
@@ -80,7 +86,7 @@ impl Window {
     }
 
     /// Match identified elements by their ID and anonymous siblings by position.
-    pub(crate) fn begin_retained_element(&mut self, id: Option<ElementId>) -> NativeElementScope {
+    pub(crate) fn begin_retained_element(&mut self, id: Option<&ElementId>) -> NativeElementScope {
         let next_child = self.layout_key_scopes.last_mut()
             .map(|scope| &mut scope.next_unidentified_child)
             .unwrap_or(&mut self.layout_root_index);
@@ -865,8 +871,9 @@ mod layout_identity_tests {
     #[test]
     fn explicit_ids_do_not_renumber_anonymous_layout_siblings() {
         let mut next = 0;
-        assert_eq!(layout_segment(None, &mut next), ElementId::InstanceSlot(0));
-        assert_eq!(layout_segment(Some(ElementId::from("fixed")), &mut next), ElementId::from("fixed"));
-        assert_eq!(layout_segment(None, &mut next), ElementId::InstanceSlot(1));
+        assert_eq!(*layout_segment(None, &mut next), ElementId::InstanceSlot(0));
+        let fixed = ElementId::from("fixed");
+        assert_eq!(layout_segment(Some(&fixed), &mut next).as_ref(), &fixed);
+        assert_eq!(*layout_segment(None, &mut next), ElementId::InstanceSlot(1));
     }
 }

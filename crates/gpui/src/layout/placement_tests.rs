@@ -25,9 +25,8 @@ fn interaction_flags_preserve_native_size_measure_cache(cx: &mut TestAppContext)
             let request = |engine: &mut TaffyLayoutEngine, allow_scroll: bool| {
                 let mut style = Style::default();
                 style.allow_concurrent_scroll = allow_scroll;
-                let pair = (owner_pair.0, owner_pair.1.clone());
                 engine.request_size_layout(
-                    Some(pair),
+                    Some(owner_pair),
                     style,
                     px(16.),
                     scale_factor,

@@ -1187,8 +1187,6 @@ mod fragment_count_damage_tests {
             entity_id: EntityId::from(1_u64),
             bounds,
             scene_range: start..scene.len(),
-            prepaint_range: Default::default(),
-            paint_range: Default::default(),
         }
     }
 
