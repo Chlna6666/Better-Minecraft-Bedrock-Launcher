@@ -30,32 +30,19 @@ struct TextLayoutInner {
 }
 
 impl TextLayout {
-    /// Plain text owns no external layout handle. Reuse the state of a stable
-    /// mounted element instead of allocating a new Rc and rebuilding its
-    /// shaped lines on every render. The normal input/constraint checks in
-    /// layout() still decide whether the contents can be reused.
+    /// Plain text adopts the native layout node's state. It never enters
+    /// the general ElementState table or its per-frame state-access log.
     pub(super) fn layout_plain(
         text: SharedString,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self) {
-        if let Some(id) = window.current_stable_layout_element_id()
-            && !window.has_current_element_state::<Self>(&id)
-        {
-            // Even an explicitly identified element can issue multiple layout
-            // requests. Never hand two live requests the same mutable text
-            // state in a single frame.
-            window.with_element_state(&id, |previous: Option<Self>, window| {
-                let fresh_state = previous.is_none();
-                let state = previous.unwrap_or_default();
-                let layout_id = state.layout(text, None, fresh_state, window, cx);
-                ((layout_id, state.clone()), state)
-            })
-        } else {
-            let state = Self::default();
-            let layout_id = state.layout(text, None, true, window, cx);
-            (layout_id, state)
-        }
+        let state = window.previous_plain_text().unwrap_or_default();
+        // The native request checks both the actual state and its identity.
+        // Even a freshly allocated state can publish its identity immediately.
+        let layout_id = state.layout(text, None, false, window, cx);
+        window.set_plain_text(layout_id, state.clone());
+        (layout_id, state)
     }
 
     /// Requests the text's layout node.
@@ -116,7 +103,7 @@ impl TextLayout {
         // invalidate the ancestors' layout.
         let intrinsic_only = text_style.white_space == WhiteSpace::Nowrap
             && text_style.text_overflow.is_none()
-            && window.current_stable_layout_element_id().is_some();
+            && window.has_layout_owner();
 
         let state_ready = self.0.borrow().as_ref().is_some_and(|layout| {
             layout.cache_key == cache_key && layout.paint_key == paint_key && layout.size.is_some()

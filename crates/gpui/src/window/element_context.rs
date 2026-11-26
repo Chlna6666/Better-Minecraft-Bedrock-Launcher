@@ -112,27 +112,29 @@ impl Window {
         Some(self.global_ids.borrow_mut().get(path))
     }
 
-    /// Obtain a layout-owned identity without assigning an application element ID.
-    pub(crate) fn current_stable_layout_element_id(&self) -> Option<GlobalElementId> {
-        if self.layout_key_scopes.is_empty() {
-            return None;
-        }
-        self.current_retained_element_id()
+    pub(crate) fn has_layout_owner(&self) -> bool {
+        !self.layout_key_scopes.is_empty() && !self.retained_element_id_stack.is_empty()
     }
 
-    /// Derive the native node key from the incremental path and local request slot.
-    pub(crate) fn current_stable_layout_owner(&mut self) -> Option<(u64, GlobalElementId)> {
+    /// Inspect the next native slot without claiming it. Plain text uses this
+    /// to adopt the state before constructing its measurement callback.
+    pub(crate) fn next_layout_owner(&self) -> Option<(u64, GlobalElementId)> {
         let path = &self.retained_element_id_stack;
-        let scope = self.layout_key_scopes.last_mut()?;
-        if path.is_empty() {
+        let slot = self.layout_key_scopes.last()?.next_layout_slot;
+        if path.is_empty() || slot == u32::MAX {
             return None;
         }
-        let slot = scope.next_layout_slot;
-        scope.next_layout_slot = slot.checked_add(1)?;
         Some((
             crate::layout::layout_node_key(path.hash(), slot),
             self.global_ids.borrow_mut().get(path),
         ))
+    }
+
+    /// Derive and consume the native layout slot.
+    pub(crate) fn current_stable_layout_owner(&mut self) -> Option<(u64, GlobalElementId)> {
+        let owner = self.next_layout_owner()?;
+        self.layout_key_scopes.last_mut()?.next_layout_slot += 1;
+        Some(owner)
     }
 
     /// Executes the provided function with the specified rem size.

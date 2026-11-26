@@ -104,6 +104,8 @@ impl MeasurementKey {
 
 pub(super) struct NodeContext {
     measure: Option<NodeMeasureFn>,
+    // Plain text belongs to its native layout slot, not the frame state map.
+    plain_text: Option<crate::TextLayout>,
     key: Option<MeasurementKey>,
     replayable: bool,
     measure_log: MeasureLog,
@@ -131,6 +133,7 @@ impl<F: FnOnce() -> Option<NodeMeasureFn>> MeasureRequest<F> {
     fn into_context(self) -> NodeContext {
         NodeContext {
             measure: (self.build)(),
+            plain_text: None,
             key: self.key,
             replayable: self.replayable,
             measure_log: MeasureLog::Empty,
@@ -353,6 +356,12 @@ impl TaffyLayoutEngine {
                 return false;
             }
             // Offscreen row caches must not pin a frame-local measuring closure.
+            // Intrinsic text keeps only its size, not an offscreen shaped-line state.
+            if let Some(context) = taffy.get_node_context_mut(node.id.into()) {
+                if matches!(context.key, Some(MeasurementKey::Size(_))) {
+                    context.plain_text = None;
+                }
+            }
             if node.measured && taffy.get_node_context_mut(node.id.into())
                 .is_some_and(|context| context.key.is_none())
             {
@@ -836,6 +845,24 @@ impl TaffyLayoutEngine {
             key: None, replayable: false, state_ready: true,
             build: move || Some(boxed_measure(measure)),
         })
+    }
+
+    /// Obtain the previous plain text state only for an unclaimed matching slot.
+    /// A duplicate owner or a hash collision must never alias mutable text.
+    pub(crate) fn previous_plain_text(&mut self, owner: &(u64, GlobalElementId)) -> Option<crate::TextLayout> {
+        let node = self.persistent_nodes.get(&owner.0)?;
+        if node.claimed_in_frame == self.request_frame || node.element != owner.1 {
+            return None;
+        }
+        self.taffy.get_node_context_mut(node.id.into())?.plain_text.clone()
+    }
+
+    /// Attach state to the actual node returned by the request (including
+    /// transient collision nodes). Replayed views retain their native claims.
+    pub(crate) fn set_plain_text(&mut self, id: LayoutId, state: crate::TextLayout) {
+        self.taffy.get_node_context_mut(id.into())
+            .expect("plain text has a native measurement context")
+            .plain_text = Some(state);
     }
 
     pub(crate) fn request_size_layout(

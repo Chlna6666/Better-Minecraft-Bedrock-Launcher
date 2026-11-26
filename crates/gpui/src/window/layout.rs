@@ -76,6 +76,16 @@ impl Window {
             )
     }
 
+    /// Adopt plain text from its native slot before requesting the new node.
+    pub(crate) fn previous_plain_text(&mut self) -> Option<crate::TextLayout> {
+        let owner = self.next_layout_owner()?;
+        self.layout_engine.as_mut()?.previous_plain_text(&owner)
+    }
+
+    pub(crate) fn set_plain_text(&mut self, id: LayoutId, state: crate::TextLayout) {
+        self.layout_engine.as_mut().expect("layout engine installed").set_plain_text(id, state);
+    }
+
     /// Native, constraint-dependent size measurement without a hash or closure.
     pub(crate) fn request_size_layout(
         &mut self,
