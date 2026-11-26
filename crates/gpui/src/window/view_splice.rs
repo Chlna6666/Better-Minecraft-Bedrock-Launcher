@@ -15,8 +15,6 @@ pub(super) struct PrebuiltGap {
     claims: LayoutClaimBlocks,
     states: StateAccessBlocks,
     node: Option<DispatchNodeId>,
-    // Selected after native layout and shared by both lifecycle phases.
-    placement_bounds: Option<Bounds<Pixels>>,
 }
 
 pub(crate) struct ViewSplice {
@@ -328,7 +326,6 @@ impl Window {
             parts.push(SplicePart::Dirty(PrebuiltGap {
                 key: gap_key, old, view, layout_id, state,
                 claims: LayoutClaimBlocks::request(gap_claims), states, node: None,
-                placement_bounds: None,
             }));
             if !compatible {
                 self.layout_engine.as_mut().expect("layout engine").discard_splice_placement(placement);
@@ -360,7 +357,7 @@ impl Window {
         })
     }
 
-    pub(crate) fn can_prepaint_view_splice(&mut self, splice: &mut ViewSplice, bounds: Bounds<Pixels>) -> bool {
+    pub(crate) fn can_prepaint_view_splice(&mut self, splice: &ViewSplice, bounds: Bounds<Pixels>) -> bool {
         let placement = self.layout_engine.as_mut()
             .and_then(|engine| engine.finish_splice_placement(splice.placement));
         // Retained event closures and clipping are not yet relocatable. A
@@ -374,26 +371,14 @@ impl Window {
         {
             return false;
         }
-        // Only rebuilt gaps can move: their hitboxes, clips, event closures
-        // and paint are generated anew. Retained ancestor/sibling geometry
-        // must stay unchanged, and explicit geometry reads may depend on
-        // the dirty slot even when their owner's native Layout is identical.
-        let allow_moved_gap = !self.rendered_frame.has_explicit_layout_reads
-            && !self.next_frame.has_explicit_layout_reads;
-        for part in &mut splice.parts {
-            if let SplicePart::Dirty(gap) = part {
-                let current = self.element_layout_bounds(gap.layout_id);
-                if current != gap.old.bounds {
-                    if !allow_moved_gap || !self.layout_engine.as_ref().is_some_and(|engine| {
-                        engine.retained_claims_outside_gap(&splice.kept, gap.layout_id)
-                    }) {
-                        return false;
-                    }
-                }
-                gap.placement_bounds = Some(current);
-            }
-        }
-        true
+        // Retained prepaint may have consumed a gap's bounds in arbitrary
+        // callbacks. Until the layer path owns those geometry dependencies,
+        // use the original placement and let ordinary traversal rebuild a
+        // moved slot. No second native-subtree ownership scan is needed.
+        splice.parts.iter().all(|part| match part {
+            SplicePart::Dirty(gap) => self.layout_bounds(gap.layout_id) == gap.old.bounds,
+            SplicePart::Clean(_) | SplicePart::Ancestor(_) => true,
+        })
     }
 
     fn splice_fragment_supported(
@@ -435,8 +420,7 @@ impl Window {
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
                     self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
-                        let bounds = gap.placement_bounds.expect("validated gap placement");
-                        gap.view.prepaint(Some(&rebuild.application_id), None, bounds, &mut gap.state, window, cx);
+                        gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
                     gap.node = Some(node);
@@ -489,9 +473,8 @@ impl Window {
                     self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
                     self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
-                        let bounds = gap.placement_bounds.expect("validated gap placement");
-                        window.record_debug_element_paint(bounds, cx);
-                        gap.view.paint(Some(&rebuild.application_id), None, bounds, &mut gap.state, &mut (), window, cx);
+                        window.record_debug_element_paint(old.bounds, cx);
+                        gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
                     cursor = old.paint_range.end.clone();

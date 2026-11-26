@@ -65,10 +65,6 @@ pub(crate) struct Frame {
     paint: Option<Arc<Paint>>,
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
-    // Explicit bounds queries can escape a view's own layout slot (scroll,
-    // anchors, custom elements). Until they have fragment-local ownership,
-    // they prevent relocation of dirty slots under skipped ancestors.
-    pub(super) has_explicit_layout_reads: bool,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -274,7 +270,6 @@ impl Frame {
             paint: None,
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
-            has_explicit_layout_reads: false,
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -337,7 +332,6 @@ impl Frame {
         self.view_retentions.clear();
         self.view_retention_records.clear();
         self.hitboxes.clear();
-        self.has_explicit_layout_reads = false;
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();

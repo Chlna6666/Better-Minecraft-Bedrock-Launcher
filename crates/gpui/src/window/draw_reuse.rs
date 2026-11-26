@@ -251,7 +251,6 @@ impl Window {
             super::element_work::ElementWorkPhase::Replay,
         );
 
-        self.next_frame.has_explicit_layout_reads |= self.rendered_frame.has_explicit_layout_reads;
         self.next_frame.hitboxes.extend_from_slice(
             &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
@@ -402,7 +401,6 @@ impl Window {
     /// not change afterwards, so paint must not pay for the validation again (and a required text
     /// layout was already pinned by the prepaint copy).
     pub(crate) fn replay_validated_paint(&mut self, range: Range<PaintIndex>) {
-        self.next_frame.has_explicit_layout_reads |= self.rendered_frame.has_explicit_layout_reads;
         #[cfg(any(test, feature = "test-support"))]
         {
             let records: Vec<_> = self.rendered_frame.debug_bounds_records

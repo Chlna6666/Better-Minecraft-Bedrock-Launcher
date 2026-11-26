@@ -752,19 +752,6 @@ impl TaffyLayoutEngine {
         false
     }
 
-    /// A changed gap may not carry a retained native node with it. View
-    /// ownership and native parentage can differ for custom layout elements.
-    /// Only run this proof for a gap whose placement actually changed.
-    pub(crate) fn retained_claims_outside_gap(
-        &self, kept: &LayoutClaimBlocks, gap: LayoutId,
-    ) -> bool {
-        kept.iter().all(|span| self.claimed_key_log.get(span.clone()).is_some_and(|claims| {
-            claims.iter().flatten().all(|claim| {
-                claim.id != gap && !self.layout_reaches(gap, claim.id)
-            })
-        }))
-    }
-
     /// Record topology and the current native mutation epoch at admission.
     /// Geometry is journaled only at actual changed native layout writes.
     pub(crate) fn capture_splice_placement(
