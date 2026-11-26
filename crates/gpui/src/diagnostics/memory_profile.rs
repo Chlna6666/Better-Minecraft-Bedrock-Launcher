@@ -90,6 +90,9 @@ pub struct RendererMemoryProfile {
     /// Prepared resize generations and old offscreen allocations waiting for GPU fences.
     #[serde(default)]
     pub pending_offscreen_bytes: u64,
+    /// Native scroll tiles, including invalidated textures with live GPU users.
+    #[serde(default)]
+    pub scroll_tile_bytes: u64,
 }
 
 impl RendererMemoryProfile {
@@ -113,6 +116,7 @@ impl RendererMemoryProfile {
             .saturating_add(self.blur_target_bytes)
             .saturating_add(self.root_color_bytes)
             .saturating_add(self.pending_offscreen_bytes)
+            .saturating_add(self.scroll_tile_bytes)
     }
 }
 

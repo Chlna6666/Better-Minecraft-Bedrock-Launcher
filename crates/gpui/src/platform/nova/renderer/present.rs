@@ -975,6 +975,24 @@ impl NovaRenderer {
         let atlas_content_generation = atlas_upload.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let text_raster = self.retained_upload.text_raster_token();
+        self.raster_tiles.begin_frame();
+        let tile_context = (atlas_content_generation, text_raster, packet.paint.geometry.scale_factor.to_bits());
+        if self.raster_tiles.bytes() != 0 {
+            if self.raster_tile_context != Some(tile_context) {
+                self.raster_tiles.invalidate_all();
+            }
+            // A publication can skip UI generations. Keep only exact content
+            // generations until a complete per-tile dirty proof is published.
+            let generations: FxHashMap<_, _> = packet.paint.layers.frames.iter()
+                .map(|layer| (layer.id, layer.generation)).collect();
+            self.raster_tiles.retain_generations(|id| generations.get(&id).copied());
+            if self.submitted_frames % 120 == 0 {
+                if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, Some(120)) {
+                    log::debug!("failed to trim idle scroll tiles: {error}");
+                }
+            }
+        }
+        self.raster_tile_context = Some(tile_context);
         let text_raster_changed = self.submitted_text_raster != text_raster;
         if text_raster_changed {
             // Shader context can change cached glyph pixels even when the

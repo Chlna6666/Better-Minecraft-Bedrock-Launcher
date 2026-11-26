@@ -66,8 +66,7 @@ fn verify(backend: RendererBackend) {
     assert!(source.width() >= 32 && source.height() >= 40);
     let tile = Extent2d::new(16, 16).expect("tile extent");
     let original_buffers = renderer.frame_resources[0].buffers;
-    let mut tile_cache = RasterTileCache::new(64 * 1024 * 1024);
-    tile_cache.begin_frame();
+    renderer.raster_tiles.begin_frame();
     let resident_key = RasterTileKey { layer: 1, x: 0, y: 0 };
     let resident_raster = RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } };
     let (reference, resident) = device!(renderer, device, {
@@ -80,7 +79,7 @@ fn verify(backend: RendererBackend) {
         ] {
             let extent = raster.extent;
             let write = if raster == resident_raster {
-                Some(tile_cache.prepare(device, resident_key, 1, raster, Format::Bgra8Unorm)
+                Some(renderer.raster_tiles.prepare(device, resident_key, 1, raster, Format::Bgra8Unorm)
                     .expect("resident allocation").expect("cache capacity"))
             } else { None };
             let (color, color_view) = if let Some(write) = &write {
@@ -134,7 +133,7 @@ fn verify(backend: RendererBackend) {
                 bind_group, bind_group, bind_group, |_| None, &mut steps,
             ), "static quads must be tile-rasterizable");
             assert!(!steps.is_empty());
-            device.render_to_textures(&[RenderPassCommands {
+            let submission = device.render_to_textures(&[RenderPassCommands {
                 color_attachments: std::slice::from_ref(&color_view),
                 render_pass: renderer.render_pass,
                 commands: &steps,
@@ -148,6 +147,16 @@ fn verify(backend: RendererBackend) {
                 viewport: Some(raster.viewport()),
                 resolve_target: None,
             }]).expect("pixel-exact raster");
+            let is_resident = write.is_some();
+            let mut write = write;
+            if let Some(id) = submission {
+                if let Some(reservation) = write.take() {
+                    renderer.raster_tiles.finish_write(reservation, Some(id)).expect("track native writer");
+                    assert!(renderer.raster_tiles.lookup(resident_key, 1, resident_raster, Format::Bgra8Unorm).is_none());
+                }
+                device.wait_submission(id).expect("native raster fence");
+                renderer.raster_tiles.complete(id);
+            }
             let readback = device.read_texture(color).expect("native pixels");
             let pixels = readback.bytes.chunks_exact(readback.bytes_per_row as usize)
                 .take(extent.height() as usize)
@@ -158,8 +167,10 @@ fn verify(backend: RendererBackend) {
             device.destroy_buffer(global_buffer).expect("retire globals");
             device.destroy_texture_view(depth_view).expect("retire depth view");
             device.destroy_texture(depth).expect("retire depth");
-            if let Some(write) = write {
-                tile_cache.finish_write(write, None).expect("publish completed tile");
+            if is_resident {
+                if let Some(write) = write {
+                    renderer.raster_tiles.finish_write(write, None).expect("publish completed tile");
+                }
                 resident = Some((color, color_view));
             } else {
                 device.destroy_texture_view(color_view).expect("retire color view");
@@ -179,12 +190,12 @@ fn verify(backend: RendererBackend) {
     assert_ne!(&cropped[..4], &cropped[(8 * 16 + 8) * 4..][..4]);
     assert!(cropped.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
 
-    tile_cache.begin_frame();
-    tile_cache.advance_layer(1, 2, |_| false);
-    let cached = tile_cache.lookup(resident_key, 2, resident_raster, Format::Bgra8Unorm)
+    renderer.raster_tiles.begin_frame();
+    renderer.raster_tiles.advance_layer(1, 2, |_| false);
+    let cached = renderer.raster_tiles.lookup(resident_key, 2, resident_raster, Format::Bgra8Unorm)
         .expect("clean generation retains physical tile");
     assert_eq!((cached.texture, cached.view), resident);
-    assert_eq!(tile_cache.bytes(), 16 * 16 * 4);
+    assert_eq!(renderer.raster_tiles.bytes(), 16 * 16 * 4);
 
     // Reuse the actual render-target texture twice, changing only the sprite
     // placement. No readback bytes are uploaded to the GPU.
@@ -246,7 +257,7 @@ fn verify(backend: RendererBackend) {
                 instance_count: 2,
                 ..quad_step(&renderer)
             })];
-            device.render_to_textures(&[RenderPassCommands {
+            let submission = device.render_to_textures(&[RenderPassCommands {
                 color_attachments: std::slice::from_ref(&target_view),
                 render_pass: renderer.render_pass,
                 commands: &steps,
@@ -260,6 +271,12 @@ fn verify(backend: RendererBackend) {
                 viewport: Some(raster.viewport()),
                 resolve_target: None,
             }]).expect("resident tile composite");
+            if let Some(id) = submission {
+                renderer.raster_tiles.record_reader(resident_key, cached, id).expect("track native tile reader");
+                assert!(renderer.raster_tiles.has_pending_users());
+                device.wait_submission(id).expect("native composite fence");
+                renderer.raster_tiles.complete(id);
+            }
             let pixels = device.read_texture(target).expect("composited pixels");
             for x in [0usize, 24] {
                 let actual = pixels.bytes.chunks_exact(pixels.bytes_per_row as usize)
@@ -272,8 +289,8 @@ fn verify(backend: RendererBackend) {
         device.destroy_buffer(global_buffer).expect("retire composite globals");
         device.destroy_texture_view(target_view).expect("retire target view");
         device.destroy_texture(target).expect("retire target");
-        tile_cache.clear(device).expect("retire completed resident tile");
-        assert_eq!(tile_cache.bytes(), 0);
+        renderer.raster_tiles.clear(device).expect("retire completed resident tile");
+        assert_eq!(renderer.raster_tiles.bytes(), 0);
     });
     renderer.destroy();
 }

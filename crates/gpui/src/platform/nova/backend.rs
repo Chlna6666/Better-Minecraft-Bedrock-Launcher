@@ -718,6 +718,34 @@ impl NovaBackend {
         }
     }
 
+    pub(super) fn trim_raster_tiles(
+        &mut self,
+        cache: &mut gfx_core::RasterTileCache,
+        max_age: Option<u64>,
+    ) -> Result<()> {
+        fn trim<D: ResourceDevice>(device: &mut D, cache: &mut gfx_core::RasterTileCache, max_age: Option<u64>) -> Result<()> {
+            match max_age {
+                Some(age) => cache.trim(device, age)?,
+                None => cache.clear(device)?,
+            }
+            Ok(())
+        }
+        #[allow(unreachable_patterns)]
+        match self {
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            Self::OpenGl(device) => trim(device, cache, max_age),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => trim(device, cache, max_age),
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => trim(device, cache, max_age),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => trim(device, cache, max_age),
+            #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+            Self::Vulkan(device) => trim(device, cache, max_age),
+            _ => Ok(()),
+        }
+    }
+
     pub(super) fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         match self {
             #[cfg(all(

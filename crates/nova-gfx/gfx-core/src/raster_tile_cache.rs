@@ -89,13 +89,14 @@ impl RasterTileCache {
     /// Resident physical texel bytes, including busy invalid allocations.
     pub fn bytes(&self) -> u64 { self.bytes }
 
-    /// Adopt clean completed tiles across consecutive generations only.
+    /// Adopt clean tiles (including pending writes) across consecutive generations only.
     /// Missed generations have no complete dirty-set proof.
     pub fn advance_layer(&mut self, layer: u64, generation: u64, mut dirty: impl FnMut(RasterTileKey) -> bool) {
         for (&key, entry) in &mut self.entries {
             if key.layer != layer || entry.generation == generation { continue; }
             if entry.generation.checked_add(1) == Some(generation)
-                && entry.state == State::Ready && !entry.stale && !dirty(key)
+                && matches!(entry.state, State::Ready | State::Submitted(_))
+                && !entry.stale && !dirty(key)
             {
                 entry.generation = generation;
             } else {
@@ -108,6 +109,25 @@ impl RasterTileCache {
     pub fn invalidate_layer(&mut self, layer: u64) {
         for (key, entry) in &mut self.entries {
             if key.layer == layer { entry.invalidate(); }
+        }
+    }
+
+    /// Invalidate every content version without retiring native GPU users.
+    pub fn invalidate_all(&mut self) {
+        for e in self.entries.values_mut() { e.invalidate(); }
+    }
+
+    /// True while a native submission still owns a cached texture.
+    pub fn has_pending_users(&self) -> bool {
+        self.entries.values().any(|e| !e.readers.is_empty() || matches!(e.state, State::Submitted(_)))
+    }
+
+    /// Reconcile committed layer generations in one cache walk.
+    /// Until exact tile damage is available, a changed or absent generation
+    /// invalidates its pixels without discarding native GPU users.
+    pub fn retain_generations(&mut self, mut generation: impl FnMut(u64) -> Option<u64>) {
+        for (key, e) in &mut self.entries {
+            if generation(key.layer) != Some(e.generation) { e.invalidate(); }
         }
     }
 
@@ -298,6 +318,21 @@ mod tests {
         assert!(c.entries[&key(0)].idle());
         assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
     }
+    #[test]
+    fn clean_pending_generation_waits_for_its_real_writer() {
+        let mut c = RasterTileCache::new(4096);
+        let fence = SubmissionId::from_parts(4, 1);
+        c.entries.insert(key(0), entry(3, State::Submitted(fence)));
+        c.advance_layer(7, 4, |_| false);
+        assert!(c.has_pending_users());
+        assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_none());
+        c.complete(fence);
+        assert!(!c.has_pending_users());
+        assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_some());
+        c.retain_generations(|_| None);
+        assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_none());
+    }
+
     #[test]
     fn all_readers_must_retire() {
         let mut c = RasterTileCache::new(4096);

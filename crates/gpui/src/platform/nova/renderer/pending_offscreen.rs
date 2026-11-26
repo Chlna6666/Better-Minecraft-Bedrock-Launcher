@@ -68,6 +68,7 @@ impl NovaRenderer {
     /// Only Fence::Complete retires physical readers. A failed submission
     /// retains its reference until backend/device teardown.
     pub(super) fn on_offscreen_submission_complete(&mut self, submission: SubmissionId) {
+        self.raster_tiles.complete(submission);
         let mut index = 0;
         while index < self.retired_offscreen_targets.len() {
             self.retired_offscreen_targets[index]

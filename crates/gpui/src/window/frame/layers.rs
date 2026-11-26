@@ -113,7 +113,11 @@ impl SceneLayers {
                 if previous.viewport == record.viewport && previous.offset == record.offset
                     && previous.content.matches(&content)
                 {
-                    (previous.id, previous.generation, Arc::clone(&previous.content))
+                    // Equal pixels need not share their backing pages. Do
+                    // not pin unrelated historical window operations.
+                    let shared = previous.content.operations.matches_by(&content.operations, |_, _| false);
+                    let content = if shared { Arc::clone(&previous.content) } else { Arc::new(content) };
+                    (previous.id, previous.generation, content)
                 } else if let Some(next) = previous.generation.checked_add(1) {
                     (previous.id, next, Arc::new(content))
                 } else {

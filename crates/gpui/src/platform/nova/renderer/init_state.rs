@@ -93,6 +93,9 @@ impl NovaRenderer {
             pending_offscreen_targets: None,
             pending_surface_attachments: None,
             retired_offscreen_targets: Vec::new(),
+            // GPUI Fast's per-window logical budget. Texture allocation is lazy.
+            raster_tiles: gfx_core::RasterTileCache::new(64 * 1024 * 1024),
+            raster_tile_context: None,
             atlas_sampler: resources.atlas_sampler,
             path_texture: resources.path_texture,
             path_texture_view: resources.path_texture_view,

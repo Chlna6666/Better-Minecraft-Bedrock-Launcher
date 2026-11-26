@@ -208,6 +208,9 @@ pub(crate) struct NovaRenderer {
     pending_surface_attachments: Option<pending_surface::PendingSurfaceAttachments>,
     /// Physical Filter allocations still referenced by specific outstanding GPU submissions.
     retired_offscreen_targets: Vec<pending_offscreen::RetiredOffscreenTargets>,
+    // Scroll texture residency belongs to the same native GPU owner as Root/Filter.
+    raster_tiles: gfx_core::RasterTileCache,
+    raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
@@ -1458,6 +1461,11 @@ impl NovaRenderer {
             false
         };
         self.atlas.trim(level);
+        if submissions_drained && self.raster_tiles.bytes() != 0 {
+            if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, None) {
+                log::debug!("failed to trim native scroll tiles: {error}");
+            }
+        }
         if matches!(
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
@@ -1575,6 +1583,12 @@ impl NovaRenderer {
         log::debug!(target: "gpui_gpu_shutdown", "renderer submissions drained backend={}", self.backend_info.label());
         self.destroy_renderer_extensions();
         log::debug!(target: "gpui_gpu_shutdown", "renderer extensions destroyed backend={}", self.backend_info.label());
+        if self.raster_tiles.bytes() != 0 {
+            if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, None) {
+                // A failed fence is not proof of completion. Never destroy early.
+                log::debug!("failed to retire native scroll tiles: {error}");
+            }
+        }
         self.destroy_window_resources();
         self.memory_profile.remove();
         let total = destroy_started_at.elapsed();

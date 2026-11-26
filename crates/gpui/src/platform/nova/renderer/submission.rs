@@ -184,7 +184,8 @@ impl NovaRenderer {
     /// synthetic Scene/Present or scheduling UI work.
     pub(crate) fn has_pollable_offscreen_retirements(&self) -> bool {
         !self.auxiliary_submissions.is_empty()
-            || (!self.retired_offscreen_targets.is_empty() && !self.pending_submissions.is_empty())
+            || ((!self.retired_offscreen_targets.is_empty() || self.raster_tiles.has_pending_users())
+                && !self.pending_submissions.is_empty())
     }
 
     pub(crate) fn poll_offscreen_retirements(&mut self) -> Result<()> {
@@ -332,6 +333,7 @@ impl NovaRenderer {
                 SubmissionStatus::Pending => index += 1,
                 SubmissionStatus::Complete => {
                     self.auxiliary_submissions.swap_remove(index);
+                    self.raster_tiles.complete(id);
                     self.renderer_registry.gpu_submission_completed(id);
                 }
                 SubmissionStatus::Failed(error) => {
@@ -360,6 +362,7 @@ impl NovaRenderer {
                 return Err(error.into());
             }
             self.auxiliary_submissions.pop();
+            self.raster_tiles.complete(id);
             self.renderer_registry.gpu_submission_completed(id);
         }
         Ok(())
@@ -461,6 +464,7 @@ impl NovaRenderer {
     /// Preserve the physical allocations for outstanding fences, invalidate
     /// the snapshots, and request complete redraw of the latest geometry.
     fn invalidate_failed_gpu_submission(&mut self) {
+        self.raster_tiles.invalidate_all();
         self.root_color.invalidate();
         self.filters.invalidate();
         self.path_mask_residency.invalidate();
