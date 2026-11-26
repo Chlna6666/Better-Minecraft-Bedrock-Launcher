@@ -417,7 +417,6 @@ fn native_taffy_marks_impure_measure_dirty_on_every_commit(cx: &mut TestAppConte
                     Style::default(),
                     px(16.),
                     1.,
-                    99,
                     move |_, _, _, _| {
                         counter.set(counter.get() + 1);
                         size(px(22.), px(14.))

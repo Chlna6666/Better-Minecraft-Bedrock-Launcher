@@ -119,7 +119,7 @@ impl Window {
             + 'static,
     >(
         &mut self,
-        fingerprint_seed: u64,
+        replayable: bool,
         mut measure: F,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
@@ -134,7 +134,7 @@ impl Window {
                 owner,
                 rem_size,
                 scale_factor,
-                fingerprint_seed,
+                replayable,
                 move |known, available, window, cx| {
                     snap_measured_size_to_device_pixels(
                         measure(known, available, window, cx),

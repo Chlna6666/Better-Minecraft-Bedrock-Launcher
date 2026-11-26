@@ -50,7 +50,32 @@ struct DefaultMeasuredStyle {
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
-    pub(super) last_measure_input: Option<(Size<Option<Pixels>>, Size<AvailableSpace>)>,
+    replayable: bool,
+    measure_log: MeasureLog,
+    replay_pending: bool,
+}
+
+// Adapted from longbridge/gpui-fast fast/layout.rs (Apache-2.0).
+// Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge.
+// Until final-width state adoption is available, only a single distinct
+// constraint can vouch for a fresh stateful text measurement.
+#[derive(Clone, Copy, Default)]
+enum MeasureLog {
+    #[default]
+    Empty,
+    Single(Size<Option<Pixels>>, Size<AvailableSpace>, Size<Pixels>),
+    Multiple,
+}
+
+impl MeasureLog {
+    fn record(&mut self, known: Size<Option<Pixels>>, available: Size<AvailableSpace>, measured: Size<Pixels>) {
+        match *self {
+            Self::Empty => *self = Self::Single(known, available, measured),
+            Self::Single(k, a, size) if k == known && a == available && size == measured => {}
+            Self::Single(..) => *self = Self::Multiple,
+            Self::Multiple => {}
+        }
+    }
 }
 
 pub(super) const EXPECT_MESSAGE: &str =
@@ -127,6 +152,7 @@ pub struct TaffyLayoutEngine {
     claimed_this_frame: usize,
     claimed_key_log: Vec<Option<LayoutClaim>>,
     committed_claim_log: Vec<Option<LayoutClaim>>,
+    pending_replays: Vec<LayoutId>,
     layout_changes: u64,
     remeasures: u64,
     robbed_parents: FxHashSet<LayoutId>,
@@ -185,6 +211,7 @@ impl TaffyLayoutEngine {
             claimed_this_frame: 0,
             claimed_key_log: Vec::new(),
             committed_claim_log: Vec::new(),
+            pending_replays: Vec::new(),
             layout_changes: 0,
             remeasures: 0,
             robbed_parents: FxHashSet::default(),
@@ -305,6 +332,13 @@ impl TaffyLayoutEngine {
         self.persistent_layout_reuses = 0;
         std::mem::swap(&mut self.claimed_key_log, &mut self.committed_claim_log);
         self.claimed_key_log.clear();
+        for id in self.pending_replays.drain(..) {
+            if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
+                context.replay_pending = false;
+                context.measure_log = MeasureLog::Empty;
+                self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+            }
+        }
         let mut transient = std::mem::take(&mut self.anonymous_nodes);
         for id in transient.drain(..) {
             self.remove_native_node(id);
@@ -367,6 +401,7 @@ impl TaffyLayoutEngine {
             self.anonymous_nodes.shrink_to_fit();
             self.claimed_key_log.shrink_to_fit();
             self.committed_claim_log.shrink_to_fit();
+            self.pending_replays.shrink_to_fit();
         }
         if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
             let taffy = &mut self.taffy;
@@ -516,6 +551,7 @@ impl TaffyLayoutEngine {
                     .then_some(style)
             };
             let requires_style = changed_style.is_some();
+            let same_style = !style_is_stale && node.style_fingerprint == style_fingerprint;
             node.style_fingerprint = style_fingerprint;
             let is_measured = measure.is_some();
             if node.measured && !is_measured {
@@ -559,11 +595,17 @@ impl TaffyLayoutEngine {
                     && !requires_style;
                 if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
                     let reusable = unchanged_pure && old_context.is_pure;
-                    if reusable {
-                        context.last_measure_input = old_context.last_measure_input;
+                    let replay = same_style && !requires_style && child_order_unchanged
+                        && context.replayable && old_context.replayable
+                        && !old_context.replay_pending
+                        && matches!(old_context.measure_log, MeasureLog::Single(..));
+                    if replay {
+                        context.measure_log = old_context.measure_log;
+                        context.replay_pending = true;
+                        self.pending_replays.push(id);
                     }
                     *old_context = context;
-                    if !reusable {
+                    if !reusable && !replay {
                         self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                         self.layout_changes = self.layout_changes.wrapping_add(1);
                         self.remeasures = self.remeasures.wrapping_add(1);
@@ -738,7 +780,9 @@ impl TaffyLayoutEngine {
             Some(NodeContext {
                 measure,
                 is_pure: fingerprint_seed.is_some(),
-                last_measure_input: None,
+                replayable: false,
+                measure_log: MeasureLog::Empty,
+                replay_pending: false,
             }),
             fingerprint_seed,
             Some(style_fingerprint),
@@ -754,7 +798,6 @@ impl TaffyLayoutEngine {
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
-        fingerprint_seed: u64,
         measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
@@ -770,7 +813,7 @@ impl TaffyLayoutEngine {
         let native = layout_style.to_taffy(rem_size, scale_factor);
         self.request_impure_measured_node(
             owner, layout_style, native, style_fingerprint, rem_size,
-            scale_factor, fingerprint_seed, measure,
+            scale_factor, false, measure,
         )
     }
 
@@ -779,7 +822,7 @@ impl TaffyLayoutEngine {
         owner: Option<(u64, GlobalElementId)>,
         rem_size: Pixels,
         scale_factor: f32,
-        fingerprint_seed: u64,
+        replayable: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
@@ -805,7 +848,7 @@ impl TaffyLayoutEngine {
         let cached = self.default_measured_style.as_ref().expect("default measured style");
         self.request_impure_measured_node(
             owner, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
-            rem_size, scale_factor, fingerprint_seed, measure,
+            rem_size, scale_factor, replayable, measure,
         )
     }
 
@@ -817,7 +860,7 @@ impl TaffyLayoutEngine {
         style_fingerprint: u64,
         rem_size: Pixels,
         scale_factor: f32,
-        fingerprint_seed: u64,
+        replayable: bool,
         measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
@@ -840,14 +883,38 @@ impl TaffyLayoutEngine {
             Some(NodeContext {
                 measure,
                 is_pure: false,
-                last_measure_input: None,
+                replayable,
+                measure_log: MeasureLog::Empty,
+                replay_pending: false,
             }),
-            Some(fingerprint_seed),
+            None,
             Some(style_fingerprint),
             move || taffy_style,
         );
         self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
+    }
+
+    fn replay_pending_measures(&mut self, window: &mut Window, cx: &mut App) {
+        let mut pending = std::mem::take(&mut self.pending_replays);
+        for id in pending.drain(..) {
+            let Some(context) = self.taffy.get_node_context_mut(id.into()) else { continue; };
+            if !std::mem::take(&mut context.replay_pending) {
+                continue;
+            }
+            let MeasureLog::Single(known, available, previous) = context.measure_log else {
+                self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                continue;
+            };
+            let actual = (context.measure)(known, available, window, cx);
+            if actual != previous {
+                context.measure_log = MeasureLog::Empty;
+                self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                self.layout_changes = self.layout_changes.wrapping_add(1);
+                self.remeasures = self.remeasures.wrapping_add(1);
+            }
+        }
+        self.pending_replays = pending;
     }
 
     #[cfg_attr(feature = "stacker", stacksafe::stacksafe)]
@@ -864,6 +931,7 @@ impl TaffyLayoutEngine {
         );
         let started_at = Instant::now();
         self.roots_computed = self.roots_computed.saturating_add(1);
+        self.replay_pending_measures(window, cx);
         let scale_factor = window.scale_factor();
         let constraints = (
             size(
@@ -956,14 +1024,15 @@ impl TaffyLayoutEngine {
                                 untransform(available_space.height),
                             );
 
-                            node_context.last_measure_input =
-                                Some((known_dimensions, available_space));
                             let measured = (node_context.measure)(
                                 known_dimensions,
                                 available_space,
                                 window,
                                 cx,
                             );
+                            if node_context.replayable {
+                                node_context.measure_log.record(known_dimensions, available_space, measured);
+                            }
                             size(
                                 measured.width.0 * scale_factor,
                                 measured.height.0 * scale_factor,

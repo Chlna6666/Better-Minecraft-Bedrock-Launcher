@@ -118,6 +118,7 @@ impl TextLayout {
             && text_style.text_overflow.is_none()
             && window.current_stable_layout_element_id().is_some();
 
+        let replayable_measure = text_style.text_overflow.is_none();
         let measurement_key = text_layout_measurement_fingerprint(
             cache_key,
             paint_key,
@@ -267,7 +268,7 @@ impl TextLayout {
             // whole root every frame.
             window.request_pure_measured_layout(measurement_key, measure)
         } else {
-            window.request_default_measured_layout(measurement_key, measure)
+            window.request_default_measured_layout(replayable_measure, measure)
         }
     }
 
