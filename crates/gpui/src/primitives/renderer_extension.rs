@@ -231,6 +231,11 @@ impl RendererExtensionContext {
 /// synchronously on the renderer owner and must not perform application callbacks or blocking I/O.
 pub trait RendererExtension: Any + Send + Sync {
     /// Requests compositor-owned frames for time-dependent shading without rebuilding UI layout.
+    ///
+    /// Return true when shader output can change for the same immutable input,
+    /// for example when sampling frame time or a continuously updated GPU
+    /// simulation. A containing isolated layer must refresh its source pixels;
+    /// identical scene identity or GPUI animation values do not prove reuse.
     fn is_time_dependent(&self) -> bool {
         false
     }

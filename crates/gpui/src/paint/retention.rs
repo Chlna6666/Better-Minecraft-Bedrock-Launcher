@@ -266,8 +266,13 @@ pub(crate) fn filter_source_matches(
     animation_values: &[SceneAnimationValue],
     previous_animation_values: &[SceneAnimationValue],
 ) -> bool {
+    // A time-dependent extension can change GPU pixels without a Scene
+    // commit or a GPUI animation sample. Never use identity as a raster proof.
+    if scene.has_time_dependent_extensions() || previous.has_time_dependent_extensions() {
+        return false;
+    }
     // The exact immutable Scene and the complete GPU sample vector are a
-    // sufficient source-content proof. Avoid traversing every paint operation
+    // sufficient source-content proof for static sources. Avoid traversing every paint operation
     // (including recursive Blur captures) on unchanged compositor ticks.
     // When samples differ, fall back to the full recursive check: unrelated
     // animation tracks must not wrongly invalidate a retained filter target.

@@ -76,8 +76,9 @@ impl FrameUpload {
             .gpu_indexed_composite_element_blur_animation_ids
             .iter()
             .filter_map(|(index, animation_id)| {
-                active_animation_ids
-                    .contains(animation_id)
+                (active_animation_ids.contains(animation_id)
+                    && !matches!(self.element_blur_source(*index),
+                        Some(FilterSource::Element(blur)) if blur.content.has_time_dependent_extensions()))
                     .then_some(*index)
             })
             .collect();
@@ -85,6 +86,7 @@ impl FrameUpload {
             let blur = primitive.base_paint_blur()?;
             let animation_id = blur.animation_id?;
             if !active_animation_ids.contains(&animation_id)
+                || blur.content.has_time_dependent_extensions()
                 || !blur.content.animation_ids().is_empty()
             {
                 return None;

@@ -212,6 +212,12 @@ impl FilterRegistry {
                 Self::same_auto_static_source(current, &previous.source)
             }
             (FilterSource::Element(current), FilterSource::Element(old)) => {
+                // A time-driven GPU extension changes source texels without
+                // changing the immutable Scene or its GPUI animation samples.
+                // This also covers extensions inside nested captures.
+                if current.content.has_time_dependent_extensions() {
+                    return false;
+                }
                 let previous_values = previous.animation_values.as_deref().unwrap_or(&[]);
                 if current.layer_id != old.layer_id
                     || current.bounds != old.bounds
@@ -307,6 +313,11 @@ impl FilterRegistry {
         else {
             return None;
         };
+        // GPUI animation damage cannot prove the footprint of arbitrary
+        // time-driven shader work. Refresh the whole isolated source instead.
+        if current.content.has_time_dependent_extensions() {
+            return None;
+        }
         // The snapshot of the last *successful refresh for this layer* owns
         // the pixels we are updating. The global last-presented GPU sample may
         // have advanced while this particular filter was skipped.
