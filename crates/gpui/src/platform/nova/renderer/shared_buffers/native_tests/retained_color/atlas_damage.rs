@@ -74,7 +74,7 @@ fn begin_capture(
 ) {
     painter.begin_blur(crate::BlurCapture {
         animation_id: None,
-        layer_id: Some(crate::NativeElementId::from_path(&[id.into()])),
+        layer_id: Some(u64::from_path(&[id.into()])),
         bounds: region,
         content_mask: crate::ContentMask::new(region),
         radius: crate::ScaledPixels(2.),
