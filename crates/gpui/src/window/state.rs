@@ -490,10 +490,8 @@ pub struct Window {
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: ElementIdStack,
     pub(crate) global_ids: RefCell<GlobalIdCache>,
-    /// Retained rendering identity path. This intentionally differs from `element_id_stack`:
-    /// anonymous elements receive internal `InstanceSlot` segments here but still receive no
-    /// `GlobalElementId` for state storage.
-    pub(crate) retained_element_id_stack: ElementIdStack,
+    /// Absolute native identity; application state keeps its separate exact path.
+    pub(crate) native_element_scope: Option<NativeElementScope>,
     /// Window-owned native layout key scopes; no per-thread identity tables.
     pub(crate) layout_key_scopes: SmallVec<[super::element_context::LayoutKeyScope; 32]>,
     pub(crate) layout_root_index: u32,

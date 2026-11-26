@@ -513,7 +513,7 @@ impl Window {
             root: None,
             element_id_stack: ElementIdStack::default(),
             global_ids: RefCell::new(GlobalIdCache::default()),
-            retained_element_id_stack: ElementIdStack::default(),
+            native_element_scope: None,
             layout_key_scopes: SmallVec::default(),
             layout_root_index: 0,
             text_style_stack: Vec::new(),

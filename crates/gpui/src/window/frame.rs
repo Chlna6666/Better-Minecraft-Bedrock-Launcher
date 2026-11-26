@@ -11,7 +11,7 @@ pub(crate) struct DeferredDraw {
     pub(super) priority: usize,
     pub(super) parent_node: DispatchNodeId,
     pub(super) element_prefix: Option<GlobalElementId>,
-    pub(super) retained_prefix: Option<GlobalElementId>,
+    pub(super) native_scope: Option<NativeElementScope>,
     pub(super) text_style_stack: Vec<TextStyleRefinement>,
     pub(super) element_visual_transform: ElementVisualTransform,
     pub(super) content_mask_stack: Vec<ContentMask<Pixels>>,

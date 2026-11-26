@@ -1,6 +1,6 @@
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
-    Pixels, Size, Window,
+    Pixels, Size, Window, NativeElementScope,
 };
 use derive_more::Deref;
 use smallvec::SmallVec;
@@ -71,12 +71,8 @@ impl ElementIdStack {
         self.ids.is_empty() && self.prefix_slice().is_empty()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &ElementId> {
+    fn iter(&self) -> impl Iterator<Item = &ElementId> {
         self.prefix_slice().iter().chain(self.ids.iter())
-    }
-
-    pub(crate) fn last(&self) -> Option<&ElementId> {
-        self.ids.last().or_else(|| self.prefix_slice().last())
     }
 
     pub(crate) fn matches(&self, path: &[ElementId]) -> bool {
@@ -264,14 +260,14 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     RequestLayout {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
-        retained_segment: ElementId,
+        retained_scope: NativeElementScope,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
     LayoutComputed {
         layout_id: LayoutId,
         global_id: Option<GlobalElementId>,
-        retained_segment: ElementId,
+        retained_scope: NativeElementScope,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
         request_layout: RequestLayoutState,
@@ -279,7 +275,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     Prepaint {
         node_id: DispatchNodeId,
         global_id: Option<GlobalElementId>,
-        retained_segment: ElementId,
+        retained_scope: NativeElementScope,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: RequestLayoutState,
@@ -309,7 +305,7 @@ fn prepare_inspector_id(
 
 struct RetainedElementMount {
     global_id: Option<GlobalElementId>,
-    retained_segment: ElementId,
+    retained_scope: NativeElementScope,
     inspector_id: Option<InspectorElementId>,
 }
 
@@ -323,7 +319,7 @@ fn begin_retained_element_mount(
         "layout_retained_mount",
         crate::window::element_work::ElementWorkPhase::Layout,
     );
-    let retained_segment = window.begin_retained_element(element_id.clone());
+    let retained_scope = window.begin_retained_element(element_id.clone());
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
     let inspector_id;
@@ -342,7 +338,7 @@ fn begin_retained_element_mount(
 
     RetainedElementMount {
         global_id,
-        retained_segment,
+        retained_scope,
         inspector_id,
     }
 }
@@ -351,7 +347,7 @@ fn begin_retained_element_mount(
 fn run_element_prepaint(
     element_id: Option<ElementId>,
     global_id: Option<&GlobalElementId>,
-    retained_segment: &ElementId,
+    retained_scope: NativeElementScope,
     window: &mut Window,
     callback: &mut dyn FnMut(&mut Window),
 ) -> DispatchNodeId {
@@ -363,7 +359,7 @@ fn run_element_prepaint(
     }
 
     let node_id = window.next_frame.dispatch_tree.push_node();
-    window.with_retained_element_segment(retained_segment, |window| callback(window));
+    window.with_native_element_scope(retained_scope, |window| callback(window));
     window.next_frame.dispatch_tree.pop_node();
 
     if global_id.is_some() {
@@ -378,7 +374,7 @@ fn run_element_paint(
     element_id: Option<ElementId>,
     global_id: Option<&GlobalElementId>,
     node_id: DispatchNodeId,
-    retained_segment: &ElementId,
+    retained_scope: NativeElementScope,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -393,7 +389,7 @@ fn run_element_paint(
 
     window.record_debug_element_paint(bounds, cx);
     window.next_frame.dispatch_tree.set_active_node(node_id);
-    window.with_retained_element_segment(retained_segment, |window| callback(window, cx));
+    window.with_native_element_scope(retained_scope, |window| callback(window, cx));
 }
 
 #[inline(never)]
@@ -466,7 +462,7 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
                     global_id: mount.global_id,
-                    retained_segment: mount.retained_segment,
+                    retained_scope: mount.retained_scope,
                     inspector_id: mount.inspector_id,
                     request_layout,
                 };
@@ -481,14 +477,14 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 mut request_layout,
             }
             | ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 mut request_layout,
                 ..
@@ -501,7 +497,7 @@ impl<E: Element> Drawable<E> {
                 let node_id = run_element_prepaint(
                     prepaint_element_id,
                     global_id.as_ref(),
-                    &retained_segment,
+                    retained_scope,
                     window,
                     &mut |window| {
                         prepaint = Some(crate::window::element_work::measure_named(
@@ -528,7 +524,7 @@ impl<E: Element> Drawable<E> {
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
                     global_id,
-                    retained_segment,
+                    retained_scope,
                     inspector_id,
                     bounds,
                     request_layout,
@@ -544,7 +540,7 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::Prepaint {
                 node_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 bounds,
                 mut request_layout,
@@ -557,7 +553,7 @@ impl<E: Element> Drawable<E> {
                     paint_element_id,
                     global_id.as_ref(),
                     node_id,
-                    &retained_segment,
+                    retained_scope,
                     bounds,
                     window,
                     cx,
@@ -608,7 +604,7 @@ impl<E: Element> Drawable<E> {
         let (
             layout_id,
             global_id,
-            retained_segment,
+            retained_scope,
             inspector_id,
             previous_available_space,
             request_layout,
@@ -616,13 +612,13 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 request_layout,
             } => (
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 None,
                 request_layout,
@@ -630,14 +626,14 @@ impl<E: Element> Drawable<E> {
             ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 available_space: previous_available_space,
                 request_layout,
             } => (
                 layout_id,
                 global_id,
-                retained_segment,
+                retained_scope,
                 inspector_id,
                 Some(previous_available_space),
                 request_layout,
@@ -655,7 +651,7 @@ impl<E: Element> Drawable<E> {
         self.phase = ElementDrawPhase::LayoutComputed {
             layout_id,
             global_id,
-            retained_segment,
+            retained_scope,
             inspector_id,
             available_space,
             request_layout,

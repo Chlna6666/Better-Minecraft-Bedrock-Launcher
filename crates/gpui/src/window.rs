@@ -79,7 +79,7 @@ mod display;
 mod draw;
 mod draw_reuse;
 mod element_context;
-pub(crate) use element_context::NativeElementId;
+pub(crate) use element_context::{NativeElementId, NativeElementScope};
 mod element_id;
 pub(crate) mod element_work;
 mod elements;

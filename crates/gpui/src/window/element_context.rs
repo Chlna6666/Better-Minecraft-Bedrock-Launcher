@@ -22,6 +22,7 @@ impl NativeElementId {
         Self { key: primary.finish(), witness: witness.finish() }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_path(path: &[ElementId]) -> Self {
         path.iter().fold(None, |parent, segment| Some(Self::child(parent, segment)))
             .expect("native identity requires a nonempty path")
@@ -32,13 +33,27 @@ impl NativeElementId {
 // Adapt the identified/positional key rules of longbridge/gpui-fast
 // 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout_key.rs (Apache-2.0).
 // Copyright 2022-2025 Zed Industries, Inc. Copyright 2026 Longbridge.
-// Structural paths remain for retained view/interaction identities only;
-// the native layout hot path consumes integer keys and scope metadata.
+// Native layout, prepaint and paint use the same captured integer scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeElementScope {
+    pub(crate) id: NativeElementId,
+    lingers: bool,
+}
+
+impl NativeElementScope {
+    fn child(parent: Option<Self>, segment: &ElementId) -> Self {
+        Self {
+            id: NativeElementId::child(parent.map(|scope| scope.id), segment),
+            lingers: parent.is_some_and(|scope| scope.lingers) || crate::layout::is_list_row_segment(segment),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct LayoutKeyScope {
     next_unidentified_child: u32,
     next_layout_slot: u32,
-    lingers: bool,
+    parent: Option<NativeElementScope>,
 }
 
 fn layout_segment(id: Option<ElementId>, next_unidentified_child: &mut u32) -> ElementId {
@@ -65,30 +80,23 @@ impl Window {
     }
 
     /// Match identified elements by their ID and anonymous siblings by position.
-    pub(crate) fn begin_retained_element(&mut self, id: Option<ElementId>) -> ElementId {
+    pub(crate) fn begin_retained_element(&mut self, id: Option<ElementId>) -> NativeElementScope {
         let next_child = self.layout_key_scopes.last_mut()
             .map(|scope| &mut scope.next_unidentified_child)
             .unwrap_or(&mut self.layout_root_index);
         let segment = layout_segment(id, next_child);
-        self.retained_element_id_stack.push(segment.clone());
-        self.push_layout_scope();
-        segment
+        let scope = NativeElementScope::child(self.native_element_scope, &segment);
+        self.push_layout_scope(Some(scope));
+        scope
     }
 
-    fn push_layout_scope(&mut self) {
-        let path = &self.retained_element_id_stack;
-        // A resumed prepaint or gap can enter with no request scope. Scan
-        // its prefix once; ordinary child requests inherit the bit in O(1).
-        let lingers = self.layout_key_scopes.last().map_or_else(
-            || path.iter().any(crate::layout::is_list_row_segment),
-            |parent| parent.lingers || path.last().is_some_and(crate::layout::is_list_row_segment),
-        );
-        self.layout_key_scopes.push(LayoutKeyScope { lingers, ..Default::default() });
+    fn push_layout_scope(&mut self, scope: Option<NativeElementScope>) {
+        let parent = mem::replace(&mut self.native_element_scope, scope);
+        self.layout_key_scopes.push(LayoutKeyScope { parent, ..Default::default() });
     }
 
     pub(crate) fn end_retained_element(&mut self) {
-        self.layout_key_scopes.pop();
-        self.retained_element_id_stack.pop();
+        self.native_element_scope = self.layout_key_scopes.pop().expect("balanced layout scope").parent;
     }
 
     /// Execute lazy child construction with a fresh parent-local retained slot namespace.
@@ -104,11 +112,9 @@ impl Window {
     /// Callers that retry a transactional prepaint must create a new scope for every attempt so the
     /// same logical children receive the same slots after rollback.
     pub(crate) fn with_retained_child_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        // The path may have been restored independently for a dirty gap.
-        let lingers = self.retained_element_id_stack.iter().any(crate::layout::is_list_row_segment);
-        self.layout_key_scopes.push(LayoutKeyScope { lingers, ..Default::default() });
+        self.push_layout_scope(self.native_element_scope);
         let result = f(self);
-        self.layout_key_scopes.pop();
+        self.end_retained_element();
         result
     }
 
@@ -124,68 +130,48 @@ impl Window {
         key: impl Into<ElementId>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.retained_element_id_stack.push(key.into());
-        self.push_layout_scope();
+        let scope = NativeElementScope::child(self.native_element_scope, &key.into());
+        self.push_layout_scope(Some(scope));
         let result = f(self);
-        self.layout_key_scopes.pop();
-        self.retained_element_id_stack.pop();
+        self.end_retained_element();
         result
     }
 
-    /// Restores one already-assigned retained identity segment for prepaint/paint traversal.
-    pub(crate) fn with_retained_element_segment<R>(
+    /// Enter the absolute key assigned during RequestLayout, as GPUI Fast does
+    /// for prepaint. No segment hashing, allocation or path reconstruction.
+    pub(crate) fn with_native_element_scope<R>(
         &mut self,
-        segment: &ElementId,
+        scope: NativeElementScope,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.retained_element_id_stack.push(segment.clone());
+        let previous = self.native_element_scope.replace(scope);
         let result = f(self);
-        self.retained_element_id_stack.pop();
+        self.native_element_scope = previous;
         result
-    }
-
-    /// Returns the retained rendering identity of the element currently being laid out,
-    /// prepainted, or painted.
-    pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
-        let path = &self.retained_element_id_stack;
-        if path.is_empty() {
-            return None;
-        }
-        Some(self.global_ids.borrow_mut().get(path))
     }
 
     pub(crate) fn current_native_element_id(&self) -> Option<NativeElementId> {
-        self.current_retained_element_id().map(|path| NativeElementId::from_path(&path.0))
+        self.native_element_scope.map(|scope| scope.id)
     }
 
-    /// Verify a native-key candidate without materializing or interning the active path.
-    pub(crate) fn retained_path_matches(&self, path: &GlobalElementId) -> bool {
-        self.retained_element_id_stack.matches(path.0.as_ref())
-    }
-
-    /// Animation tickets need only the same running integer identity as
-    /// native layout, not a materialized global element path.
     pub(crate) fn current_retained_element_key(&self) -> Option<u64> {
-        (!self.retained_element_id_stack.is_empty())
-            .then(|| self.retained_element_id_stack.hash())
+        self.current_native_element_id().map(|id| id.key)
     }
 
     pub(crate) fn has_layout_owner(&self) -> bool {
-        !self.layout_key_scopes.is_empty() && !self.retained_element_id_stack.is_empty()
+        !self.layout_key_scopes.is_empty() && self.native_element_scope.is_some()
     }
 
-    /// Inspect the next native slot without claiming it. Plain text uses this
-    /// to adopt the state before constructing its measurement callback.
+    /// Inspect the next native slot without claiming it.
     pub(crate) fn next_layout_owner(&self) -> Option<crate::layout::NativeLayoutKey> {
-        let path = &self.retained_element_id_stack;
-        let scope = self.layout_key_scopes.last()?;
-        let slot = scope.next_layout_slot;
-        if path.is_empty() || slot == u32::MAX {
+        let native = self.native_element_scope?;
+        let slot = self.layout_key_scopes.last()?.next_layout_slot;
+        if slot == u32::MAX {
             return None;
         }
         Some(crate::layout::NativeLayoutKey {
-            key: crate::layout::layout_node_key(path.hash(), slot),
-            lingers: scope.lingers,
+            key: crate::layout::layout_node_key(native.id.key, slot),
+            lingers: native.lingers,
         })
     }
 

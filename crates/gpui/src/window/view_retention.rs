@@ -93,8 +93,7 @@ impl StateAccessBlocks {
 pub(crate) struct ViewRebuild {
     pub(super) view: crate::AnyWeakView,
     pub(super) application_id: GlobalElementId,
-    // Exact identity is needed only for collision checks and rebuilding a dirty gap.
-    pub(super) retained_path: GlobalElementId,
+    pub(super) native_scope: NativeElementScope,
     pub(super) layout: RetainedPaintContext,
     pub(super) splice_supported: bool,
 }
@@ -169,7 +168,7 @@ impl Window {
         Some(Rc::new(ViewRebuild {
             view: view.downgrade(),
             application_id: application_id?.clone(),
-            retained_path: self.current_retained_element_id()?,
+            native_scope: self.native_element_scope?,
             layout: self.current_retained_paint_context(),
             splice_supported: self.splice_context_supported(),
         }))
@@ -313,7 +312,7 @@ impl Window {
         let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = record.rebuild.as_ref()?;
         if rebuild.view.entity_id() != view_id
-            || !self.retained_path_matches(&rebuild.retained_path)
+            || self.native_element_scope != Some(rebuild.native_scope)
             || Some(&rebuild.application_id) != application_id
             || rebuild.splice_supported != self.splice_context_supported()
             || !self.retained_paint_context_matches(&rebuild.layout)

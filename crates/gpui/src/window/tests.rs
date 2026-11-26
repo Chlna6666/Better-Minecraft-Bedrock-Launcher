@@ -2072,7 +2072,7 @@ struct UseAssetView {
     source: u64,
     load_asset: bool,
     asset_ready: Rc<Cell<bool>>,
-    retained_target: Rc<RefCell<Option<GlobalElementId>>>,
+    retained_target: Rc<RefCell<Option<NativeElementId>>>,
 }
 
 impl Render for UseAssetView {
@@ -2093,7 +2093,7 @@ struct AssetUseElement {
     source: u64,
     load_asset: bool,
     asset_ready: Rc<Cell<bool>>,
-    retained_target: Rc<RefCell<Option<GlobalElementId>>>,
+    retained_target: Rc<RefCell<Option<NativeElementId>>>,
 }
 
 impl IntoElement for AssetUseElement {
@@ -2123,7 +2123,7 @@ impl Element for AssetUseElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        *self.retained_target.borrow_mut() = window.current_retained_element_id();
+        *self.retained_target.borrow_mut() = window.current_native_element_id();
         if self.load_asset {
             self.asset_ready.set(
                 window

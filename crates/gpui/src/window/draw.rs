@@ -170,6 +170,7 @@ impl Window {
         }
         debug_assert!(self.layout_key_scopes.is_empty());
         self.layout_key_scopes.clear();
+        self.native_element_scope = None;
         self.layout_root_index = 0;
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;

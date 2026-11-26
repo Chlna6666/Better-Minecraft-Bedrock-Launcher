@@ -82,7 +82,7 @@ impl Element for PaintCountLeaf {
 struct CapturedDiv {
     id: &'static str,
     inner: crate::Div,
-    path: Rc<RefCell<Option<GlobalElementId>>>,
+    path: Rc<RefCell<Option<crate::NativeElementId>>>,
 }
 
 impl IntoElement for CapturedDiv {
@@ -124,7 +124,7 @@ impl Element for CapturedDiv {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        *self.path.borrow_mut() = window.current_retained_element_id();
+        *self.path.borrow_mut() = window.current_native_element_id();
         self.inner
             .prepaint(id, inspector_id, bounds, request_layout, window, cx)
     }
@@ -154,7 +154,7 @@ impl Element for CapturedDiv {
 struct SiblingIsolationRoot {
     left_paints: Rc<Cell<usize>>,
     right_paints: Rc<Cell<usize>>,
-    dirty_path: Rc<RefCell<Option<GlobalElementId>>>,
+    dirty_path: Rc<RefCell<Option<crate::NativeElementId>>>,
     dirty_width: f32,
 }
 
@@ -199,7 +199,7 @@ impl Render for SiblingIsolationRoot {
 
 struct ClipDependencyRoot {
     child_paints: Rc<Cell<usize>>,
-    clip_path: Rc<RefCell<Option<GlobalElementId>>>,
+    clip_path: Rc<RefCell<Option<crate::NativeElementId>>>,
     clip_width: f32,
 }
 
