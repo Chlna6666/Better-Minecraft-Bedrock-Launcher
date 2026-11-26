@@ -28,9 +28,10 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
 
-        let owner = self.current_stable_layout_owner();
+        let owner = crate::fast::layout_key::layout_key(self);
         self.layout_engine.as_mut().unwrap().request_layout(
             owner,
+            crate::fast::layout_key::is_laying_out_list_row(self),
             style,
             rem_size,
             scale_factor,
@@ -58,12 +59,13 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let owner = self.current_stable_layout_owner();
+        let owner = crate::fast::layout_key::layout_key(self);
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_measured_layout(
                 owner,
+                crate::fast::layout_key::is_laying_out_list_row(self),
                 style,
                 rem_size,
                 scale_factor,
@@ -78,7 +80,7 @@ impl Window {
 
     /// Adopt plain text from its native slot before requesting the new node.
     pub(crate) fn previous_plain_text(&mut self) -> Option<crate::TextLayout> {
-        let owner = self.next_layout_owner()?;
+        let owner = crate::fast::layout_key::layout_key(self)?;
         self.layout_engine.as_mut()?.previous_plain_text(&owner)
     }
 
@@ -95,8 +97,15 @@ impl Window {
         self.invalidator.debug_assert_prepaint();
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let owner = self.current_stable_layout_owner();
-        self.layout_engine.as_mut().unwrap().request_size_layout(owner, style, rem_size, scale_factor, input)
+        let owner = crate::fast::layout_key::layout_key(self);
+        self.layout_engine.as_mut().unwrap().request_size_layout(
+            owner,
+            crate::fast::layout_key::is_laying_out_list_row(self),
+            style,
+            rem_size,
+            scale_factor,
+            input,
+        )
     }
 
     pub(crate) fn request_default_measured_layout<
@@ -113,12 +122,13 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let owner = self.current_stable_layout_owner();
+        let owner = crate::fast::layout_key::layout_key(self);
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_default_measured_layout(
                 owner,
+                crate::fast::layout_key::is_laying_out_list_row(self),
                 rem_size,
                 scale_factor,
                 key,

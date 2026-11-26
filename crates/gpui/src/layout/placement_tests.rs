@@ -1,9 +1,6 @@
 /// The integer key the layout engine claims.
-fn owner(name: &'static str) -> Option<super::NativeLayoutKey> {
-    let id = crate::GlobalElementId::from_path(&[crate::ElementId::from(name)]);
-    let mut hasher = collections::FxHasher::default();
-    std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-    Some(super::NativeLayoutKey { key: std::hash::Hasher::finish(&hasher), lingers: false })
+fn owner(name: &'static str) -> Option<u64> {
+    Some(crate::fast::layout_key::key_for_path(&[crate::ElementId::from(name)]))
 }
 
 use super::{AvailableSpace, TaffyLayoutEngine};

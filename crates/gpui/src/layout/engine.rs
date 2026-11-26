@@ -11,7 +11,7 @@ use std::{
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
-    ClaimBlockMap, LayoutClaimBlocks, NativeLayoutKey, SpanRelocations,
+    ClaimBlockMap, LayoutClaimBlocks, SpanRelocations,
     convert::ToTaffy,
     fingerprint::{
         hash_absolute_length, hash_display, hash_edges_absolute_length, hash_edges_definite_length,
@@ -856,7 +856,8 @@ impl TaffyLayoutEngine {
     /// changed styles/child edges/measure inputs dirty Taffy's cached layouts.
     fn request_persistent_node(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
+        lingers: bool,
         children: &[LayoutId],
         measure: Option<MeasureRequest<impl FnOnce() -> Option<NodeMeasureFn>>>,
         style_fingerprint: Option<u64>,
@@ -868,7 +869,7 @@ impl TaffyLayoutEngine {
         );
         // Keep the lazy conversion monomorphized. Boxing this closure allocated
         // for every request, including the fingerprint-hit path that never calls it.
-        let Some(NativeLayoutKey { key, lingers }) = owner else {
+        let Some(key) = owner else {
             let style = build_style();
             let id = self.create_taffy_node(style, children, measure.map(MeasureRequest::into_context));
             self.anonymous_nodes.push(id);
@@ -1058,7 +1059,8 @@ impl TaffyLayoutEngine {
 
     pub fn request_layout(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
+        lingers: bool,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1077,6 +1079,7 @@ impl TaffyLayoutEngine {
         let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
+            lingers,
             children,
             None::<MeasureRequest<fn() -> Option<NodeMeasureFn>>>,
             Some(style_fingerprint),
@@ -1088,7 +1091,8 @@ impl TaffyLayoutEngine {
 
     pub fn request_measured_layout(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
+        lingers: bool,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1100,7 +1104,7 @@ impl TaffyLayoutEngine {
         ) -> Size<Pixels>
         + 'static,
     ) -> LayoutId {
-        self.request_measured_node(owner, style, rem_size, scale_factor, MeasureRequest {
+        self.request_measured_node(owner, lingers, style, rem_size, scale_factor, MeasureRequest {
             key: None, replayable: false, state_ready: true,
             build: move || Some(boxed_measure(measure)),
         })
@@ -1108,8 +1112,8 @@ impl TaffyLayoutEngine {
 
     /// Obtain the previous plain text state only for an unclaimed matching slot.
     /// A slot already claimed in this frame cannot lend its mutable text.
-    pub(crate) fn previous_plain_text(&mut self, owner: &NativeLayoutKey) -> Option<crate::TextLayout> {
-        let node = self.persistent_nodes.get(&owner.key)?;
+    pub(crate) fn previous_plain_text(&mut self, owner: &u64) -> Option<crate::TextLayout> {
+        let node = self.persistent_nodes.get(owner)?;
         if node.claimed_in_frame == self.request_frame {
             return None;
         }
@@ -1126,13 +1130,14 @@ impl TaffyLayoutEngine {
 
     pub(crate) fn request_size_layout(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
+        lingers: bool,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
         input: SizeMeasurement,
     ) -> LayoutId {
-        self.request_measured_node(owner, style, rem_size, scale_factor, MeasureRequest {
+        self.request_measured_node(owner, lingers, style, rem_size, scale_factor, MeasureRequest {
             key: Some(MeasurementKey::Size(input)), replayable: false, state_ready: true,
             build: || None,
         })
@@ -1140,7 +1145,7 @@ impl TaffyLayoutEngine {
 
     fn request_measured_node(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -1159,6 +1164,7 @@ impl TaffyLayoutEngine {
         let pending_style = layout_style.clone();
         let layout_id = self.request_persistent_node(
             owner,
+            lingers,
             &[],
             Some(request),
             Some(style_fingerprint),
@@ -1170,7 +1176,8 @@ impl TaffyLayoutEngine {
 
     pub(crate) fn request_default_measured_layout(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
+        lingers: bool,
         rem_size: Pixels,
         scale_factor: f32,
         key: Option<MeasurementKey>,
@@ -1200,14 +1207,14 @@ impl TaffyLayoutEngine {
         }
         let cached = self.default_measured_style.as_ref().expect("default measured style");
         self.request_native_measured_node(
-            owner, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
+            owner, lingers, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
             rem_size, scale_factor, key, replayable, state_ready, measure,
         )
     }
 
     fn request_native_measured_node(
         &mut self,
-        owner: Option<NativeLayoutKey>,
+        owner: Option<u64>,
         layout_style: LayoutStyle,
         taffy_style: taffy::Style,
         style_fingerprint: u64,
@@ -1231,6 +1238,7 @@ impl TaffyLayoutEngine {
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
         let layout_id = self.request_persistent_node(
             owner,
+            lingers,
             &[],
             Some(MeasureRequest {
                 key,
@@ -1638,7 +1646,7 @@ mod tests {
     fn row_id(index: usize) -> GlobalElementId {
         GlobalElementId::from_path(&[
             ElementId::from("list"),
-            ElementId::named_usize("__gpui_retained_uniform_row", index),
+            ElementId::named_usize("gpui::list_item", index),
             ElementId::from("leaf"),
         ])
     }
@@ -1647,13 +1655,8 @@ mod tests {
         GlobalElementId::from_path(&[ElementId::from("list")])
     }
 
-    fn owner(id: &GlobalElementId) -> NativeLayoutKey {
-        let mut hasher = collections::FxHasher::default();
-        std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-        NativeLayoutKey {
-            key: std::hash::Hasher::finish(&hasher),
-            lingers: id.0.iter().any(crate::layout::is_list_row_segment),
-        }
+    fn owner(id: &GlobalElementId) -> u64 {
+        crate::fast::layout_key::key_for_path(id.0.as_ref())
     }
 
     #[test]
@@ -1679,9 +1682,9 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();
         let row = row_id(2);
-        let first = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
+        let first = engine.request_layout(Some(owner(&root)), false, Style::default(), crate::px(16.), 1., &[]);
         let start = engine.claim_log_len();
-        engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        engine.request_layout(Some(owner(&row)), false, Style::default(), crate::px(16.), 1., &[]);
         let end = engine.claim_log_len();
         let mut claims = LayoutClaimBlocks::request(0..start);
         claims.push_prepaint(start..end);
@@ -1696,7 +1699,7 @@ mod tests {
         engine.release_kept(&kept);
         assert_eq!(engine.claimed_this_frame, 0);
         assert!(engine.claimed_key_log.iter().all(Option::is_none));
-        assert_eq!(engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]), first);
+        assert_eq!(engine.request_layout(Some(owner(&root)), false, Style::default(), crate::px(16.), 1., &[]), first);
         assert!(engine.try_keep_retained(&claims, first).is_none());
         assert_eq!(engine.claimed_this_frame, 1);
     }
@@ -1706,19 +1709,19 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         let gap_owner = row_id(2);
         let root_owner = list_id();
-        let gap = engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]);
-        let root = engine.request_layout(Some(owner(&root_owner)), Style::default(), crate::px(16.), 1., &[gap]);
+        let gap = engine.request_layout(Some(owner(&gap_owner)), false, Style::default(), crate::px(16.), 1., &[]);
+        let root = engine.request_layout(Some(owner(&root_owner)), false, Style::default(), crate::px(16.), 1., &[gap]);
         engine.clear();
         let anchor = LayoutClaimBlocks::request(0..2);
         let gap_span = LayoutClaimBlocks::request(0..1);
         let stamp = engine.splice_layout_stamp();
         let (kept, _) = engine.try_keep_around_gaps(&anchor, &[(gap_span, gap)], root).unwrap();
         assert_eq!(engine.claimed_this_frame, 1);
-        assert_eq!(engine.request_layout(Some(owner(&gap_owner)), Style::default(), crate::px(16.), 1., &[]), gap);
+        assert_eq!(engine.request_layout(Some(owner(&gap_owner)), false, Style::default(), crate::px(16.), 1., &[]), gap);
         assert_eq!(engine.splice_layout_stamp(), stamp);
         engine.release_kept(&kept);
         assert_eq!(engine.claimed_this_frame, 1);
-        assert_eq!(engine.request_layout(Some(owner(&root_owner)), Style::default(), crate::px(16.), 1., &[gap]), root);
+        assert_eq!(engine.request_layout(Some(owner(&root_owner)), false, Style::default(), crate::px(16.), 1., &[gap]), root);
     }
 
     #[test]
@@ -1726,7 +1729,7 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();
         let start = engine.claim_log_len();
-        let id = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
+        let id = engine.request_layout(Some(owner(&root)), false, Style::default(), crate::px(16.), 1., &[]);
         let claims = LayoutClaimBlocks::request(start..engine.claim_log_len());
         engine.clear();
         engine.robbed_parents.insert(id);
@@ -1735,34 +1738,29 @@ mod tests {
     }
 
     #[test]
-    fn claims_release_unused_slots_without_mount_metadata() {
+    fn duplicate_fast_layout_keys_use_a_transient_node() {
         let mut engine = TaffyLayoutEngine::new();
-        let owner_id = list_id();
-        let request = |engine: &mut TaffyLayoutEngine, slot| {
-            let mut key = owner(&owner_id);
-            key.key = crate::layout::layout_node_key(key.key, slot);
-            engine.request_layout(Some(key),
-                Style::default(), crate::px(16.), 1., &[])
-        };
-        let first = request(&mut engine, 0);
-        let second = request(&mut engine, 1);
-        assert_eq!(engine.claimed_this_frame, 2);
-        engine.clear();
-        let changes = engine.layout_changes;
-        assert_eq!(request(&mut engine, 0), first);
-        assert_eq!(engine.layout_changes, changes);
+        let key = owner(&list_id());
+        let first = engine.request_layout(
+            Some(key), false, Style::default(), crate::px(16.), 1., &[],
+        );
+        let duplicate = engine.request_layout(
+            Some(key), false, Style::default(), crate::px(16.), 1., &[],
+        );
+        assert_ne!(first, duplicate);
+        assert_eq!(engine.persistent_nodes.len(), 1);
+        assert_eq!(engine.transient_count(), 1);
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 1);
-        assert!(!engine.persistent_nodes.values().any(|node| node.id == second));
     }
 
     #[test]
     fn reparenting_marks_previous_parent_robbed() {
         let mut engine = TaffyLayoutEngine::new();
-        let child = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[]);
-        let old = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
-        let ancestor = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[old]);
-        let next = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
+        let child = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[]);
+        let old = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[child]);
+        let ancestor = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[old]);
+        let next = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[child]);
         assert_eq!(engine.taffy.parent(child.into()), Some(next.into()));
         assert!(engine.robbed_parents.contains(&old));
         assert!(engine.taffy.dirty(old.into()).unwrap());
@@ -1775,11 +1773,11 @@ mod tests {
     fn offscreen_rows_reuse_layout_and_expire_on_trim() {
         let mut engine = TaffyLayoutEngine::new();
         let row = row_id(7);
-        let first = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        let first = engine.request_layout(Some(owner(&row)), true, Style::default(), crate::px(16.), 1., &[]);
         engine.clear();
         engine.clear();
         assert_eq!(engine.taffy.total_node_count(), 1);
-        let again = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        let again = engine.request_layout(Some(owner(&row)), true, Style::default(), crate::px(16.), 1., &[]);
         assert_eq!(again, first);
         engine.clear();
         engine.clear();
@@ -1791,19 +1789,19 @@ mod tests {
     fn offscreen_rows_expire_and_abort_discards_speculative_nodes() {
         let mut engine = TaffyLayoutEngine::new();
         let row = row_id(1);
-        engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        engine.request_layout(Some(owner(&row)), true, Style::default(), crate::px(16.), 1., &[]);
         engine.clear();
         for _ in 0..ROW_NODE_LINGER_FRAMES {
             engine.clear();
         }
         assert_eq!(engine.taffy.total_node_count(), 0);
         let start = engine.claim_log_len();
-        let id = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        let id = engine.request_layout(Some(owner(&row)), true, Style::default(), crate::px(16.), 1., &[]);
         let claims = LayoutClaimBlocks::request(start..engine.claim_log_len());
         engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
         assert!(engine.try_keep_retained(&claims, id).is_none());
-        let new = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        let new = engine.request_layout(Some(owner(&row)), true, Style::default(), crate::px(16.), 1., &[]);
         assert_ne!(id, new);
     }
 

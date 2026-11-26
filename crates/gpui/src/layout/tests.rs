@@ -11,11 +11,9 @@ fn element_identity(name: &'static str) -> GlobalElementId {
 }
 
 /// The integer key the layout engine claims.
-fn layout_identity(name: &'static str) -> Option<super::NativeLayoutKey> {
+fn layout_identity(name: &'static str) -> Option<u64> {
     let id = element_identity(name);
-    let mut hasher = collections::FxHasher::default();
-    std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
-    Some(super::NativeLayoutKey { key: std::hash::Hasher::finish(&hasher), lingers: false })
+    Some(crate::fast::layout_key::key_for_path(id.0.as_ref()))
 }
 
 #[gpui::test]

@@ -2,7 +2,6 @@ mod builders;
 mod convert;
 mod engine;
 mod fingerprint;
-mod key;
 mod layout_bounds;
 mod metrics;
 
@@ -256,6 +255,4 @@ impl SpanRelocations {
         self.moves.clear();
     }
 }
-pub use key::NativeLayoutKey;
-pub(crate) use key::{LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT, is_list_row_segment, layout_node_key, mix};
 pub use metrics::{AvailableSpace, LayoutId};
