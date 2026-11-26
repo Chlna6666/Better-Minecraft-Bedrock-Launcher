@@ -4,7 +4,6 @@ use crate::{
     Window,
 };
 use anyhow::Result;
-use smallvec::SmallVec;
 use std::{any::TypeId, fmt, ops::Range, rc::Rc};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
@@ -160,7 +159,7 @@ enum ViewRequestLayoutKind {
 #[derive(Default)]
 struct RetentionDraft {
     slot: Option<crate::window::ViewRetentionSlot>,
-    nested: SmallVec<[crate::GlobalElementId; 4]>,
+    nested: Range<usize>,
 }
 
 struct ReusedView {
@@ -249,7 +248,7 @@ impl Element for ViewElement {
             slot: window
                 .current_retained_element_id()
                 .map(|key| window.reserve_view_retention(key)),
-            nested: SmallVec::new(),
+            nested: 0..0,
         });
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| {
@@ -330,14 +329,15 @@ impl Element for ViewElement {
 
         match &mut state.kind {
             ViewRequestLayoutKind::Retained {
-                admission,
                 retention: state_retention,
                 reused,
                 ..
             } => {
                 if reused.is_some() {
                     let mut draft = retention.take().expect("view retention slot");
-                    draft.nested = admission.nested.clone();
+                    if let Some(slot) = draft.slot.as_ref() {
+                        draft.nested = window.finish_view_retention_scope(slot);
+                    }
                     *state_retention = draft;
                 }
             }

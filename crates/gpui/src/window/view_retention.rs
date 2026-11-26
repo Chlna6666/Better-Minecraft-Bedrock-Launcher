@@ -25,8 +25,8 @@ pub(crate) struct RetainedViewRecord {
     pub(crate) bounds: Bounds<Pixels>,
     /// The inherited context the ranges were recorded under.
     pub(crate) context: Rc<RetainedPaintContext>,
-    /// Views drawn inside this one, in post-order.
-    pub(crate) nested: SmallVec<[GlobalElementId; 4]>,
+    /// Descendant span in the frame's prepaint-order view table.
+    pub(crate) nested: Range<usize>,
     /// Only states taken during request layout. Prepaint and paint replay their own spans.
     pub(crate) layout_state_range: Range<usize>,
 }
@@ -78,6 +78,7 @@ impl Window {
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
             || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
+            || self.rendered_frame.view_retention_order.get(record.nested.clone()).is_none()
             || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
         {
             return None;
@@ -140,7 +141,9 @@ impl Window {
         }
         // Reserve nested view positions during prepaint, not paint. Ancestors
         // finish collecting their descendant order before paint begins.
-        self.next_frame.view_retention_order.extend(record.nested.iter().cloned());
+        self.next_frame.view_retention_order.extend_from_slice(
+            &self.rendered_frame.view_retention_order[record.nested.clone()],
+        );
         Some(start..end)
     }
 
@@ -179,15 +182,12 @@ impl Window {
         ViewRetentionSlot(self.next_frame.view_retention_order.len() - 1)
     }
 
-    /// The views this view prepainted, in post-order.
+    /// The contiguous descendants this view prepainted, without copying their keys.
     pub(crate) fn finish_view_retention_scope(
         &self,
         slot: &ViewRetentionSlot,
-    ) -> SmallVec<[GlobalElementId; 4]> {
-        self.next_frame.view_retention_order[slot.0 + 1..]
-            .iter()
-            .cloned()
-            .collect()
+    ) -> Range<usize> {
+        slot.0 + 1..self.next_frame.view_retention_order.len()
     }
 
     pub(crate) fn begin_view_record(&mut self) -> usize {
@@ -230,17 +230,18 @@ impl Window {
     pub(crate) fn commit_view_retention(
         &mut self,
         slot: &ViewRetentionSlot,
-        nested: SmallVec<[GlobalElementId; 4]>,
+        nested: Range<usize>,
         commit: ViewRetentionCommit,
     ) {
         let index = slot.0;
         if let Some(source) = commit.reused.as_ref() {
-            for key in std::iter::once(&self.next_frame.view_retention_order[index]).chain(source.nested.iter()) {
+            let source_keys = &self.rendered_frame.view_retention_order[source.nested.clone()];
+            for key in std::iter::once(&self.next_frame.view_retention_order[index]).chain(source_keys) {
                 if let Some(ElementId::View(owner)) = key.0.last() {
                     self.replayed_view_owners.insert(*owner);
                 }
             }
-            self.copy_nested_view_records(source, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
+            self.copy_nested_view_records(source, &nested, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
         }
         let key = self.next_frame.view_retention_order[index].clone();
         self.next_frame.view_retentions.insert(
@@ -261,11 +262,12 @@ impl Window {
     fn copy_nested_view_records(
         &mut self,
         source: &RetainedViewRecord,
+        target_nested: &Range<usize>,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
         target_states: &Range<usize>,
     ) {
-        for key in &source.nested {
+        for key in &self.rendered_frame.view_retention_order[source.nested.clone()] {
             let Some(nested) = self.rendered_frame.view_retentions.get(key).cloned() else {
                 continue;
             };
@@ -290,11 +292,14 @@ impl Window {
             // Rebase it against that phase, not against the initial layout span.
             let layout_states = if old_states.is_empty() {
                 target_states.start..target_states.start
-            } else if let Some(range) = rebase_layout_states(old_states, &source.layout_state_range, target_states)
-                .or_else(|| rebase_layout_states(old_states, &source_prepaint_states, &target_prepaint_states))
+            } else if let Some(range) = rebase_span(old_states, &source.layout_state_range, target_states)
+                .or_else(|| rebase_span(old_states, &source_prepaint_states, &target_prepaint_states))
             {
                 range
             } else {
+                continue;
+            };
+            let Some(descendants) = rebase_span(&nested.nested, &source.nested, target_nested) else {
                 continue;
             };
             self.next_frame.view_retentions.insert(
@@ -303,6 +308,7 @@ impl Window {
                     prepaint_range: prepaint,
                     paint_range: paint,
                     layout_state_range: layout_states,
+                    nested: descendants,
                     ..nested
                 },
             );
@@ -310,7 +316,7 @@ impl Window {
     }
 }
 
-fn rebase_layout_states(range: &Range<usize>, source: &Range<usize>, target: &Range<usize>) -> Option<Range<usize>> {
+fn rebase_span(range: &Range<usize>, source: &Range<usize>, target: &Range<usize>) -> Option<Range<usize>> {
     if range.start > range.end || range.start < source.start || range.end > source.end {
         return None;
     }

@@ -81,7 +81,7 @@ pub(crate) struct Frame {
     /// element path. A view that is drawn again from the committed frame is copied from here
     /// without running `Render` or walking its subtree.
     pub(crate) view_retentions: FxHashMap<GlobalElementId, super::view_retention::RetainedViewRecord>,
-    /// Post-order keys of [`Self::view_retentions`], so one view's nested records form one span.
+    /// Prepaint-order keys of [`Self::view_retentions`], so one view's descendants form one span.
     pub(crate) view_retention_order: Vec<GlobalElementId>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
