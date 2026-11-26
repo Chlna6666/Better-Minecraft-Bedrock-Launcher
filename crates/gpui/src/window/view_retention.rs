@@ -93,6 +93,8 @@ impl StateAccessBlocks {
 pub(crate) struct ViewRebuild {
     pub(super) view: crate::AnyWeakView,
     pub(super) application_id: GlobalElementId,
+    // Exact identity is needed only for collision checks and rebuilding a dirty gap.
+    pub(super) retained_path: GlobalElementId,
     pub(super) layout: RetainedPaintContext,
     pub(super) splice_supported: bool,
 }
@@ -122,7 +124,8 @@ pub(crate) struct RetainedViewRecord {
 /// Prepaint order is also record order. A reservation without a paint commit
 /// remains a hole, and cannot be selected as a rebuild/replay source.
 pub(crate) struct ViewRecordSlot {
-    pub(crate) key: GlobalElementId,
+    pub(crate) key: u64,
+    pub(crate) owner: EntityId,
     pub(crate) record: Option<RetainedViewRecord>,
 }
 
@@ -166,6 +169,7 @@ impl Window {
         Some(Rc::new(ViewRebuild {
             view: view.downgrade(),
             application_id: application_id?.clone(),
+            retained_path: self.current_retained_element_id()?,
             layout: self.current_retained_paint_context(),
             splice_supported: self.splice_context_supported(),
         }))
@@ -246,12 +250,13 @@ impl Window {
     /// Reserve the entire clean subtree in the candidate table at its new
     /// prepaint position. Its actual records are installed during paint.
     pub(super) fn reserve_spliced_clean(
-        &mut self, key: GlobalElementId, record: &RetainedViewRecord,
+        &mut self, key: u64, record: &RetainedViewRecord,
     ) -> (ViewRetentionSlot, Range<usize>) {
-        let slot = self.reserve_view_retention(key);
+        let owner = record.rebuild.as_ref().expect("validated clean subtree").view.entity_id();
+        let slot = self.reserve_view_retention(key, owner);
         self.next_frame.view_retention_records.extend(
             self.rendered_frame.view_retention_records[record.nested.clone()].iter().map(|entry| {
-                ViewRecordSlot { key: entry.key.clone(), record: None }
+                ViewRecordSlot { key: entry.key, owner: entry.owner, record: None }
             }),
         );
         let nested = self.finish_view_retention_scope(&slot);
@@ -296,7 +301,7 @@ impl Window {
     /// later must release it with [`Window::release_retained_view`].
     pub(crate) fn admit_retained_view(
         &mut self,
-        key: &GlobalElementId,
+        key: u64,
         view_id: EntityId,
         application_id: Option<&GlobalElementId>,
         cx: &App,
@@ -304,10 +309,11 @@ impl Window {
         if !self.view_retention_eligible(view_id, cx) {
             return None;
         }
-        let index = *self.rendered_frame.view_retentions.get(key)?;
+        let index = *self.rendered_frame.view_retentions.get(&key)?;
         let record = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = record.rebuild.as_ref()?;
         if rebuild.view.entity_id() != view_id
+            || !self.retained_path_matches(&rebuild.retained_path)
             || Some(&rebuild.application_id) != application_id
             || rebuild.splice_supported != self.splice_context_supported()
             || !self.retained_paint_context_matches(&rebuild.layout)
@@ -376,7 +382,7 @@ impl Window {
         // finish collecting their descendant order before paint begins.
         self.next_frame.view_retention_records.extend(
             self.rendered_frame.view_retention_records[record.nested.clone()].iter().map(|slot| {
-                ViewRecordSlot { key: slot.key.clone(), record: None }
+                ViewRecordSlot { key: slot.key, owner: slot.owner, record: None }
             }),
         );
         Some(start..end)
@@ -414,9 +420,9 @@ impl Window {
     ///
     /// Positions are allocated in prepaint order, so everything a view prepaints takes a later
     /// position than the view itself and forms one span.
-    pub(crate) fn reserve_view_retention(&mut self, key: GlobalElementId) -> ViewRetentionSlot {
+    pub(crate) fn reserve_view_retention(&mut self, key: u64, owner: EntityId) -> ViewRetentionSlot {
         let index = self.next_frame.view_retention_records.len();
-        self.next_frame.view_retention_records.push(ViewRecordSlot { key, record: None });
+        self.next_frame.view_retention_records.push(ViewRecordSlot { key, owner, record: None });
         ViewRetentionSlot(index)
     }
 
@@ -451,9 +457,7 @@ impl Window {
         if let Some(source) = commit.reused.as_ref() {
             let source_slots = &self.rendered_frame.view_retention_records[source.nested.clone()];
             for entry in std::iter::once(&self.next_frame.view_retention_records[index]).chain(source_slots) {
-                if let Some(ElementId::View(owner)) = entry.key.0.last() {
-                    self.replayed_view_owners.insert(*owner);
-                }
+                self.replayed_view_owners.insert(entry.owner);
             }
             let source_scene = source.paint_range.start.scene_index..source.paint_range.end.scene_index;
             let target_scene = commit.paint_range.start.scene_index..commit.paint_range.end.scene_index;
@@ -472,7 +476,7 @@ impl Window {
         }
         let scene_segments = commit.scene_segments_start..self.next_frame.retained_scene_segments.len();
         let entry = &mut self.next_frame.view_retention_records[index];
-        self.next_frame.view_retentions.insert(entry.key.clone(), index);
+        self.next_frame.view_retentions.entry(entry.key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
         entry.record = Some(RetainedViewRecord {
                 layout_root: commit.layout_root,
                 layout_claims: commit.layout_claims,
@@ -547,7 +551,7 @@ impl Window {
             };
             let index = target_nested.start + offset;
             let entry = &mut self.next_frame.view_retention_records[index];
-            self.next_frame.view_retentions.insert(entry.key.clone(), index);
+            self.next_frame.view_retentions.entry(entry.key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
             entry.record = Some(RetainedViewRecord {
                     prepaint_range: prepaint,
                     paint_range: paint,

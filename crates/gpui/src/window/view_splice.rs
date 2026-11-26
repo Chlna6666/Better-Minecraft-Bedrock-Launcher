@@ -7,7 +7,7 @@ use crate::{Element, IntoElement, ViewElement, ViewRequestLayout};
 use crate::layout::{LayoutClaimBlocks, NativePlacementDelta, NativePlacementProof};
 
 pub(super) struct PrebuiltGap {
-    key: GlobalElementId,
+    key: u64,
     old: RetainedViewRecord,
     view: ViewElement,
     layout_id: LayoutId,
@@ -34,7 +34,7 @@ enum SplicePart {
 }
 
 struct AncestorPart {
-    key: GlobalElementId,
+    key: u64,
     old: RetainedViewRecord,
     claims: LayoutClaimBlocks,
     states: StateAccessBlocks,
@@ -45,7 +45,7 @@ struct AncestorPart {
 }
 
 struct CleanPart {
-    key: GlobalElementId,
+    key: u64,
     old: RetainedViewRecord,
     claims: LayoutClaimBlocks,
     states: StateAccessBlocks,
@@ -88,12 +88,15 @@ impl Window {
     /// An abandoned gap can hand off its already-requested layout to the normal
     /// traversal. The original spans remain valid, including nested layouts.
     pub(crate) fn take_prebuilt_gap(
-        &mut self, key: &GlobalElementId, id: Option<&GlobalElementId>, owner: EntityId,
+        &mut self, key: u64, id: Option<&GlobalElementId>, owner: EntityId,
     ) -> Option<(LayoutId, ViewRequestLayout)> {
         if self.prebuilt_gaps.is_empty() {
             return None;
         }
-        let mut gap = self.prebuilt_gaps.remove(key)?;
+        // A colliding key must not consume another subtree's speculative claims.
+        let rebuild = self.prebuilt_gaps.get(&key)?.old.rebuild.as_ref()?;
+        if !self.retained_path_matches(&rebuild.retained_path) { return None; }
+        let mut gap = self.prebuilt_gaps.remove(&key)?;
         let compatible = gap.old.rebuild.as_ref().is_some_and(|rebuild| {
             rebuild.view.entity_id() == owner
                 && id == Some(&rebuild.application_id)
@@ -155,7 +158,12 @@ impl Window {
     fn stash_prebuilt_gaps(&mut self, parts: Vec<SplicePart>) {
         for part in parts {
             if let SplicePart::Dirty(gap) = part {
-                self.prebuilt_gaps.insert(gap.key.clone(), gap);
+                let previous = self.prebuilt_gaps.insert(gap.key, gap);
+                debug_assert!(previous.is_none(), "splice plan contains duplicate native keys");
+                if let Some(previous) = previous {
+                    self.release_retained_view(&previous.claims);
+                    self.cancel_view_layout_states(&previous.states);
+                }
             }
         }
     }
@@ -163,7 +171,7 @@ impl Window {
     /// Select disjoint dirty and clean subtrees, validate the partition before
     /// mutating native layout, then build them under their original paths.
     pub(crate) fn try_splice_view(
-        &mut self, key: &GlobalElementId, owner: EntityId,
+        &mut self, key: u64, owner: EntityId,
         id: Option<&GlobalElementId>, cx: &mut App,
     ) -> Option<ViewSplice> {
         if self.view_dirty_scope(owner) != Some(ViewDirtyScope::TraversalAncestor)
@@ -174,11 +182,12 @@ impl Window {
         {
             return None;
         }
-        let index = *self.rendered_frame.view_retentions.get(key)?;
+        let index = *self.rendered_frame.view_retentions.get(&key)?;
         let anchor = self.rendered_frame.view_retention_records.get(index)?.record.as_ref()?;
         let rebuild = anchor.rebuild.as_ref()?;
         if !anchor.splice_safe || !rebuild.splice_supported
             || rebuild.view.entity_id() != owner || id != Some(&rebuild.application_id)
+            || !self.retained_path_matches(&rebuild.retained_path)
             || !self.retained_paint_context_matches(&rebuild.layout)
             || !anchor.layout_state_range.iter().all(|span| self.rendered_frame.accessed_element_states.get(span.clone()).is_some())
             || !self.can_reuse_prepaint(&anchor.prepaint_range)
@@ -236,7 +245,7 @@ impl Window {
             } else {
                 None
             };
-            plan.push((gap_index, slot.key.clone(), old, ancestor, view));
+            plan.push((gap_index, slot.key, old, ancestor, view));
         }
         while let Some(old) = open.pop() {
             if !self.splice_fragment_supported(&prepaint, &old.prepaint_range.end, &paint, &old.paint_range.end) {
@@ -310,7 +319,7 @@ impl Window {
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
             let rebuild = old.rebuild.as_ref().expect("validated gap");
-            let (layout_id, state) = self.with_gap_paths(&gap_key, &rebuild.application_id, |window| {
+            let (layout_id, state) = self.with_gap_paths(&rebuild.retained_path, &rebuild.application_id, |window| {
                 window.with_retained_child_scope(|window| {
                     view.request_layout(Some(&rebuild.application_id), None, window, cx)
                 })
@@ -409,7 +418,7 @@ impl Window {
             match part {
                 SplicePart::Clean(clean) => {
                     let start = self.prepaint_index();
-                    clean.reservation = Some(self.reserve_spliced_clean(clean.key.clone(), &clean.old));
+                    clean.reservation = Some(self.reserve_spliced_clean(clean.key, &clean.old));
                     replay_prepaint(self, clean.old.prepaint_range.clone(), parent, relocated);
                     clean.prepaint = Some(start..self.prepaint_index());
                     cursor = clean.old.prepaint_range.end.clone();
@@ -420,7 +429,7 @@ impl Window {
                     let node = relocate_dispatch(Some(wrapper), parent, relocated).expect("validated gap wrapper");
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
+                    self.with_gap_paths(&rebuild.retained_path, &rebuild.application_id, |window| {
                         gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
                     });
                     self.next_frame.dispatch_tree.set_active_node(parent);
@@ -430,7 +439,7 @@ impl Window {
                 SplicePart::Ancestor(ancestor) => {
                     let (children, tail) = parts.split_at_mut(ancestor.descendants);
                     parts = tail;
-                    let slot = self.reserve_view_retention(ancestor.key.clone());
+                    let slot = self.reserve_view_retention(ancestor.key, ancestor.old.rebuild.as_ref().expect("validated ancestor").view.entity_id());
                     let start = self.prepaint_index();
                     let claims_start = self.claim_log_len();
                     self.prepaint_splice_parts(children, &ancestor.old.prepaint_range, parent, relocated, cx);
@@ -473,7 +482,7 @@ impl Window {
                     let old = &gap.old;
                     self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_paths(&gap.key, &rebuild.application_id, |window| {
+                    self.with_gap_paths(&rebuild.retained_path, &rebuild.application_id, |window| {
                         window.record_debug_element_paint(old.bounds, cx);
                         gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
                     });

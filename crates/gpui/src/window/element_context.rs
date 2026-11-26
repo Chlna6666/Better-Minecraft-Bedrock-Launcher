@@ -126,6 +126,11 @@ impl Window {
         Some(self.global_ids.borrow_mut().get(path))
     }
 
+    /// Verify a native-key candidate without materializing or interning the active path.
+    pub(crate) fn retained_path_matches(&self, path: &GlobalElementId) -> bool {
+        self.retained_element_id_stack.as_slice() == path.0.as_ref()
+    }
+
     /// Animation tickets need only the same running integer identity as
     /// native layout, not a materialized global element path.
     pub(crate) fn current_retained_element_key(&self) -> Option<u64> {

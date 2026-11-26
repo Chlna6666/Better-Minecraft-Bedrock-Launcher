@@ -220,12 +220,12 @@ impl Element for ViewElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
         let splice_safe = window.splice_context_supported();
-        let retained_id = window.current_retained_element_id();
-        if let Some(global_id) = retained_id.as_ref() {
-            if let Some(prebuilt) = window.take_prebuilt_gap(global_id, id, entity_id) {
+        let retained_key = window.current_retained_element_key();
+        if let Some(key) = retained_key {
+            if let Some(prebuilt) = window.take_prebuilt_gap(key, id, entity_id) {
                 return prebuilt;
             }
-            if let Some(splice) = window.try_splice_view(global_id, entity_id, id, cx) {
+            if let Some(splice) = window.try_splice_view(key, entity_id, id, cx) {
                 return (splice.anchor.layout_root, ViewRequestLayout {
                     rebuild: splice.anchor.rebuild.clone(), splice_safe,
                     kind: ViewRequestLayoutKind::Spliced {
@@ -235,8 +235,8 @@ impl Element for ViewElement {
                 });
             }
         }
-        if let Some(global_id) = retained_id.as_ref()
-            && let Some((admission, layout_claims)) = window.admit_retained_view(global_id, entity_id, id, cx)
+        if let Some(key) = retained_key
+            && let Some((admission, layout_claims)) = window.admit_retained_view(key, entity_id, id, cx)
         {
             let layout_root = admission.layout_root;
             let layout_state_range = window.replay_view_layout_states(&admission.layout_state_range);
@@ -312,8 +312,8 @@ impl Element for ViewElement {
         let prepaint_start = window.prepaint_index();
         let mut retention = Some(RetentionDraft {
             slot: window
-                .current_retained_element_id()
-                .map(|key| window.reserve_view_retention(key)),
+                .current_retained_element_key()
+                .map(|key| window.reserve_view_retention(key, entity_id)),
             nested: 0..0,
         });
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));

@@ -76,8 +76,9 @@ pub(crate) struct Frame {
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
     pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
     retained_scene_index_spill_capacity: usize,
-    /// Path lookup only; the actual records are stored in prepaint order.
-    pub(crate) view_retentions: FxHashMap<GlobalElementId, usize>,
+    /// Native key lookup; ambiguous keys use usize::MAX and cannot be admitted.
+    /// The actual records remain in prepaint order.
+    pub(crate) view_retentions: FxHashMap<u64, usize>,
     pub(crate) view_retention_records: Vec<super::view_retention::ViewRecordSlot>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
@@ -631,7 +632,7 @@ impl Frame {
     /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
     pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
         self.view_retentions.capacity()
-            .saturating_mul(std::mem::size_of::<(GlobalElementId, usize)>())
+            .saturating_mul(std::mem::size_of::<(u64, usize)>())
             .saturating_add(self.view_retention_records.capacity()
                 .saturating_mul(std::mem::size_of::<super::view_retention::ViewRecordSlot>()))
 
