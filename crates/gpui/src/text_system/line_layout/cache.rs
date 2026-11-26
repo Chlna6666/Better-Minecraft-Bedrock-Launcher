@@ -298,7 +298,7 @@ impl LineLayoutCache {
         }
 
         // Font discovery may advance the shared generation from another thread.
-        // Clear every per-window tier before publishing the generation it represents.
+        // Clear both frame maps before publishing the generation they represent.
         let mut current_frame = self.current_frame.borrow_mut();
         let mut previous_frame = self.previous_frame.borrow_mut();
         let generation = self.font_generation.load(Ordering::Acquire);
@@ -720,6 +720,7 @@ fn trim_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{ShapedGlyph, ShapedRun};
     use crate::{
         FontId, GlyphId, GpuiMemoryTrimLevel, NoopTextSystem, Point, snapshot,
         point, px,
