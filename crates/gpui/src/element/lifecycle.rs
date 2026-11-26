@@ -36,11 +36,56 @@ pub(crate) fn extend_path_hash(prefix: u64, id: &ElementId) -> u64 {
 
 #[derive(Clone, Default)]
 pub(crate) struct ElementIdStack {
+    // A suspended traversal already owns an immutable, hashed prefix.
+    prefix: Option<GlobalElementId>,
     ids: SmallVec<[ElementId; 32]>,
     hashes: SmallVec<[u64; 32]>,
 }
 
 impl ElementIdStack {
+    pub(crate) fn from_prefix(prefix: GlobalElementId) -> Self {
+        Self { prefix: Some(prefix), ..Self::default() }
+    }
+
+    pub(crate) fn restore_prefix(&mut self, prefix: Option<GlobalElementId>) {
+        debug_assert!(self.is_empty());
+        self.prefix = prefix;
+    }
+
+    pub(crate) fn take_prefix(&mut self) -> Option<GlobalElementId> {
+        debug_assert!(self.ids.is_empty() && self.hashes.is_empty());
+        self.ids.clear();
+        self.hashes.clear();
+        self.prefix.take()
+    }
+
+    fn prefix_slice(&self) -> &[ElementId] {
+        self.prefix.as_ref().map_or(&[], |prefix| prefix.0.as_ref())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.prefix_slice().len() + self.ids.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.is_empty() && self.prefix_slice().is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &ElementId> {
+        self.prefix_slice().iter().chain(self.ids.iter())
+    }
+
+    pub(crate) fn last(&self) -> Option<&ElementId> {
+        self.ids.last().or_else(|| self.prefix_slice().last())
+    }
+
+    pub(crate) fn matches(&self, path: &[ElementId]) -> bool {
+        let prefix = self.prefix_slice();
+        path.len() == prefix.len() + self.ids.len()
+            && &path[..prefix.len()] == prefix
+            && &path[prefix.len()..] == self.ids.as_slice()
+    }
+
     pub(crate) fn push(&mut self, id: ElementId) {
         self.hashes.push(extend_path_hash(self.hash(), &id));
         self.ids.push(id);
@@ -54,6 +99,7 @@ impl ElementIdStack {
     pub(crate) fn clear(&mut self) {
         self.ids.clear();
         self.hashes.clear();
+        self.prefix = None;
     }
 
     /// The hash of the whole path on the stack.
@@ -61,23 +107,24 @@ impl ElementIdStack {
         self.hashes
             .last()
             .copied()
-            .unwrap_or(EMPTY_PATH_HASH)
+            .unwrap_or_else(|| self.prefix.as_ref().map_or(EMPTY_PATH_HASH, |prefix| prefix.1))
     }
 
+    #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[ElementId] {
+        assert!(self.prefix.is_none());
         &self.ids
     }
 
     pub(crate) fn global_id(&self) -> GlobalElementId {
+        if let Some(prefix) = &self.prefix {
+            if self.ids.is_empty() {
+                return prefix.clone();
+            }
+            let path: Arc<[ElementId]> = self.iter().cloned().collect();
+            return GlobalElementId(path, self.hash());
+        }
         GlobalElementId::with_hash(&self.ids, self.hash())
-    }
-}
-
-impl std::ops::Deref for ElementIdStack {
-    type Target = [ElementId];
-
-    fn deref(&self) -> &Self::Target {
-        &self.ids
     }
 }
 
@@ -119,12 +166,12 @@ impl GlobalIdCache {
     pub(crate) fn get(&mut self, path: &ElementIdStack) -> GlobalElementId {
         let hash = path.hash();
         if let Some(id) = self.current.get(&hash)
-            && id.0.as_ref() == path.as_slice()
+            && path.matches(id.0.as_ref())
         {
             return id.clone();
         }
         let id = match self.previous.get(&hash) {
-            Some(id) if id.0.as_ref() == path.as_slice() => id.clone(),
+            Some(id) if path.matches(id.0.as_ref()) => id.clone(),
             _ => path.global_id(),
         };
         self.current.insert(hash, id.clone());
@@ -310,13 +357,9 @@ fn run_element_prepaint(
 ) -> DispatchNodeId {
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
-        debug_assert_eq!(
-            global_id
-                .expect("element id must have a corresponding global id")
-                .0
-                .as_ref(),
-            window.element_id_stack.as_slice()
-        );
+        debug_assert!(window.element_id_stack.matches(
+            global_id.expect("element id must have a corresponding global id").0.as_ref()
+        ));
     }
 
     let node_id = window.next_frame.dispatch_tree.push_node();
@@ -343,13 +386,9 @@ fn run_element_paint(
 ) {
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
-        debug_assert_eq!(
-            global_id
-                .expect("element id must have a corresponding global id")
-                .0
-                .as_ref(),
-            window.element_id_stack.as_slice()
-        );
+        debug_assert!(window.element_id_stack.matches(
+            global_id.expect("element id must have a corresponding global id").0.as_ref()
+        ));
     }
 
     window.record_debug_element_paint(bounds, cx);

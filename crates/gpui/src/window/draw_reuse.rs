@@ -41,11 +41,8 @@ impl Window {
                     element_visual_transform,
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
-                    mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
-                    mem::swap(
-                        &mut self.retained_element_id_stack,
-                        &mut deferred_draw.retained_element_id_stack,
-                    );
+                    self.element_id_stack.restore_prefix(deferred_draw.element_prefix.take());
+                    self.retained_element_id_stack.restore_prefix(deferred_draw.retained_prefix.take());
                     mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
                     mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
                     mem::swap(
@@ -77,11 +74,8 @@ impl Window {
                 let prepaint_end = self.prepaint_index();
 
                 let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
-                mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
-                mem::swap(
-                    &mut self.retained_element_id_stack,
-                    &mut deferred_draw.retained_element_id_stack,
-                );
+                deferred_draw.element_prefix = self.element_id_stack.take_prefix();
+                deferred_draw.retained_prefix = self.retained_element_id_stack.take_prefix();
                 mem::swap(&mut self.text_style_stack, &mut deferred_draw.text_style_stack);
                 mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
                 mem::swap(
@@ -132,11 +126,8 @@ impl Window {
             }
 
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
-            mem::swap(
-                &mut self.retained_element_id_stack,
-                &mut deferred_draw.retained_element_id_stack,
-            );
+            self.element_id_stack.restore_prefix(deferred_draw.element_prefix.take());
+            self.retained_element_id_stack.restore_prefix(deferred_draw.retained_prefix.take());
             self.element_visual_transform = deferred_draw.element_visual_transform;
             mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
             mem::swap(
@@ -158,11 +149,8 @@ impl Window {
                 self.degrade_current_draw();
                 false
             };
-            mem::swap(&mut self.element_id_stack, &mut deferred_draw.element_id_stack);
-            mem::swap(
-                &mut self.retained_element_id_stack,
-                &mut deferred_draw.retained_element_id_stack,
-            );
+            deferred_draw.element_prefix = self.element_id_stack.take_prefix();
+            deferred_draw.retained_prefix = self.retained_element_id_stack.take_prefix();
             mem::swap(&mut self.content_mask_stack, &mut deferred_draw.content_mask_stack);
             mem::swap(
                 &mut self.visual_content_mask_stack,

@@ -114,11 +114,14 @@ impl Window {
     ) {
         self.invalidator.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
+        let element_prefix = (!self.element_id_stack.is_empty())
+            .then(|| self.global_ids.borrow_mut().get(&self.element_id_stack));
+        let retained_prefix = self.current_retained_element_id();
         self.next_frame.deferred_draws.push(DeferredDraw {
             current_view: self.current_view(),
             parent_node,
-            element_id_stack: self.element_id_stack.clone(),
-            retained_element_id_stack: self.retained_element_id_stack.clone(),
+            element_prefix,
+            retained_prefix,
             text_style_stack: self.text_style_stack.clone(),
             element_visual_transform: self.element_visual_transform,
             content_mask_stack: self.content_mask_stack.clone(),

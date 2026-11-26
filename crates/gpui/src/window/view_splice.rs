@@ -70,15 +70,12 @@ impl Window {
         &mut self, key: &GlobalElementId, application_id: &GlobalElementId,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        fn stack(id: &GlobalElementId) -> ElementIdStack {
-            let mut stack = ElementIdStack::default();
-            for segment in id.0.iter() {
-                stack.push(segment.clone());
-            }
-            stack
-        }
-        let application = mem::replace(&mut self.element_id_stack, stack(application_id));
-        let native = mem::replace(&mut self.retained_element_id_stack, stack(key));
+        let application = mem::replace(
+            &mut self.element_id_stack, ElementIdStack::from_prefix(application_id.clone()),
+        );
+        let native = mem::replace(
+            &mut self.retained_element_id_stack, ElementIdStack::from_prefix(key.clone()),
+        );
         let result = f(self);
         self.element_id_stack = application;
         self.retained_element_id_stack = native;

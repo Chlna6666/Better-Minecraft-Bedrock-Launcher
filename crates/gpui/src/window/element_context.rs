@@ -128,7 +128,7 @@ impl Window {
 
     /// Verify a native-key candidate without materializing or interning the active path.
     pub(crate) fn retained_path_matches(&self, path: &GlobalElementId) -> bool {
-        self.retained_element_id_stack.as_slice() == path.0.as_ref()
+        self.retained_element_id_stack.matches(path.0.as_ref())
     }
 
     /// Animation tickets need only the same running integer identity as
