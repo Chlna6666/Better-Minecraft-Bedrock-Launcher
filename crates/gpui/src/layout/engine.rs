@@ -8,6 +8,7 @@ use std::{
     ops::Range,
     time::{Duration, Instant},
 };
+use slotmap::{DefaultKey, KeyData, SecondaryMap};
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
@@ -271,7 +272,10 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
 }
 
 pub struct TaffyLayoutEngine {
-    pub(super) taffy: TaffyTree<NodeContext>,
+    pub(super) taffy: TaffyTree<()>,
+    // Zed GPUI #67223: measurement ownership uses the native generational node key.
+    // No Taffy context hash lookup and no duplicate measurement state.
+    contexts: SecondaryMap<DefaultKey, NodeContext>,
     persistent_nodes: FxHashMap<u64, PersistentLayoutNode>,
     /// Nodes whose native style was rewritten by a percentage-passthrough parent.
     ///
@@ -328,6 +332,13 @@ fn promote_percentage_axis(wrapper: &mut Length, child: &mut Length) -> bool {
     true
 }
 
+// Adapted from Zed GPUI 79af38b26c7571fbbdf84b8dd1f19d4426e58df7 (Apache-2.0).
+// Copyright 2022-2025 Zed Industries, Inc.
+#[inline]
+fn node_key(id: taffy::NodeId) -> DefaultKey {
+    KeyData::from_ffi(id.into()).into()
+}
+
 impl TaffyLayoutEngine {
     const MIN_RETAINED_CAPACITY: usize = 32;
 
@@ -338,6 +349,7 @@ impl TaffyLayoutEngine {
         taffy.disable_rounding();
         TaffyLayoutEngine {
             taffy,
+            contexts: SecondaryMap::new(),
             persistent_nodes: FxHashMap::default(),
             stale_style_fingerprints: FxHashSet::default(),
             anonymous_nodes: Vec::new(),
@@ -388,6 +400,7 @@ impl TaffyLayoutEngine {
         let limit = row_linger_limit(&by_age, row_linger_budget(self.claimed_this_frame));
         let mut removed = Vec::new();
         let taffy = &mut self.taffy;
+        let contexts = &mut self.contexts;
         self.persistent_nodes.retain(|_, node| {
             if node.claimed_in_frame == frame {
                 return true;
@@ -399,15 +412,15 @@ impl TaffyLayoutEngine {
             }
             // Offscreen row caches must not pin a frame-local measuring closure.
             // Intrinsic text keeps only its size, not an offscreen shaped-line state.
-            if let Some(context) = taffy.get_node_context_mut(node.id.into()) {
+            if let Some(context) = contexts.get_mut(node_key(node.id.into())) {
                 if matches!(context.key, Some(MeasurementKey::Size(_))) {
                     context.plain_text = None;
                 }
             }
-            if node.measured && taffy.get_node_context_mut(node.id.into())
+            if node.measured && contexts.get_mut(node_key(node.id.into()))
                 .is_some_and(|context| context.key.is_none())
             {
-                taffy.set_node_context(node.id.into(), None).expect(EXPECT_MESSAGE);
+                contexts.remove(node_key(node.id.into()));
                 taffy.mark_dirty(node.id.into()).expect(EXPECT_MESSAGE);
                 node.measured = false;
             }
@@ -434,6 +447,7 @@ impl TaffyLayoutEngine {
             self.absolute_layout_bounds.clear();
             self.unrounded_layout_origins.clear();
         }
+        self.contexts.remove(node_key(id.into()));
         self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
         self.root_constraints.remove(&id);
         self.layout_changes = self.layout_changes.wrapping_add(1);
@@ -479,7 +493,7 @@ impl TaffyLayoutEngine {
         self.claimed_key_log.clear();
         self.claim_relocations.clear();
         for id in self.pending_replays.drain(..) {
-            if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
+            if let Some(context) = self.contexts.get_mut(node_key(id.into())) {
                 context.replay_pending = false;
                 context.measure_log = MeasureLog::Empty;
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
@@ -554,12 +568,14 @@ impl TaffyLayoutEngine {
         if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive)
         {
             let taffy = &mut self.taffy;
+            let contexts = &mut self.contexts;
             let root_constraints = &mut self.root_constraints;
             let stale_styles = &mut self.stale_style_fingerprints;
             let robbed_parents = &mut self.robbed_parents;
             let layout_changes = &mut self.layout_changes;
             self.persistent_nodes.retain(|_, node| {
                 if node.offscreen {
+                    contexts.remove(node_key(node.id.into()));
                     taffy.remove(node.id.into()).expect(EXPECT_MESSAGE);
                     root_constraints.remove(&node.id);
                     stale_styles.remove(&node.id);
@@ -915,9 +931,7 @@ impl TaffyLayoutEngine {
             node.style_fingerprint = style_fingerprint;
             let is_measured = measure.is_some();
             if node.measured && !is_measured {
-                self.taffy
-                    .set_node_context(id.into(), None)
-                    .expect(EXPECT_MESSAGE);
+                self.contexts.remove(node_key(id.into()));
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                 self.layout_changes = self.layout_changes.wrapping_add(1);
             }
@@ -946,7 +960,7 @@ impl TaffyLayoutEngine {
                 self.layout_changes = self.layout_changes.wrapping_add(1);
             }
             if let Some(request) = measure {
-                if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
+                if let Some(old_context) = self.contexts.get_mut(node_key(id.into())) {
                     let same_inputs = same_style && !requires_style && child_order_unchanged
                         && !old_context.replay_pending;
                     let keys = request.key.zip(old_context.key);
@@ -976,9 +990,7 @@ impl TaffyLayoutEngine {
                         self.remeasures = self.remeasures.wrapping_add(1);
                     }
                 } else {
-                    self.taffy
-                        .set_node_context(id.into(), Some(request.into_context()))
-                        .expect(EXPECT_MESSAGE);
+                    self.contexts.insert(node_key(id.into()), request.into_context());
                     self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                     self.layout_changes = self.layout_changes.wrapping_add(1);
                     self.remeasures = self.remeasures.wrapping_add(1);
@@ -1011,7 +1023,7 @@ impl TaffyLayoutEngine {
     // (longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, Apache-2.0).
     // Copyright 2022 - 2025 Zed Industries, Inc. Copyright 2026 Longbridge.
     fn note_reparented_children(
-        taffy: &mut TaffyTree<NodeContext>,
+        taffy: &mut TaffyTree<()>,
         robbed_parents: &mut FxHashSet<LayoutId>,
         new_parent: Option<LayoutId>,
         children: &[LayoutId],
@@ -1043,11 +1055,11 @@ impl TaffyLayoutEngine {
             self.unrounded_layout_origins.clear();
         }
         match measure {
-            Some(context) => self
-                .taffy
-                .new_leaf_with_context(style, context)
-                .expect(EXPECT_MESSAGE)
-                .into(),
+            Some(context) => {
+                let id = self.taffy.new_leaf(style).expect(EXPECT_MESSAGE);
+                self.contexts.insert(node_key(id), context);
+                id.into()
+            }
             None if children.is_empty() => self.taffy.new_leaf(style).expect(EXPECT_MESSAGE).into(),
             None => self
                 .taffy
@@ -1117,13 +1129,13 @@ impl TaffyLayoutEngine {
         if node.claimed_in_frame == self.request_frame {
             return None;
         }
-        self.taffy.get_node_context_mut(node.id.into())?.plain_text.clone()
+        self.contexts.get_mut(node_key(node.id.into()))?.plain_text.clone()
     }
 
     /// Attach state to the actual node returned by the request (including
     /// transient collision nodes). Replayed views retain their native claims.
     pub(crate) fn set_plain_text(&mut self, id: LayoutId, state: crate::TextLayout) {
-        self.taffy.get_node_context_mut(id.into())
+        self.contexts.get_mut(node_key(id.into()))
             .expect("plain text has a native measurement context")
             .plain_text = Some(state);
     }
@@ -1258,7 +1270,7 @@ impl TaffyLayoutEngine {
     fn replay_pending_measures(&mut self, window: &mut Window, cx: &mut App) {
         let mut pending = std::mem::take(&mut self.pending_replays);
         for id in pending.drain(..) {
-            let Some(context) = self.taffy.get_node_context_mut(id.into()) else { continue; };
+            let Some(context) = self.contexts.get_mut(node_key(id.into())) else { continue; };
             if !std::mem::take(&mut context.replay_pending) {
                 continue;
             }
@@ -1289,7 +1301,7 @@ impl TaffyLayoutEngine {
             Pixels((layout.size.height - layout.padding.top - layout.padding.bottom
                 - layout.border.top - layout.border.bottom).max(0.) / scale),
         );
-        let Some(context) = self.taffy.get_node_context_mut(id.into()) else { return; };
+        let Some(context) = self.contexts.get_mut(node_key(id.into())) else { return; };
         if context.replayable {
             context.measure(content.map(Some), content.map(AvailableSpace::Definite), scale, window, cx);
         }
@@ -1385,11 +1397,13 @@ impl TaffyLayoutEngine {
         };
         let observer: Option<&mut dyn FnMut(taffy::NodeId, &taffy::tree::Layout, &taffy::tree::Layout)> =
             if observe_bounds { Some(&mut record_mutation) } else { None };
+        let contexts = &mut self.contexts;
         self.taffy
             .compute_layout_with_measure_and_observer(
                 id.into(),
                 available_space.into(),
-                |inputs, _node_id, node_context, style| {
+                |inputs, node_id, _, style| {
+                    let node_context = contexts.get_mut(node_key(node_id));
                     taffy::compute_leaf_layout(
                         inputs,
                         style,
