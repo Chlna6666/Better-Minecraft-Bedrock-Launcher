@@ -451,10 +451,16 @@ impl Frame {
         let same_paint = self.painter.finish_against(prev_frame.scene());
         let retention = Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention");
-        if same_paint {
-            retention.finish_against(&mut self.painter.scene, &prev_frame.retained_paint);
-        } else {
+        let previous_scene = prev_frame.scene();
+        if previous_scene.revision == 0 {
             retention.finish(&mut self.painter.scene);
+        } else {
+            retention.finish_against(
+                &mut self.painter.scene,
+                previous_scene,
+                &prev_frame.retained_paint,
+                same_paint,
+            );
         }
     }
 

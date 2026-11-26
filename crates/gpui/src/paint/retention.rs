@@ -73,17 +73,7 @@ impl<'a> RetainedChunkPlanner<'a> {
 
         if is_quad {
             let (first, last, is_solid) = static_quad_orders(operations)?;
-            let start = self.scene.quads.partition_point(|quad| quad.order < first);
-            let end = self.scene.quads.partition_point(|quad| quad.order <= last);
-            if end.saturating_sub(start) != operations.len()
-                || !self.order_is_exclusive(range, first, last, operations.len())
-            {
-                return None;
-            }
-            return Some(RetainedChunkProof::Quad(QuadChunkProof {
-                range: start..end,
-                is_solid,
-            }));
+            return self.prove_static_quad(range, first, last, is_solid);
         }
 
         let (first, last, texture_id, sampling) = static_monochrome_sprite_orders(operations)?;
@@ -107,6 +97,30 @@ impl<'a> RetainedChunkPlanner<'a> {
                 sampling,
             },
         ))
+    }
+
+    /// Static type, order endpoints and solid state are either scanned
+    /// locally or proven by exact immutable operation storage identity.
+    /// Typed indices and exclusivity always belong to the destination.
+    pub(crate) fn prove_static_quad(
+        &mut self,
+        range: Range<usize>,
+        first: DrawOrder,
+        last: DrawOrder,
+        is_solid: bool,
+    ) -> Option<RetainedChunkProof> {
+        let count = range.len();
+        if count < MIN_RETAINED_QUADS || first > last {
+            return None;
+        }
+        let start = self.scene.quads.partition_point(|quad| quad.order < first);
+        let end = self.scene.quads.partition_point(|quad| quad.order <= last);
+        if end.saturating_sub(start) != count
+            || !self.order_is_exclusive(range, first, last, count)
+        {
+            return None;
+        }
+        Some(RetainedChunkProof::Quad(QuadChunkProof { range: start..end, is_solid }))
     }
 
     fn order_is_exclusive(

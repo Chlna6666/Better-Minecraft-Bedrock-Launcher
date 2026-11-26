@@ -30,15 +30,28 @@ pub(crate) struct PreparedRetainedMonochromeSpriteChunk {
 
 impl RetainedPaint {
     pub(crate) fn finish(&mut self, scene: &mut Scene) {
-        self.finish_with_previous(scene, None);
+        self.finish_with_previous(scene, None, false);
     }
 
-    /// The caller must have proved exact Paint equality during Scene finish.
-    pub(crate) fn finish_against(&mut self, scene: &mut Scene, previous: &Self) {
-        self.finish_with_previous(scene, Some(previous));
+    /// The source Scene must be the publication paired with previous retention.
+    /// Whole-Paint equality permits sharing the entire table; changed scenes
+    /// may carry individual immutable Quad qualifications instead.
+    pub(crate) fn finish_against(
+        &mut self,
+        scene: &mut Scene,
+        previous_scene: &Scene,
+        previous: &Self,
+        same_paint: bool,
+    ) {
+        self.finish_with_previous(scene, Some((previous_scene, previous)), same_paint);
     }
 
-    fn finish_with_previous(&mut self, scene: &mut Scene, previous: Option<&Self>) {
+    fn finish_with_previous(
+        &mut self,
+        scene: &mut Scene,
+        previous: Option<(&Scene, &Self)>,
+        same_paint: bool,
+    ) {
         // Preserve one candidate authority and sort it in place. Recording
         // remains cheap append-only during Paint; finished retention permits
         // O(log chunks + locally overlapping chunks) replay lookups.
@@ -58,8 +71,11 @@ impl RetainedPaint {
                 .windows(2)
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
-        if !previous.is_some_and(|previous| self.reuse_prepared_chunks(scene, previous)) {
-            self.prepare_retained_chunks(scene);
+        let previous = previous.filter(|(source, retention)| {
+            retention.finished && source.revision != 0 && source.revision == retention.revision
+        });
+        if !(same_paint && previous.is_some_and(|(_, old)| self.reuse_prepared_chunks(scene, old))) {
+            self.prepare_retained_chunks(scene, previous);
         }
         scene.quads.compact();
         scene.paint_operations.compact();
@@ -209,7 +225,39 @@ impl RetainedPaint {
         });
     }
 
-    fn prepare_retained_chunks(&mut self, scene: &Scene) {
+    /// Reuse a static qualification only for an exactly shared operation
+    /// range with the same candidate identity. The destination may have
+    /// introduced additional orders, so global coverage is proved again.
+    fn shared_quad_proof(
+        candidate: &RetainedChunkCandidate,
+        scene: &Scene,
+        previous: Option<(&Scene, &Self)>,
+        planner: &mut RetainedChunkPlanner<'_>,
+    ) -> Option<RetainedChunkProof> {
+        if !candidate.replayed {
+            return None;
+        }
+        let (source, old) = previous?;
+        let table = old.prepared.as_deref()?;
+        let range = candidate.scene_range.clone();
+        let first = table.replay_quad_indices.partition_point(|index| {
+            table.quads[*index].paint_range.start < range.start
+        });
+        let chunk = table.replay_quad_indices[first..].iter()
+            .map(|index| &table.quads[*index])
+            .take_while(|chunk| chunk.paint_range.start == range.start)
+            .find(|chunk| chunk.id == candidate.id && chunk.paint_range == range)?;
+        if !scene.paint_operations.get_range(range.clone())?
+            .matches_by(source.paint_operations.get_range(range.clone())?, |_, _| false)
+        {
+            return None;
+        }
+        let first = source.quads[chunk.quad_range.start].order;
+        let last = source.quads[chunk.quad_range.end - 1].order;
+        planner.prove_static_quad(range, first, last, chunk.is_solid)
+    }
+
+    fn prepare_retained_chunks(&mut self, scene: &Scene, previous: Option<(&Scene, &Self)>) {
         if self.retained_chunk_candidates.is_empty() {
             self.prepared = None;
             return;
@@ -228,7 +276,9 @@ impl RetainedPaint {
             if candidate.scene_range.end <= qualified_until {
                 continue;
             }
-            match planner.prove(candidate.scene_range.clone()) {
+            let proof = Self::shared_quad_proof(candidate, scene, previous, &mut planner)
+                .or_else(|| planner.prove(candidate.scene_range.clone()));
+            match proof {
                 Some(RetainedChunkProof::Quad(proof)) => {
                     qualified_until = candidate.scene_range.end;
                     quads.push(PreparedRetainedQuadChunk {
@@ -359,13 +409,13 @@ mod tests {
         assert_eq!(prepared.quads[0].id, previous.chunks()[0].id);
         assert!(prepared.quads[0].replayed);
         assert_eq!(prepared.replay_quad_indices, previous.retention.prepared.as_deref().unwrap().replay_quad_indices);
-        current.retention.finish_against(&mut current.paint.scene, &previous.retention);
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true);
         assert_eq!(current.chunks().len(), 1);
 
         let mut next = crate::window::retained::PaintFixture::default();
         next.replay(0..32, &current);
         assert!(next.paint.finish_against(&current.paint));
-        next.retention.finish_against(&mut next.paint.scene, &current.retention);
+        next.retention.finish_against(&mut next.paint.scene, &current.paint.scene, &current.retention, true);
         assert!(Arc::ptr_eq(next.retention.prepared.as_ref().unwrap(), current.retention.prepared.as_ref().unwrap()));
         assert!(!previous.chunks()[0].replayed);
         next.retention.clear();
@@ -375,8 +425,51 @@ mod tests {
         // still go through normal chunk qualification.
         current.record(GlobalElementId::from_path(&["different".into()]), 1, 0..32);
         assert!(!current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
-        current.retention.finish_against(&mut current.paint.scene, &previous.retention);
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true);
         assert_eq!(current.chunks().len(), 1);
+    }
+
+    #[test]
+    fn shared_quad_qualification_rechecks_destination_order_coverage() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(32.), ScaledPixels(32.)),
+        );
+        let quad = Quad { bounds, content_mask: crate::ContentMask::new(bounds), ..Quad::default() };
+        let mut previous = crate::window::retained::PaintFixture::default();
+        for _ in 0..32 { previous.insert_primitive(quad); }
+        previous.record(GlobalElementId::from_path(&["stable".into()]), 1, 0..32);
+        previous.insert_primitive(quad);
+        previous.finish();
+        assert_eq!(previous.chunks().len(), 1);
+
+        let mut current = crate::window::retained::PaintFixture::default();
+        current.replay(0..32, &previous);
+        current.insert_primitive(Quad { background: crate::Hsla::white().into(), ..quad });
+        assert!(!current.paint.finish_against(&previous.paint));
+        let mut planner = RetainedChunkPlanner::new(&current.paint.scene, 1);
+        let candidate = &current.retention.retained_chunk_candidates[0];
+        let proof = RetainedPaint::shared_quad_proof(candidate, &current.paint.scene,
+            Some((&previous.paint.scene, &previous.retention)), &mut planner);
+        assert!(matches!(proof, Some(RetainedChunkProof::Quad(_))));
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, false);
+        assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
+
+        // A nonoverlapping new Quad receives order 1, which falls inside
+        // the old chunk's order interval: importing its old proof is unsafe.
+        let mut conflicting = crate::window::retained::PaintFixture::default();
+        conflicting.replay(0..32, &previous);
+        let other = Bounds::new(
+            crate::point(ScaledPixels(100.), ScaledPixels(100.)),
+            crate::size(ScaledPixels(32.), ScaledPixels(32.)),
+        );
+        conflicting.insert_primitive(Quad { bounds: other, content_mask: crate::ContentMask::new(other), ..quad });
+        assert!(!conflicting.paint.finish_against(&previous.paint));
+        let mut planner = RetainedChunkPlanner::new(&conflicting.paint.scene, 1);
+        assert!(RetainedPaint::shared_quad_proof(&conflicting.retention.retained_chunk_candidates[0],
+            &conflicting.paint.scene, Some((&previous.paint.scene, &previous.retention)), &mut planner).is_none());
+        conflicting.retention.finish_against(&mut conflicting.paint.scene, &previous.paint.scene, &previous.retention, false);
+        assert!(conflicting.chunks().is_empty());
     }
 
     #[test]
