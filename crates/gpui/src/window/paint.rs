@@ -173,13 +173,22 @@ impl Window {
         sigma: Pixels,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.invalidator.debug_assert_paint();
-
         let sigma = f32::from(sigma);
         if !sigma.is_finite() || sigma <= 0.0 {
             return f(self);
         }
+        self.paint_isolated_layer(bounds, sigma, f)
+    }
 
+    /// Both real element filters and zero-filter compositor layers capture
+    /// their content directly. Zero sigma is not a synthetic CSS blur.
+    pub(super) fn paint_isolated_layer<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        sigma: f32,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint();
         let scale_factor = self.scale_factor();
         let visual_scale = self.visual_scale();
         let previous_opacity = self.element_opacity;

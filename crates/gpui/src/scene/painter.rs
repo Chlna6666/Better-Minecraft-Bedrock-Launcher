@@ -31,6 +31,7 @@ pub(crate) struct Painter {
 }
 struct BlurCaptureState {
     config: BlurCapture,
+    operation_start: usize,
     scene: Box<Painter>,
     previous_content: Option<std::sync::Arc<Scene>>,
 }
@@ -151,11 +152,13 @@ impl Painter {
         previous_content: Option<std::sync::Arc<Scene>>,
     ) {
         self.scene.revision = 0;
+        let operation_start = self.scene.paint_operations.len();
         self.scene
             .paint_operations
             .push(PaintOperation::StartBlur(config.clone()));
         self.blur_captures.push(BlurCaptureState {
             config,
+            operation_start,
             scene: Box::default(),
             previous_content,
         });
@@ -173,15 +176,34 @@ impl Painter {
         };
 
         let mut content = *capture.scene;
-        let Some(content_bounds) = content
-            .bounds_for_range(0..content.len())
-            .map(|bounds| bounds.union(&capture.config.bounds))
-        else {
+        let Some(content_bounds) = content.bounds_for_range(0..content.len()) else {
             self.scene.paint_operations.push(PaintOperation::EndBlur);
             return;
         };
-        let effect_bounds = content_bounds.dilate(blur_influence_radius(capture.config.radius));
-        let config = capture.config;
+        let mut config = capture.config;
+        let effect_bounds = if config.radius.0 == 0.0 {
+            // A zero-filter layer has no Gaussian support. Its actual pixel
+            // footprint is already known from the captured content, including
+            // nested captures. Do not union the enclosing layout rectangle.
+            let tight = content_bounds.intersect(&config.content_mask.bounds);
+            if !tight.is_empty() {
+                config.bounds = tight;
+                let end = self.scene.paint_operations.len();
+                self.scene.paint_operations.edit(capture.operation_start..capture.operation_start + 1, |operation| {
+                    if let PaintOperation::StartBlur(marker) = operation {
+                        marker.bounds = tight;
+                    }
+                });
+                self.scene.paint_operations.edit(capture.operation_start + 1..end, |operation| {
+                    if let PaintOperation::StartLayer(bounds) = operation {
+                        *bounds = bounds.intersect(&tight);
+                    }
+                });
+            }
+            tight
+        } else {
+            content_bounds.union(&config.bounds).dilate(blur_influence_radius(config.radius))
+        };
         let content = if let Some(previous) = capture.previous_content {
             if content.finish_against(&previous)
                 && content.scene.animation_values == previous.animation_values

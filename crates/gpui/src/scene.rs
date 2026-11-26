@@ -4,6 +4,7 @@
 mod animation_bounds;
 mod batch;
 mod bounds_tree;
+#[cfg(test)]
 mod composite;
 mod display_list;
 pub(crate) mod geometry;
