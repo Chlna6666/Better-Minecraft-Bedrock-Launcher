@@ -981,11 +981,19 @@ impl NovaRenderer {
             if self.raster_tile_context != Some(tile_context) {
                 self.raster_tiles.invalidate_all();
             }
-            // A publication can skip UI generations. Keep only exact content
-            // generations until a complete per-tile dirty proof is published.
-            let generations: FxHashMap<_, _> = packet.paint.layers.frames.iter()
-                .map(|layer| (layer.id, layer.generation)).collect();
-            self.raster_tiles.retain_generations(|id| generations.get(&id).copied());
+            let layers: FxHashMap<_, _> = packet.paint.layers.frames.iter()
+                .map(|layer| (layer.id, layer)).collect();
+            let scale = packet.paint.geometry.scale_factor;
+            self.raster_tiles.reconcile_tiles(|key, generation, raster| {
+                let layer = layers.get(&key.layer)?;
+                let x = i64::from(raster.origin.x);
+                let y = i64::from(raster.origin.y);
+                layer.adopt_tile(generation, [
+                    x, y,
+                    x + i64::from(raster.extent.width()),
+                    y + i64::from(raster.extent.height()),
+                ], scale)
+            });
             if self.submitted_frames % 120 == 0 {
                 if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, Some(120)) {
                     log::debug!("failed to trim idle scroll tiles: {error}");

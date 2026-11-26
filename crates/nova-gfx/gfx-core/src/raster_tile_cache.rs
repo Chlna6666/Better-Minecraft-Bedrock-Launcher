@@ -131,6 +131,26 @@ impl RasterTileCache {
         }
     }
 
+    /// Adopt an existing native tile only when the caller proves its exact
+    /// raster rectangle survived the generation transition. Pending writers
+    /// retain their original fence; no new readiness is implied.
+    pub fn reconcile_tiles(
+        &mut self,
+        mut adopt: impl FnMut(RasterTileKey, u64, RasterTile) -> Option<u64>,
+    ) {
+        for (&key, e) in &mut self.entries {
+            if e.stale { continue; }
+            match adopt(key, e.generation, e.raster) {
+                Some(generation) if generation == e.generation => {}
+                Some(generation) if e.generation.checked_add(1) == Some(generation)
+                    && matches!(e.state, State::Ready | State::Submitted(_)) => {
+                    e.generation = generation;
+                }
+                _ => e.invalidate(),
+            }
+        }
+    }
+
     /// Resolve completed pixels, independent of viewport placement.
     pub fn lookup(&mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format) -> Option<RasterTileTexture> {
         let e = self.entries.get_mut(&key)?;
