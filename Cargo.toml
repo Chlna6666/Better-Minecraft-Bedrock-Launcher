@@ -189,7 +189,7 @@ members = [
     "crates/nova-gfx/examples/atlas-smoke-metal",
     "crates/nova-gfx/examples/public-api-smoke",
 ]
-exclude = ["crates/easytier", "crates/easytier-bmcbl", "crates/nethernet", "crates/raknet", "vendor/sctk-adwaita"]
+exclude = ["crates/easytier", "crates/easytier-bmcbl", "crates/nethernet", "crates/raknet", "vendor/sctk-adwaita", "vendor/taffy"]
 
 [workspace.dependencies]
 fearless_simd = "=1.1.0"
@@ -224,6 +224,8 @@ gfx-opengl = { path = "crates/nova-gfx/gfx-opengl" }
 raw-window-handle = "0.6"
 
 [patch.crates-io]
+# Taffy v0.15.0 (eb6450694f33e2b7413e40677f230ff63f0fc194) with a native layout-write observer.
+taffy = { path = "vendor/taffy" }
 gpui = { path = "crates/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }

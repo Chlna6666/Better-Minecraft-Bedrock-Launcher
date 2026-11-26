@@ -234,10 +234,64 @@ struct PlacementWatch {
     clean: Vec<(LayoutId, Option<LayoutId>)>,
     gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]>,
     transient_count: usize,
-    // Layout geometry changes only when native computation runs. Capture it
-    // just before the first actual compute, not on a retained cache hit.
-    before_compute: Option<Vec<taffy::tree::Layout>>,
-    invalid: bool,
+    mutation_epoch: usize,
+}
+
+/// Sparse frame-local journal. Only actual native layout changes enter the
+/// log, once per node per compute. Multiple candidate proofs share the log.
+#[derive(Default)]
+struct NativeLayoutMutationLog {
+    epoch: usize,
+    heads: FxHashMap<LayoutId, usize>,
+    entries: Vec<NativeLayoutMutation>,
+}
+
+struct NativeLayoutMutation {
+    epoch: usize,
+    previous: taffy::tree::Layout,
+    older: Option<usize>,
+}
+
+impl NativeLayoutMutationLog {
+    fn begin_compute(&mut self) {
+        self.epoch += 1;
+    }
+
+    fn record(&mut self, id: LayoutId, previous: &taffy::tree::Layout) {
+        let older = self.heads.get(&id).copied();
+        if older.is_some_and(|index| self.entries[index].epoch == self.epoch) {
+            return;
+        }
+        let index = self.entries.len();
+        self.entries.push(NativeLayoutMutation { epoch: self.epoch, previous: *previous, older });
+        self.heads.insert(id, index);
+    }
+
+    fn previous_since(&self, id: LayoutId, epoch: usize) -> Option<&taffy::tree::Layout> {
+        let mut cursor = self.heads.get(&id).copied();
+        let mut previous = None;
+        while let Some(index) = cursor {
+            let entry = &self.entries[index];
+            if entry.epoch <= epoch { break; }
+            previous = Some(&entry.previous);
+            cursor = entry.older;
+        }
+        previous
+    }
+
+    fn clear(&mut self) {
+        self.epoch = 0;
+        let count = self.entries.len();
+        self.entries.clear();
+        self.heads.clear();
+        let target = count.max(64);
+        if self.entries.capacity() > target.saturating_mul(4) {
+            self.entries.shrink_to(target);
+        }
+        if self.heads.capacity() > target.saturating_mul(4) {
+            self.heads.shrink_to(target);
+        }
+    }
 }
 
 struct PersistentLayoutNode {
@@ -297,6 +351,7 @@ pub struct TaffyLayoutEngine {
     committed_claim_log: Vec<Option<LayoutClaim>>,
     claim_relocations: SpanRelocations,
     splice_placements: Vec<Option<PlacementWatch>>,
+    layout_mutations: NativeLayoutMutationLog,
     pending_replays: Vec<LayoutId>,
     layout_changes: u64,
     remeasures: u64,
@@ -358,6 +413,7 @@ impl TaffyLayoutEngine {
             committed_claim_log: Vec::new(),
             claim_relocations: SpanRelocations::default(),
             splice_placements: Vec::new(),
+            layout_mutations: NativeLayoutMutationLog::default(),
             pending_replays: Vec::new(),
             layout_changes: 0,
             remeasures: 0,
@@ -486,6 +542,7 @@ impl TaffyLayoutEngine {
         self.claimed_key_log.clear();
         self.claim_relocations.clear();
         self.splice_placements.clear();
+        self.layout_mutations.clear();
         for id in self.pending_replays.drain(..) {
             if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
                 context.replay_pending = false;
@@ -662,9 +719,8 @@ impl TaffyLayoutEngine {
         false
     }
 
-    /// Record topology at admission. Stable cached layout does not need a
-    /// second copy of its geometry; the native compute boundary captures it
-    /// only when a candidate actually recomputes layout.
+    /// Record topology and the current native mutation epoch at admission.
+    /// Geometry is journaled only at actual changed native layout writes.
     pub(crate) fn capture_splice_placement(
         &mut self, kept: &LayoutClaimBlocks, gaps: &[(LayoutClaimBlocks, LayoutId)],
     ) -> Option<NativePlacementProof> {
@@ -686,30 +742,15 @@ impl TaffyLayoutEngine {
         }).collect();
         let watch = PlacementWatch {
             clean, gap_parents, transient_count: self.anonymous_nodes.len(),
-            before_compute: None, invalid: false,
+            mutation_epoch: self.layout_mutations.epoch,
         };
         let index = self.splice_placements.len();
         self.splice_placements.push(Some(watch));
         Some(NativePlacementProof(index))
     }
 
-    fn snapshot_splice_placements(&mut self) {
-        for watch in self.splice_placements.iter_mut().flatten() {
-            if watch.invalid || watch.before_compute.is_some() {
-                continue;
-            }
-            let before: Option<Vec<_>> = watch.clean.iter().map(|(id, _)| {
-                self.taffy.layout((*id).into()).ok().copied()
-            }).collect();
-            if before.is_none() {
-                watch.invalid = true;
-            }
-            watch.before_compute = before;
-        }
-    }
-
     fn placement_topology_matches(&self, watch: &PlacementWatch) -> bool {
-        !watch.invalid && self.anonymous_nodes.len() == watch.transient_count
+        self.anonymous_nodes.len() == watch.transient_count
             && watch.clean.iter().all(|(id, parent)| {
                 !self.robbed_parents.contains(id)
                     && !self.stale_style_fingerprints.contains(id)
@@ -731,20 +772,19 @@ impl TaffyLayoutEngine {
         }
     }
 
-    /// Consume the watch once the containing root is computed. If native
-    /// compute ran, compare its full Layout values, including overflow and
-    /// box metrics. Otherwise the old geometry was never rewritten.
+    /// Consume the watch once the containing root is computed. A node that
+    /// was changed and subsequently restored still has identical placement.
+    /// Compare full native Layout values, not just bounds.
     pub(crate) fn finish_splice_placement(&mut self, proof: NativePlacementProof) -> bool {
         let Some(watch) = self.splice_placements.get_mut(proof.0).and_then(Option::take) else {
             return false;
         };
         self.pending_replays.is_empty()
             && self.placement_topology_matches(&watch)
-            && watch.clean.iter().all(|(id, _)| self.taffy.dirty((*id).into()).is_ok_and(|dirty| !dirty))
-            && watch.before_compute.as_ref().is_none_or(|before| {
-                watch.clean.iter().zip(before).all(|((id, _), previous)| {
-                    self.taffy.layout((*id).into()).is_ok_and(|current| current == previous)
-                })
+            && watch.clean.iter().all(|(id, _)| {
+                self.taffy.dirty((*id).into()).is_ok_and(|dirty| !dirty)
+                    && self.layout_mutations.previous_since(*id, watch.mutation_epoch)
+                        .is_none_or(|previous| self.taffy.layout((*id).into()).is_ok_and(|current| current == previous))
             })
     }
 
@@ -1334,7 +1374,6 @@ impl TaffyLayoutEngine {
             self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
             return;
         }
-        self.snapshot_splice_placements();
         self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
         self.root_constraints.insert(id, constraints);
 
@@ -1371,8 +1410,16 @@ impl TaffyLayoutEngine {
             "taffy_compute",
             crate::window::element_work::ElementWorkPhase::Layout,
         );
+        let observe = self.splice_placements.iter().any(Option::is_some);
+        let mutations = &mut self.layout_mutations;
+        if observe { mutations.begin_compute(); }
+        let mut record_mutation = |node, previous: &taffy::tree::Layout| {
+            mutations.record(LayoutId::from(node), previous);
+        };
+        let observer: Option<&mut dyn FnMut(taffy::NodeId, &taffy::tree::Layout)> =
+            if observe { Some(&mut record_mutation) } else { None };
         self.taffy
-            .compute_layout_with_measure(
+            .compute_layout_with_measure_and_observer(
                 id.into(),
                 available_space.into(),
                 |inputs, _node_id, node_context, style| {
@@ -1425,6 +1472,7 @@ impl TaffyLayoutEngine {
                         },
                     )
                 },
+                observer,
             )
             .expect(EXPECT_MESSAGE);
         drop(taffy_work);
