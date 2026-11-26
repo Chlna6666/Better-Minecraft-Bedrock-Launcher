@@ -4018,3 +4018,34 @@ fn scroll_layer_input_matches_flat_hit_testing(cx: &mut TestAppContext) {
         frame.layer_inputs = groups;
     }).unwrap();
 }
+
+#[gpui::test]
+fn scroll_layer_input_carries_complete_ranges_and_rolls_back(cx: &mut TestAppContext) {
+    let context = cx.add_empty_window();
+    context.update(|window, _| {
+        let viewport = Bounds::new(point(px(10.), px(10.)), size(px(40.), px(40.)));
+        window.rendered_frame.hitboxes.clear();
+        window.rendered_frame.layer_inputs.clear();
+        window.next_frame.hitboxes.clear();
+        window.next_frame.layer_inputs.clear();
+        for id in 1..=16 {
+            window.rendered_frame.hitboxes.push(Hitbox {
+                id: HitboxId(id),
+                bounds: viewport,
+                content_mask: ContentMask::new(viewport),
+                behavior: HitboxBehavior::Normal,
+            });
+        }
+        // Nested groups close inside-out, at the same ending index.
+        window.rendered_frame.record_layer_input(8, viewport);
+        window.rendered_frame.record_layer_input(0, viewport);
+        let baseline = window.prepaint_index();
+        window.next_frame.carry_layer_inputs(&window.rendered_frame, 8..16);
+        window.next_frame.hitboxes.extend_from_slice(&window.rendered_frame.hitboxes[8..16]);
+        assert_eq!(window.next_frame.layer_inputs.len(), 1);
+        assert_eq!(window.next_frame.layer_inputs[0].hitboxes, 0..8);
+        window.truncate_prepaint_to(baseline);
+        assert!(window.next_frame.layer_inputs.is_empty());
+        assert!(window.next_frame.hitboxes.is_empty());
+    }).unwrap();
+}

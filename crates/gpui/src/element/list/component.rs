@@ -143,6 +143,9 @@ impl Element for List {
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
+        let input_start = window.next_frame.hitboxes.len();
+        let viewport = window.visual_bounds(bounds)
+            .intersect(&window.visual_content_mask().bounds);
         let layout =
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
                 Ok(layout) => layout,
@@ -155,6 +158,8 @@ impl Element for List {
                 }
             };
 
+        // Only the successful prepaint transaction contributes input records.
+        window.next_frame.record_layer_input(input_start, viewport);
         state.version.bump_if(state.last_layout_bounds != Some(bounds) || state.last_padding != Some(padding));
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
