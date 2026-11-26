@@ -1,8 +1,8 @@
-# lucide-gpui
+# lucide_gpui
 
 [中文](README.zh-CN.md)
 
-`lucide-gpui` exposes Lucide icons to GPUI applications. Its build script collects the icon
+`lucide_gpui` exposes Lucide icons to GPUI applications. Its build script collects the icon
 set and embeds it as a generated `Assets` source plus indexed icon bytes; the public API is
 the `Assets` type consumed by GPUI's asset source.
 
@@ -15,11 +15,11 @@ the `Assets` type consumed by GPUI's asset source.
 ## Build and test
 
 ```powershell
-cargo check -p lucide-gpui
-cargo test -p lucide-gpui
+cargo check -p lucide_gpui
+cargo test -p lucide_gpui
 ```
 
 ## Documentation
 
-- [Architecture](../../docs/ARCHITECTURE.en.md)
-- [Crate catalog](../../docs/CRATES.en.md)
+- [Architecture](../../../docs/ARCHITECTURE.en.md)
+- [Crate catalog](../../../docs/CRATES.en.md)

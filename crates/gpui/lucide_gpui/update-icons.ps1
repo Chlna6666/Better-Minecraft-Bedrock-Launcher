@@ -5,10 +5,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..")).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..\\..")).Path
 $tmpRoot = Join-Path $repoRoot ".tmp"
 $upstreamDir = Join-Path $tmpRoot "lucide-upstream"
-$targetDir = Join-Path $repoRoot "crates\\lucide-gpui\\icons"
+$targetDir = Join-Path $PSScriptRoot "icons"
 
 if (!(Test-Path $tmpRoot)) {
   New-Item -ItemType Directory -Force $tmpRoot | Out-Null

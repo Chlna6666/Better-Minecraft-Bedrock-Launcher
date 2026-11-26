@@ -9,9 +9,9 @@ fn main() -> anyhow::Result<()> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     let bmcbl_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("lucide-gpui must remain under BMCBL/crates"))?;
+        .ancestors()
+        .nth(3)
+        .ok_or_else(|| anyhow::anyhow!("lucide_gpui must remain under BMCBL/crates/gpui"))?;
     let src_dir = bmcbl_root.join("src");
     let icons_dir = manifest_dir.join("icons");
 

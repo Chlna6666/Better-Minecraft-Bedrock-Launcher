@@ -1,5 +1,5 @@
 [package]
-name = "lucide-gpui"
+name = "lucide_gpui"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
