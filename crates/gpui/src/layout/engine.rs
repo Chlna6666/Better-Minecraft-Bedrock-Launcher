@@ -259,10 +259,52 @@ struct BoundsMutation {
 }
 
 struct PlacementWatch {
-    clean: Vec<(LayoutId, Option<LayoutId>)>,
+    // Reuse native claim blocks instead of copying a node/parent table
+    // into every nested speculative splice.
+    kept: LayoutClaimBlocks,
+    clean_count: usize,
+    topology_epoch: usize,
     gap_parents: smallvec::SmallVec<[(LayoutId, Option<LayoutId>); 4]>,
     transient_count: usize,
     mutation_epoch: usize,
+}
+
+/// Only topology edits made while a proof is live are tracked. An edited
+/// child list conservatively invalidates the affected children, including
+/// children temporarily detached and reattached by Taffy::set_children.
+#[derive(Default)]
+struct NativeTopologyJournal {
+    epoch: usize,
+    touched: FxHashMap<LayoutId, usize>,
+}
+
+impl NativeTopologyJournal {
+    fn record(&mut self, taffy: &TaffyTree<NodeContext>, parent: Option<LayoutId>, children: &[LayoutId]) {
+        self.epoch += 1;
+        if let Some(parent) = parent {
+            for child in taffy.child_ids(parent.into()) {
+                self.touched.insert(child.into(), self.epoch);
+            }
+        }
+        for &child in children {
+            if taffy.parent(child.into()).map(LayoutId::from) != parent || parent.is_none() {
+                self.touched.insert(child, self.epoch);
+            }
+        }
+    }
+
+    fn changed_since(&self, id: LayoutId, epoch: usize) -> bool {
+        self.epoch != epoch && self.touched.get(&id).is_some_and(|last| *last > epoch)
+    }
+
+    fn clear(&mut self) {
+        self.epoch = 0;
+        let target = self.touched.len().max(32);
+        self.touched.clear();
+        if self.touched.capacity() > target.saturating_mul(4) {
+            self.touched.shrink_to(target);
+        }
+    }
 }
 
 /// Sparse frame-local journal. Only actual native layout changes enter the
@@ -374,6 +416,7 @@ pub struct TaffyLayoutEngine {
     claim_relocations: SpanRelocations,
     splice_placements: Vec<Option<PlacementWatch>>,
     layout_mutations: NativeLayoutMutationLog,
+    topology_mutations: NativeTopologyJournal,
     pending_replays: Vec<LayoutId>,
     layout_changes: u64,
     remeasures: u64,
@@ -437,6 +480,7 @@ impl TaffyLayoutEngine {
             claim_relocations: SpanRelocations::default(),
             splice_placements: Vec::new(),
             layout_mutations: NativeLayoutMutationLog::default(),
+            topology_mutations: NativeTopologyJournal::default(),
             pending_replays: Vec::new(),
             layout_changes: 0,
             remeasures: 0,
@@ -514,6 +558,10 @@ impl TaffyLayoutEngine {
     }
 
     fn remove_native_node(&mut self, id: LayoutId) {
+        if self.splice_placements.iter().any(Option::is_some) {
+            self.topology_mutations.record(&self.taffy, Some(id), &[]);
+            self.topology_mutations.touched.insert(id, self.topology_mutations.epoch);
+        }
         if let Some(parent) = self.taffy.parent(id.into()) {
             self.robbed_parents.insert(parent.into());
             self.taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
@@ -571,6 +619,7 @@ impl TaffyLayoutEngine {
         self.claim_relocations.clear();
         self.splice_placements.clear();
         self.layout_mutations.clear();
+        self.topology_mutations.clear();
         for id in self.pending_replays.drain(..) {
             if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
                 context.replay_pending = false;
@@ -640,6 +689,7 @@ impl TaffyLayoutEngine {
         self.bounds_mutations.shrink_to(floor.max(self.bounds_mutations.len()));
         self.layout_mutations.entries.shrink_to(floor.max(self.layout_mutations.entries.len()));
         self.layout_mutations.heads.shrink_to(floor.max(self.layout_mutations.heads.len()));
+        self.topology_mutations.touched.shrink_to(floor.max(self.topology_mutations.touched.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.splice_placements.shrink_to_fit();
             self.anonymous_nodes.shrink_to_fit();
@@ -647,7 +697,9 @@ impl TaffyLayoutEngine {
             self.committed_claim_log.shrink_to_fit();
             self.pending_replays.shrink_to_fit();
         }
-        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
+        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive)
+            && !self.splice_placements.iter().any(Option::is_some)
+        {
             let taffy = &mut self.taffy;
             let root_constraints = &mut self.root_constraints;
             let stale_styles = &mut self.stale_style_fingerprints;
@@ -760,22 +812,24 @@ impl TaffyLayoutEngine {
         if !self.pending_replays.is_empty() {
             return None;
         }
-        let mut clean = Vec::with_capacity(kept.iter().map(|span| span.len()).sum());
+        let mut clean_count = 0;
         for span in kept.iter() {
             for claim in self.claimed_key_log.get(span.clone())?.iter().flatten() {
                 let id = claim.id;
                 if self.taffy.dirty(id.into()).ok()? || self.stale_style_fingerprints.contains(&id) {
                     return None;
                 }
-                clean.push((id, self.taffy.parent(id.into()).map(LayoutId::from)));
+                clean_count += 1;
             }
         }
         let gap_parents = gaps.iter().map(|(_, id)| {
             (*id, self.taffy.parent((*id).into()).map(LayoutId::from))
         }).collect();
         let watch = PlacementWatch {
-            clean, gap_parents, transient_count: self.anonymous_nodes.len(),
+            kept: kept.clone(), clean_count, gap_parents,
+            transient_count: self.anonymous_nodes.len(),
             mutation_epoch: self.layout_mutations.epoch,
+            topology_epoch: self.topology_mutations.epoch,
         };
         let index = self.splice_placements.len();
         self.splice_placements.push(Some(watch));
@@ -783,15 +837,31 @@ impl TaffyLayoutEngine {
     }
 
     fn placement_topology_matches(&self, watch: &PlacementWatch) -> bool {
-        self.anonymous_nodes.len() == watch.transient_count
-            && watch.clean.iter().all(|(id, parent)| {
-                !self.robbed_parents.contains(id)
-                    && !self.stale_style_fingerprints.contains(id)
-                    && self.taffy.parent((*id).into()).map(LayoutId::from) == *parent
-            })
-            && watch.gap_parents.iter().all(|(id, parent)| {
-                self.taffy.parent((*id).into()).map(LayoutId::from) == *parent
-            })
+        if self.anonymous_nodes.len() != watch.transient_count {
+            return false;
+        }
+        let mut count = 0;
+        for span in watch.kept.iter() {
+            let span = self.claim_relocations.resolve(span);
+            let Some(claims) = self.claimed_key_log.get(span) else { return false; };
+            for claim in claims.iter().flatten() {
+                let id = claim.id;
+                if self.robbed_parents.contains(&id)
+                    || self.stale_style_fingerprints.contains(&id)
+                    || self.topology_mutations.changed_since(id, watch.topology_epoch)
+                    || !self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+                        node.id == id && node.claimed_in_frame == self.request_frame
+                    })
+                {
+                    return false;
+                }
+                count += 1;
+            }
+        }
+        count == watch.clean_count && watch.gap_parents.iter().all(|(id, parent)| {
+            !self.topology_mutations.changed_since(*id, watch.topology_epoch)
+                && self.taffy.parent((*id).into()).map(LayoutId::from) == *parent
+        })
     }
 
     pub(crate) fn splice_topology_matches(&self, proof: NativePlacementProof) -> bool {
@@ -814,11 +884,15 @@ impl TaffyLayoutEngine {
             return None;
         }
         let mut delta = NativePlacementDelta::Unchanged;
-        for (id, _) in &watch.clean {
-            if self.taffy.dirty((*id).into()).ok()? { return None; }
-            if let Some(previous) = self.layout_mutations.previous_since(*id, watch.mutation_epoch) {
-                let current = self.taffy.layout((*id).into()).ok()?;
-                delta = delta.max(NativePlacementDelta::between(previous, current));
+        for span in watch.kept.iter() {
+            let span = self.claim_relocations.resolve(span);
+            for claim in self.claimed_key_log.get(span)?.iter().flatten() {
+                let id = claim.id;
+                if self.taffy.dirty(id.into()).ok()? { return None; }
+                if let Some(previous) = self.layout_mutations.previous_since(id, watch.mutation_epoch) {
+                    let current = self.taffy.layout(id.into()).ok()?;
+                    delta = delta.max(NativePlacementDelta::between(previous, current));
+                }
             }
         }
         Some(delta)
@@ -1042,6 +1116,9 @@ impl TaffyLayoutEngine {
                     self.taffy.get_child_id(id.into(), index) == (*child).into()
                 });
             if !child_order_unchanged {
+                if self.splice_placements.iter().any(Option::is_some) {
+                    self.topology_mutations.record(&self.taffy, Some(id), children);
+                }
                 Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
                     Some(id), children);
                 // Even attaching a previously parentless cached node or
@@ -1148,6 +1225,9 @@ impl TaffyLayoutEngine {
         self.layout_changes = self.layout_changes.wrapping_add(1);
         if measure.is_some() {
             self.remeasures = self.remeasures.wrapping_add(1);
+        }
+        if !children.is_empty() && self.splice_placements.iter().any(Option::is_some) {
+            self.topology_mutations.record(&self.taffy, None, children);
         }
         Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
             None, children);
