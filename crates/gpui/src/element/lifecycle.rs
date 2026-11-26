@@ -319,7 +319,7 @@ fn begin_retained_element_mount(
         "layout_retained_mount",
         crate::window::element_work::ElementWorkPhase::Layout,
     );
-    let retained_scope = window.begin_retained_element(element_id.as_ref());
+    let retained_scope = window.push_layout_key(element_id.as_ref());
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
     let inspector_id;
@@ -457,7 +457,7 @@ impl<E: Element> Drawable<E> {
                 if mount.global_id.is_some() {
                     window.element_id_stack.pop();
                 }
-                window.end_retained_element();
+                window.pop_layout_key();
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,

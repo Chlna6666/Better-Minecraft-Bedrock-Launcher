@@ -1,34 +1,26 @@
 use super::*;
 use crate::TransformOrigin;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use crate::layout::{LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT, mix};
+use collections::FxHasher;
 
-/// Running layout key plus a separately hashed structural witness. The key
-/// retains the existing native layout identity; the witness protects retained
-/// view/layer admission without keeping an ElementId path alive.
+/// The native GPUI Fast layout key, also used by the compositor for layer
+/// lookup. A typed wrapper does not add another hash or another identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct NativeElementId {
     pub(crate) key: u64,
-    witness: u64,
 }
 
 impl NativeElementId {
-    #[inline]
-    fn child(parent: Option<Self>, segment: &ElementId) -> Self {
-        let mut primary = collections::FxHasher::with_seed(parent.map_or(0, |id| id.key) as usize);
-        segment.hash(&mut primary);
-        let mut witness = DefaultHasher::new();
-        parent.map_or(0, |id| id.witness).hash(&mut witness);
-        segment.hash(&mut witness);
-        Self { key: primary.finish(), witness: witness.finish() }
-    }
-
     #[cfg(test)]
     pub(crate) fn from_path(path: &[ElementId]) -> Self {
-        path.iter().fold(None, |parent, segment| Some(Self::child(parent, segment)))
-            .expect("native identity requires a nonempty path")
+        let key = path.iter().fold(mix(LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT), |parent, id| {
+            let mut hasher = FxHasher::default();
+            id.hash(&mut hasher);
+            mix(parent, mix(hasher.finish(), 1))
+        });
+        Self { key }
     }
 }
-
 
 // Adapt the identified/positional key rules of longbridge/gpui-fast
 // 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout_key.rs (Apache-2.0).
@@ -40,34 +32,11 @@ pub(crate) struct NativeElementScope {
     lingers: bool,
 }
 
-impl NativeElementScope {
-    fn child(parent: Option<Self>, segment: &ElementId) -> Self {
-        Self {
-            id: NativeElementId::child(parent.map(|scope| scope.id), segment),
-            lingers: parent.is_some_and(|scope| scope.lingers) || crate::layout::is_list_row_segment(segment),
-        }
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct LayoutKeyScope {
     next_unidentified_child: u32,
     next_layout_slot: u32,
     parent: Option<NativeElementScope>,
-}
-
-fn layout_segment<'a>(
-    id: Option<&'a ElementId>,
-    next_unidentified_child: &mut u32,
-) -> std::borrow::Cow<'a, ElementId> {
-    match id {
-        Some(id) => std::borrow::Cow::Borrowed(id),
-        None => {
-            let index = *next_unidentified_child;
-            *next_unidentified_child = index.checked_add(1).expect("layout child index overflow");
-            std::borrow::Cow::Owned(ElementId::InstanceSlot(index))
-        }
-    }
 }
 
 impl Window {
@@ -85,13 +54,54 @@ impl Window {
         result
     }
 
-    /// Match identified elements by their ID and anonymous siblings by position.
-    pub(crate) fn begin_retained_element(&mut self, id: Option<&ElementId>) -> NativeElementScope {
-        let next_child = self.layout_key_scopes.last_mut()
-            .map(|scope| &mut scope.next_unidentified_child)
-            .unwrap_or(&mut self.layout_root_index);
-        let segment = layout_segment(id, next_child);
-        let scope = NativeElementScope::child(self.native_element_scope, &segment);
+    /// Begins an element, deriving the key its layout node is matched by across
+    /// frames.
+    ///
+    /// The key is the hash of the path from the root: each element mixes either
+    /// its [`ElementId`], when it has one, or its index among its unidentified
+    /// siblings. Identified elements therefore keep their node when siblings are
+    /// inserted or reordered around them, while unidentified ones are matched
+    /// purely by position, which is the same bargain the element state map makes.
+    ///
+    /// Because the parent's key is always mixed in, a key encodes the whole
+    /// ancestor path, and a node can never be matched to an element that has
+    /// moved to a different parent.
+    #[inline]
+    pub(crate) fn push_layout_key(&mut self, id: Option<&ElementId>) -> NativeElementScope {
+        let component = match id {
+            Some(id) => {
+                let mut hasher = FxHasher::default();
+                id.hash(&mut hasher);
+                // Kept distinct from the positional case so that an element
+                // identified by index 3 and one whose `ElementId` hashes to 3
+                // do not collide.
+                mix(hasher.finish(), 1)
+            }
+            None => {
+                let index = match self.layout_key_scopes.last_mut() {
+                    Some(parent) => &mut parent.next_unidentified_child,
+                    None => &mut self.layout_root_index,
+                };
+                let component = mix(*index as u64, 2);
+                *index += 1;
+                component
+            }
+        };
+        // BMCBL also enters an already assigned scope during Paint and gap
+        // reconstruction. A request frame uses that absolute parent; fresh
+        // trees laid out during Prepaint use the upstream salted namespace.
+        let enclosing = self.native_element_scope;
+        let parent = if self.layout_key_scopes.is_empty() {
+            mix(enclosing.map_or(LAYOUT_ROOT_SEED, |scope| scope.id.key), LAYOUT_PREPAINT_SALT)
+        } else {
+            enclosing.map_or(LAYOUT_ROOT_SEED, |scope| scope.id.key)
+        };
+        let key = mix(parent, component);
+        let scope = NativeElementScope {
+            id: NativeElementId { key },
+            lingers: enclosing.is_some_and(|scope| scope.lingers)
+                || id.is_some_and(crate::layout::is_list_row_segment),
+        };
         self.push_layout_scope(Some(scope));
         scope
     }
@@ -101,7 +111,7 @@ impl Window {
         self.layout_key_scopes.push(LayoutKeyScope { parent, ..Default::default() });
     }
 
-    pub(crate) fn end_retained_element(&mut self) {
+    pub(crate) fn pop_layout_key(&mut self) {
         self.native_element_scope = self.layout_key_scopes.pop().expect("balanced layout scope").parent;
     }
 
@@ -109,7 +119,7 @@ impl Window {
     ///
     /// Normal elements allocate all children during `request_layout`, while virtualized elements
     /// such as [`crate::List`] may create their visible children later during prepaint. At that
-    /// point the original `begin_retained_element` child counter has already been popped, so lazy
+    /// point the original `push_layout_key` child counter has already been popped, so lazy
     /// children must establish an equivalent scope explicitly. Without this, every lazy child can
     /// fall back to slot zero (or consume an unrelated ancestor counter), causing retained ranges,
     /// hitboxes and listeners to be reconciled against the wrong element after list expansion or
@@ -120,7 +130,7 @@ impl Window {
     pub(crate) fn with_retained_child_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.push_layout_scope(self.native_element_scope);
         let result = f(self);
-        self.end_retained_element();
+        self.pop_layout_key();
         result
     }
 
@@ -136,10 +146,9 @@ impl Window {
         key: impl Into<ElementId>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let scope = NativeElementScope::child(self.native_element_scope, &key.into());
-        self.push_layout_scope(Some(scope));
+        self.push_layout_key(Some(&key.into()));
         let result = f(self);
-        self.end_retained_element();
+        self.pop_layout_key();
         result
     }
 
@@ -150,9 +159,12 @@ impl Window {
         scope: NativeElementScope,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let previous = self.native_element_scope.replace(scope);
+        let enclosing = (
+            self.native_element_scope.replace(scope),
+            mem::replace(&mut self.layout_root_index, 0),
+        );
         let result = f(self);
-        self.native_element_scope = previous;
+        (self.native_element_scope, self.layout_root_index) = enclosing;
         result
     }
 
@@ -870,10 +882,13 @@ mod layout_identity_tests {
 
     #[test]
     fn explicit_ids_do_not_renumber_anonymous_layout_siblings() {
-        let mut next = 0;
-        assert_eq!(*layout_segment(None, &mut next), ElementId::InstanceSlot(0));
         let fixed = ElementId::from("fixed");
-        assert_eq!(layout_segment(Some(&fixed), &mut next).as_ref(), &fixed);
-        assert_eq!(*layout_segment(None, &mut next), ElementId::InstanceSlot(1));
+        let parent = mix(LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT);
+        let first = mix(parent, mix(0, 2));
+        let named = NativeElementId::from_path(&[fixed]).key;
+        let second = mix(parent, mix(1, 2));
+        assert_ne!(first, named);
+        assert_ne!(second, named);
+        assert_ne!(first, second);
     }
 }

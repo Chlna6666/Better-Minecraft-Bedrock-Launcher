@@ -256,5 +256,5 @@ impl SpanRelocations {
     }
 }
 pub use key::NativeLayoutKey;
-pub(crate) use key::{is_list_row_segment, layout_node_key};
+pub(crate) use key::{LAYOUT_ROOT_SEED, LAYOUT_PREPAINT_SALT, is_list_row_segment, layout_node_key, mix};
 pub use metrics::{AvailableSpace, LayoutId};

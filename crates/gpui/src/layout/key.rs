@@ -16,10 +16,19 @@ pub(crate) fn is_list_row_segment(segment: &crate::ElementId) -> bool {
         if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
 }
 
-/// Mixes `value` into `state` with the SplitMix64 finalizer, so paths built from small child
-/// indices do not collide in practice.
-#[inline]
-fn mix(state: u64, value: u64) -> u64 {
+/// Where layout key paths start.
+pub(crate) const LAYOUT_ROOT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Separates the elements laid out during an element's prepaint from that same
+/// element's children, which are keyed from the same point during request
+/// layout and would otherwise land on the same keys.
+pub(crate) const LAYOUT_PREPAINT_SALT: u64 = 0x5BF0_3635_931A_2E77;
+
+/// Mixes `value` into `state`, well enough that path hashes built out of small
+/// child indices do not collide in practice.
+///
+/// This is the finalizer from SplitMix64 applied to the combined value.
+pub(crate) fn mix(state: u64, value: u64) -> u64 {
     let mut z = state
         .rotate_left(27)
         .wrapping_add(value)
@@ -28,7 +37,6 @@ fn mix(state: u64, value: u64) -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
-
 
 /// One element may request several Taffy nodes. Number them locally in its
 /// request scope and mix the slot into the full retained path hash.
