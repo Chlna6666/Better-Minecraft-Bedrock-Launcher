@@ -3464,6 +3464,48 @@ impl Viewport {
     }
 }
 
+/// A physical raster tile in signed content-space pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RasterTile {
+    /// Content coordinate of the tile's top-left pixel.
+    pub origin: SignedOrigin2d,
+    /// Physical attachment extent, not the full content extent.
+    pub extent: Extent2d,
+}
+
+impl RasterTile {
+    /// A bounded native viewport. The caller's vertex shader subtracts
+    /// `origin` and its fragment shader adds it back when evaluating
+    /// content-space geometry. No oversized or negative native viewport
+    /// is required, even when the content extends far outside the window.
+    pub fn viewport(self) -> Viewport {
+        Viewport {
+            origin: SignedOrigin2d::ZERO,
+            extent: self.extent,
+            reference_extent: self.extent,
+            mapping: ViewportMapping::PixelExact,
+        }
+    }
+
+    /// Intersect another signed content rectangle with this tile and
+    /// return a tile-local scissor. Use i64 for the edge arithmetic,
+    /// including tiles near the signed coordinate limits.
+    pub fn intersection_scissor(self, content: Self) -> Option<ScissorRect> {
+        fn axis(a: i32, a_len: u32, b: i32, b_len: u32) -> Option<(u32, u32)> {
+            let (a, b) = (i64::from(a), i64::from(b));
+            let start = a.max(b);
+            let end = (a + i64::from(a_len)).min(b + i64::from(b_len));
+            if start >= end {
+                return None;
+            }
+            Some(((start - a) as u32, (end - start) as u32))
+        }
+        let (x, width) = axis(self.origin.x, self.extent.width(), content.origin.x, content.extent.width())?;
+        let (y, height) = axis(self.origin.y, self.extent.height(), content.origin.y, content.extent.height())?;
+        Some(ScissorRect { x, y, width, height })
+    }
+}
+
 /// One ordered render command list targeting an offscreen texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderPassCommands<'a> {
@@ -3868,6 +3910,36 @@ mod tests {
             }, tile).unwrap(),
             ScissorRect { x: 0, y: 0, width: 16, height: 16 },
         );
+    }
+
+    #[test]
+    fn raster_tile_uses_bounded_viewport_for_large_signed_content() {
+        let extent = Extent2d::new(512, 512).unwrap();
+        let tile = RasterTile {
+            origin: SignedOrigin2d { x: -65536, y: 131072 },
+            extent,
+        };
+        assert_eq!(tile.viewport().mapped_origin(extent).unwrap(), SignedOrigin2d::ZERO);
+        assert_eq!(tile.viewport().for_target(extent).unwrap(), extent);
+        let content = RasterTile {
+            origin: SignedOrigin2d { x: -65568, y: 131104 },
+            extent: Extent2d::new(64, 32).unwrap(),
+        };
+        assert_eq!(tile.intersection_scissor(content), Some(ScissorRect {
+            x: 0, y: 32, width: 32, height: 32,
+        }));
+        let outside = RasterTile {
+            origin: SignedOrigin2d { x: -65024, y: 131072 },
+            extent,
+        };
+        assert_eq!(tile.intersection_scissor(outside), None);
+        let edge = RasterTile {
+            origin: SignedOrigin2d { x: i32::MAX - 8, y: i32::MIN },
+            extent,
+        };
+        assert_eq!(edge.intersection_scissor(edge), Some(ScissorRect {
+            x: 0, y: 0, width: 512, height: 512,
+        }));
     }
 
     #[test]

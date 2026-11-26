@@ -5,8 +5,9 @@ struct GlobalParams {
     pad: u32,
     presentation_time_seconds: f32,
     presentation_tick_60hz: u32,
-    // Target-local fragment coordinates + this origin = stable content coordinates.
-    // Native PixelExact viewport offsets handle the vertex position separately.
+    // Signed content origin of the physical target. The vertex projection
+    // subtracts it, and fragment SDF/clip evaluation adds it back.
+    // Full-window rendering uses zero. A tile uses a bounded native viewport.
     target_origin: vec2<f32>,
 }
 
@@ -157,7 +158,7 @@ fn content_position(target_position: vec2<f32>) -> vec2<f32> {
 
 fn to_device_position_impl(position: vec2<f32>) -> vec4<f32> {
     let viewport_size = max(globals.viewport_size, vec2<f32>(1.0));
-    let device_position = position / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+    let device_position = (position - globals.target_origin) / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
     return vec4<f32>(device_position, 0.0, 1.0);
 }
 

@@ -58,10 +58,11 @@ fn verify(backend: RendererBackend) {
     let scissor = ScissorRect { x: 16, y: 24, width: 16, height: 16 };
     let reference = device!(renderer, device, {
         let mut results = Vec::new();
-        for (extent, origin) in [
-            (source, SignedOrigin2d::ZERO),
-            (tile, SignedOrigin2d { x: -16, y: -24 }),
+        for raster in [
+            RasterTile { extent: source, origin: SignedOrigin2d::ZERO },
+            RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } },
         ] {
+            let extent = raster.extent;
             let color = device.create_texture(&TextureDescriptor {
                 label: Some("pixel-exact raster color".into()),
                 size: extent,
@@ -94,12 +95,7 @@ fn verify(backend: RendererBackend) {
                 usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
                 memory_location: MemoryLocation::CpuToGpu,
             }).expect("tile globals");
-            let mut globals = pack_global_params(
-                renderer.current_size,
-                renderer.surface_alpha.outputs_premultiplied_alpha(),
-                [-(origin.x as f32), -(origin.y as f32)],
-            );
-            globals[12..24].copy_from_slice(&renderer.frame_upload.globals[12..24]);
+            let globals = pack_tile_globals(raster, &renderer.frame_upload.globals);
             device.write_buffer(global_buffer, 0, &globals).expect("target globals");
             let buffers = FrameResourceBuffers { global_buffer, ..original_buffers };
             let bind_group = create_quad_bind_group(
@@ -107,7 +103,10 @@ fn verify(backend: RendererBackend) {
             ).expect("target quad bind group");
             let step = RenderCommand::Draw(DrawCommand {
                 bind_groups: bind_group_list([bind_group]),
-                scissor: Some(scissor),
+                scissor: raster.intersection_scissor(RasterTile {
+                    origin: SignedOrigin2d { x: scissor.x as i32, y: scissor.y as i32 },
+                    extent: Extent2d::new(scissor.width, scissor.height).unwrap(),
+                }),
                 ..quad_step(&renderer)
             });
             device.render_to_textures(&[RenderPassCommands {
@@ -121,12 +120,7 @@ fn verify(backend: RendererBackend) {
                     depth_load_op: LoadOp::Clear(1.),
                     stencil_load_op: None,
                 }),
-                viewport: Some(Viewport {
-                    origin,
-                    extent: source,
-                    reference_extent: source,
-                    mapping: ViewportMapping::PixelExact,
-                }),
+                viewport: Some(raster.viewport()),
                 resolve_target: None,
             }]).expect("pixel-exact raster");
             let readback = device.read_texture(color).expect("native pixels");

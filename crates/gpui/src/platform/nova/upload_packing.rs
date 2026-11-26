@@ -1,7 +1,7 @@
 use super::*;
 
-/// Packs the static GlobalParams WGSL ABI. The viewport is the content extent,
-/// even when rendering into a smaller pixel-exact attachment.
+/// Packs the static GlobalParams WGSL ABI. The viewport is the physical
+/// raster extent and target_origin is its top-left in stable content space.
 pub(super) fn pack_global_params(
     viewport: DrawableSize,
     premultiplied_alpha: bool,
@@ -15,6 +15,21 @@ pub(super) fn pack_global_params(
     // Both are populated by their existing upload paths after static encoding.
     params[24..28].copy_from_slice(&target_origin[0].to_ne_bytes());
     params[28..32].copy_from_slice(&target_origin[1].to_ne_bytes());
+    params
+}
+
+/// Reuse the frame's animation and presentation-clock ABI for a tile.
+/// Only the projection and target alpha convention differ.
+pub(super) fn pack_tile_globals(
+    tile: gfx_core::RasterTile,
+    frame_globals: &[u8],
+) -> [u8; GLOBAL_UPLOAD_BYTES] {
+    let mut params = pack_global_params(
+        DrawableSize { width: tile.extent.width(), height: tile.extent.height() },
+        true,
+        [tile.origin.x as f32, tile.origin.y as f32],
+    );
+    params[12..24].copy_from_slice(&frame_globals[12..24]);
     params
 }
 
