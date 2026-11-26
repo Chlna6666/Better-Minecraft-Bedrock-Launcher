@@ -74,8 +74,7 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationCadenceElement<E> {
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         if self.animating {
-            let layout_key = window
-                crate::fast::layout_key::layout_key(window)
+            let layout_key = crate::fast::layout_key::layout_key(window)
                 .expect("layout animation cadence target must have a retained identity");
             if self.interval.is_zero() {
                 window.request_layout_animation_frame(layout_key);

@@ -307,8 +307,7 @@ impl Element for ViewElement {
         window.set_view_id(entity_id);
         let prepaint_start = window.prepaint_index();
         let mut retention = Some(RetentionDraft {
-            slot: window
-                crate::fast::layout_key::layout_key(window)
+            slot: crate::fast::layout_key::layout_key(window)
                 .map(|key| window.reserve_view_retention(key, entity_id)),
             nested: 0..0,
         });
