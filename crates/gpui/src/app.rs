@@ -15,6 +15,7 @@ mod displays;
 mod drag;
 mod effects;
 mod entity_map;
+mod fast_dependencies;
 mod events;
 mod focus;
 mod globals;

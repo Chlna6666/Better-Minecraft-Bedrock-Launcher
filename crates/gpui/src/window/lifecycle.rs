@@ -263,13 +263,15 @@ impl WindowInvalidator {
         inner.global_read_dependencies.clear();
         for (owner, reads) in &mut inner.view_reads {
             // The read log publishes sorted, unique owner sets, including mixed replay.
-            reads.entities.retain(|entity| is_live(*entity));
+            if !reads.entities.iter().all(|entity| is_live(*entity)) {
+                reads.entities = reads.entities.iter().copied().filter(|entity| is_live(*entity)).collect();
+            }
             let owner = owner.filter(|owner| has_route(*owner));
-            for &entity in &reads.entities {
+            for &entity in reads.entities.iter() {
                 entities.insert(entity);
                 insert_dependency_owner(&mut inner.render_dependencies, entity, owner);
             }
-            for &key in &reads.globals {
+            for &key in reads.globals.iter() {
                 insert_dependency_owner(&mut inner.global_read_dependencies, key, owner);
             }
         }

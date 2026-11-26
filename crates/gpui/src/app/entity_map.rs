@@ -20,7 +20,8 @@ use std::{
     thread::panicking,
 };
 
-use super::Context;
+use super::{Context, fast_dependencies::{Interned, merge_sorted, sort_unique}};
+use std::rc::Rc;
 #[cfg(any(test, feature = "leak-detection"))]
 mod leak_detection;
 mod weak_entity;
@@ -71,12 +72,16 @@ pub(crate) type GlobalReadDependencies =
 pub(crate) struct FrameReadLog {
     entities: Vec<(Option<EntityId>, EntityId)>,
     globals: Vec<(Option<EntityId>, (TypeId, Option<bool>))>,
+    interned_entities: Interned<EntityId>,
+    interned_globals: Interned<(TypeId, Option<bool>)>,
+    scratch_entities: Vec<EntityId>,
+    scratch_globals: Vec<(TypeId, Option<bool>)>,
 }
 
 #[derive(Default)]
 pub(crate) struct ViewReadSet {
-    pub(crate) entities: SmallVec<[EntityId; 4]>,
-    pub(crate) globals: SmallVec<[(TypeId, Option<bool>); 2]>,
+    pub(crate) entities: Rc<[EntityId]>,
+    pub(crate) globals: Rc<[(TypeId, Option<bool>)]>,
 }
 
 impl FrameReadLog {
@@ -95,27 +100,21 @@ impl FrameReadLog {
 
     /// Repeated reads are recorded cheaply and deduplicated once at publication.
     pub(crate) fn append_to(&mut self, reads: &mut FxHashMap<Option<EntityId>, ViewReadSet>) {
-        self.entities.sort_unstable();
-        self.entities.dedup();
-        self.globals.sort_unstable();
-        self.globals.dedup();
+        sort_unique(&mut self.entities);
+        sort_unique(&mut self.globals);
         for group in self.entities.chunk_by(|a, b| a.0 == b.0) {
+            self.scratch_entities.clear();
+            self.scratch_entities.extend(group.iter().map(|entry| entry.1));
+            let current = self.interned_entities.get(&self.scratch_entities);
             let target = &mut reads.entry(group[0].0).or_default().entities;
-            let overlaps_replay = !target.is_empty();
-            target.extend(group.iter().map(|entry| entry.1));
-            if overlaps_replay {
-                target.sort_unstable();
-                target.dedup();
-            }
+            *target = merge_sorted(target, &current);
         }
         for group in self.globals.chunk_by(|a, b| a.0 == b.0) {
+            self.scratch_globals.clear();
+            self.scratch_globals.extend(group.iter().map(|entry| entry.1));
+            let current = self.interned_globals.get(&self.scratch_globals);
             let target = &mut reads.entry(group[0].0).or_default().globals;
-            let overlaps_replay = !target.is_empty();
-            target.extend(group.iter().map(|entry| entry.1));
-            if overlaps_replay {
-                target.sort_unstable();
-                target.dedup();
-            }
+            *target = merge_sorted(target, &current);
         }
         self.clear();
     }
@@ -719,7 +718,7 @@ mod test {
 
         assert_eq!(entity_map.read(&handle).i, 2);
         let reads = entity_map.finish_frame_read_log().into_sets();
-        assert_eq!(reads[&None].entities.as_slice(), &[handle.entity_id()]);
+        assert_eq!(reads[&None].entities.as_ref(), &[handle.entity_id()]);
     }
 
     #[test]
