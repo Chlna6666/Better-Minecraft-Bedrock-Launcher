@@ -14,6 +14,37 @@ mod tests {
     }
 
     #[test]
+    fn retained_composite_replay_shares_published_content() {
+        use std::sync::Arc;
+
+        let bounds = rect(0.0, 0.0, 32.0, 24.0);
+        let mut previous = crate::scene::Painter::default();
+        previous.begin_blur(super::super::BlurCapture {
+            animation_id: None,
+            layer_id: Some(7),
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            radius: ScaledPixels(0.0),
+            opacity: 1.0,
+        });
+        previous.insert_primitive(Quad {
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            ..Default::default()
+        });
+        previous.end_blur();
+        previous.finish();
+
+        let mut next = crate::scene::Painter::default();
+        next.replay(0..previous.len(), &previous, std::iter::empty());
+        next.finish();
+
+        assert_eq!(next.blurs.len(), 1);
+        assert!(Arc::ptr_eq(&previous.blurs[0].content, &next.blurs[0].content));
+        assert_eq!(previous.blurs[0].content.revision, next.blurs[0].content.revision);
+    }
+
+    #[test]
     fn composite_capture_uses_real_pixel_bounds_and_zero_filter() {
         let layout_bounds = rect(0.0, 0.0, 1000.0, 700.0);
         let pixel_bounds = rect(40.0, 96.0, 420.0, 240.0);

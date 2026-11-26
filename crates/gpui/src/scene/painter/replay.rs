@@ -309,7 +309,18 @@ impl Painter {
                         self.pop_replayed_layer();
                     }
                 }
-                PaintOperation::StartBlur(config) => self.begin_blur(config.clone()),
+                PaintOperation::StartBlur(config) => {
+                    // Replay must preserve the same published content owner as
+                    // a normal isolated-layer paint. The closing capture still
+                    // proves equality before it adopts this candidate.
+                    if let Some(previous) = config.layer_id.as_ref()
+                        .and_then(|id| prev_scene.blur_content_for(id))
+                    {
+                        self.begin_previous_blur(config.clone(), Some(previous));
+                    } else {
+                        self.begin_blur(config.clone());
+                    }
+                }
                 PaintOperation::EndBlur => self.end_blur(),
             }
         }
