@@ -20,7 +20,7 @@ use std::{
     thread::panicking,
 };
 
-use super::{Context, fast_dependencies::AppDependencies};
+use super::{Context, fast_dependencies::{AppDependencies, StateReadRecording}};
 #[cfg(any(test, feature = "leak-detection"))]
 mod leak_detection;
 mod weak_entity;
@@ -218,6 +218,14 @@ impl EntityMap {
             return;
         }
         self.dependencies.borrow_mut().note_global_read((global, existence));
+    }
+
+    pub(crate) fn begin_state_reads(&self) -> StateReadRecording {
+        if self.tracking_frame_dependencies {
+            self.dependencies.borrow().begin_state_reads()
+        } else {
+            StateReadRecording::enter(None)
+        }
     }
 
     pub(crate) fn tracking_frame_dependencies(&self) -> bool {

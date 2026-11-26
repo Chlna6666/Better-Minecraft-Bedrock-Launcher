@@ -5,7 +5,7 @@
 
 use crate::EntityId;
 use collections::{FxHashMap, FxHashSet};
-use std::{any::TypeId, ops::Range, rc::Rc};
+use std::{any::TypeId, cell::{Cell, RefCell}, ops::Range, rc::{Rc, Weak}};
 
 /// Lists of what retained subtrees read, each kept once and shared by every
 /// subtree that read the same: a view built again reads what it read last
@@ -108,10 +108,12 @@ pub(crate) fn merge_sorted<T: Ord + Copy>(a: &Rc<[T]>, b: &Rc<[T]>) -> Rc<[T]> {
 pub(crate) struct AppDependencies {
     entity_log: Vec<EntityId>,
     global_log: Vec<(TypeId, Option<bool>)>,
+    state_read_log: Rc<RefCell<Vec<StateRead>>>,
     recording: DependencyRecording,
     ranges: Vec<LogRanges>,
     scratch_entities: Vec<EntityId>,
     scratch_globals: Vec<(TypeId, Option<bool>)>,
+    scratch_states: Vec<StateRead>,
     interned_entities: Interned<EntityId>,
     interned_globals: Interned<(TypeId, Option<bool>)>,
 }
@@ -121,12 +123,14 @@ struct DependencyRecording {
     owner: Option<EntityId>,
     entities: usize,
     globals: usize,
+    states: usize,
 }
 
 struct LogRanges {
     owner: Option<EntityId>,
     entities: Range<usize>,
     globals: Range<usize>,
+    states: Range<usize>,
 }
 
 /// The entity and global portion of Fast's RenderDependencies. Global presence
@@ -135,6 +139,7 @@ struct LogRanges {
 pub(crate) struct RenderDependencies {
     pub(crate) entities: Rc<[EntityId]>,
     pub(crate) globals: Rc<[(TypeId, Option<bool>)]>,
+    pub(crate) states: Rc<[StateRead]>,
 }
 
 impl AppDependencies {
@@ -163,13 +168,16 @@ impl AppDependencies {
     fn close_recording(&mut self) {
         let entities = self.recording.entities..self.entity_log.len();
         let globals = self.recording.globals..self.global_log.len();
-        if !entities.is_empty() || !globals.is_empty() {
+        let states = self.recording.states..self.state_read_log.borrow().len();
+        if !entities.is_empty() || !globals.is_empty() || !states.is_empty() {
             self.recording.entities = entities.end;
             self.recording.globals = globals.end;
+            self.recording.states = states.end;
             self.ranges.push(LogRanges {
                 owner: self.recording.owner,
                 entities,
                 globals,
+                states,
             });
         }
     }
@@ -186,6 +194,7 @@ impl AppDependencies {
     pub(crate) fn clear(&mut self) {
         self.entity_log.clear();
         self.global_log.clear();
+        self.state_read_log.borrow_mut().clear();
         self.ranges.clear();
         self.recording = DependencyRecording::default();
     }
@@ -198,13 +207,16 @@ impl AppDependencies {
         reads: &mut FxHashMap<Option<EntityId>, RenderDependencies>,
     ) {
         self.close_recording();
-        self.ranges.sort_unstable_by_key(|range| range.owner);
+        self.ranges.sort_unstable_by_key(|range| (range.owner, range.states.start));
+        let states_log = self.state_read_log.borrow();
         for group in self.ranges.chunk_by(|a, b| a.owner == b.owner) {
             self.scratch_entities.clear();
             self.scratch_globals.clear();
+            self.scratch_states.clear();
             for range in group {
                 self.scratch_entities.extend_from_slice(&self.entity_log[range.entities.clone()]);
                 self.scratch_globals.extend_from_slice(&self.global_log[range.globals.clone()]);
+                self.scratch_states.extend_from_slice(&states_log[range.states.clone()]);
             }
             sort_unique(&mut self.scratch_entities);
             sort_unique(&mut self.scratch_globals);
@@ -213,8 +225,18 @@ impl AppDependencies {
             let target = reads.entry(group[0].owner).or_default();
             target.entities = merge_sorted(&target.entities, &entities);
             target.globals = merge_sorted(&target.globals, &globals);
+            if !self.scratch_states.is_empty() {
+                self.scratch_states.extend_from_slice(&target.states);
+                target.states = unique_states(&self.scratch_states);
+            }
         }
+        drop(states_log);
+        self.scratch_states.clear();
         self.clear();
+    }
+
+    pub(crate) fn begin_state_reads(&self) -> StateReadRecording {
+        StateReadRecording::enter(Some(self.state_read_log.clone()))
     }
 
     #[cfg(test)]
@@ -234,5 +256,94 @@ impl AppDependencies {
         let mut sets = FxHashMap::default();
         self.append_to(&mut sets);
         sets
+    }
+}
+
+// StateVersion and first-read deduplication from fast/dependencies.rs,
+// adapted to keep weak state snapshots and window notification semantics.
+thread_local! {
+    static STATE_READ_LOG: RefCell<Option<Rc<RefCell<Vec<StateRead>>>>> = const { RefCell::new(None) };
+    static STATE_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+pub(crate) fn state_generation() -> u64 {
+    STATE_GENERATION.with(Cell::get)
+}
+
+#[derive(Clone, Default, Debug)]
+pub(crate) struct StateVersion(Rc<Cell<u64>>);
+
+impl StateVersion {
+    pub(crate) fn get(&self) -> u64 {
+        self.0.get()
+    }
+
+    pub(crate) fn bump(&self) {
+        self.0.set(self.0.get().wrapping_add(1));
+        STATE_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+    }
+
+    #[inline]
+    pub(crate) fn bump_if(&self, changed: bool) {
+        if changed {
+            self.bump();
+        }
+    }
+
+    pub(crate) fn read(&self) {
+        STATE_READ_LOG.with_borrow(|log| {
+            if let Some(log) = log {
+                log.borrow_mut().push(StateRead::new(self));
+            }
+        });
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StateReadStatus { Unchanged, Changed, Dead }
+
+#[derive(Clone)]
+pub(crate) struct StateRead {
+    state: Weak<Cell<u64>>,
+    at: u64,
+}
+
+impl StateRead {
+    pub(crate) fn new(version: &StateVersion) -> Self {
+        Self { state: Rc::downgrade(&version.0), at: version.get() }
+    }
+
+    fn id(&self) -> usize {
+        self.state.as_ptr() as usize
+    }
+
+    pub(crate) fn status(&self) -> StateReadStatus {
+        match self.state.upgrade() {
+            Some(state) if state.get() == self.at => StateReadStatus::Unchanged,
+            Some(_) => StateReadStatus::Changed,
+            None => StateReadStatus::Dead,
+        }
+    }
+}
+
+/// The first read of each state, in order, as in Fast's unique_states.
+fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
+    let mut seen = FxHashSet::with_capacity_and_hasher(states.len(), Default::default());
+    states.iter().filter(|state| seen.insert(state.id())).cloned().collect()
+}
+
+/// Shares the existing frame log with code that reads state without an App.
+/// Restore the nested caller's log, including on unwind.
+pub(crate) struct StateReadRecording(Option<Rc<RefCell<Vec<StateRead>>>>);
+
+impl StateReadRecording {
+    pub(crate) fn enter(log: Option<Rc<RefCell<Vec<StateRead>>>>) -> Self {
+        Self(STATE_READ_LOG.with(|current| current.replace(log)))
+    }
+}
+
+impl Drop for StateReadRecording {
+    fn drop(&mut self) {
+        STATE_READ_LOG.with(|current| { current.replace(self.0.take()); });
     }
 }

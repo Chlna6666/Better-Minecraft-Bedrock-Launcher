@@ -277,6 +277,21 @@ impl WindowInvalidator {
         }
     }
 
+    pub(in crate::window) fn changed_state_owners(&self, changed: &mut SmallVec<[EntityId; 4]>) {
+        let mut inner = self.inner.borrow_mut();
+        for (owner, reads) in &mut inner.view_reads {
+            if reads.states.iter().any(|read| read.status() == crate::StateReadStatus::Changed)
+                && let Some(owner) = *owner
+                && !changed.contains(&owner)
+            {
+                changed.push(owner);
+            }
+            if reads.states.iter().any(|read| read.status() == crate::StateReadStatus::Dead) {
+                reads.states = reads.states.iter().filter(|read| read.status() != crate::StateReadStatus::Dead).cloned().collect();
+            }
+        }
+    }
+
     /// Global notifications are already dispatched by the App effect queue.
     /// Never synthesize an Entity Notify for the dependent views.
     pub(crate) fn invalidate_global_dependency(&self, global: TypeId, exists: bool) {

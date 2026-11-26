@@ -1,47 +1,12 @@
 //! Scroll dependencies use state versions, not per-getter executable probes.
 //! StateVersion follows longbridge/gpui-fast fast/dependencies.rs (Apache-2.0;
 //! Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge).
-use crate::{EntityId, Pixels, Point, Window};
-use collections::FxHashMap;
+use crate::{EntityId, Pixels, Point, Window, StateRead, StateReadStatus, state_generation};
+pub(crate) use crate::StateVersion;
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut},
+    cell::{Ref, RefCell, RefMut},
     ops::{Deref, DerefMut},
-    rc::{Rc, Weak},
 };
-
-thread_local! {
-    // All scroll state is Rc-owned and mutated on the UI thread.
-    static SCROLL_GENERATION: Cell<u64> = const { Cell::new(0) };
-}
-
-#[derive(Clone, Default, Debug)]
-pub(crate) struct StateVersion(Rc<Cell<u64>>);
-
-impl StateVersion {
-    #[inline]
-    pub(crate) fn bump_if(&self, changed: bool) {
-        if changed {
-            self.0.set(self.0.get().wrapping_add(1));
-            SCROLL_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
-        }
-    }
-
-    #[inline]
-    pub(crate) fn bump(&self) {
-        self.bump_if(true);
-    }
-
-    pub(crate) fn read(&self) {
-        CAPTURE.with(|capture| {
-            let mut capture = capture.borrow_mut();
-            let Some(reads) = capture.as_mut() else { return; };
-            let ptr = Rc::as_ptr(&self.0);
-            if !reads.iter().any(|entry| entry.state.as_ptr() == ptr) {
-                reads.push(ScrollRead { state: Rc::downgrade(&self.0), at: self.0.get() });
-            }
-        });
-    }
-}
 
 /// Shared offset storage records actual changes at every mutable borrow,
 /// including wheel, clamping, and uniform-list writes.
@@ -84,41 +49,16 @@ impl Drop for OffsetWrite<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReadStatus { Unchanged, Changed, Dead }
-
-#[derive(Clone)]
-pub(crate) struct ScrollRead {
-    state: Weak<Cell<u64>>,
-    at: u64,
-}
-
-impl ScrollRead {
-    fn same_state(&self, other: &Self) -> bool {
-        self.state.ptr_eq(&other.state)
-    }
-
-    fn status(&self) -> ReadStatus {
-        match self.state.upgrade() {
-            Some(state) if state.get() == self.at => ReadStatus::Unchanged,
-            Some(_) => ReadStatus::Changed,
-            None => ReadStatus::Dead,
-        }
-    }
-}
-
-pub(crate) type ScrollReads = FxHashMap<EntityId, Vec<ScrollRead>>;
-
 #[derive(Clone)]
 pub(crate) struct MountedScrollSource {
     listener_index: usize,
     owner: EntityId,
-    read: ScrollRead,
+    read: StateRead,
 }
 
 impl MountedScrollSource {
     fn new(listener_index: usize, owner: EntityId, version: &StateVersion) -> Self {
-        Self { listener_index, owner, read: ScrollRead { state: Rc::downgrade(&version.0), at: version.0.get() } }
+        Self { listener_index, owner, read: StateRead::new(version) }
     }
 }
 
@@ -142,67 +82,7 @@ pub(crate) fn carry_scroll_sources(
     }));
 }
 
-thread_local! {
-    static CAPTURE: RefCell<Option<Vec<ScrollRead>>> = const { RefCell::new(None) };
-}
-
-/// Nested Render scopes restore the parent collector, including on unwind.
-pub(crate) struct ScrollReadScope(Option<Option<Vec<ScrollRead>>>);
-
-impl ScrollReadScope {
-    pub(crate) fn begin() -> Self {
-        Self(Some(CAPTURE.with(|capture| capture.replace(Some(Vec::new())))))
-    }
-
-    pub(crate) fn finish(mut self) -> Vec<ScrollRead> {
-        CAPTURE.with(|capture| capture.replace(self.0.take().expect("active scroll read scope")).unwrap_or_default())
-    }
-}
-
-impl Drop for ScrollReadScope {
-    fn drop(&mut self) {
-        // finish has already restored the parent (which may itself be None).
-        if let Some(previous) = self.0.take() {
-            CAPTURE.with(|capture| { capture.replace(previous); });
-        }
-    }
-}
-
-fn merge_reads(target: &mut Vec<ScrollRead>, incoming: Vec<ScrollRead>) {
-    if target.is_empty() {
-        *target = incoming;
-        return;
-    }
-    for entry in incoming {
-        if !target.iter().any(|current| current.same_state(&entry)) {
-            target.push(entry);
-        }
-    }
-}
-
 impl Window {
-    pub(crate) fn record_scroll_reads(&mut self, owner: EntityId, reads: Vec<ScrollRead>) {
-        // Even an empty set is a new Render result. Keeping the previous
-        // getters in that case resurrects dependencies Render stopped reading.
-        if !reads.is_empty() || self.scroll_reads.contains_key(&owner) {
-            merge_reads(self.next_scroll_reads.entry(owner).or_default(), reads);
-        }
-    }
-
-    pub(in crate::window) fn commit_scroll_reads(&mut self) {
-        for owner in &self.replayed_view_owners {
-            if let Some(reads) = self.scroll_reads.remove(owner) {
-                merge_reads(self.next_scroll_reads.entry(*owner).or_default(), reads);
-            }
-        }
-        self.next_scroll_reads.retain(|_, reads| !reads.is_empty());
-        std::mem::swap(&mut self.scroll_reads, &mut self.next_scroll_reads);
-        self.next_scroll_reads.clear();
-        // A frame can read a version and then change it during layout.
-        // Validate the newly published reads once even without another mutation.
-        self.checked_scroll_generation = None;
-    }
-
     /// Register immediately before the native wheel listener is appended.
     /// Its committed snapshot survives whole-view and deferred paint replay.
     pub(crate) fn watch_mounted_scroll(&mut self, owner: EntityId, version: &StateVersion) {
@@ -226,27 +106,18 @@ impl Window {
         if !self.invalidator.not_drawing() {
             return;
         }
-        let generation = SCROLL_GENERATION.with(Cell::get);
+        let generation = state_generation();
         if self.checked_scroll_generation == Some(generation) {
             return;
         }
         self.checked_scroll_generation = Some(generation);
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         for source in &self.rendered_frame.mounted_scroll_sources {
-            if source.read.status() == ReadStatus::Changed && !changed.contains(&source.owner) {
+            if source.read.status() == StateReadStatus::Changed && !changed.contains(&source.owner) {
                 changed.push(source.owner);
             }
         }
-        self.scroll_reads.retain(|&owner, reads| {
-            let mut dirty = false;
-            reads.retain(|entry| match entry.status() {
-                ReadStatus::Dead => false,
-                ReadStatus::Changed => { dirty = true; true }
-                ReadStatus::Unchanged => true,
-            });
-            if dirty && !changed.contains(&owner) { changed.push(owner); }
-            !reads.is_empty()
-        });
+        self.invalidator.changed_state_owners(&mut changed);
         self.invalidator.invalidate_dependent_views(changed);
     }
 }
@@ -254,31 +125,38 @@ impl Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppDependencies;
 
     #[test]
     fn reads_keep_earliest_version_and_do_not_own_state() {
         let state = StateVersion::default();
-        let scope = ScrollReadScope::begin();
+        let mut dependencies = AppDependencies::default();
+        let scope = dependencies.begin_state_reads();
         state.read();
         state.bump();
         state.read();
-        let reads = scope.finish();
+        drop(scope);
+        let sets = dependencies.into_sets();
+        let reads = &sets[&None].states;
         assert_eq!(reads.len(), 1);
-        assert_eq!(reads[0].status(), ReadStatus::Changed);
+        assert_eq!(reads[0].status(), StateReadStatus::Changed);
         drop(state);
-        assert_eq!(reads[0].status(), ReadStatus::Dead);
+        assert_eq!(reads[0].status(), StateReadStatus::Dead);
     }
 
     #[test]
     fn offset_only_bumps_on_change() {
         let state = ScrollOffset::default();
-        let scope = ScrollReadScope::begin();
+        let mut dependencies = AppDependencies::default();
+        let scope = dependencies.begin_state_reads();
         state.version.read();
         *state.borrow_mut() = Point::default();
-        let reads = scope.finish();
-        assert_eq!(reads[0].status(), ReadStatus::Unchanged);
+        drop(scope);
+        let sets = dependencies.into_sets();
+        let reads = &sets[&None].states;
+        assert_eq!(reads[0].status(), StateReadStatus::Unchanged);
         state.borrow_mut().y = crate::px(10.);
-        assert_eq!(reads[0].status(), ReadStatus::Changed);
+        assert_eq!(reads[0].status(), StateReadStatus::Changed);
     }
 
     #[test]
@@ -295,19 +173,23 @@ mod tests {
         assert_eq!(target.len(), 1);
         assert_eq!(target[0].listener_index, 13);
         state.bump();
-        assert_eq!(target[0].read.status(), ReadStatus::Changed);
+        assert_eq!(target[0].read.status(), StateReadStatus::Changed);
     }
 
     #[test]
     fn nested_scopes_restore_outer_capture() {
         let a = StateVersion::default();
         let b = StateVersion::default();
-        let outer = ScrollReadScope::begin();
+        let mut outer = AppDependencies::default();
+        let outer_scope = outer.begin_state_reads();
         a.read();
-        let inner = ScrollReadScope::begin();
+        let mut inner = AppDependencies::default();
+        let inner_scope = inner.begin_state_reads();
         b.read();
-        assert_eq!(inner.finish().len(), 1);
+        drop(inner_scope);
+        assert_eq!(inner.into_sets()[&None].states.len(), 1);
         b.read();
-        assert_eq!(outer.finish().len(), 2);
+        drop(outer_scope);
+        assert_eq!(outer.into_sets()[&None].states.len(), 2);
     }
 }
