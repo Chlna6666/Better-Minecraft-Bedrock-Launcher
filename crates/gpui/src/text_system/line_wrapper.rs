@@ -68,17 +68,11 @@ impl LineWrapper {
                             continue;
                         }
 
-                        if Self::is_word_char(c) {
-                            if prev_c == ' ' && c != ' ' && first_non_whitespace_ix.is_some() {
-                                last_candidate_ix = ix;
-                                last_candidate_width = width;
-                            }
-                        } else {
-                            // CJK may not be space separated, e.g.: `Hello world你好世界`
-                            if c != ' ' && first_non_whitespace_ix.is_some() {
-                                last_candidate_ix = ix;
-                                last_candidate_width = width;
-                            }
+                        if first_non_whitespace_ix.is_some()
+                            && Self::is_break_candidate(prev_c, c)
+                        {
+                            last_candidate_ix = ix;
+                            last_candidate_width = width;
                         }
 
                         if c != ' ' && first_non_whitespace_ix.is_none() {
@@ -102,10 +96,14 @@ impl LineWrapper {
                             first_non_whitespace_ix = Some(ix);
                         }
 
+                        // Like the upstream inline-element placeholder, the
+                        // element consumes the previous character context.
+                        new_prev_c = 'a';
                         element_width
                     }
                 };
 
+                prev_c = new_prev_c;
                 width += item_width;
                 if width > wrap_width && ix > last_wrap_ix {
                     if let (None, Some(first_non_whitespace_ix)) = (indent, first_non_whitespace_ix)
@@ -131,7 +129,6 @@ impl LineWrapper {
                     return Some(Boundary::new(last_wrap_ix, indent.unwrap_or(0)));
                 }
 
-                prev_c = new_prev_c;
             }
 
             None
@@ -147,6 +144,14 @@ impl LineWrapper {
         runs: &mut Vec<crate::TextRun>,
     ) -> crate::SharedString {
         truncate::line(self, line, truncate_width, truncation_suffix, runs)
+    }
+
+    /// Shared break admission for both fragment wrapping and shaped text.
+    #[inline]
+    pub(super) fn is_break_candidate(previous: char, current: char) -> bool {
+        current != ' '
+            && (previous == ' ' || !Self::is_word_char(current))
+            && crate::fast::line_break::allows_break_between(previous, current)
     }
 
     /// Any character in this list should be treated as a word character,

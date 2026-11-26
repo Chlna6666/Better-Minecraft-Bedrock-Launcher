@@ -1,5 +1,6 @@
 use crate::{Pixels, point, px};
 use smallvec::SmallVec;
+use itertools::Itertools as _;
 
 use super::super::LineWrapper;
 use super::{ShapedRun, WrapBoundary};
@@ -157,23 +158,23 @@ impl LineLayout {
                 run.glyphs.iter().enumerate().map(move |(glyph_ix, glyph)| {
                     (
                         WrapBoundary { run_ix, glyph_ix },
-                        text[glyph.index..].chars().next().unwrap(),
+                        glyph.index,
                         glyph.position.x,
                     )
                 })
             })
+            // GPUI upstream deduplicates adjacent shaped glyphs belonging
+            // to the same UTF-8 cluster before choosing a wrap boundary.
+            .dedup_by(|(_, previous_index, _), (_, index, _)| previous_index == index)
+            .map(|(boundary, index, x)| (boundary, text[index..].chars().next().unwrap(), x))
             .peekable();
 
         while let Some((boundary, character, x)) = glyphs.next() {
             if character == '\n' {
                 continue;
             }
-            if (LineWrapper::is_word_char(character)
-                && previous == ' '
-                && first_non_whitespace.is_some())
-                || (!LineWrapper::is_word_char(character)
-                    && character != ' '
-                    && first_non_whitespace.is_some())
+            if first_non_whitespace.is_some()
+                && LineWrapper::is_break_candidate(previous, character)
             {
                 last_candidate = Some(boundary);
                 last_candidate_x = x;
@@ -186,7 +187,7 @@ impl LineLayout {
                 if max_lines.is_some_and(|limit| boundaries.len() >= limit.saturating_sub(1)) {
                     break;
                 }
-                if let Some(candidate) = last_candidate.take() {
+                if let Some(candidate) = last_candidate.take().filter(|candidate| *candidate > last_boundary) {
                     last_boundary = candidate;
                     last_boundary_x = last_candidate_x;
                 } else {
@@ -198,5 +199,33 @@ impl LineLayout {
             previous = character;
         }
         boundaries
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+    use crate::{FontId, GlyphId, ShapedGlyph};
+
+    #[test]
+    fn shaped_wrap_does_not_split_a_glyph_cluster() {
+        let layout = LineLayout {
+            width: px(30.),
+            len: 3,
+            runs: vec![ShapedRun {
+                font_id: FontId(0),
+                glyphs: [(0, 0.), (1, 10.), (1, 14.), (2, 20.)].into_iter()
+                    .map(|(index, x)| ShapedGlyph {
+                        id: GlyphId(0),
+                        index,
+                        position: point(px(x), px(0.)),
+                        is_emoji: false,
+                    }).collect(),
+            }],
+            ..Default::default()
+        };
+        let boundaries = layout.compute_wrap_boundaries("abc", px(17.), None);
+        assert_eq!(boundaries[0], WrapBoundary { run_ix: 0, glyph_ix: 1 });
+        assert!(boundaries.iter().all(|boundary| boundary.glyph_ix != 2));
     }
 }

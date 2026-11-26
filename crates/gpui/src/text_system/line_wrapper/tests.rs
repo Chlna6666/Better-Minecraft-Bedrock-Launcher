@@ -387,3 +387,19 @@ fn test_wrap_shaped_line(cx: &mut TestAppContext) {
         )
     });
 }
+
+#[test]
+fn cjk_break_constraints_match_gpui_fast() {
+    let mut wrapper = build_wrapper();
+    let text = "今天的天气非常好，我们一起去公园散步吧。";
+    let fits = "今天的天气非常好";
+    let width = fits.chars().map(|c| wrapper.width_for_char(c))
+        .fold(px(0.), |sum, width| sum + width)
+        + wrapper.width_for_char('，') / 2.;
+    let boundaries = wrapper.wrap_line(&[LineFragment::text(text)], width)
+        .collect::<Vec<_>>();
+    assert_eq!(boundaries[0].ix, fits.len() - '好'.len_utf8());
+    assert!(!LineWrapper::is_break_candidate('（', '中'));
+    assert!(!LineWrapper::is_break_candidate('好', ','));
+    assert!(LineWrapper::is_break_candidate('好', '我'));
+}
