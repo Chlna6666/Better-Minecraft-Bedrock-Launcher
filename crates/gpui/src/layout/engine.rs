@@ -852,7 +852,7 @@ impl TaffyLayoutEngine {
         let layout_id = self.request_persistent_node(
             owner,
             children,
-            None::<MeasureRequest<fn() -> NodeMeasureFn>>,
+            None::<MeasureRequest<fn() -> Option<NodeMeasureFn>>>,
             Some(style_fingerprint),
             move || pending_style.to_taffy(rem_size, scale_factor),
         );
