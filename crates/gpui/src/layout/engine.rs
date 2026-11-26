@@ -274,7 +274,7 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<()>,
     // Zed GPUI #67223: measurement ownership uses the native generational node key.
-    // No Taffy context hash lookup and no duplicate measurement state.
+    // Index directly by the layout node rather than Taffy's separate context key.
     contexts: SecondaryMap<DefaultKey, NodeContext>,
     persistent_nodes: FxHashMap<u64, PersistentLayoutNode>,
     /// Nodes whose native style was rewritten by a percentage-passthrough parent.
@@ -1751,6 +1751,36 @@ mod tests {
         engine.robbed_parents.insert(id);
         assert!(engine.try_keep_retained(&claims, id).is_none());
         assert_eq!(engine.claimed_this_frame, 0);
+    }
+
+    #[test]
+    fn measurement_context_follows_native_node_lifetime() {
+        let mut engine = TaffyLayoutEngine::new();
+        let key = owner(&list_id());
+        let measured = engine.request_size_layout(
+            Some(key), false, Style::default(), crate::px(16.), 1.,
+            SizeMeasurement::Intrinsic(crate::size(crate::px(20.), crate::px(10.))),
+        );
+        assert!(engine.contexts.get(node_key(measured.into())).is_some());
+        engine.clear();
+
+        let plain = engine.request_layout(
+            Some(key), false, Style::default(), crate::px(16.), 1., &[],
+        );
+        assert_eq!(plain, measured);
+        assert!(engine.contexts.get(node_key(plain.into())).is_none());
+        engine.clear();
+
+        let measured = engine.request_size_layout(
+            Some(key), false, Style::default(), crate::px(16.), 1.,
+            SizeMeasurement::Intrinsic(crate::size(crate::px(30.), crate::px(10.))),
+        );
+        assert_eq!(plain, measured);
+        assert!(engine.contexts.get(node_key(measured.into())).is_some());
+        engine.clear();
+        engine.clear();
+        assert!(engine.contexts.get(node_key(measured.into())).is_none());
+        assert!(engine.contexts.is_empty());
     }
 
     #[test]
