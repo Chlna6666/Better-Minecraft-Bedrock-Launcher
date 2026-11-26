@@ -43,6 +43,9 @@ impl StateInner {
             }
         }
 
+        if self.items.summary().unrendered_count == 0 {
+            return;
+        }
         let cursor = self.items.cursor::<Count>(());
         let available_item_space = size(
             AvailableSpace::Definite(available_width),
@@ -83,7 +86,14 @@ impl StateInner {
     ) -> LayoutItemsResponse {
         let old_items = self.items.clone();
         let previous_top = self.logical_scroll_top;
-        let mut geometry_changed = false;
+        let mut changed_start = usize::MAX;
+        let mut changed_end = 0;
+        let mut note_geometry = |index: usize, old: Option<crate::Size<Pixels>>, new| {
+            if old != Some(new) {
+                changed_start = changed_start.min(index);
+                changed_end = changed_end.max(index + 1);
+            }
+        };
         let mut measured_items = std::mem::take(&mut self.measured_items_scratch);
         measured_items.clear();
         let mut item_layouts = std::mem::take(&mut self.item_layouts_scratch);
@@ -153,7 +163,7 @@ impl StateInner {
             }
 
             let item_size = item_size.unwrap();
-            geometry_changed |= item.size() != Some(item_size);
+            note_geometry(scroll_top.item_ix + ix, item.size(), item_size);
             rendered_height += item_size.height;
             max_item_width = max_item_width.max(item_size.width);
             measured_items.push_back(ListItem::Measured {
@@ -181,7 +191,7 @@ impl StateInner {
                                 element.layout_as_root(available_item_space, window, cx);
                             (element, element_size)
                         });
-                    geometry_changed |= item.size() != Some(element_size);
+                    note_geometry(item_index, item.size(), element_size);
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
                     measured_items.push_front(ListItem::Measured {
@@ -244,7 +254,7 @@ impl StateInner {
                     })
                 };
 
-                geometry_changed |= item.size() != Some(item_size);
+                note_geometry(item_index, item.size(), item_size);
                 measured_start = item_index;
                 leading_overdraw += item_size.height;
                 measured_items.push_front(ListItem::Measured {
@@ -256,14 +266,26 @@ impl StateInner {
             }
         }
 
-        let measured_range = measured_start..(measured_start + measured_items.len());
-        let mut cursor = old_items.cursor::<Count>(());
-        let mut new_items = cursor.slice(&Count(measured_range.start), Bias::Right);
-        new_items.extend(measured_items.drain(..), ());
-        cursor.seek(&Count(measured_range.end), Bias::Right);
-        new_items.append(cursor.suffix(), ());
+        // Scrolling across already measured rows does not change the geometry
+        // tree. Preserve its shared nodes rather than rebuilding a viewport-
+        // sized slice every frame. When a row changes, replace only the span
+        // from the first changed row through the last changed row.
+        let geometry_changed = changed_start < changed_end;
+        if geometry_changed {
+            debug_assert!(changed_start >= measured_start);
+            debug_assert!(changed_end <= measured_start + measured_items.len());
+            let mut cursor = old_items.cursor::<Count>(());
+            let mut new_items = cursor.slice(&Count(changed_start), Bias::Right);
+            new_items.extend(
+                measured_items.drain(changed_start - measured_start..changed_end - measured_start),
+                (),
+            );
+            cursor.seek(&Count(changed_end), Bias::Right);
+            new_items.append(cursor.suffix(), ());
+            self.items = new_items;
+        }
+        measured_items.clear();
         self.version.bump_if(geometry_changed || previous_top != self.logical_scroll_top);
-        self.items = new_items;
         self.measured_items_scratch = measured_items;
 
         if !rendered_focused_item {

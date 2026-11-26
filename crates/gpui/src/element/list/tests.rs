@@ -187,3 +187,48 @@ fn large_overdraw_bounds_speculative_measurements_and_keeps_row_indices(cx: &mut
     assert_eq!(state.bounds_for_item(501).unwrap().origin.y, px(10.));
     assert!(state.bounds_for_item(534).is_none());
 }
+
+#[gpui::test]
+fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut TestAppContext) {
+    use crate::{ListState, Styled, div, list, point, px, size};
+    use super::tree::Count;
+    use std::cell::Cell;
+    use sum_tree::Bias;
+
+    let cx = cx.add_empty_window();
+    let state = ListState::new(12, crate::ListAlignment::Top, px(0.)).measure_all();
+    let taller = Rc::new(Cell::new(false));
+    let builds = Rc::new(Cell::new(0));
+    let draw = || {
+        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
+            let taller = taller.clone();
+            let builds = builds.clone();
+            list(state.clone(), move |index, _, _| {
+                builds.set(builds.get() + 1);
+                div().w_full().h(if index == 2 && taller.get() { px(30.) } else { px(20.) }).into_any()
+            }).w_full().h_full()
+        });
+    };
+    draw();
+    let old_tree = state.0.borrow().items.clone();
+    let before = builds.get();
+    state.scroll_by(px(20.));
+    draw();
+    assert!(builds.get() > before, "exercise the normal visible-row layout path");
+    {
+        let state = state.0.borrow();
+        let mut old = old_tree.cursor::<Count>(());
+        let mut new = state.items.cursor::<Count>(());
+        old.seek(&Count(1), Bias::Right);
+        new.seek(&Count(1), Bias::Right);
+        assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()),
+            "unchanged measured rows must retain their original tree nodes");
+    }
+
+    taller.set(true);
+    draw();
+    let state = state.0.borrow();
+    assert_eq!(state.items.summary().count, 12);
+    assert_eq!(state.items.summary().height, px(250.));
+    drop(state);
+}
