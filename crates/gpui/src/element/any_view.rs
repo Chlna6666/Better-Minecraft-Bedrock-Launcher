@@ -139,6 +139,7 @@ enum ViewRequestLayoutKind {
     /// finds that what it inherits changed.
     Retained {
         admission: crate::window::RetainedViewRecord,
+        layout_claims: crate::layout::LayoutClaimSpans,
         layout_state_range: Range<usize>,
         retention: RetentionDraft,
         reused: Option<ReusedView>,
@@ -147,7 +148,7 @@ enum ViewRequestLayoutKind {
     Built {
         element: AnyElement,
         layout_root: LayoutId,
-        layout_claims: Rc<[crate::layout::LayoutClaim]>,
+        layout_claims: crate::layout::LayoutClaimSpans,
         prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
         context: Option<Rc<crate::window::RetainedPaintContext>>,
         layout_state_range: Range<usize>,
@@ -187,7 +188,7 @@ impl Element for ViewElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
         if let Some(global_id) = window.current_retained_element_id()
-            && let Some(admission) = window.admit_retained_view(&global_id, entity_id, cx)
+            && let Some((admission, layout_claims)) = window.admit_retained_view(&global_id, entity_id, cx)
         {
             let layout_root = admission.layout_root;
             let layout_state_range = window.replay_view_layout_states(&admission.layout_state_range);
@@ -196,6 +197,7 @@ impl Element for ViewElement {
                 ViewRequestLayout {
                     kind: ViewRequestLayoutKind::Retained {
                         admission,
+                        layout_claims,
                         layout_state_range,
                         retention: RetentionDraft::default(),
                         reused: None,
@@ -203,7 +205,7 @@ impl Element for ViewElement {
                 },
             );
         }
-        let claim_start = window.begin_view_record();
+        let claim_start = window.claim_log_len();
         let element_state_start = window.begin_view_element_states();
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
@@ -214,7 +216,7 @@ impl Element for ViewElement {
             (layout_id, element)
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
-        let layout_claims = window.finish_view_record_claims(claim_start);
+        let layout_claims = [claim_start..window.claim_log_len(), 0..0];
         let layout_state_range = window.view_layout_state_range(element_state_start);
         (
             layout_id,
@@ -256,6 +258,7 @@ impl Element for ViewElement {
             match &mut state.kind {
                 ViewRequestLayoutKind::Retained {
                     admission,
+                    layout_claims,
                     layout_state_range,
                     reused,
                     ..
@@ -268,10 +271,10 @@ impl Element for ViewElement {
                     }
                     // The committed layout no longer describes what this view inherits. Give the
                     // nodes back and draw the content into the slot the parent allocated.
-                    window.release_retained_view(admission);
+                    window.release_retained_view(layout_claims);
                     window.cancel_view_layout_states(layout_state_range);
                     let layout_root = admission.layout_root;
-                    let claim_start = window.begin_view_record();
+                    let claim_start = window.claim_log_len();
                     let element_state_start = window.begin_view_element_states();
                     let mut element = {
                         let type_name =
@@ -292,11 +295,11 @@ impl Element for ViewElement {
                         );
                         rebuilt_root
                     });
-                    let mut layout_claims = window.finish_view_record_claims(claim_start);
+                    let mut layout_claims = [0..0, claim_start..window.claim_log_len()];
                     if rebuilt_root != layout_root {
                         // The parent still references the admitted root. Do not publish
                         // a reusable record for that root after replacing its subtree.
-                        layout_claims = Rc::from([]);
+                        layout_claims = [0..0, 0..0];
                     }
                     state.kind = ViewRequestLayoutKind::Built {
                         element,
@@ -316,9 +319,9 @@ impl Element for ViewElement {
                     retention: state_retention,
                     ..
                 } => {
-                    let claim_start = window.begin_view_record();
+                    let claim_start = window.claim_log_len();
                     element.prepaint(window, cx);
-                    window.finish_view_prepaint_claims(claim_start, layout_claims);
+                    layout_claims[1] = claim_start..window.claim_log_len();
                     *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
                     *recorded_context = Some(context);
                     *state_retention = retention.take().expect("view retention slot");
@@ -365,7 +368,7 @@ impl Element for ViewElement {
         let entity_id = self.view.entity_id();
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
-            ViewRequestLayoutKind::Retained { admission, layout_state_range, retention, reused } => {
+            ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused } => {
                 let Some(reused) = reused.as_ref() else {
                     unreachable!("an admitted view is either drawn again or rebuilt in prepaint")
                 };
@@ -381,7 +384,7 @@ impl Element for ViewElement {
                     retention.nested.clone(),
                     crate::window::ViewRetentionCommit {
                         layout_root: admission.layout_root,
-                        layout_claims: admission.layout_claims.clone(),
+                        layout_claims: layout_claims.clone(),
                         prepaint_range: reused.prepaint_range.clone(),
                         paint_range: start..end,
                         bounds,

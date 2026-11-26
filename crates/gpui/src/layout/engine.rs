@@ -10,6 +10,7 @@ use std::{
 use taffy::{TaffyTree, TraversePartialTree as _};
 
 use super::{
+    LayoutClaimSpans,
     convert::ToTaffy,
     fingerprint::{
         hash_absolute_length, hash_display, hash_edges_absolute_length, hash_edges_definite_length,
@@ -125,7 +126,7 @@ pub struct TaffyLayoutEngine {
     request_frame: u64,
     claimed_this_frame: usize,
     claimed_key_log: Vec<Option<LayoutClaim>>,
-    open_key_recordings: usize,
+    committed_claim_log: Vec<Option<LayoutClaim>>,
     layout_changes: u64,
     remeasures: u64,
     robbed_parents: FxHashSet<LayoutId>,
@@ -183,7 +184,7 @@ impl TaffyLayoutEngine {
             request_frame: 1,
             claimed_this_frame: 0,
             claimed_key_log: Vec::new(),
-            open_key_recordings: 0,
+            committed_claim_log: Vec::new(),
             layout_changes: 0,
             remeasures: 0,
             robbed_parents: FxHashSet::default(),
@@ -276,6 +277,7 @@ impl TaffyLayoutEngine {
         }
         self.claimed_this_frame = 0;
         self.clear();
+        self.committed_claim_log.clear();
     }
 
     pub fn clear(&mut self) {
@@ -301,8 +303,7 @@ impl TaffyLayoutEngine {
             );
         }
         self.persistent_layout_reuses = 0;
-        debug_assert_eq!(self.open_key_recordings, 0);
-        self.open_key_recordings = 0;
+        std::mem::swap(&mut self.claimed_key_log, &mut self.committed_claim_log);
         self.claimed_key_log.clear();
         let mut transient = std::mem::take(&mut self.anonymous_nodes);
         for id in transient.drain(..) {
@@ -331,7 +332,9 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
         trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
-        trim_to_working_set!(self.claimed_key_log, node_working_set);
+        trim_to_working_set!(self.claimed_key_log, self.committed_claim_log.len());
+        let claim_count = self.committed_claim_log.len();
+        trim_to_working_set!(self.committed_claim_log, claim_count);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
         self.nodes_requested = 0;
@@ -363,6 +366,7 @@ impl TaffyLayoutEngine {
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.anonymous_nodes.shrink_to_fit();
             self.claimed_key_log.shrink_to_fit();
+            self.committed_claim_log.shrink_to_fit();
         }
         if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
             let taffy = &mut self.taffy;
@@ -393,79 +397,64 @@ impl TaffyLayoutEngine {
     // longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, fast/layout.rs.
     // Copyright 2022 - 2025 Zed Industries, Inc. Copyright 2026 Longbridge.
     // SPDX-License-Identifier: Apache-2.0
-    pub(crate) fn record_claimed_keys(&mut self) -> usize {
-        self.open_key_recordings += 1;
+    /// Every native claim is recorded once. Nested views retain ranges, not arrays.
+    pub(crate) fn claim_log_len(&self) -> usize {
         self.claimed_key_log.len()
     }
 
-    /// Ends the recording started at `start`, returning the keys it saw.
-    pub(crate) fn finish_recording_claimed_keys(&mut self, start: usize) -> Vec<LayoutClaim> {
-        let keys = self.claimed_key_log[start..].iter().flatten().copied().collect();
-        self.open_key_recordings -= 1;
-        if self.open_key_recordings == 0 {
-            self.claimed_key_log.clear();
+    /// Validate both committed spans before claiming anything. Preserve tombstones
+    /// so descendant spans can be rebased without a secondary mapping table.
+    pub(crate) fn try_keep_retained(
+        &mut self,
+        spans: &LayoutClaimSpans,
+        root: LayoutId,
+    ) -> Option<LayoutClaimSpans> {
+        let first = self.committed_claim_log.get(spans[0].clone())?;
+        let second = self.committed_claim_log.get(spans[1].clone())?;
+        if !first.iter().chain(second).flatten().any(|claim| claim.id == root) {
+            return None;
         }
-        keys
-    }
-
-
-    /// Every node must still have the recorded identity and be unclaimed.
-    /// Validate the complete slice before modifying any request stamps.
-    pub(crate) fn try_keep_retained(&mut self, claims: &[LayoutClaim]) -> bool {
         let frame = self.request_frame;
-        let all_there = claims.iter().all(|claim| {
+        if !first.iter().chain(second).flatten().all(|claim| {
             self.persistent_nodes.get(&claim.key).is_some_and(|node| {
                 node.id == claim.id
                     && node.claimed_in_frame != frame
                     && !node.offscreen
                     && !self.robbed_parents.contains(&node.id)
             })
-        });
-        if !all_there {
-            return false;
+        }) {
+            return None;
         }
-        for claim in claims {
+        let start = self.claimed_key_log.len();
+        for claim in first.iter().chain(second).flatten() {
             let node = self.persistent_nodes.get_mut(&claim.key)
                 .expect("validated retained layout claim");
-            // Recordings produce unique claims; this also handles duplicate
-            // input defensively without inflating the live-node count.
             if node.claimed_in_frame != frame {
                 node.claimed_in_frame = frame;
                 self.claimed_this_frame += 1;
-                if self.open_key_recordings > 0 {
-                    self.claimed_key_log.push(Some(*claim));
-                }
             }
         }
-        true
+        self.claimed_key_log.extend_from_slice(first);
+        let middle = self.claimed_key_log.len();
+        self.claimed_key_log.extend_from_slice(second);
+        Some([start..middle, middle..self.claimed_key_log.len()])
     }
 
-    /// Undo a just-acquired transaction before rebuilding the subtree.
-    /// Released entries become tombstones: nested recording offsets stay stable.
-    pub(crate) fn release_kept(&mut self, claims: &[LayoutClaim]) {
+    /// Cancel exactly the speculative claims made by admission, without
+    /// scanning unrelated nodes or allocating a temporary set.
+    pub(crate) fn release_kept(&mut self, spans: &LayoutClaimSpans) {
         let frame = self.request_frame;
-        for claim in claims {
-            if let Some(node) = self.persistent_nodes.get_mut(&claim.key)
-                && node.id == claim.id && node.claimed_in_frame == frame
-            {
-                node.claimed_in_frame = frame.wrapping_sub(1);
-                self.claimed_this_frame -= 1;
-            }
-        }
-        if self.open_key_recordings > 0 {
-            let released: FxHashSet<_> = claims.iter().copied().collect();
-            for entry in &mut self.claimed_key_log {
-                if entry.is_some_and(|claim| released.contains(&claim)) {
-                    *entry = None;
+        for span in spans {
+            for entry in &mut self.claimed_key_log[span.clone()] {
+                let Some(claim) = entry.take() else { continue; };
+                if let Some(node) = self.persistent_nodes.get_mut(&claim.key)
+                    && node.id == claim.id && node.claimed_in_frame == frame
+                {
+                    node.claimed_in_frame = frame.wrapping_sub(1);
+                    self.claimed_this_frame -= 1;
                 }
             }
         }
-    }
-
-    pub(crate) fn claim_is_current(&self, claim: &LayoutClaim) -> bool {
-        self.persistent_nodes.get(&claim.key).is_some_and(|node| {
-            node.id == claim.id && node.claimed_in_frame == self.request_frame
-        })
     }
 
     /// Reconcile the retained Element's native layout nodes. Only genuinely
@@ -505,9 +494,7 @@ impl TaffyLayoutEngine {
             node.claimed_in_frame = self.request_frame;
             self.claimed_this_frame += 1;
             let id = node.id;
-            if self.open_key_recordings > 0 {
-                self.claimed_key_log.push(Some(LayoutClaim { key, id }));
-            }
+            self.claimed_key_log.push(Some(LayoutClaim { key, id }));
             self.robbed_parents.remove(&id);
             // Compare the actual native inputs. GPUI interaction/scroll flags
             // can change without changing Taffy's layout style; they must not
@@ -598,9 +585,7 @@ impl TaffyLayoutEngine {
             let is_measured = measure.is_some();
             let id = self.create_taffy_node(build_style(), children, measure);
             self.claimed_this_frame += 1;
-            if self.open_key_recordings > 0 {
-                self.claimed_key_log.push(Some(LayoutClaim { key, id }));
-            }
+            self.claimed_key_log.push(Some(LayoutClaim { key, id }));
             self.persistent_nodes.insert(
                 key,
                 PersistentLayoutNode {
@@ -1208,30 +1193,24 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();
         let row = row_id(2);
-        let outer = engine.record_claimed_keys();
         let first = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
-        let inner = engine.record_claimed_keys();
+        let start = engine.claim_log_len();
         engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
-        let inner_claims = engine.finish_recording_claimed_keys(inner);
-        let claims = engine.finish_recording_claimed_keys(outer);
-        assert_eq!(inner_claims.len(), 1);
-        assert_eq!(claims.len(), 2);
-        assert_eq!(claims[1], inner_claims[0]);
+        let end = engine.claim_log_len();
+        let claims = [0..start, start..end];
+        assert_eq!(end, 2);
         engine.clear();
 
-        let recording = engine.record_claimed_keys();
-        let mut invalid = claims.clone();
-        invalid[1].id = first;
-        assert!(!engine.try_keep_retained(&invalid));
+        assert!(engine.try_keep_retained(&[0..end+1, 0..0], first).is_none());
         assert_eq!(engine.claimed_this_frame, 0);
-        assert!(engine.try_keep_retained(&claims));
-        assert!(!engine.try_keep_retained(&claims));
+        let kept = engine.try_keep_retained(&claims, first).unwrap();
+        assert!(engine.try_keep_retained(&claims, first).is_none());
         assert_eq!(engine.claimed_this_frame, 2);
-        engine.release_kept(&claims);
+        engine.release_kept(&kept);
         assert_eq!(engine.claimed_this_frame, 0);
-        assert!(engine.finish_recording_claimed_keys(recording).is_empty());
+        assert!(engine.claimed_key_log.iter().all(Option::is_none));
         assert_eq!(engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]), first);
-        assert!(!engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, first).is_none());
         assert_eq!(engine.claimed_this_frame, 1);
     }
 
@@ -1239,12 +1218,12 @@ mod tests {
     fn subtree_claim_refuses_robbed_layout_nodes() {
         let mut engine = TaffyLayoutEngine::new();
         let root = list_id();
-        let recording = engine.record_claimed_keys();
+        let start = engine.claim_log_len();
         let id = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
-        let claims = engine.finish_recording_claimed_keys(recording);
+        let claims = [start..engine.claim_log_len(), 0..0];
         engine.clear();
         engine.robbed_parents.insert(id);
-        assert!(!engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, id).is_none());
         assert_eq!(engine.claimed_this_frame, 0);
     }
 
@@ -1310,12 +1289,12 @@ mod tests {
             engine.clear();
         }
         assert_eq!(engine.taffy.total_node_count(), 0);
-        let start = engine.record_claimed_keys();
+        let start = engine.claim_log_len();
         let id = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
-        let claims = engine.finish_recording_claimed_keys(start);
+        let claims = [start..engine.claim_log_len(), 0..0];
         engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
-        assert!(!engine.try_keep_retained(&claims));
+        assert!(engine.try_keep_retained(&claims, id).is_none());
         let new = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
         assert_ne!(id, new);
     }

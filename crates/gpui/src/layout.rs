@@ -17,6 +17,7 @@ mod placement_tests;
 pub use builders::{absolute_fill, center, h_stack, relative_fill, v_stack};
 pub(crate) use convert::snap_logical_to_device_pixel;
 pub use engine::TaffyLayoutEngine;
-pub(crate) use engine::LayoutClaim;
+/// Request-layout and prepaint claims in the double-buffered native log.
+pub(crate) type LayoutClaimSpans = [std::ops::Range<usize>; 2];
 pub(crate) use key::layout_node_key;
 pub use metrics::{AvailableSpace, LayoutId};

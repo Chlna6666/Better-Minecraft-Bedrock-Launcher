@@ -11,7 +11,7 @@
 
 use super::draw_reuse::{rebase_paint_range, rebase_prepaint_range};
 use super::*;
-use crate::layout::LayoutClaim;
+use crate::layout::LayoutClaimSpans;
 
 /// Everything needed to draw one view subtree again without building it.
 #[derive(Clone)]
@@ -19,7 +19,7 @@ pub(crate) struct RetainedViewRecord {
     /// The view's committed layout root, still owned by the layered layout engine.
     pub(crate) layout_root: LayoutId,
     /// Every persistent node the subtree claimed, in claim order.
-    pub(crate) layout_claims: Rc<[LayoutClaim]>,
+    pub(crate) layout_claims: LayoutClaimSpans,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
@@ -36,7 +36,7 @@ pub(crate) struct ViewRetentionSlot(usize);
 
 pub(crate) struct ViewRetentionCommit {
     pub(crate) layout_root: LayoutId,
-    pub(crate) layout_claims: Rc<[LayoutClaim]>,
+    pub(crate) layout_claims: LayoutClaimSpans,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) bounds: Bounds<Pixels>,
@@ -70,7 +70,7 @@ impl Window {
         key: &GlobalElementId,
         view_id: EntityId,
         cx: &App,
-    ) -> Option<RetainedViewRecord> {
+    ) -> Option<(RetainedViewRecord, LayoutClaimSpans)> {
         if !self.view_retention_eligible(view_id, cx) {
             return None;
         }
@@ -79,27 +79,22 @@ impl Window {
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
             || self.rendered_frame.accessed_element_states.get(record.layout_state_range.clone()).is_none()
             || self.rendered_frame.view_retention_order.get(record.nested.clone()).is_none()
-            || !record.layout_claims.iter().any(|claim| claim.id == record.layout_root)
         {
             return None;
         }
-        if !self
-            .layout_engine
+        let claims = self.layout_engine
             .as_mut()
             .expect("layout engine is installed while a frame is drawn")
-            .try_keep_retained(&record.layout_claims)
-        {
-            return None;
-        }
-        Some(record)
+            .try_keep_retained(&record.layout_claims, record.layout_root)?;
+        Some((record, claims))
     }
 
     /// Gives the admitted layout back so the view can be built normally.
-    pub(crate) fn release_retained_view(&mut self, record: &RetainedViewRecord) {
+    pub(crate) fn release_retained_view(&mut self, claims: &LayoutClaimSpans) {
         self.layout_engine
             .as_mut()
             .expect("layout engine is installed while a frame is drawn")
-            .release_kept(&record.layout_claims);
+            .release_kept(claims);
     }
 
     /// The admitted record still describes this view's inherited context.
@@ -190,40 +185,11 @@ impl Window {
         slot.0 + 1..self.next_frame.view_retention_order.len()
     }
 
-    pub(crate) fn begin_view_record(&mut self) -> usize {
+    pub(crate) fn claim_log_len(&self) -> usize {
         self.layout_engine
-            .as_mut()
+            .as_ref()
             .expect("layout engine is installed while a frame is drawn")
-            .record_claimed_keys()
-    }
-
-    pub(crate) fn finish_view_record_claims(&mut self, claim_start: usize) -> Rc<[LayoutClaim]> {
-        Rc::from(
-            self.layout_engine
-                .as_mut()
-                .expect("layout engine is installed while a frame is drawn")
-                .finish_recording_claimed_keys(claim_start),
-        )
-    }
-
-    /// Lazy children (notably List rows) request layout during prepaint.
-    /// Merge those claims with the earlier request-layout record. A nested
-    /// view may have released and rebuilt some of the earlier claims.
-    pub(crate) fn finish_view_prepaint_claims(
-        &mut self,
-        start: usize,
-        claims: &mut Rc<[LayoutClaim]>,
-    ) {
-        let engine = self.layout_engine.as_mut().expect("layout engine installed");
-        let extra = engine.finish_recording_claimed_keys(start);
-        if extra.is_empty() {
-            return;
-        }
-        let mut seen = FxHashSet::default();
-        let merged: Vec<_> = claims.iter().copied().chain(extra)
-            .filter(|claim| engine.claim_is_current(claim) && seen.insert(*claim))
-            .collect();
-        *claims = Rc::from(merged);
+            .claim_log_len()
     }
 
     /// Stores this view's record once its paint range is known.
@@ -241,7 +207,7 @@ impl Window {
                     self.replayed_view_owners.insert(*owner);
                 }
             }
-            self.copy_nested_view_records(source, &nested, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
+            self.copy_nested_view_records(source, &nested, &commit.layout_claims, &commit.prepaint_range, &commit.paint_range, &commit.layout_state_range);
         }
         let key = self.next_frame.view_retention_order[index].clone();
         self.next_frame.view_retentions.insert(
@@ -263,6 +229,7 @@ impl Window {
         &mut self,
         source: &RetainedViewRecord,
         target_nested: &Range<usize>,
+        target_claims: &LayoutClaimSpans,
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
         target_states: &Range<usize>,
@@ -302,6 +269,9 @@ impl Window {
             let Some(descendants) = rebase_span(&nested.nested, &source.nested, target_nested) else {
                 continue;
             };
+            let Some(layout_claims) = rebase_claims(&nested.layout_claims, &source.layout_claims, target_claims) else {
+                continue;
+            };
             self.next_frame.view_retentions.insert(
                 key.clone(),
                 RetainedViewRecord {
@@ -309,6 +279,7 @@ impl Window {
                     paint_range: paint,
                     layout_state_range: layout_states,
                     nested: descendants,
+                    layout_claims,
                     ..nested
                 },
             );
@@ -323,4 +294,16 @@ fn rebase_span(range: &Range<usize>, source: &Range<usize>, target: &Range<usize
     let start = target.start.checked_add(range.start - source.start)?;
     let end = target.start.checked_add(range.end - source.start)?;
     (end <= target.end).then_some(start..end)
+}
+
+
+fn rebase_claims(claims: &LayoutClaimSpans, source: &LayoutClaimSpans, target: &LayoutClaimSpans) -> Option<LayoutClaimSpans> {
+    let rebase = |range: &Range<usize>| {
+        if range.is_empty() {
+            return Some(target[0].start..target[0].start);
+        }
+        rebase_span(range, &source[0], &target[0])
+            .or_else(|| rebase_span(range, &source[1], &target[1]))
+    };
+    Some([rebase(&claims[0])?, rebase(&claims[1])?])
 }
