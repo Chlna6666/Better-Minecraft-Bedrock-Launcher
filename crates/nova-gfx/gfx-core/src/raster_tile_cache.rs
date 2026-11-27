@@ -244,6 +244,26 @@ impl RasterTileCache {
         &mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
         ordered_after: impl FnOnce(SubmissionId) -> bool,
     ) -> Option<RasterTileRead> {
+        self.lookup_ordered_internal(key, generation, raster, format, None, ordered_after)
+            .map(|(read, _)| read)
+    }
+
+    /// Resolve a lease and its already resident consumer-slot descriptor in
+    /// the same cache lookup. No descriptor is allocated here. The returned
+    /// binding is valid only while the cache's physical resources are not
+    /// mutated, and has the same external buffer ownership contract as
+    /// sampling_binding. A missing binding requires sampling_binding.
+    pub fn lookup_ordered_with_binding(
+        &mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
+        slot: usize, ordered_after: impl FnOnce(SubmissionId) -> bool,
+    ) -> Option<(RasterTileRead, Option<BindGroupId>)> {
+        self.lookup_ordered_internal(key, generation, raster, format, Some(slot), ordered_after)
+    }
+
+    fn lookup_ordered_internal(
+        &mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
+        slot: Option<usize>, ordered_after: impl FnOnce(SubmissionId) -> bool,
+    ) -> Option<(RasterTileRead, Option<BindGroupId>)> {
         let e = self.entries.get_mut(&key)?;
         if e.stale || e.generation != generation || e.raster != raster || e.format != format {
             return None;
@@ -255,7 +275,16 @@ impl RasterTileCache {
         };
         let texture = e.handles()?;
         e.last_used = self.frame;
-        Some(RasterTileRead { key, serial: e.serial, texture, writer, region: e.region(self.pages.get(&e.texture)) })
+        let page = self.pages.get(&e.texture);
+        let binding = slot.and_then(|slot| {
+            let bindings = if e.page_slot.is_some() {
+                &page?.sampling_bindings
+            } else {
+                &e.sampling_bindings
+            };
+            bindings.iter().find(|(key, _)| *key == slot).map(|(_, binding)| *binding)
+        });
+        Some((RasterTileRead { key, serial: e.serial, texture, writer, region: e.region(page) }, binding))
     }
 
     /// Reuse a sampled descriptor for a physical tile and stable consumer
@@ -638,6 +667,50 @@ mod tests {
         assert!(cache.entries.values().all(Entry::idle));
         assert!(cache.lookup_ordered(key(1), 1, raster(), Format::Bgra8Unorm, |_| true).is_none());
         assert_eq!(cache.physical_textures(), 1);
+    }
+
+    #[test]
+    fn ordered_lookup_resolves_only_live_slot_descriptors() {
+        let mut cache = RasterTileCache::new(4096);
+        let writer = SubmissionId::from_parts(4, 1);
+        let binding = BindGroupId::from_parts(8, 1);
+        let mut a = entry(3, State::Submitted(writer));
+        a.sampling_bindings.push((1, binding));
+        cache.entries.insert(key(0), a);
+        assert!(cache.lookup_ordered_with_binding(key(0), 3, raster(), Format::Bgra8Unorm, 1, |_| false).is_none());
+        let (read, resident) = cache.lookup_ordered_with_binding(
+            key(0), 3, raster(), Format::Bgra8Unorm, 1, |id| id == writer).unwrap();
+        assert_eq!(read.writer(), Some(writer));
+        assert_eq!(resident, Some(binding));
+        assert_eq!(cache.lookup_ordered_with_binding(
+            key(0), 3, raster(), Format::Bgra8Unorm, 0, |_| true).unwrap().1, None);
+        cache.complete(writer);
+        assert_eq!(cache.lookup_ordered_with_binding(
+            key(0), 3, raster(), Format::Bgra8Unorm, 1, |_| false).unwrap().1, Some(binding));
+        cache.invalidate_layer(7);
+        assert!(cache.lookup_ordered_with_binding(key(0), 3, raster(), Format::Bgra8Unorm, 1, |_| true).is_none());
+    }
+
+    #[test]
+    fn ordered_lookup_resolves_shared_page_descriptor_and_distinct_regions() {
+        let mut cache = RasterTileCache::new(4096);
+        let binding = BindGroupId::from_parts(9, 1);
+        let mut a = entry(1, State::Ready);
+        let mut b = entry(1, State::Ready);
+        a.page_slot = Some(0);
+        b.page_slot = Some(1);
+        let mut bindings = SmallVec::new();
+        bindings.push((0, binding));
+        cache.pages.insert(a.texture, Page { cell: raster().extent,
+            extent: Extent2d::new(16, 32).unwrap(), format: Format::Bgra8Unorm,
+            view: a.view, bytes: 2048, cells: 2, occupied: 3, sampling_bindings: bindings });
+        cache.entries.insert(key(0), a);
+        cache.entries.insert(key(1), b);
+        let (a, first) = cache.lookup_ordered_with_binding(key(0), 1, raster(), Format::Bgra8Unorm, 0, |_| false).unwrap();
+        let (b, second) = cache.lookup_ordered_with_binding(key(1), 1, raster(), Format::Bgra8Unorm, 0, |_| false).unwrap();
+        assert_eq!(first, Some(binding));
+        assert_eq!(first, second);
+        assert_ne!(a.region(), b.region());
     }
 
     #[test]

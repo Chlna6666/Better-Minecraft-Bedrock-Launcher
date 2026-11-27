@@ -1247,9 +1247,13 @@ impl NovaRenderer {
         // All writes for these tiles are issued on OrderedGraphics by this
         // owner. Accept a pending lease only if its exact writer is tracked.
         let requests: Vec<_> = plans.iter().flat_map(|plan| plan.requests.iter().map(move |request| (plan.layer, request))).collect();
+        let mut resident_bindings = SmallVec::<[Option<BindGroupId>; 64]>::new();
         let mut reads: Vec<Option<RasterTileRead>> = requests.iter().map(|(layer, request)| {
-            self.raster_tiles.lookup_ordered(request.key, layer.generation, request.raster, format,
-                |writer| self.pending_submissions.iter().any(|pending| pending.submission == writer || pending.predecessors.contains(&writer)))
+            let resolved = self.raster_tiles.lookup_ordered_with_binding(
+                request.key, layer.generation, request.raster, format, slot,
+                |writer| self.pending_submissions.iter().any(|pending| pending.submission == writer || pending.predecessors.contains(&writer)));
+            resident_bindings.push(resolved.and_then(|(_, binding)| binding));
+            resolved.map(|(read, _)| read)
         }).collect();
         let misses = reads.iter().filter(|read| read.is_none()).count();
         let mut new_writer = None;
@@ -1471,6 +1475,10 @@ impl NovaRenderer {
         // the exact registered fences, rather than preparing it a second time.
         let mut extension_steps = Vec::new();
         self.prepare_renderer_extensions_on(&outside.extensions, &mut extension_steps, frame_time, device)?;
+        // No cache reservation, eviction or external producer occurs on
+        // this all-hit static path. The combined lookup's native binding
+        // identities remain valid. Mixed/miss paths revalidate every lease.
+        let reuse_lookup_bindings = misses == 0 && outside.extensions.is_empty();
         // Without extensions every source run emits exactly one command.
         // The immutable root already owns the correct boundaries.
         let expanded;
@@ -1560,12 +1568,16 @@ impl NovaRenderer {
             // Resolve live sampling leases before testing command identity.
             // An evicted/recreated view cannot reuse a stale descriptor ID.
             let mut tiles = Vec::with_capacity(reads.len());
-            for (&instance, read) in instances.iter().zip(&reads) {
-                let group = self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
-                    label: Some("resident scroll composite binding".into()),
-                    layout: self.poly_sprite_bind_group_layout,
-                    entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
-                })?;
+            for ((&instance, read), &resident) in instances.iter().zip(&reads).zip(&resident_bindings) {
+                let group = if reuse_lookup_bindings && let Some(group) = resident {
+                    group
+                } else {
+                    self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
+                        label: Some("resident scroll composite binding".into()),
+                        layout: self.poly_sprite_bind_group_layout,
+                        entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
+                    })?
+                };
                 tiles.push((instance, group));
             }
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
