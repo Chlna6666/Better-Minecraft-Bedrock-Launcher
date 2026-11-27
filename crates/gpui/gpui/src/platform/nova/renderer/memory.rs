@@ -242,6 +242,10 @@ impl NovaRenderer {
                 .map_or(0, BackdropBlurTargets::byte_size),
             root_color_bytes: self.root_color.target.as_ref().map_or(0, |root| root.target.byte_size),
             scroll_tile_bytes: self.raster_tiles.bytes(),
+            scroll_resident_buffer_bytes: self.scroll_composite_slots.iter()
+                .map(|slot| slot.gpu_bytes()).fold(0u64, u64::saturating_add),
+            scroll_inflight_bytes: self.scroll_raster_resources.iter()
+                .map(|(_, resources)| resources.gpu_bytes()).fold(0u64, u64::saturating_add),
             pending_offscreen_bytes: self.pending_offscreen_targets.as_ref()
                 .map_or(0, |targets| targets.byte_size())
                 .saturating_add(self.retired_offscreen_targets.iter()

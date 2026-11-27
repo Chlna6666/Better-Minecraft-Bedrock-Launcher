@@ -96,9 +96,14 @@ pub(super) struct Resources {
     buffers: Vec<BufferId>,
     bindings: Vec<BindGroupId>,
     depths: Vec<(TextureId, TextureViewId)>,
+    gpu_bytes: u64,
 }
 
 impl Resources {
+    pub(super) fn gpu_bytes(&self) -> u64 {
+        self.gpu_bytes
+    }
+
     fn allocate_buffer<D: ResourceDevice>(&mut self, device: &mut D, size: usize, usage: BufferUsage) -> Result<BufferId> {
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("scroll raster stream".into()),
@@ -107,6 +112,7 @@ impl Resources {
             memory_location: MemoryLocation::CpuToGpu,
         })?;
         self.buffers.push(buffer);
+        self.gpu_bytes = self.gpu_bytes.saturating_add(size as u64);
         Ok(buffer)
     }
 
@@ -282,8 +288,12 @@ impl StaticStreams {
         bytes <= RETAINED_OUTSIDE_STREAM_BYTES
     }
 
-    fn commands_resident(&self) -> bool {
-        self.runs.iter().all(|run| self.binding_resident(run.kind))
+    fn streams_resident(&self) -> bool {
+        // Every static run refers to one of these packed streams.
+        // Extension admission is checked separately by the root owner.
+        [self.quads.len(), self.shadows.len(), self.underlines.len(),
+            self.mono.len(), self.poly.len()].into_iter()
+            .all(|bytes| bytes <= RETAINED_OUTSIDE_STREAM_BYTES)
     }
 
     fn push(&mut self, primitive: &Primitive, split: bool) -> Option<()> {
@@ -786,6 +796,25 @@ fn changed_record_ranges(previous: &[u8], next: &[u8], stride: usize) -> Vec<std
 }
 
 impl CompositeSlot {
+    /// Logical sizes of buffers actually allocated by this physical slot.
+    /// Tile pages and fence-owned transient allocations are counted elsewhere.
+    pub(super) fn gpu_bytes(&self) -> u64 {
+        let fixed = [
+            (self.global, GLOBAL_UPLOAD_BYTES),
+            (self.sprites, MAX_TILES * PACKED_POLY_SPRITE_BYTES),
+            (self.placements, MAX_TILES * PACKED_ANIMATION_VALUE_BYTES),
+            (self.static_animation, PACKED_ANIMATION_VALUE_BYTES),
+            (self.outside.text, TEXT_RASTER_UPLOAD_BYTES),
+            (self.projection.buffer, self.projection.capacity),
+        ];
+        let outside = [&self.outside.quads, &self.outside.shadows, &self.outside.underlines,
+            &self.outside.mono, &self.outside.poly];
+        fixed.into_iter().filter(|(buffer, _)| buffer.is_some()).map(|(_, bytes)| bytes as u64)
+            .chain(outside.into_iter().filter(|stream| stream.buffer.is_some())
+                .map(|stream| stream.capacity as u64))
+            .fold(0u64, u64::saturating_add)
+    }
+
     /// Retire only the descriptors sampling the physical page being removed
     /// or replaced. Like ordinary Atlas descriptors, accepted native work
     /// remains owned by the backend's submission retirement mechanism.
@@ -1322,6 +1351,10 @@ impl NovaRenderer {
                             let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == target_extent) { *view } else {
                                 let target = create_depth_target(device, "scroll raster", target_extent)?;
                                 resources.depths.push(target);
+                                // Depth32Float, one sample and mip. Count each
+                                // physical allocation once, not per tile/pass.
+                                resources.gpu_bytes = resources.gpu_bytes.saturating_add(
+                                    u64::from(target_extent.width()) * u64::from(target_extent.height()) * 4);
                                 depth_views.push((target_extent, target.1));
                                 target.1
                             };
@@ -1391,8 +1424,16 @@ impl NovaRenderer {
         // the exact registered fences, rather than preparing it a second time.
         let mut extension_steps = Vec::new();
         self.prepare_renderer_extensions_on(&outside.extensions, &mut extension_steps, frame_time, device)?;
-        let boundaries = expanded_boundaries(&outside.streams.runs, &outside.boundaries, &extension_steps)
-            .context("invalid mixed root command boundaries")?;
+        // Without extensions every source run emits exactly one command.
+        // The immutable root already owns the correct boundaries.
+        let expanded;
+        let boundaries = if outside.extensions.is_empty() {
+            outside.boundaries.as_slice()
+        } else {
+            expanded = expanded_boundaries(&outside.streams.runs, &outside.boundaries, &extension_steps)
+                .context("invalid mixed root command boundaries")?;
+            expanded.as_slice()
+        };
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Arc<[RenderCommand]>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
@@ -1481,11 +1522,11 @@ impl NovaRenderer {
                 tiles.push((instance, group));
             }
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
-            let cacheable = outside.extensions.is_empty() && outside.streams.commands_resident();
+            let cacheable = outside.extensions.is_empty() && outside.streams.streams_resident();
             // The same flattened instances may be partitioned differently
             // around root runs. Include both root and tile span ends.
             let mut end = 0;
-            let command_boundaries: Vec<_> = plans.iter().zip(&boundaries).map(|(plan, &boundary)| {
+            let command_boundaries: Vec<_> = plans.iter().zip(boundaries).map(|(plan, &boundary)| {
                 end += plan.requests.len();
                 (boundary, end)
             }).collect();
@@ -1521,7 +1562,7 @@ impl NovaRenderer {
             let mut root_offset = 0;
             let mut tile_offset = 0;
             let mut previous_tile = false;
-            for (plan, &boundary) in plans.iter().zip(&boundaries) {
+            for (plan, &boundary) in plans.iter().zip(boundaries) {
                 if boundary != root_offset { previous_tile = false; }
                 commands.extend(root.by_ref().take(boundary - root_offset));
                 root_offset = boundary;

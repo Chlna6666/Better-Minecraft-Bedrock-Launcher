@@ -93,6 +93,12 @@ pub struct RendererMemoryProfile {
     /// Native scroll tiles, including invalidated textures with live GPU users.
     #[serde(default)]
     pub scroll_tile_bytes: u64,
+    /// Persistent private composite and projection buffers of allocated scroll frame slots.
+    #[serde(default)]
+    pub scroll_resident_buffer_bytes: u64,
+    /// Fence-owned transient scroll buffers and depth targets, excluding tile pages.
+    #[serde(default)]
+    pub scroll_inflight_bytes: u64,
 }
 
 impl RendererMemoryProfile {
@@ -117,6 +123,8 @@ impl RendererMemoryProfile {
             .saturating_add(self.root_color_bytes)
             .saturating_add(self.pending_offscreen_bytes)
             .saturating_add(self.scroll_tile_bytes)
+            .saturating_add(self.scroll_resident_buffer_bytes)
+            .saturating_add(self.scroll_inflight_bytes)
     }
 }
 
@@ -406,6 +414,9 @@ mod tests {
                     depth_bytes: 100,
                     path_target_bytes: 200,
                     blur_target_bytes: 300,
+                    scroll_tile_bytes: 500,
+                    scroll_resident_buffer_bytes: 600,
+                    scroll_inflight_bytes: 700,
                     buffers: vec![BufferMemoryProfile {
                         gpu_capacity_bytes: 400,
                         cpu: MemoryUsage {
@@ -430,7 +441,7 @@ mod tests {
         );
         assert_eq!(
             totals_for_registry(&registry).gpu_bytes,
-            512 * 512 * 4 + 4096 * 4096 * 4 + 1000
+            512 * 512 * 4 + 4096 * 4096 * 4 + 2800
         );
     }
 }
