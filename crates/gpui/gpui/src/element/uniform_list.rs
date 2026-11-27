@@ -361,15 +361,9 @@ impl Element for UniformList {
 
                         let scroll_top = -scroll_offset.y.to_f64();
                         let item_height_f64 = item_height.to_f64();
-                        let first_visible_element_ix =
-                            ((scroll_top - padding.top.to_f64()) / item_height_f64).floor()
-                                as usize;
-                        let last_visible_element_ix =
-                            ((scroll_top + padded_bounds.size.height.to_f64()) / item_height_f64)
-                                .ceil() as usize;
-
-                        let visible_range = first_visible_element_ix
-                            ..cmp::min(last_visible_element_ix, self.item_count);
+                        let visible_range = crate::window::scroll_rows::uniform_visible_range(
+                            scroll_offset.y, item_height, padded_bounds.size.height, padding.top, self.item_count,
+                        );
 
                         let content_mask = ContentMask {
                             bounds,
@@ -413,7 +407,14 @@ impl Element for UniformList {
                                 cx,
                             );
                         }
-                        if frame_state.row_plan.is_some() {
+                        if let Some(plan) = frame_state.row_plan.as_mut() {
+                            if self.fixed_item_height == Some(item_height) && shared_scroll_to_item.is_none() {
+                                plan.bind_uniform_placement(
+                                    &shared_scroll_offset, scroll_offset, visible_range,
+                                    item_height, padded_bounds, padding.top,
+                                    min_vertical_scroll_offset.min(Pixels::ZERO),
+                                );
+                            }
                             return;
                         }
                         let items = if y_flipped {
@@ -504,6 +505,9 @@ impl Element for UniformList {
                         item,
                         cx,
                     );
+                }
+                if let Some(plan) = request_layout.row_plan.as_ref() {
+                    window.remember_uniform_placement(plan);
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);

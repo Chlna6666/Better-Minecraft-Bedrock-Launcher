@@ -550,7 +550,7 @@ impl Operations {
                 return None;
             };
             if !placement.same_source_placement_domain(old)
-                || placement.visual_bounds() != old.visual_bounds()
+                || (!placement.is_row_placement() && placement.visual_bounds() != old.visual_bounds())
                 || placement.same_paint(old)
             {
                 return None;

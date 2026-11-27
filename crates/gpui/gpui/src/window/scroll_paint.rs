@@ -449,6 +449,10 @@ impl ScrollPlacement {
 
     /// The viewport is a conservative damage bound for every projected
     /// primitive, including a newly exposed part of the overscan.
+    pub(crate) fn is_row_placement(&self) -> bool {
+        self.native.row_bounds.is_some()
+    }
+
     pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
         self.native.row_bounds
             .map_or(self.viewport.bounds, |row| moved(row, self.delta).intersect(&self.viewport.bounds))
@@ -575,6 +579,36 @@ mod tests {
         let union = left.union(right);
         assert!(union.intersects(PaintBlockBounds::new(bounds(0.5, 0.25))));
         assert!(!union.contained_by(right));
+    }
+
+    #[test]
+    fn compact_row_placement_recertifies_moving_visual_bounds() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let quad = Quad {
+            bounds: Bounds::new(point(px(0.), px(16.)), size(px(40.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(coverage), ..Default::default()
+        };
+        let mut ops = Operations::default();
+        ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, ops));
+        let old = source.native_row_placement(viewport, 1., Point::default()).unwrap();
+        let moved = source.native_row_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-4.))).unwrap();
+        assert_ne!(old.visual_bounds(), moved.visual_bounds());
+        let mut painter = Painter::for_frame();
+        assert!(painter.push_deferred_scroll(old.clone()));
+        painter.finish();
+        let mut scene = painter.into_scene();
+        let mut retention = crate::window::retained::RetainedPaint::default();
+        retention.finish(&mut scene);
+        let mut paint = crate::window::Paint::new(scene, Arc::new(retention), Default::default());
+        paint.layers = crate::window::SceneLayers::capture(&paint.scene, None, true);
+        let next = paint.with_scroll_placement(0, moved.clone(), true).expect("row marker moves");
+        assert!(matches!(paint.scene.paint_operations.view(0), Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&old)));
+        assert!(matches!(next.scene.paint_operations.view(0), Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&moved)));
+        assert!(next.scene.paint_operations.shares_boundary_storage(&paint.scene.paint_operations));
+        let expanded = next.owner_fallback().unwrap().unwrap();
+        assert_eq!(expanded.scene.quads[0].bounds.origin.y, px(12.).scale(1.));
     }
 
     #[test]

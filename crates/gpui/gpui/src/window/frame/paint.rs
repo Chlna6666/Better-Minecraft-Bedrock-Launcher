@@ -66,8 +66,18 @@ impl Paint {
         let scene = self.scene.with_scroll_placements(placements)?;
         let retention = Arc::new(self.retained_paint.placement_variant(&self.scene, &scene)?);
         let mut result = Self::new(scene, retention, self.geometry);
-        result.layers = self.layers.with_scroll_placements(placements, window_opaque)
-            .unwrap_or_else(|| SceneLayers::capture_against(
+        // Compact row raster bounds move with the row. The fixed-viewport
+        // layer translation shortcut assumes unchanged visual bounds;
+        // recertify root ordering and layer geometry when that is not true.
+        let bounds_changed = placements.iter().any(|(index, placement)| {
+            match self.scene.paint_operations.view(*index) {
+                Some(crate::scene::PaintOperationRef::DeferredScroll(old)) =>
+                    old.visual_bounds() != placement.visual_bounds(),
+                _ => true,
+            }
+        });
+        result.layers = (!bounds_changed).then(|| self.layers.with_scroll_placements(placements, window_opaque))
+            .flatten().unwrap_or_else(|| SceneLayers::capture_against(
                 &result.scene, Some((&self.scene, &self.layers)), window_opaque,
             ));
         Some(Arc::new(result))

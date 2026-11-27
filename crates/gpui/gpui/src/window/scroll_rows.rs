@@ -9,8 +9,83 @@ use crate::{
 };
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use std::{any::TypeId, cell::{Cell, RefCell}, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
+use std::{any::TypeId, cell::{Cell, RefCell}, collections::VecDeque, ops::Range, rc::{Rc, Weak}, sync::Arc};
 use super::lifecycle::{RowNotification, WindowInvalidator};
+use super::scroll_dependencies::{MountedScrollSource, ScrollOffset};
+use super::scroll_paint::ScrollPlacement;
+use crate::diagnostics::scroll_placement::Outcome;
+
+#[derive(Clone)]
+struct UniformPlacementBinding {
+    owner: crate::EntityId,
+    revision: u64,
+    offset: Weak<ScrollOffset>,
+    sampled: Point<Pixels>,
+    visible: Range<usize>,
+    item_count: usize,
+    item_height: Pixels,
+    padded: Bounds<Pixels>,
+    padding_top: Pixels,
+    min_y: Pixels,
+    proof: Option<Rc<UniformPlacementProof>>,
+}
+
+/// Fixed CPU record topology is certified once per committed frame.
+/// Other position-only transactions preserve these slots and bounds.
+struct UniformPlacementProof {
+    slots: Vec<usize>,
+    damage_limit: Option<Bounds<crate::ScaledPixels>>,
+}
+
+pub(crate) fn uniform_visible_range(
+    offset: Pixels, item_height: Pixels, viewport_height: Pixels,
+    padding_top: Pixels, count: usize,
+) -> Range<usize> {
+    let top = -offset.to_f64();
+    let height = item_height.to_f64();
+    let start = ((top - padding_top.to_f64()) / height).floor() as usize;
+    let end = ((top + viewport_height.to_f64()) / height).ceil() as usize;
+    start..end.min(count)
+}
+
+impl UniformPlacementBinding {
+    fn origin(&self, row: usize, offset: Point<Pixels>) -> Point<Pixels> {
+        self.padded.origin + crate::point(offset.x, Pixels::from(
+            self.item_height.to_f64() * row as f64 + offset.y.to_f64() + self.padding_top.to_f64()
+        ))
+    }
+}
+
+pub(super) struct UniformPlacementCandidate {
+    key: u64,
+    pub(super) offset: Rc<ScrollOffset>,
+    pub(super) sampled: Point<Pixels>,
+    mounted_source: usize,
+    pub(super) placements: Vec<(usize, ScrollPlacement)>,
+    origins: Vec<(RowKey, Point<Pixels>)>,
+    proof: Rc<UniformPlacementProof>,
+    pub(super) damage: Bounds<crate::ScaledPixels>,
+}
+
+impl UniformPlacementCandidate {
+    pub(super) fn commit(self, frame: &mut super::Frame) {
+        for (key, origin) in self.origins {
+            frame.scroll_rows.rows.get_mut(&key).expect("validated row").prepaint.origin = origin;
+        }
+        let binding = frame.scroll_rows.uniform_placements.get_mut(&self.key)
+            .expect("validated uniform binding");
+        binding.sampled = self.sampled;
+        if binding.proof.is_none() {
+            for &slot in &self.proof.slots {
+                if let Some(record) = frame.view_retention_records[slot].record.as_mut() {
+                    record.splice_safe = false;
+                }
+            }
+            binding.proof = Some(self.proof);
+        }
+        frame.mounted_scroll_sources[self.mounted_source].acknowledge(&self.offset.version);
+    }
+}
 
 type RowKey = (u64, usize);
 
@@ -455,6 +530,7 @@ pub(super) struct ScrollRows {
     notification_routing: RefCell<RowNotificationRouting>,
     changed_rows: Vec<RowKey>,
     membership: RowRuns,
+    uniform_placements: FxHashMap<u64, UniformPlacementBinding>,
     oldest_notification_epoch: Option<u64>,
     measurements: FxHashMap<GlobalElementId, (u64, Rc<RowMeasurement>)>,
     pub(super) enabled: bool,
@@ -473,6 +549,7 @@ impl ScrollRows {
         *self.notification_routing.get_mut() = Default::default();
         self.changed_rows.clear();
         self.membership.runs.clear();
+        self.uniform_placements.clear();
         self.oldest_notification_epoch = None;
         self.measurements.clear();
         self.enabled = false;
@@ -508,6 +585,10 @@ impl ScrollRows {
         if self.membership.runs.capacity() > run_target.saturating_mul(4) {
             self.membership.runs.shrink_to(run_target);
         }
+        let binding_target = current.uniform_placements.len().max(4);
+        if self.uniform_placements.capacity() > binding_target.saturating_mul(4) {
+            self.uniform_placements.shrink_to(binding_target);
+        }
         let target = current.measurements.len().max(4);
         if self.measurements.capacity() > target * 4 {
             self.measurements.shrink_to(target);
@@ -539,6 +620,7 @@ pub(crate) struct RowPlan {
     notification_epoch: u64,
     placement_only: bool,
     allow_reuse: bool,
+    uniform_placement: Option<UniformPlacementBinding>,
     row_revision: Option<RowRevision>,
     context: Rc<ListContext>,
     // Rows captured by one plan share exactly one immutable context.
@@ -551,6 +633,26 @@ pub(crate) struct RowPlan {
 }
 
 impl RowPlan {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_uniform_placement(
+        &mut self, offset: &Rc<ScrollOffset>, sampled: Point<Pixels>,
+        visible: Range<usize>, item_height: Pixels, padded: Bounds<Pixels>,
+        padding_top: Pixels, min_y: Pixels,
+    ) {
+        if self.row_revision.is_none() && sampled.x == Pixels::ZERO
+            && !visible.is_empty() && item_height.0.is_finite() && item_height > Pixels::ZERO
+            && min_y.0.is_finite() && sampled.y.0.is_finite()
+            && sampled.y >= min_y && sampled.y <= Pixels::ZERO
+        {
+            self.uniform_placement = Some(UniformPlacementBinding {
+                owner: self.context.owner, revision: self.revision,
+                offset: Rc::downgrade(offset), sampled, visible,
+                item_count: self.context.item_count, item_height, padded, padding_top, min_y,
+                proof: None,
+            });
+        }
+    }
+
     pub(crate) fn row_revision(&self, row: usize) -> u64 {
         self.row_revision.as_ref().map_or(0, |revision| revision(row))
     }
@@ -796,6 +898,7 @@ impl Window {
             notification_epoch: self.invalidator.row_notification_epoch(),
             placement_only,
             allow_reuse,
+            uniform_placement: None,
             row_revision,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
@@ -808,6 +911,143 @@ impl Window {
                 available_space,
                 inherited: self.current_retained_paint_context(),
             }),
+        })
+    }
+
+    pub(crate) fn remember_uniform_placement(&mut self, plan: &RowPlan) {
+        if let Some(binding) = &plan.uniform_placement {
+            self.next_frame.scroll_rows.uniform_placements.insert(plan.key, binding.clone());
+        }
+    }
+
+    /// Stable-membership fixed-height lists can use the same atomic
+    /// placement publication as full scrolling views. Initially admit only
+    /// passive rows: no moving listeners, hitboxes or independently retained
+    /// descendant views. A boundary crossing is normal row replay work.
+    pub(super) fn prepare_uniform_row_placement(
+        &self, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+        changed: &[(usize, &MountedScrollSource)], paint: &super::Paint,
+    ) -> Result<UniformPlacementCandidate, Outcome> {
+        let frame = &self.rendered_frame;
+        let rows = &frame.scroll_rows;
+        let mut bindings = rows.uniform_placements.iter().filter_map(|(&key, binding)| {
+            if binding.owner != owner { return None; }
+            let offset = binding.offset.upgrade()?;
+            let sampled = *offset.borrow();
+            (sampled != binding.sampled).then_some((key, binding, offset, sampled))
+        });
+        let (key, binding, offset, sampled) = bindings.next().ok_or(Outcome::MissingCapture)?;
+        if bindings.next().is_some() { return Err(Outcome::MultipleCaptures); }
+        if binding.revision != epoch.content { return Err(Outcome::CaptureDependencies); }
+        let [(mounted_source, source)] = changed else { return Err(Outcome::MountedSources); };
+        if !source.changed_for(owner, &offset.version) { return Err(Outcome::MountedSources); }
+        if sampled.x != Pixels::ZERO || !sampled.y.0.is_finite()
+            || sampled.y < binding.min_y || sampled.y > Pixels::ZERO
+            || uniform_visible_range(sampled.y, binding.item_height, binding.padded.size.height,
+                binding.padding_top, binding.item_count) != binding.visible
+        {
+            return Err(Outcome::OffsetRange);
+        }
+        let mut placements = Vec::with_capacity(binding.visible.len());
+        let mut origins = Vec::with_capacity(binding.visible.len());
+        let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
+        let scale = self.scale_factor();
+        let mut routing = rows.notification_routing.borrow_mut();
+        for row in binding.visible.clone() {
+            let row_key = (key, row);
+            let record = rows.rows.get(&row_key).ok_or(Outcome::MissingCapture)?;
+            if record.revision != epoch.content || record.context.owner != owner
+                || record.prepaint.origin != binding.origin(row, binding.sampled)
+                || !routing.unchanged(&rows.rows, row_key, record, &self.invalidator)
+                || !routing.state_unchanged(&rows.rows, row_key, record, &self.invalidator)
+            {
+                return Err(Outcome::CaptureDependencies);
+            }
+            let pre = &record.prepaint.records;
+            let span = &record.paint;
+            if !hitbox_range(&record.prepaint).is_empty()
+                || pre.start.tooltips_index != pre.end.tooltips_index
+                || pre.start.deferred_draws_index != pre.end.deferred_draws_index
+                || span.start.mouse_listeners_index != span.end.mouse_listeners_index
+                || span.start.input_handlers_index != span.end.input_handlers_index
+                || span.start.window_control_hitboxes_index != span.end.window_control_hitboxes_index
+                || span.start.cursor_styles_index != span.end.cursor_styles_index
+                || span.start.tab_handle_index != span.end.tab_handle_index
+            {
+                return Err(Outcome::InputRecords);
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            if span.start.debug_bounds_index != span.end.debug_bounds_index {
+                return Err(Outcome::InputRecords);
+            }
+            let marker = span.start.scene_index;
+            if span.end.scene_index != marker + 1 { return Err(Outcome::Marker); }
+            let Some(crate::scene::PaintOperationRef::DeferredScroll(old)) =
+                paint.scene.paint_operations.view(marker) else { return Err(Outcome::Marker); };
+            let viewport = record.context.inherited.visual_content_mask;
+            let old_delta = record.content.translation(record.prepaint.origin, scale)
+                .ok_or(Outcome::PreviousTranslation)?;
+            let expected = record.content.native_row_placement(viewport, scale, old_delta)
+                .ok_or(Outcome::PreviousPlacement)?;
+            if !old.same_paint(&expected) { return Err(Outcome::PreviousMarker); }
+            let origin = binding.origin(row, sampled);
+            let delta = record.content.translation(origin, scale).ok_or(Outcome::FractionalTranslation)?;
+            let placement = record.content.native_row_placement(viewport, scale, delta)
+                .ok_or(Outcome::PlacementGeometry)?;
+            if placement.same_paint(old) { return Err(Outcome::FractionalTranslation); }
+            let bounds = old.visual_bounds().union(&placement.visual_bounds());
+            damage = Some(damage.map_or(bounds, |current| current.union(&bounds)));
+            placements.push((marker, placement));
+            origins.push((row_key, origin));
+        }
+        drop(routing);
+        placements.sort_unstable_by_key(|(marker, _)| *marker);
+        let first = placements.first().ok_or(Outcome::MissingCapture)?.0;
+        let end = placements.last().ok_or(Outcome::MissingCapture)?.0 + 1;
+        if placements.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(Outcome::MultipleCaptures);
+        }
+        let damage = damage.ok_or(Outcome::Damage)?;
+        // Retained view records must be fixed enclosing views. Do not
+        // translate nested view/layout records or widen existing fragment
+        // bounds in this initial transaction.
+        let proof = if let Some(proof) = &binding.proof {
+            Rc::clone(proof)
+        } else {
+            let mut slots = Vec::new();
+            let ancestors = frame.dispatch_tree.view_path(owner);
+            for (slot, entry) in frame.view_retention_records.iter().enumerate() {
+                let Some(record) = &entry.record else { continue; };
+                let start = record.paint_range.start.scene_index;
+                let stop = record.paint_range.end.scene_index;
+                let ancestor = entry.owner == owner || ancestors.contains(&entry.owner);
+                if !ancestor && frame.dispatch_tree.view_path_reversed(entry.owner).any(|id| id == owner) {
+                    return Err(Outcome::NestedRetention);
+                }
+                if start < end && first < stop {
+                    if !ancestor || start > first || stop < end {
+                        return Err(Outcome::NestedRetention);
+                    }
+                    slots.push(slot);
+                }
+            }
+            let mut damage_limit: Option<Bounds<crate::ScaledPixels>> = None;
+            for segment in &frame.retained_scene_segments {
+                if segment.scene_range.start < end && first < segment.scene_range.end {
+                    if segment.scene_range.start > first || segment.scene_range.end < end {
+                        return Err(Outcome::Damage);
+                    }
+                    damage_limit = Some(damage_limit.map_or(segment.bounds, |limit| limit.intersect(&segment.bounds)));
+                }
+            }
+            Rc::new(UniformPlacementProof { slots, damage_limit })
+        };
+        if proof.damage_limit.is_some_and(|limit| limit.intersect(&damage) != damage) {
+            return Err(Outcome::Damage);
+        }
+        Ok(UniformPlacementCandidate {
+            key, offset, sampled, mounted_source: *mounted_source,
+            placements, origins, proof, damage,
         })
     }
 
@@ -1076,6 +1316,19 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn uniform_placement_membership_uses_the_normal_materialization_formula() {
+        use crate::px;
+        let range = |y| uniform_visible_range(px(y), px(24.), px(120.), px(0.), 100);
+        assert_eq!(range(0.), 0..5);
+        assert_eq!(range(-1.), 0..6);
+        assert_eq!(range(-2.), 0..6);
+        assert_eq!(range(-23.), 0..6);
+        assert_eq!(range(-24.), 1..6);
+        assert_eq!(range(-25.), 1..7);
+        assert_eq!(uniform_visible_range(px(-100.), px(24.), px(120.), px(4.), 6), 4..6);
+    }
 
     #[test]
     fn row_run_retirement_matches_exhaustive_membership_difference() {

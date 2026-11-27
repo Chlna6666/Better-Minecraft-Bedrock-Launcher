@@ -158,6 +158,7 @@ struct PlacementTransaction {
     owners: smallvec::SmallVec<[EntityId; 4]>,
     source_revision: u64,
     members: smallvec::SmallVec<[PlacementMember; 1]>,
+    uniform: Option<super::scroll_rows::UniformPlacementCandidate>,
     paint: Arc<super::Paint>,
 }
 
@@ -220,7 +221,25 @@ impl Window {
         if changed.len() != owners.len() {
             return Err(Outcome::MountedSources);
         }
-        for &owner in &owners {
+        // A uniform-list transaction initially owns a single scroll
+        // source. Mixed list/view transactions keep the regular fallback.
+        if owners.len() == 1 {
+            match self.prepare_placement_member(cx, epoch, owners[0], old_paint, &changed) {
+                Err(Outcome::MissingCapture) => {
+                    let uniform = self.prepare_uniform_row_placement(epoch, owners[0], &changed, old_paint)?;
+                    let paint = old_paint.with_scroll_placements(&uniform.placements,
+                        self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
+                        .ok_or(Outcome::ScenePublication)?;
+                    return Ok(PlacementTransaction {
+                        epoch, owners, source_revision: old_paint.scene.revision,
+                        members, uniform: Some(uniform), paint,
+                    });
+                }
+                Err(outcome) => return Err(outcome),
+                Ok(member) => members.push(member),
+            }
+        }
+        for &owner in owners.iter().skip(members.len()) {
             let member = self.prepare_placement_member(cx, epoch, owner, old_paint, &changed)?;
             if members.iter().any(|previous| {
                 previous.marker == member.marker
@@ -241,7 +260,7 @@ impl Window {
             self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
             .ok_or(Outcome::ScenePublication)?;
         Ok(PlacementTransaction {
-            epoch, owners, source_revision: old_paint.scene.revision, members, paint,
+            epoch, owners, source_revision: old_paint.scene.revision, members, uniform: None, paint,
         })
     }
 
@@ -377,6 +396,7 @@ impl Window {
         };
         if self.rendered_frame.scene().revision != transaction.source_revision
             || transaction.members.iter().any(|member| *member.offset.borrow() != member.sampled)
+            || transaction.uniform.as_ref().is_some_and(|list| *list.offset.borrow() != list.sampled)
             || !self.invalidator.commit_placement(transaction.epoch, &transaction.owners)
         {
             scroll_placement::record(Outcome::CommitRace);
@@ -394,6 +414,11 @@ impl Window {
             view.stale_input = member.stale_input;
             frame.mounted_scroll_sources[member.mounted_source].acknowledge(&member.offset.version);
         }
+        let uniform_damage = transaction.uniform.map(|list| {
+            let damage = list.damage;
+            list.commit(frame);
+            damage
+        });
         frame.commit_scroll_placements(Arc::clone(&transaction.paint),
             transaction.members.iter().map(|member| (member.hitboxes.clone(), member.delta)));
         self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
@@ -406,6 +431,9 @@ impl Window {
         }
         for member in &transaction.members {
             self.render_dirty_region.push(member.damage);
+        }
+        if let Some(damage) = uniform_damage {
+            self.render_dirty_region.push(damage);
         }
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
         self.render_dirty_region.coalesce_if_large(viewport, super::DIRTY_REGION_FULL_REDRAW_RATIO);
@@ -892,6 +920,67 @@ mod binding_tests {
             assert!(window.prepare_scroll_placement(app).is_err());
             window.draw(app).clear();
             assert_eq!(scroll.offset().y, Pixels::ZERO);
+        });
+    }
+
+    #[gpui::test]
+    fn stable_uniform_rows_publish_placement_without_root_or_row_build(cx: &mut crate::TestAppContext) {
+        use crate::{Context, IntoElement, Render, Styled, UniformListScrollHandle, uniform_list_each,
+            PlatformInput, ScrollDelta, ScrollWheelEvent, div};
+        use std::cell::Cell;
+        struct Rows {
+            root_builds: Rc<Cell<usize>>,
+            row_builds: Rc<Cell<usize>>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.root_builds.set(self.root_builds.get() + 1);
+                let builds = self.row_builds.clone();
+                uniform_list_each("placement-rows", 100, move |row, _, _| {
+                    builds.set(builds.get() + 1);
+                    div().w_full().h(px(24.)).bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                })
+                .with_item_height(px(24.))
+                .track_scroll(self.scroll.clone())
+                .w(px(200.)).h(px(120.))
+            }
+        }
+        let root_builds = Rc::new(Cell::new(0));
+        let row_builds = Rc::new(Cell::new(0));
+        let scroll = UniformListScrollHandle::new();
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Rows { root_builds: root_builds.clone(), row_builds: row_builds.clone(), scroll: scroll.clone() }
+        });
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(8.), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(-1.), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            let before = (root_builds.get(), row_builds.get());
+            let old = window.rendered_frame.published_paint();
+            window.dispatch_event(wheel(-1.), app);
+            let candidate = window.prepare_scroll_placement(app).expect("same visible row set");
+            assert!(candidate.uniform.is_some());
+            window.draw(app).clear();
+            assert_eq!((root_builds.get(), row_builds.get()), before);
+            let moved = window.rendered_frame.published_paint();
+            assert_ne!(moved.scene.revision, old.scene.revision);
+            assert_eq!(window.last_generation_stats.prepaint_elapsed, Duration::ZERO);
+            assert_eq!(window.last_generation_stats.paint_elapsed, Duration::ZERO);
+            assert!(window.test_present().is_accepted());
+            // Cross a row boundary. The normal retained row path must
+            // materialize the entering row instead of moving stale members.
+            window.dispatch_event(wheel(-24.), app);
+            assert!(window.prepare_scroll_placement(app).is_err());
+            window.draw(app).clear();
+            assert!(row_builds.get() > before.1);
         });
     }
 
