@@ -113,6 +113,73 @@ struct CommittedReads {
     keep: bool,
 }
 
+/// An identity index into the existing committed owner records. Only
+/// larger owner sets pay the indexing cost; no dependency payload is copied.
+#[derive(Default)]
+struct OwnerStateRouting {
+    index: Vec<(usize, Option<EntityId>)>,
+    cursor: Option<crate::StateMutationCursor>,
+    pending: SmallVec<[Option<EntityId>; 4]>,
+}
+
+impl OwnerStateRouting {
+    const SPARSE_THRESHOLD: usize = 16;
+
+    fn reset(&mut self) {
+        self.index.clear();
+        self.cursor = None;
+        self.pending.clear();
+    }
+
+    fn trim(&mut self, owners: usize, eager: bool) {
+        if eager {
+            self.reset();
+            self.index.shrink_to_fit();
+            self.pending.shrink_to_fit();
+        } else if self.index.is_empty() && self.index.capacity() > owners.max(16).saturating_mul(4) {
+            self.index.shrink_to(owners.max(16));
+        }
+    }
+}
+
+fn poll_owner_states(entry: &mut CommittedReads) -> bool {
+    if entry.reads.states.is_empty() {
+        return false;
+    }
+    let mut has_change = false;
+    let mut dead = SmallVec::<[usize; 4]>::new();
+    entry.state_validation.poll(entry.reads.states.iter().enumerate(), |index, status| {
+        match status {
+            crate::StateReadStatus::Changed => has_change = true,
+            crate::StateReadStatus::Dead => dead.push(index),
+            crate::StateReadStatus::Unchanged => {}
+        }
+    });
+    if !dead.is_empty() {
+        let mut dead = dead.into_iter().peekable();
+        entry.reads.states = entry.reads.states.iter().enumerate()
+            .filter_map(|(index, read)| {
+                if dead.peek() == Some(&index) {
+                    dead.next();
+                    None
+                } else {
+                    Some(read.clone())
+                }
+            })
+            .collect();
+        entry.state_validation = Default::default();
+    }
+    has_change
+}
+
+fn report_state_owner(route: Option<EntityId>, changed: &mut SmallVec<[EntityId; 4]>, unscoped: &mut bool) {
+    match route {
+        Some(owner) if !changed.contains(&owner) => changed.push(owner),
+        Some(_) => {}
+        None => *unscoped = true,
+    }
+}
+
 // Requests are accumulated until begin_draw_cycle consumes them. In
 // particular a wheel event must not turn a pending model/overlay refresh
 // into a placement-only frame.
@@ -144,6 +211,7 @@ struct WindowInvalidatorInner {
     // Last successfully committed Render read owners. An unknown owner
     // requires the conservative window-wide fallback.
     view_reads: FxHashMap<Option<EntityId>, CommittedReads>,
+    owner_state_routing: OwnerStateRouting,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -181,6 +249,7 @@ impl WindowInvalidator {
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
                 view_reads: FxHashMap::default(),
+                owner_state_routing: OwnerStateRouting::default(),
                 render_dependencies: FxHashMap::default(),
                 global_read_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
@@ -287,7 +356,8 @@ impl WindowInvalidator {
 
     /// Publish the current read log and the owners whose lifecycle was replayed.
     /// Like Fast's tracked-entity reconciliation, unchanged read edges keep
-    /// their committed reverse routes. Rebuild only after a real change.
+    /// their committed reverse routes. Apply scoped edge deltas in place;
+    /// rebuild only when removing an unresolved masking edge.
     pub(in crate::window) fn commit_frame_dependencies(
         &self,
         log: &mut crate::AppDependencies,
@@ -299,14 +369,25 @@ impl WindowInvalidator {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
         let mut changed = false;
+        let mut rebuild_routes = false;
+        let mut state_snapshots_changed = false;
+        let entity_routes = &mut inner.render_dependencies;
+        let global_routes = &mut inner.global_read_dependencies;
         for (owner, entry) in &mut inner.view_reads {
             let route = owner.filter(|owner| has_route(*owner));
             changed |= route != entry.route;
-            entry.route = route;
             entry.keep = match *owner {
                 Some(owner) => replayed.contains(&owner) && route.is_some(),
                 None => !replayed.is_empty(),
             };
+            // Owners not replayed may be rebuilt or retired. Keep their
+            // old route until that decision, avoiding a transient unresolved
+            // edge that would force a rebuild on an ordinary retirement.
+            if entry.keep && route != entry.route {
+                rebuild_routes |= update_dependency_routes(entity_routes, &entry.reads.entities, entry.route, &entry.reads.entities, route);
+                rebuild_routes |= update_dependency_routes(global_routes, &entry.reads.globals, entry.route, &entry.reads.globals, route);
+                entry.route = route;
+            }
         }
 
         log.finish(|owner, mut reads| {
@@ -314,18 +395,35 @@ impl WindowInvalidator {
                 if entry.keep {
                     reads.merge_replayed(&entry.reads);
                 }
-                changed |= !entry.reads.same_routes(&reads);
+                let route = owner.filter(|owner| has_route(*owner));
+                if route != entry.route || !entry.reads.same_routes(&reads) {
+                    changed = true;
+                    rebuild_routes |= update_dependency_routes(entity_routes, &entry.reads.entities, entry.route, &reads.entities, route);
+                    rebuild_routes |= update_dependency_routes(global_routes, &entry.reads.globals, entry.route, &reads.globals, route);
+                    entry.route = route;
+                }
                 if !Rc::ptr_eq(&entry.reads.states, &reads.states) {
-                    entry.state_validation = Default::default();
+                    if entry.reads.states == reads.states {
+                        // Identical observations keep their physical snapshot
+                        // and the previous routing/validation proof.
+                        reads.states = entry.reads.states.clone();
+                    } else {
+                        state_snapshots_changed = true;
+                        entry.state_validation = Default::default();
+                    }
                 }
                 entry.reads = reads;
                 entry.keep = true;
             } else {
+                let route = owner.filter(|owner| has_route(*owner));
                 changed |= !reads.entities.is_empty() || !reads.globals.is_empty();
+                state_snapshots_changed |= !reads.states.is_empty();
+                rebuild_routes |= update_dependency_routes(entity_routes, &[], route, &reads.entities, route);
+                rebuild_routes |= update_dependency_routes(global_routes, &[], route, &reads.globals, route);
                 inner.view_reads.insert(owner, CommittedReads {
                     reads,
                     state_validation: Default::default(),
-                    route: owner.filter(|owner| has_route(*owner)),
+                    route,
                     keep: true,
                 });
             }
@@ -334,17 +432,27 @@ impl WindowInvalidator {
         inner.view_reads.retain(|_, entry| {
             if !entry.keep {
                 changed |= !entry.reads.entities.is_empty() || !entry.reads.globals.is_empty();
+                state_snapshots_changed |= !entry.reads.states.is_empty();
+                rebuild_routes |= update_dependency_routes(entity_routes, &entry.reads.entities, entry.route, &[], entry.route);
+                rebuild_routes |= update_dependency_routes(global_routes, &entry.reads.globals, entry.route, &[], entry.route);
                 return false;
             }
             let reads = &mut entry.reads;
             if !reads.entities.iter().all(|entity| is_live(*entity)) {
-                reads.entities = reads.entities.iter().copied().filter(|entity| is_live(*entity)).collect();
+                let live: Rc<[EntityId]> = reads.entities.iter().copied().filter(|entity| is_live(*entity)).collect();
+                rebuild_routes |= update_dependency_routes(entity_routes, &reads.entities, entry.route, &live, entry.route);
+                reads.entities = live;
                 changed = true;
             }
             true
         });
 
-        if changed {
+        if state_snapshots_changed {
+            inner.owner_state_routing.reset();
+        }
+        // An unresolved read masks all scoped readers in the compact
+        // Option index. Only removing such a read needs full reconstruction.
+        if rebuild_routes {
             inner.render_dependencies.clear();
             inner.global_read_dependencies.clear();
             for entry in inner.view_reads.values() {
@@ -365,44 +473,57 @@ impl WindowInvalidator {
     /// Returns whether scoped invalidation is insufficient.
     pub(in crate::window) fn changed_state_owners(&self, changed: &mut SmallVec<[EntityId; 4]>) -> bool {
         let mut inner = self.inner.borrow_mut();
+        let inner = &mut *inner;
+        let routing = &mut inner.owner_state_routing;
+        let owners = &mut inner.view_reads;
         let mut unscoped = false;
-        for entry in inner.view_reads.values_mut() {
-            if entry.reads.states.is_empty() {
-                continue;
-            }
-            let mut has_change = false;
-            // Dead reads are uncommon. Store only their indices inline,
-            // avoiding a second Weak upgrade when retiring them.
-            let mut dead = SmallVec::<[usize; 4]>::new();
-            entry.state_validation.poll(entry.reads.states.iter().enumerate(), |index, status| {
-                match status {
-                    crate::StateReadStatus::Changed => has_change = true,
-                    crate::StateReadStatus::Dead => dead.push(index),
-                    crate::StateReadStatus::Unchanged => {}
-                }
-            });
-            if has_change {
-                match entry.route {
-                    Some(owner) if !changed.contains(&owner) => changed.push(owner),
-                    Some(_) => {}
-                    None => unscoped = true,
+        if owners.len() < OwnerStateRouting::SPARSE_THRESHOLD {
+            routing.reset();
+            for entry in owners.values_mut() {
+                if poll_owner_states(entry) {
+                    report_state_owner(entry.route, changed, &mut unscoped);
                 }
             }
-            if !dead.is_empty() {
-                let mut dead = dead.into_iter().peekable();
-                entry.reads.states = entry.reads.states.iter().enumerate()
-                    .filter_map(|(index, read)| {
-                        if dead.peek() == Some(&index) {
-                            dead.next();
-                            None
-                        } else {
-                            Some(read.clone())
-                        }
-                    })
-                    .collect();
-                entry.state_validation = Default::default();
+            return unscoped;
+        }
+
+        if let Some(cursor) = routing.cursor {
+            let index = &routing.index;
+            let pending = &mut routing.pending;
+            if let Some(next) = cursor.visit_since(owners.len() / 2, |id| {
+                let start = index.partition_point(|&(identity, _)| identity < id);
+                let end = index.partition_point(|&(identity, _)| identity <= id);
+                pending.extend(index[start..end].iter().map(|&(_, owner)| owner));
+            }) {
+                routing.cursor = Some(next);
+                pending.sort_unstable();
+                pending.dedup();
+                pending.retain(|owner| {
+                    let Some(entry) = owners.get_mut(owner) else { return false; };
+                    if poll_owner_states(entry) {
+                        report_state_owner(entry.route, changed, &mut unscoped);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                return unscoped;
             }
         }
+
+        // Initial publication and journal overflow use the authoritative
+        // snapshots. Rebuild the identity table here to retire dead edges.
+        routing.index.clear();
+        routing.pending.clear();
+        for (&owner, entry) in owners.iter_mut() {
+            if poll_owner_states(entry) {
+                report_state_owner(entry.route, changed, &mut unscoped);
+                routing.pending.push(owner);
+            }
+            routing.index.extend(entry.reads.states.iter().map(|read| (read.id(), owner)));
+        }
+        routing.index.sort_unstable();
+        routing.cursor = Some(crate::StateMutationCursor::current());
         unscoped
     }
 
@@ -722,6 +843,8 @@ impl WindowInvalidator {
             inner.pending_placement_views.shrink_to_fit();
         }
         trim_collection!(view_reads);
+        let owner_count = inner.view_reads.len();
+        inner.owner_state_routing.trim(owner_count, eager);
         trim_collection!(render_dependencies);
         trim_collection!(global_read_dependencies);
         trim_collection!(pending_layout_animation_frames);
@@ -773,6 +896,73 @@ fn insert_dependency_owner<K: Eq + std::hash::Hash>(
             }
         }
     }
+}
+
+/// Remove a scoped edge in place. An unresolved edge hides the scoped
+/// reader set, so its removal requests the existing full-rebuild fallback.
+fn remove_dependency_owner<K: Copy + Eq + std::hash::Hash>(
+    index: &mut FxHashMap<K, Option<SmallVec<[EntityId; 2]>>>,
+    key: K,
+    owner: Option<EntityId>,
+) -> bool {
+    let Some(owner) = owner else { return true; };
+    if let Some(Some(owners)) = index.get_mut(&key) {
+        if let Some(position) = owners.iter().position(|&reader| reader == owner) {
+            owners.swap_remove(position);
+        }
+        if owners.is_empty() {
+            index.remove(&key);
+        }
+    }
+    false
+}
+
+/// Apply the set difference of two sorted unique snapshots, leaving common
+/// reverse entries and their allocations untouched.
+fn update_dependency_routes<K: Copy + Ord + std::hash::Hash>(
+    index: &mut FxHashMap<K, Option<SmallVec<[EntityId; 2]>>>,
+    old: &[K],
+    old_route: Option<EntityId>,
+    new: &[K],
+    new_route: Option<EntityId>,
+) -> bool {
+    if old_route == new_route && std::ptr::eq(old, new) {
+        return false;
+    }
+    let mut rebuild = false;
+    if old_route != new_route {
+        for &key in old {
+            rebuild |= remove_dependency_owner(index, key, old_route);
+        }
+        for &key in new {
+            insert_dependency_owner(index, key, new_route);
+        }
+        return rebuild;
+    }
+    let (mut i, mut j) = (0, 0);
+    while i < old.len() && j < new.len() {
+        match old[i].cmp(&new[j]) {
+            std::cmp::Ordering::Less => {
+                rebuild |= remove_dependency_owner(index, old[i], old_route);
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                insert_dependency_owner(index, new[j], new_route);
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    for &key in &old[i..] {
+        rebuild |= remove_dependency_owner(index, key, old_route);
+    }
+    for &key in &new[j..] {
+        insert_dependency_owner(index, key, new_route);
+    }
+    rebuild
 }
 
 #[cfg(test)]
@@ -955,6 +1145,71 @@ mod view_invalidation_tests {
         assert_eq!(inner.render_dependencies[&new_model].as_ref().unwrap().as_slice(), &[rebuilt]);
         assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[replayed]);
         assert!(!inner.view_reads.contains_key(&Some(removed)));
+    }
+
+    #[test]
+    fn scoped_route_delta_preserves_unrelated_and_common_edges() {
+        let first = EntityId::from(1);
+        let second = EntityId::from(2);
+        let mut index = FxHashMap::default();
+        assert!(!update_dependency_routes(&mut index, &[], Some(first), &[1, 2, 3], Some(first)));
+        assert!(!update_dependency_routes(&mut index, &[], Some(second), &[2, 4], Some(second)));
+        assert!(!update_dependency_routes(&mut index, &[1, 2, 3], Some(first), &[2, 3, 5], Some(first)));
+        assert!(!index.contains_key(&1));
+        assert_eq!(index[&2].as_ref().unwrap().as_slice(), &[first, second]);
+        assert_eq!(index[&4].as_ref().unwrap().as_slice(), &[second]);
+        assert_eq!(index[&5].as_ref().unwrap().as_slice(), &[first]);
+        assert!(!update_dependency_routes(&mut index, &[], None, &[2], None));
+        assert_eq!(index[&2], None);
+        assert!(update_dependency_routes(&mut index, &[2], None, &[], None));
+    }
+
+    #[test]
+    fn sparse_owner_poll_preserves_pending_and_rebuilds_after_snapshot_changes() {
+        let invalidator = WindowInvalidator::new();
+        let mut states: Vec<_> = (0..32).map(|_| Some(crate::StateVersion::default())).collect();
+        let owners: Vec<_> = (1..=32_u64).map(EntityId::from).collect();
+        let mut log = crate::AppDependencies::default();
+        let scope = log.begin_state_reads();
+        for (owner, state) in owners.iter().zip(&states) {
+            log.set_owner(Some(*owner));
+            state.as_ref().unwrap().read();
+        }
+        log.set_owner(None);
+        states[7].as_ref().unwrap().read();
+        drop(scope);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        let mut changed = SmallVec::new();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert!(invalidator.inner.borrow().owner_state_routing.cursor.is_some());
+        states[7].as_ref().unwrap().bump();
+        assert!(invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owners[7]]);
+        changed.clear();
+        assert!(invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owners[7]]);
+        drop(states[7].take());
+        changed.clear();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert!(changed.is_empty());
+        // Overflow still sees every affected owner.
+        for _ in 0..300 {
+            states[9].as_ref().unwrap().bump();
+        }
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owners[9]]);
+        // Publish a replacement snapshot and retire all other owners.
+        let scope = log.begin_state_reads();
+        log.set_owner(Some(owners[9]));
+        states[9].as_ref().unwrap().read();
+        drop(scope);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        changed.clear();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert!(changed.is_empty());
+        states[9].as_ref().unwrap().bump();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owners[9]]);
     }
 
     #[test]
