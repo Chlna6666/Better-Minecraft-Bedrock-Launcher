@@ -660,9 +660,43 @@ fn append_composite_tile(commands: &mut Vec<RenderCommand>, previous_tile: bool,
 struct RasterPass {
     write: RasterTileWrite,
     target_extent: Extent2d,
-    clear_region: Option<gfx_core::ScissorRect>,
+    paged: bool,
     depth: TextureViewId,
     commands: Vec<RenderCommand>,
+}
+
+// Metal has no attachment-local LoadAction::Clear. A Replace draw is
+// already used by the retained renderer for transparent source repair.
+// Keep it on the same GPUI shader ABI, not a new backend clear pipeline.
+fn shared_raster_pages<D: PresentationDevice>(device: &D, backend: Option<gfx_core::BackendKind>) -> bool {
+    device.exact_offscreen_region_clear_supported() || backend == Some(gfx_core::BackendKind::Metal)
+}
+
+struct PhysicalRasterPass {
+    view: TextureViewId,
+    extent: Extent2d,
+    depth: TextureViewId,
+    paged: bool,
+    commands: Vec<RenderCommand>,
+}
+
+fn coalesce_raster_pages(passes: &mut [RasterPass]) -> Vec<PhysicalRasterPass> {
+    let mut physical = Vec::<PhysicalRasterPass>::new();
+    let mut pages = FxHashMap::default();
+    for pass in passes {
+        let view = pass.write.texture().view;
+        if pass.paged && let Some(&index) = pages.get(&view) {
+            let target: &mut PhysicalRasterPass = &mut physical[index];
+            debug_assert_eq!(target.extent, pass.target_extent);
+            debug_assert_eq!(target.depth, pass.depth);
+            target.commands.append(&mut pass.commands);
+            continue;
+        }
+        if pass.paged { pages.insert(view, physical.len()); }
+        physical.push(PhysicalRasterPass { view, extent: pass.target_extent,
+            depth: pass.depth, paged: pass.paged, commands: std::mem::take(&mut pass.commands) });
+    }
+    physical
 }
 
 impl NovaRenderer {
@@ -979,7 +1013,7 @@ impl NovaRenderer {
                             origin: SignedOrigin2d { x: request.source_origin[0], y: request.source_origin[1] },
                             extent: request.raster.extent,
                         };
-                        let write = if device.exact_offscreen_region_clear_supported() {
+                        let write = if shared_raster_pages(device, self.backend_info.kind().ok()) {
                             self.raster_tiles.prepare_paged(device, request.key, layer.generation, request.raster, format)?
                         } else {
                             self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)?
@@ -987,7 +1021,7 @@ impl NovaRenderer {
                         let Some(write) = write else { return Ok(false); };
                         let target_extent = write.target_extent();
                         let region = write.region();
-                        let clear_region = (target_extent != raster.extent).then_some(region);
+                        let paged = target_extent != raster.extent;
                         // Map original capture coordinates into the page's
                         // physical pixels. Full-page viewport keeps vertex
                         // and fragment origin arithmetic in the same space.
@@ -997,13 +1031,32 @@ impl NovaRenderer {
                             let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
                             let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
                             let mut commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[], None)?;
-                            if let Some(region) = clear_region {
+                            if paged {
                                 for command in &mut commands {
                                     let RenderCommand::Draw(draw) = command else {
                                         anyhow::bail!("non-raster command in a shared scroll page");
                                     };
                                     draw.scissor = Some(region);
                                 }
+                                // Pixel-exact clear quad in capture coordinates.
+                                // It overwrites transparent black (including alpha),
+                                // unlike ordinary source-over blending. All raster
+                                // pipelines have depth disabled; scratch depth
+                                // can be cleared once for the entire physical pass.
+                                let bounds = crate::bounds(
+                                    crate::point(ScaledPixels(raster.origin.x as f32), ScaledPixels(raster.origin.y as f32)),
+                                    crate::size(ScaledPixels(region.width as f32), ScaledPixels(region.height as f32)));
+                                let mut clear = Vec::with_capacity(PACKED_QUAD_BYTES);
+                                write_quad(&mut clear, &Quad { bounds, content_mask: ContentMask::new(bounds),
+                                    background: crate::rgba(0).into(), ..Default::default() });
+                                let clear_buffer = resources.buffer(device, &clear, BufferUsage::STORAGE)?;
+                                let clear_buffers = FrameResourceBuffers { quad_buffer: clear_buffer, quad_capacity: 1, ..buffers };
+                                let group = resources.binding(device, self.quad_bind_group_layout, quad_resource_bindings(&clear_buffers))?;
+                                commands.insert(0, RenderCommand::Draw(DrawCommand {
+                                    pipeline: self.pipelines.retained_clear, bind_groups: bind_group_list([group]),
+                                    vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: 0,
+                                    scissor: Some(region),
+                                }));
                             }
                             let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == target_extent) { *view } else {
                                 let target = create_depth_target(device, "scroll raster", target_extent)?;
@@ -1014,7 +1067,7 @@ impl NovaRenderer {
                             Ok((depth, commands))
                         })();
                         match prepared {
-                            Ok((depth, commands)) => passes.push(RasterPass { write, target_extent, clear_region, depth, commands }),
+                            Ok((depth, commands)) => passes.push(RasterPass { write, target_extent, paged, depth, commands }),
                             Err(error) => { self.raster_tiles.cancel_write(write)?; return Err(error); }
                         }
                     }
@@ -1026,14 +1079,20 @@ impl NovaRenderer {
                 resources.destroy(device);
                 return prepare.map(|_| None);
             }
-            let views: Vec<_> = passes.iter().map(|pass| pass.write.texture().view).collect();
-            let descriptors: Vec<_> = passes.iter().zip(&views).map(|(pass, view)| RenderPassCommands {
-                color_attachments: std::slice::from_ref(view), render_pass: self.render_pass,
-                commands: &pass.commands, color_load_op: LoadOp::Clear(clear_color()), clear_region: pass.clear_region,
+            // Independent cells never sample another scroll page while
+            // rasterizing. Their producer order commutes, so gather by
+            // physical attachment; keep logical reservations for fences.
+            let physical = coalesce_raster_pages(&mut passes);
+            let descriptors: Vec<_> = physical.iter().map(|pass| RenderPassCommands {
+                color_attachments: std::slice::from_ref(&pass.view), render_pass: self.render_pass,
+                commands: &pass.commands,
+                color_load_op: if pass.paged { LoadOp::Load } else { LoadOp::Clear(clear_color()) },
+                clear_region: None,
                 depth_attachment: Some(DepthAttachment { target: pass.depth,
                     depth_load_op: LoadOp::Clear(1.), stencil_load_op: None }),
-                viewport: Some(RasterTile { origin: SignedOrigin2d::ZERO, extent: pass.target_extent }.viewport()), resolve_target: None,
+                viewport: Some(RasterTile { origin: SignedOrigin2d::ZERO, extent: pass.extent }.viewport()), resolve_target: None,
             }).collect();
+            log::trace!(target: "gpui::diagnostics", "scroll raster producers: logical_writes={} physical_passes={}", passes.len(), physical.len());
             let tags = vec![None; descriptors.len()];
             let submitted = device.render_to_textures_on_queue(&descriptors, &tags, OffscreenQueuePreference::OrderedGraphics);
             drop(descriptors);
