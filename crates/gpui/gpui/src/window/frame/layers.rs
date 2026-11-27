@@ -687,6 +687,7 @@ impl SceneLayers {
         let mut frames = Vec::new();
         // Evaluate at most once per published root, regardless of candidate count.
         let mut ordered_root = None;
+        let sources = scroll_views.raster_sources(view_records);
         for record in records {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
@@ -694,7 +695,8 @@ impl SceneLayers {
             // Derive the physical scale from the owning retained view, not the
             // current native drawable (which can already have resized).
             let placement = if record.rows.is_empty() && !range.is_empty() {
-                scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
+                sources.get(&(range.start, range.end)).and_then(|candidates|
+                    scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
             } else { None };
             let direct = if let Some(placement) = &placement {
                 let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
