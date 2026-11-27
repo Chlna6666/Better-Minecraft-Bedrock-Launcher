@@ -363,6 +363,17 @@ impl NovaAtlas {
         self.ready_composite_glyphs(ids, cfg!(target_os = "windows"))
     }
 
+    /// Validate already encoded physical placements without allocating a
+    /// second placement map. None means uploads still need publication.
+    /// A same-ID pixel refresh does not change a root's sampled UVs.
+    pub(super) fn root_placements_match(&self, tiles: &[AtlasTile]) -> Option<bool> {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        if !state.pending_uploads.is_empty() { return None; }
+        Some(tiles.iter().all(|tile| {
+            state.placements.get(&tile.tile_id).is_some_and(|(current, _)| current == tile)
+        }))
+    }
+
     fn ready_composite_glyphs(&self, ids: &[(AtlasTextureId, u32)], lcd: bool) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
         let state = self.state.lock().expect("nova atlas lock poisoned");
         if !state.pending_uploads.is_empty() { return None; }

@@ -130,8 +130,23 @@ fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels()
     assert_ne!(atlas.scroll_content_generation(), before);
     assert_eq!(atlas.scroll_damage_generation(), damage_before, "new glyphs never invalidate existing raster pixels");
     assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "queued upload is not resident");
+    assert_eq!(atlas.root_placements_match(&[tile]), None);
     atlas.clear_pending_uploads_for_test();
     assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
+    assert_eq!(atlas.root_placements_match(&[tile]), Some(true));
+    let other_key = AtlasKey::Glyph(RenderGlyphParams {
+        font_id: FontId(1), glyph_id: GlyphId(3), font_size: px(14.0),
+        subpixel_variant: Point { x: 0, y: 0 }, scale_factor: 1.0,
+        grayscale_antialiasing: true, is_emoji: false, is_cjk: false,
+    });
+    atlas.ensure_tile_with(other_key, &mut || build(128)).unwrap().unwrap();
+    assert_eq!(atlas.root_placements_match(&[tile]), None);
+    atlas.clear_pending_uploads_for_test();
+    assert_eq!(atlas.root_placements_match(&[tile]), Some(true),
+        "unrelated allocation must preserve the root placement proof");
+    let mut moved = tile;
+    moved.bounds.origin.x.0 += 1;
+    assert_eq!(atlas.root_placements_match(&[moved]), Some(false));
     let before_refresh = atlas.scroll_content_generation();
     assert_eq!(atlas.refresh_tile_with(&key, &mut || build(255)).unwrap(), Some(tile));
     assert_ne!(atlas.scroll_content_generation(), before_refresh, "same logical ID can change pixels");
@@ -139,7 +154,10 @@ fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels()
     assert_eq!(atlas.scroll_damage_since(damage_before, damage_after).unwrap(),
         [tile.tile_id.0].into_iter().collect());
     assert!(atlas.ready_scroll_glyphs(&ids).is_none());
+    assert_eq!(atlas.root_placements_match(&[tile]), None);
     atlas.clear_pending_uploads_for_test();
+    assert_eq!(atlas.root_placements_match(&[tile]), Some(true),
+        "published same-ID pixel refresh preserves direct sampling coordinates");
 
     atlas.remove(&key);
     let live = ids.into_iter().collect();
@@ -148,6 +166,7 @@ fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels()
     assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
     atlas.apply_pending_removals();
     assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "retired glyph must not be sampled");
+    assert_eq!(atlas.root_placements_match(&[tile]), Some(false));
     assert_eq!(atlas.scroll_damage_since(damage_after, atlas.scroll_damage_generation()).unwrap(),
         [tile.tile_id.0].into_iter().collect());
     let before_reset = atlas.scroll_damage_generation();

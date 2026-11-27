@@ -214,7 +214,7 @@ pub(crate) struct NovaRenderer {
     raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
     scroll_raster_resources: Vec<(SubmissionId, scroll_raster::Resources)>,
     scroll_composite_slots: Vec<scroll_raster::CompositeSlot>,
-    scroll_outside_root: Option<Arc<scroll_raster::OutsideRoot>>,
+    scroll_outside_root: Option<scroll_raster::OutsideRootCache>,
     scroll_raster_failed: bool,
     atlas_sampler: SamplerId,
     path_texture: TextureId,

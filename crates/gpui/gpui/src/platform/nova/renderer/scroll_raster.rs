@@ -485,14 +485,20 @@ fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::
 
 /// One retained encoding of the exact complement of promoted root spans.
 /// Share existing immutable operation pages, never retain a previous Scene
-/// or its fallback. Atlas generations protect resolved physical UVs.
+/// or its fallback. Exact Atlas placements protect resolved physical UVs.
 pub(super) struct OutsideRoot {
     source: crate::scene::Operations,
     source_ends: Vec<usize>,
-    atlas_epoch: Option<[u64; 4]>,
+    atlas_tiles: Vec<AtlasTile>,
     streams: StaticStreams,
     boundaries: Vec<usize>,
     extensions: Vec<crate::PaintRendererExtension>,
+}
+
+/// Validation belongs to the GPU owner, not the shared immutable encoding.
+pub(super) struct OutsideRootCache {
+    root: Arc<OutsideRoot>,
+    atlas_epoch: Option<[u64; 4]>,
 }
 
 fn outside_atlas_epoch(renderer: &NovaRenderer) -> [u64; 4] {
@@ -544,7 +550,7 @@ impl OutsideRoot {
         true
     }
 
-    fn pack(renderer: &NovaRenderer, ranges: &[std::ops::Range<usize>], scene: &crate::Scene) -> Option<Self> {
+    fn pack(renderer: &NovaRenderer, ranges: &[std::ops::Range<usize>], scene: &crate::Scene) -> Option<OutsideRootCache> {
         let before = outside_atlas_epoch(renderer);
         let mut ids = Vec::new();
         for range in ranges {
@@ -593,7 +599,11 @@ impl OutsideRoot {
             source_ends.push(source.len());
         }
         source.compact();
-        Some(Self { source, source_ends, atlas_epoch, streams, boundaries, extensions })
+        let atlas_tiles = placements.into_values().collect();
+        Some(OutsideRootCache {
+            root: Arc::new(Self { source, source_ends, atlas_tiles, streams, boundaries, extensions }),
+            atlas_epoch,
+        })
     }
 }
 
@@ -967,16 +977,31 @@ impl NovaRenderer {
     fn retained_outside_root(&mut self, plans: &[LayerPlan<'_>], scene: &crate::Scene) -> Option<Arc<OutsideRoot>> {
         let ranges = outside_ranges(plans, scene.len())?;
         let epoch = outside_atlas_epoch(self);
-        if let Some(root) = &self.scroll_outside_root
-            && root.atlas_epoch.is_none_or(|previous| previous == epoch)
-            && root.matches_ranges(&scene.paint_operations, &ranges)
+        if let Some(cache) = &mut self.scroll_outside_root
+            && cache.root.matches_ranges(&scene.paint_operations, &ranges)
         {
-            return Some(Arc::clone(root));
+            if cache.atlas_epoch.is_none_or(|previous| previous == epoch) {
+                return Some(Arc::clone(&cache.root));
+            }
+            // Unrelated allocations, uploads and relocations must not
+            // discard the encoded root. While uploads are pending, let the
+            // ordinary renderer publish them without losing this encoding.
+            let root = Arc::clone(&cache.root);
+            let Some(matches) = self.atlas.root_placements_match(&root.atlas_tiles) else {
+                return None;
+            };
+            if matches && root.atlas_tiles.iter().all(|tile| self.gpu_atlas_textures.contains_key(&tile.texture_id)) {
+                if outside_atlas_epoch(self) != epoch { return None; }
+                self.scroll_outside_root.as_mut()?.atlas_epoch = Some(epoch);
+                return Some(root);
+            }
         }
-        // A failed pack must not retain stale extension inputs or atlas UVs.
+        // A changed placement or source must be packed again; never keep
+        // invalid physical UVs or stale extension inputs.
         self.scroll_outside_root = None;
-        let root = Arc::new(OutsideRoot::pack(self, &ranges, scene)?);
-        self.scroll_outside_root = Some(Arc::clone(&root));
+        let cache = OutsideRoot::pack(self, &ranges, scene)?;
+        let root = Arc::clone(&cache.root);
+        self.scroll_outside_root = Some(cache);
         Some(root)
     }
 
@@ -1667,7 +1692,7 @@ mod tests {
     #[test]
     fn resident_command_identity_requires_exact_order_and_native_bindings() {
         let root = Arc::new(OutsideRoot { source: crate::scene::Operations::default(),
-            source_ends: Vec::new(), atlas_epoch: None, streams: StaticStreams::default(),
+            source_ends: Vec::new(), atlas_tiles: Vec::new(), streams: StaticStreams::default(),
             boundaries: Vec::new(), extensions: Vec::new() });
         let a = BindGroupId::from_parts(1, 1);
         let b = BindGroupId::from_parts(2, 1);
@@ -1914,7 +1939,7 @@ mod tests {
         let mut retained = crate::scene::Operations::default();
         retained.share(&source, 0..1);
         retained.share(&source, 2..3);
-        let root = OutsideRoot { source: retained, source_ends: vec![1, 2], atlas_epoch: None,
+        let root = OutsideRoot { source: retained, source_ends: vec![1, 2], atlas_tiles: Vec::new(),
             streams: StaticStreams::default(), boundaries: vec![1], extensions: vec![] };
         assert!(root.matches_ranges(&source, &[0..1, 2..3]));
         assert!(!root.matches_ranges(&source, &[0..2, 3..3]));
