@@ -101,6 +101,16 @@ pub trait PlatformAtlas: Send + Sync {
         })
     }
 
+    /// Whether independent glyph requests may be prepared on background workers.
+    fn supports_parallel_glyphs(&self) -> bool {
+        false
+    }
+
+    /// Looks up an already resident glyph without invoking a builder.
+    fn lookup_glyph(&self, _params: &RenderGlyphParams) -> Option<AtlasTile> {
+        None
+    }
+
     fn clear_glyphs(&self);
     fn remove(&self, key: &AtlasKey);
 

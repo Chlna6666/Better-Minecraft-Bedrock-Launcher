@@ -164,6 +164,7 @@ pub(crate) use lifecycle::{
 #[doc(hidden)]
 pub use open::DEFAULT_WINDOW_SIZE;
 pub use options::*;
+pub(crate) use paint::GlyphPaintRequest;
 pub use paint::{PaintQuad, fill, outline, quad};
 pub use paint_resources::{ImagePaintProgress, ImagePaintRequest, ImageSampling};
 pub use prompts::*;

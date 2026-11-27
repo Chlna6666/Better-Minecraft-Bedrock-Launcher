@@ -785,6 +785,13 @@ impl TextSystem {
         }
     }
 
+    pub(crate) fn cached_raster_bounds(
+        &self,
+        params: &RenderGlyphParams,
+    ) -> Option<Bounds<DevicePixels>> {
+        self.raster_bounds.read().get(params)
+    }
+
     /// Get the rasterized size and location of a specific, rendered glyph.
     pub(crate) fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
         if let Some(bounds) = self.raster_bounds.read().get(params) {

@@ -648,6 +648,15 @@ impl PlatformAtlas for NovaAtlas {
         self.ensure_tile_with(key, &mut build_tile)
     }
 
+    fn supports_parallel_glyphs(&self) -> bool {
+        true
+    }
+
+    fn lookup_glyph(&self, params: &RenderGlyphParams) -> Option<AtlasTile> {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        state.tiles.get(&AtlasKey::Glyph(params.clone())).copied()
+    }
+
     fn clear_glyphs(&self) {
         self.invalidate_builds_matching(|key| matches!(key, AtlasKey::Glyph(_)));
         let keys = {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Rgba, SceneAnimationId, TextRenderingMode};
+use crate::{BackgroundExecutor, Rgba, SceneAnimationId, TextRenderingMode, TextSystem};
 
 /// A rectangle to be rendered in the window at the given position and size.
 /// Passed as an argument [`Window::paint_quad`].
@@ -112,6 +112,71 @@ pub(crate) struct GlyphPaintContext {
     content_mask: ContentMask<ScaledPixels>,
     animation_id: Option<SceneAnimationId>,
     grayscale_antialiasing: bool,
+}
+
+pub(crate) struct GlyphPaintRequest {
+    baseline: Point<ScaledPixels>,
+    params: RenderGlyphParams,
+    color: Hsla,
+}
+
+type PreparedGlyph = (Bounds<DevicePixels>, AtlasTile);
+
+struct GlyphBatchMiss {
+    params: RenderGlyphParams,
+    origins: SmallVec<[Point<ScaledPixels>; 4]>,
+    indices: SmallVec<[usize; 4]>,
+}
+
+fn raster_origin(
+    baseline: Point<ScaledPixels>,
+    bounds: Bounds<DevicePixels>,
+    context: &GlyphPaintContext,
+) -> Point<ScaledPixels> {
+    baseline + bounds.origin.map(|pixel| downsample_raster_pixel(pixel, context.scene_text_raster_scale))
+}
+
+fn glyph_visible(
+    baseline: Point<ScaledPixels>,
+    bounds: Bounds<DevicePixels>,
+    context: &GlyphPaintContext,
+) -> bool {
+    !bounds.is_zero()
+        && !glyph_is_clipped(
+            glyph_clip_bounds(raster_origin(baseline, bounds, context), bounds.size, context.scene_text_raster_scale),
+            context.content_mask.bounds,
+            context.animation_id,
+        )
+}
+
+fn prepare_glyph(
+    text: &TextSystem,
+    atlas: &dyn PlatformAtlas,
+    params: &RenderGlyphParams,
+    origins: impl Iterator<Item = Point<ScaledPixels>>,
+    context: &GlyphPaintContext,
+) -> Result<Option<PreparedGlyph>> {
+    let bounds = text.raster_bounds(params)?;
+    if !origins.into_iter().any(|origin| glyph_visible(origin, bounds, context)) {
+        return Ok(None);
+    }
+    let tile = atlas.ensure_glyph_with(params, &mut || text.rasterize_glyph(params))?;
+    if tile.is_none() {
+        log::warn!("glyph atlas allocation failed: {params:?}");
+    }
+    Ok(tile.map(|tile| (bounds, tile)))
+}
+
+fn prepare_misses(
+    text: &TextSystem,
+    atlas: &dyn PlatformAtlas,
+    misses: Vec<GlyphBatchMiss>,
+    context: GlyphPaintContext,
+) -> Result<Vec<(SmallVec<[usize; 4]>, Option<PreparedGlyph>)>> {
+    misses.into_iter().map(|miss| {
+        let prepared = prepare_glyph(text, atlas, &miss.params, miss.origins.iter().copied(), &context)?;
+        Ok((miss.indices, prepared))
+    }).collect()
 }
 
 impl Window {
@@ -577,74 +642,15 @@ impl Window {
         is_cjk: bool,
         context: &GlyphPaintContext,
     ) -> Result<()> {
-        let visual_origin = self.visual_point(origin);
-        let (baseline_origin, subpixel_variant) =
-            glyph_device_origin(visual_origin, Point::default(), context.scale_factor);
-        let params = RenderGlyphParams {
-            font_id,
-            glyph_id,
-            font_size,
-            subpixel_variant,
-            scale_factor: context.raster_scale_factor,
-            grayscale_antialiasing: context.grayscale_antialiasing,
-            is_emoji: false,
-            is_cjk,
-        };
-
-        let raster_bounds = self.text_system().raster_bounds(&params)?;
-        if !raster_bounds.is_zero() {
-            let content_mask = context.content_mask;
-            let animation_id = context.animation_id;
-            let scene_text_raster_scale = context.scene_text_raster_scale;
-            let raster_visual_bounds = glyph_clip_bounds(
-                baseline_origin
-                    + raster_bounds
-                        .origin
-                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
-                raster_bounds.size,
-                scene_text_raster_scale,
-            );
-            if glyph_is_clipped(raster_visual_bounds, content_mask.bounds, animation_id) {
-                return Ok(());
-            }
-            let Some(tile) = self
-                .sprite_atlas
-                .ensure_glyph_with(&params, &mut || self.text_system().rasterize_glyph(&params))?
-            else {
-                log::warn!(
-                    "glyph atlas allocation failed: font_id={:?} glyph_id={:?} font_size={:?} cjk={} subpixel={}",
-                    font_id,
-                    glyph_id,
-                    font_size,
-                    is_cjk,
-                    !params.grayscale_antialiasing
-                );
-                return Ok(());
-            };
-            // The atlas tile was rasterized at the complete visual scale and its baseline is
-            // already transformed. Renderer-owned scene scaling reserves extra atlas resolution,
-            // but keeps the stable scene bounds so the GPU transform applies exactly once.
-            let bounds = Bounds {
-                origin: baseline_origin
-                    + raster_bounds
-                        .origin
-                        .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
-                size: tile
-                    .bounds
-                    .size
-                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
-            };
-            self.next_frame.painter.insert_primitive(MonochromeSprite {
-                order: 0,
-                pad: MonochromeSpriteSampling::Glyph as u32,
-                animation_id,
-                bounds,
-                content_mask,
-                color: color.opacity(context.opacity).into(),
-                tile,
-                transformation: TransformationMatrix::unit(),
-            });
-        }
+        let request = self.glyph_request(origin, font_id, glyph_id, font_size, color, false, is_cjk, context);
+        let prepared = prepare_glyph(
+            self.text_system(),
+            self.sprite_atlas.as_ref(),
+            &request.params,
+            std::iter::once(request.baseline),
+            context,
+        )?;
+        self.emit_glyph(&request, prepared, context);
         Ok(())
     }
 
@@ -677,69 +683,174 @@ impl Window {
         font_size: Pixels,
         context: &GlyphPaintContext,
     ) -> Result<()> {
-        let scene_text_raster_scale = context.scene_text_raster_scale;
+        let request = self.glyph_request(origin, font_id, glyph_id, font_size, crate::black(), true, false, context);
+        let prepared = prepare_glyph(
+            self.text_system(),
+            self.sprite_atlas.as_ref(),
+            &request.params,
+            std::iter::once(request.baseline),
+            context,
+        )?;
+        self.emit_glyph(&request, prepared, context);
+        Ok(())
+    }
+
+    pub(crate) fn supports_glyph_batch(&self) -> bool {
+        self.sprite_atlas.supports_parallel_glyphs()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn glyph_request(
+        &self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        is_emoji: bool,
+        is_cjk: bool,
+        context: &GlyphPaintContext,
+    ) -> GlyphPaintRequest {
         let visual_origin = self.visual_point(origin);
-        let glyph_origin = visual_origin.scale(context.scale_factor);
-        let params = RenderGlyphParams {
-            font_id,
-            glyph_id,
-            font_size,
-            // We don't render emojis with subpixel variants.
-            subpixel_variant: Default::default(),
-            scale_factor: context.raster_scale_factor,
-            grayscale_antialiasing: true,
-            is_emoji: true,
-            is_cjk: false,
+        let (baseline, subpixel_variant) = if is_emoji {
+            (visual_origin.scale(context.scale_factor).map(|px| px.floor()), Point::default())
+        } else {
+            glyph_device_origin(visual_origin, Point::default(), context.scale_factor)
         };
+        GlyphPaintRequest {
+            baseline,
+            color,
+            params: RenderGlyphParams {
+                font_id,
+                glyph_id,
+                font_size,
+                subpixel_variant,
+                scale_factor: context.raster_scale_factor,
+                grayscale_antialiasing: is_emoji || context.grayscale_antialiasing,
+                is_emoji,
+                is_cjk: !is_emoji && is_cjk,
+            },
+        }
+    }
 
-        let raster_bounds = self.text_system().raster_bounds(&params)?;
-        if !raster_bounds.is_zero() {
-            let raster_origin = glyph_origin.map(|px| px.floor())
-                + raster_bounds
-                    .origin
-                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale));
-            let content_mask = context.content_mask;
-            let animation_id = context.animation_id;
-            if glyph_is_clipped(
-                glyph_clip_bounds(raster_origin, raster_bounds.size, scene_text_raster_scale),
-                content_mask.bounds,
-                animation_id,
-            ) {
-                return Ok(());
-            }
-            let Some(tile) = self
-                .sprite_atlas
-                .ensure_glyph_with(&params, &mut || self.text_system().rasterize_glyph(&params))?
-            else {
-                log::warn!(
-                    "emoji atlas allocation failed: font_id={:?} glyph_id={:?} font_size={:?}",
-                    font_id,
-                    glyph_id,
-                    font_size
-                );
-                return Ok(());
-            };
-
-            let bounds = Bounds {
-                origin: raster_origin,
-                size: tile
-                    .bounds
-                    .size
-                    .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
-            };
-            let opacity = context.opacity;
-
+    fn emit_glyph(
+        &mut self,
+        request: &GlyphPaintRequest,
+        prepared: Option<PreparedGlyph>,
+        context: &GlyphPaintContext,
+    ) {
+        let Some((raster_bounds, tile)) = prepared else { return };
+        if !glyph_visible(request.baseline, raster_bounds, context) {
+            return;
+        }
+        let bounds = Bounds {
+            origin: raster_origin(request.baseline, raster_bounds, context),
+            size: tile.bounds.size.map(|pixel| downsample_raster_pixel(pixel, context.scene_text_raster_scale)),
+        };
+        if request.params.is_emoji {
             self.next_frame.painter.insert_primitive(PolychromeSprite {
                 order: 0,
                 sampling: 0,
                 grayscale: false,
-                animation_id,
+                animation_id: context.animation_id,
                 bounds,
                 corner_radii: Default::default(),
-                content_mask,
+                content_mask: context.content_mask,
                 tile,
-                opacity,
+                opacity: context.opacity,
             });
+        } else {
+            self.next_frame.painter.insert_primitive(MonochromeSprite {
+                order: 0,
+                pad: MonochromeSpriteSampling::Glyph as u32,
+                animation_id: context.animation_id,
+                bounds,
+                content_mask: context.content_mask,
+                color: request.color.opacity(context.opacity).into(),
+                tile,
+                transformation: TransformationMatrix::unit(),
+            });
+        }
+    }
+
+    pub(crate) fn paint_glyph_batch(
+        &mut self,
+        requests: &[GlyphPaintRequest],
+        context: &GlyphPaintContext,
+        text: &Arc<TextSystem>,
+        executor: &BackgroundExecutor,
+    ) -> Result<()> {
+        let mut ready = SmallVec::<[Option<PreparedGlyph>; 32]>::from_elem(None, requests.len());
+        let mut misses = Vec::<GlyphBatchMiss>::new();
+        for (index, request) in requests.iter().enumerate() {
+            if let Some(bounds) = text.cached_raster_bounds(&request.params) {
+                if !glyph_visible(request.baseline, bounds, context) {
+                    continue;
+                }
+                if let Some(tile) = self.sprite_atlas.lookup_glyph(&request.params) {
+                    ready[index] = Some((bounds, tile));
+                    continue;
+                }
+            }
+            if let Some(miss) = misses.iter_mut().find(|miss| miss.params == request.params) {
+                miss.indices.push(index);
+                miss.origins.push(request.baseline);
+            } else {
+                misses.push(GlyphBatchMiss {
+                    params: request.params.clone(),
+                    indices: smallvec::smallvec![index],
+                    origins: smallvec::smallvec![request.baseline],
+                });
+            }
+        }
+
+        if misses.is_empty() {
+            for (request, prepared) in requests.iter().zip(ready) {
+                self.emit_glyph(request, prepared, context);
+            }
+            return Ok(());
+        }
+
+        // Only cold, distinct requests justify scheduling. Use the foreground
+        // caller as one worker and reuse the existing platform executor.
+        let workers = if misses.len() >= 8 {
+            executor.num_cpus().min(4).min(misses.len() / 4).max(1)
+        } else {
+            1
+        };
+        let mut tasks = SmallVec::<[_; 3]>::new();
+        let chunk_size = misses.len() / workers;
+        for _ in 1..workers {
+            let chunk = misses.split_off(misses.len() - chunk_size);
+            let text = text.clone();
+            let atlas = self.sprite_atlas.clone();
+            let context = *context;
+            tasks.push(executor.spawn(async move {
+                prepare_misses(&text, atlas.as_ref(), chunk, context)
+            }));
+        }
+        let local = prepare_misses(text, self.sprite_atlas.as_ref(), misses, *context);
+        let results = if tasks.is_empty() {
+            Vec::new()
+        } else {
+            executor.block(async {
+                let mut results = Vec::new();
+                for task in tasks {
+                    results.push(task.await);
+                }
+                results
+            })
+        };
+        for result in std::iter::once(local).chain(results) {
+            for (indices, prepared) in result? {
+                for index in indices {
+                    ready[index] = prepared;
+                }
+            }
+        }
+
+        for (request, prepared) in requests.iter().zip(ready) {
+            self.emit_glyph(request, prepared, context);
         }
         Ok(())
     }

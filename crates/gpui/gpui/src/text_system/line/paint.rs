@@ -34,6 +34,12 @@ pub(super) fn line(
         let has_line_decoration = decoration_runs.iter().any(|run| {
             run.underline.is_some() || run.strikethrough.is_some()
         });
+        // Decorations interleave with glyph primitives; keep their original
+        // ordered path. Plain long lines can prepare bounded glyph batches.
+        let batch_glyphs = !has_line_decoration
+            && window.supports_glyph_batch()
+            && layout.runs.iter().map(|run| run.glyphs.len()).sum::<usize>() >= 16;
+        let mut glyph_batch = smallvec::SmallVec::<[crate::window::GlyphPaintRequest; 32]>::new();
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;
@@ -212,7 +218,22 @@ pub(super) fn line(
                     + point(px(0.), snapped_baseline_offset_y);
 
                 if let Some(context) = glyph_context.as_ref() {
-                    if glyph.is_emoji {
+                    if batch_glyphs {
+                        glyph_batch.push(window.glyph_request(
+                            glyph_paint_origin,
+                            run.font_id,
+                            glyph.id,
+                            glyph.font_size,
+                            color,
+                            glyph.is_emoji,
+                            glyph.uses_stable_vertical_raster_frame(),
+                            context,
+                        ));
+                        if glyph_batch.len() == 32 {
+                            window.paint_glyph_batch(&glyph_batch, context, &text_system, cx.background_executor())?;
+                            glyph_batch.clear();
+                        }
+                    } else if glyph.is_emoji {
                         window.paint_emoji_in_line(
                             glyph_paint_origin,
                             run.font_id,
@@ -233,6 +254,10 @@ pub(super) fn line(
                     }
                 }
             }
+        }
+
+        if !glyph_batch.is_empty() && let Some(context) = glyph_context.as_ref() {
+            window.paint_glyph_batch(&glyph_batch, context, &text_system, cx.background_executor())?;
         }
 
         let mut last_line_end_x = first_glyph_x + layout.width;
