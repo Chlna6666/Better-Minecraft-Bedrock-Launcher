@@ -1615,7 +1615,7 @@ impl LinuxClient for X11Client {
         let state = self.0.borrow();
 
         Some(Rc::new(
-            X11Display::new(&state.xcb_connection, state.scale_factor, id.0 as usize).ok()?,
+            X11Display::new(&state.xcb_connection, state.scale_factor, u32::from(id) as usize).ok()?,
         ))
     }
 

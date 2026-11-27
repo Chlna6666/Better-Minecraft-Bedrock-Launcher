@@ -31,6 +31,7 @@ use gpui::{
     PromptLevel,
     RendererOptions,
     ResizeEdge,
+    Tiling,
     ScaledPixels,
     SceneAnimationCompletion,
     Size,
@@ -46,7 +47,6 @@ use gpui::{
     size,
 };
 use crate::{
-    Tiling,
     X11ClientStatePtr,
 };
 
@@ -148,18 +148,16 @@ fn merge_frame_request(
     pending.merge(options)
 }
 
-impl ResizeEdge {
-    fn to_moveresize(self) -> u32 {
-        match self {
-            ResizeEdge::TopLeft => 0,
-            ResizeEdge::Top => 1,
-            ResizeEdge::TopRight => 2,
-            ResizeEdge::Right => 3,
-            ResizeEdge::BottomRight => 4,
-            ResizeEdge::Bottom => 5,
-            ResizeEdge::BottomLeft => 6,
-            ResizeEdge::Left => 7,
-        }
+fn x11_moveresize_edge(edge: ResizeEdge) -> u32 {
+    match edge {
+        ResizeEdge::TopLeft => 0,
+        ResizeEdge::Top => 1,
+        ResizeEdge::TopRight => 2,
+        ResizeEdge::Right => 3,
+        ResizeEdge::BottomRight => 4,
+        ResizeEdge::Bottom => 5,
+        ResizeEdge::BottomLeft => 6,
+        ResizeEdge::Left => 7,
     }
 }
 
@@ -1903,7 +1901,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn start_window_resize(&self, edge: ResizeEdge) {
-        self.send_moveresize(edge.to_moveresize()).log_err();
+        self.send_moveresize(x11_moveresize_edge(edge)).log_err();
     }
 
     fn window_decorations(&self) -> gpui::Decorations {

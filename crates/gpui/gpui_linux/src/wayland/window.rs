@@ -62,6 +62,7 @@ use gpui::{
     PromptLevel,
     RendererOptions,
     ResizeEdge,
+    Tiling,
     SceneAnimationCompletion,
     Size,
     WindowAppearance,
@@ -79,7 +80,6 @@ use gpui::{
 use crate::{
     Globals,
     Output,
-    Tiling,
     WaylandClientStatePtr,
 };
 use gpui::{
@@ -510,7 +510,7 @@ impl WaylandWindowState {
                 self.inset(),
                 self.tiling,
             )
-            .map(|value| value.0 as i32)
+            .map(|value| f32::from(value) as i32)
             .map_size(|value| if value <= 0 { 1 } else { value });
             (bounds.origin, bounds.size)
         });
@@ -1880,7 +1880,7 @@ impl PlatformWindow for WaylandWindow {
         state.toplevel.resize(
             &state.globals.seat,
             state.client.serial(SerialKind::MousePress),
-            edge.to_xdg(),
+            xdg_resize_edge(edge),
         )
     }
 
@@ -1898,7 +1898,7 @@ impl PlatformWindow for WaylandWindow {
         let mut state = self.borrow_mut();
         state.requested_decorations = decorations;
         if let Some(decoration) = state.decoration.as_ref() {
-            decoration.set_mode(decorations.to_xdg());
+            decoration.set_mode(xdg_decoration_mode(decorations));
         } else {
             state.decorations = WindowDecorations::Client;
             state.decoration_mode_configured = true;
@@ -2021,27 +2021,23 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
     region.destroy();
 }
 
-impl WindowDecorations {
-    fn to_xdg(self) -> zxdg_toplevel_decoration_v1::Mode {
-        match self {
-            WindowDecorations::Client => zxdg_toplevel_decoration_v1::Mode::ClientSide,
-            WindowDecorations::Server => zxdg_toplevel_decoration_v1::Mode::ServerSide,
-        }
+fn xdg_decoration_mode(decorations: WindowDecorations) -> zxdg_toplevel_decoration_v1::Mode {
+    match decorations {
+        WindowDecorations::Client => zxdg_toplevel_decoration_v1::Mode::ClientSide,
+        WindowDecorations::Server => zxdg_toplevel_decoration_v1::Mode::ServerSide,
     }
 }
 
-impl ResizeEdge {
-    fn to_xdg(self) -> xdg_toplevel::ResizeEdge {
-        match self {
-            ResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
-            ResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
-            ResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
-            ResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
-            ResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
-            ResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
-            ResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
-            ResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
-        }
+fn xdg_resize_edge(edge: ResizeEdge) -> xdg_toplevel::ResizeEdge {
+    match edge {
+        ResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+        ResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+        ResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+        ResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+        ResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+        ResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+        ResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+        ResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
     }
 }
 

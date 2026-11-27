@@ -4018,7 +4018,7 @@ dependencies = [
  "smallvec",
  "smithay-client-toolkit",
  "smol",
- "strum 0.27.2",
+ "strum 0.28.0",
  "unicode-segmentation",
  "uuid",
  "wayland-backend",

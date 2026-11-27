@@ -24,7 +24,8 @@ impl Size<Pixels> {
 
 impl Point<Pixels> {
     /// Converts the point from logical to physical pixels.
-    pub(crate) fn to_device_pixels(self, scale_factor: f32) -> Point<DevicePixels> {
+    #[doc(hidden)]
+    pub fn to_device_pixels(self, scale_factor: f32) -> Point<DevicePixels> {
         point(
             DevicePixels((self.x.0 * scale_factor).round() as i32),
             DevicePixels((self.y.0 * scale_factor).round() as i32),
