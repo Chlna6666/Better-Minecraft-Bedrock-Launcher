@@ -613,6 +613,7 @@ impl Frame {
                 == self.retained_scene_segments.len()
         );
         self.accessed_element_states.freeze();
+        self.dispatch_tree.freeze();
         for element_state_key in self.accessed_element_states.keys(0..self.accessed_element_states.len()) {
             if prev_frame.element_states.is_empty() {
                 break;

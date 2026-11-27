@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    ops::Range,
+    ops::{Index, Range},
     rc::Rc,
 };
 
@@ -20,14 +20,16 @@ pub(crate) struct DispatchTree {
     pub(super) node_stack: Vec<DispatchNodeId>,
     pub(crate) context_stack: Vec<KeyContext>,
     pub(super) view_stack: Vec<EntityId>,
-    pub(super) nodes: Vec<DispatchNode>,
+    nodes: NodeStore,
+    // Dense topology is independent of immutable listener/context payload.
+    parents: Vec<u32>,
     pub(super) focusable_node_ids: FxHashMap<FocusId, DispatchNodeId>,
     pub(super) view_node_ids: FxHashMap<EntityId, DispatchNodeId>,
     pub(super) keymap: Rc<RefCell<Keymap>>,
     pub(super) action_registry: Rc<ActionRegistry>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DispatchNode {
     pub(crate) key_listeners: SharedListeners<KeyListener>,
     pub(crate) action_listeners: SharedListeners<DispatchActionListener>,
@@ -35,7 +37,187 @@ pub(crate) struct DispatchNode {
     pub(crate) context: Option<KeyContext>,
     pub(super) focus_id: Option<FocusId>,
     pub(super) view_id: Option<EntityId>,
-    pub(super) parent: Option<DispatchNodeId>,
+}
+
+// One reference per bounded page, never per node. Rc is intentional: event
+// callbacks are UI-thread-owned and must not acquire atomic references.
+const NODE_PAGE_LEN: usize = 128;
+const NO_PARENT: u32 = u32::MAX;
+
+#[derive(Clone)]
+struct NodeSpan {
+    owner: Rc<Vec<DispatchNode>>,
+    start: usize,
+    len: usize,
+    end: usize,
+}
+
+impl NodeSpan {
+    fn begin(&self) -> usize { self.end - self.len }
+    fn slice(&self, range: Range<usize>) -> &[DispatchNode] {
+        let start = self.start + range.start.max(self.begin()) - self.begin();
+        let end = self.start + range.end.min(self.end) - self.begin();
+        &self.owner[start..end]
+    }
+}
+
+#[derive(Default)]
+struct NodeStore {
+    spans: Vec<NodeSpan>,
+    pending: Vec<DispatchNode>,
+    len: usize,
+}
+
+impl NodeStore {
+    fn len(&self) -> usize { self.len }
+    fn is_empty(&self) -> bool { self.len == 0 }
+    fn capacity(&self) -> usize { self.spans.capacity() + self.pending.capacity() }
+
+    fn push(&mut self, node: DispatchNode) {
+        self.pending.push(node);
+        self.len += 1;
+        if self.pending.len() == NODE_PAGE_LEN { self.freeze(); }
+    }
+
+    fn freeze(&mut self) {
+        if self.pending.is_empty() { return; }
+        let nodes = std::mem::take(&mut self.pending);
+        let len = nodes.len();
+        self.spans.push(NodeSpan { owner: Rc::new(nodes), start: 0, len, end: self.len });
+    }
+
+    fn spans_in(&self, range: Range<usize>) -> &[NodeSpan] {
+        let start = self.spans.partition_point(|span| span.end <= range.start);
+        let end = self.spans.partition_point(|span| span.begin() < range.end);
+        &self.spans[start..end.max(start)]
+    }
+
+    fn slices(&self, range: Range<usize>) -> impl Iterator<Item = &[DispatchNode]> {
+        assert!(range.start <= range.end && range.end <= self.len);
+        let pending_start = self.len - self.pending.len();
+        let tail = &self.pending[range.start.saturating_sub(pending_start)..range.end.saturating_sub(pending_start)];
+        self.spans_in(range.clone()).iter().map(move |span| span.slice(range.clone()))
+            .chain(std::iter::once(tail))
+            .filter(|slice| !slice.is_empty())
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &DispatchNode> {
+        self.slices(0..self.len).flatten()
+    }
+
+    fn share(&mut self, source: &Self, range: Range<usize>) {
+        assert!(range.start <= range.end && range.end <= source.len);
+        if range.is_empty() { return; }
+        for span in source.spans_in(range.clone()) {
+            let begin = range.start.max(span.begin());
+            let end = range.end.min(span.end);
+            let start = span.start + begin - span.begin();
+            let len = end - begin;
+            let adjacent = self.pending.is_empty() && self.spans.last().is_some_and(|last|
+                Rc::ptr_eq(&last.owner, &span.owner) && last.start + last.len == start);
+            // Avoid pinning a large payload page for isolated replayed nodes.
+            if !adjacent && len * 4 < span.owner.len() {
+                for node in &span.owner[start..start + len] { self.push(node.clone()); }
+                continue;
+            }
+            self.freeze();
+            self.len += len;
+            if adjacent {
+                let last = self.spans.last_mut().unwrap();
+                last.len += len;
+                last.end = self.len;
+            } else {
+                self.spans.push(NodeSpan { owner: span.owner.clone(), start, len, end: self.len });
+            }
+        }
+        let pending_start = source.len - source.pending.len();
+        for node in &source.pending[range.start.saturating_sub(pending_start)..range.end.saturating_sub(pending_start)] {
+            self.push(node.clone());
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<&DispatchNode> {
+        if index >= self.len { return None; }
+        let pending_start = self.len - self.pending.len();
+        if index >= pending_start { return self.pending.get(index - pending_start); }
+        let span = &self.spans[self.spans.partition_point(|span| span.end <= index)];
+        span.owner.get(span.start + index - span.begin())
+    }
+
+    fn get_mut(&mut self, index: usize) -> &mut DispatchNode {
+        assert!(index < self.len);
+        let pending_start = self.len - self.pending.len();
+        if index >= pending_start { return &mut self.pending[index - pending_start]; }
+        let span_index = self.spans.partition_point(|span| span.end <= index);
+        let span = &mut self.spans[span_index];
+        let local = span.start + index - span.begin();
+        // Deferred paint can register listeners on an earlier node. Detach
+        // at most one bounded page; committed callbacks remain untouched.
+        &mut Rc::make_mut(&mut span.owner)[local]
+    }
+
+    fn truncate(&mut self, len: usize) {
+        assert!(len <= self.len);
+        let pending_start = self.len - self.pending.len();
+        if len >= pending_start {
+            self.pending.truncate(len - pending_start);
+        } else {
+            self.pending.clear();
+            self.spans.truncate(self.spans.partition_point(|span| span.begin() < len));
+            if let Some(last) = self.spans.last_mut() && last.end > len {
+                last.len -= last.end - len;
+                last.end = len;
+            }
+        }
+        self.len = len;
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+        // Retain one uniquely owned construction page, not a second set of
+        // immutable pages. The other frame may still hold shared callbacks.
+        for span in self.spans.drain(..) {
+            if let Ok(mut nodes) = Rc::try_unwrap(span.owner)
+                && nodes.capacity() > self.pending.capacity()
+            {
+                nodes.clear();
+                self.pending = nodes;
+            }
+        }
+        self.len = 0;
+    }
+
+    fn trim_for_reuse(&mut self, current: &Self) {
+        let target = current.spans.len().max(4);
+        if self.spans.capacity() > target.saturating_mul(4) {
+            self.spans.shrink_to(target);
+        }
+    }
+
+    fn trim(&mut self, aggressive: bool) {
+        let floor = if aggressive { 0 } else { 4 };
+        self.spans.shrink_to(self.spans.len().max(floor));
+        if aggressive { self.pending.shrink_to_fit(); }
+    }
+}
+
+impl Index<usize> for NodeStore {
+    type Output = DispatchNode;
+    fn index(&self, index: usize) -> &DispatchNode {
+        self.get(index).expect("valid dispatch node")
+    }
+}
+
+fn encode_parent(parent: Option<DispatchNodeId>) -> u32 {
+    parent.map_or(NO_PARENT, |id| {
+        let value = u32::try_from(id.0).expect("dispatch node index overflow");
+        assert!(value != NO_PARENT, "dispatch node index reserved for no parent");
+        value
+    })
+}
+
+fn decode_parent(parent: u32) -> Option<DispatchNodeId> {
+    (parent != NO_PARENT).then_some(DispatchNodeId(parent as usize))
 }
 
 pub(crate) struct ReusedSubtree {
@@ -67,7 +249,8 @@ impl DispatchTree {
             node_stack: Vec::new(),
             context_stack: Vec::new(),
             view_stack: Vec::new(),
-            nodes: Vec::new(),
+            nodes: NodeStore::default(),
+            parents: Vec::new(),
             focusable_node_ids: FxHashMap::default(),
             view_node_ids: FxHashMap::default(),
             keymap,
@@ -80,6 +263,7 @@ impl DispatchTree {
         self.context_stack.clear();
         self.view_stack.clear();
         self.nodes.clear();
+        self.parents.clear();
         self.focusable_node_ids.clear();
         self.view_node_ids.clear();
     }
@@ -89,6 +273,7 @@ impl DispatchTree {
             + self.context_stack.capacity()
             + self.view_stack.capacity()
             + self.nodes.capacity()
+            + self.parents.capacity()
             + self.focusable_node_ids.capacity()
             + self.view_node_ids.capacity()
     }
@@ -106,7 +291,8 @@ impl DispatchTree {
         trim_vec!(node_stack);
         trim_vec!(context_stack);
         trim_vec!(view_stack);
-        trim_vec!(nodes);
+        trim_vec!(parents);
+        self.nodes.trim_for_reuse(&current.nodes);
 
         let focusable_target = Self::MIN_RETAINED_CAPACITY.max(current.focusable_node_ids.len());
         if self.focusable_node_ids.capacity()
@@ -130,7 +316,8 @@ impl DispatchTree {
         self.context_stack
             .shrink_to(floor.max(self.context_stack.len()));
         self.view_stack.shrink_to(floor.max(self.view_stack.len()));
-        self.nodes.shrink_to(floor.max(self.nodes.len()));
+        self.parents.shrink_to(floor.max(self.parents.len()));
+        self.nodes.trim(aggressive);
         self.focusable_node_ids
             .shrink_to(floor.max(self.focusable_node_ids.len()));
         self.view_node_ids
@@ -145,16 +332,15 @@ impl DispatchTree {
         let parent = self.node_stack.last().copied();
         let node_id = DispatchNodeId(self.nodes.len());
 
-        self.nodes.push(DispatchNode {
-            parent,
-            ..Default::default()
-        });
+        assert!(node_id.0 < NO_PARENT as usize, "dispatch node index overflow");
+        self.parents.push(encode_parent(parent));
+        self.nodes.push(DispatchNode::default());
         self.node_stack.push(node_id);
         node_id
     }
 
     pub fn set_active_node(&mut self, node_id: DispatchNodeId) {
-        let next_node_parent = self.nodes[node_id.0].parent;
+        let next_node_parent = self.parent(node_id);
         while self.node_stack.last().copied() != next_node_parent && !self.node_stack.is_empty() {
             self.pop_node();
         }
@@ -181,7 +367,7 @@ impl DispatchTree {
                     self.view_stack.push(view_id);
                 }
                 self.node_stack.push(node_id);
-                current_node_id = node.parent;
+                current_node_id = self.parent(node_id);
             }
 
             self.context_stack.reverse();
@@ -197,14 +383,14 @@ impl DispatchTree {
 
     pub fn set_focus_id(&mut self, focus_id: FocusId) {
         let node_id = *self.node_stack.last().unwrap();
-        self.nodes[node_id.0].focus_id = Some(focus_id);
+        self.nodes.get_mut(node_id.0).focus_id = Some(focus_id);
         self.focusable_node_ids.insert(focus_id, node_id);
     }
 
     pub fn set_view_id(&mut self, view_id: EntityId) {
         if self.view_stack.last().copied() != Some(view_id) {
             let node_id = *self.node_stack.last().unwrap();
-            self.nodes[node_id.0].view_id = Some(view_id);
+            self.nodes.get_mut(node_id.0).view_id = Some(view_id);
             self.view_node_ids.insert(view_id, node_id);
             self.view_stack.push(view_id);
         }
@@ -249,7 +435,7 @@ impl DispatchTree {
             if excluded.peek().is_some_and(|(gap, _)| gap.contains(&index)) {
                 continue;
             }
-            let parent = self.nodes[index].parent;
+            let parent = self.parent(DispatchNodeId(index));
             if parent != anchor && !parent.is_some_and(|parent| {
                 outer.contains(&parent.0) && parent.0 < index
                     && !gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
@@ -276,10 +462,14 @@ impl DispatchTree {
         let start = self.nodes.len();
         let new_range = start..start + old_range.len();
         let mut contains_focus = false;
-        self.nodes.reserve(old_range.len());
-        for (offset, node) in source.nodes[old_range.clone()].iter().enumerate() {
+        assert!(new_range.end <= NO_PARENT as usize, "dispatch node index overflow");
+        self.parents.reserve(old_range.len());
+        // Parent indices are the only mandatory per-node replay work.
+        // Iterate the compact topology, then inspect route metadata in
+        // contiguous slices without cloning listener or context payloads.
+        for (offset, &encoded) in source.parents[old_range.clone()].iter().enumerate() {
             let id = DispatchNodeId(start + offset);
-            let parent = match node.parent {
+            let parent = match decode_parent(encoded) {
                 Some(parent) if old_range.contains(&parent.0) => {
                     debug_assert!(parent.0 < old_range.start + offset);
                     Some(DispatchNodeId(start + parent.0 - old_range.start))
@@ -287,6 +477,10 @@ impl DispatchTree {
                 parent => external_parent(parent),
             };
             debug_assert!(parent.is_none_or(|parent| parent.0 < id.0));
+            self.parents.push(encode_parent(parent));
+        }
+        for (offset, node) in source.nodes.slices(old_range.clone()).flatten().enumerate() {
+            let id = DispatchNodeId(start + offset);
             if let Some(focus_id) = node.focus_id {
                 self.focusable_node_ids.insert(focus_id, id);
                 contains_focus |= Some(focus_id) == focus;
@@ -294,16 +488,8 @@ impl DispatchTree {
             if let Some(view_id) = node.view_id {
                 self.view_node_ids.insert(view_id, id);
             }
-            self.nodes.push(DispatchNode {
-                key_listeners: node.key_listeners.clone(),
-                action_listeners: node.action_listeners.clone(),
-                modifiers_changed_listeners: node.modifiers_changed_listeners.clone(),
-                context: node.context.clone(),
-                focus_id: node.focus_id,
-                view_id: node.view_id,
-                parent,
-            });
         }
+        self.nodes.share(&source.nodes, old_range.clone());
         ReusedSubtree { old_range, new_range, contains_focus }
     }
 
@@ -322,9 +508,10 @@ impl DispatchTree {
         while self.active_node_id().is_some_and(|node| node.0 >= index) {
             self.pop_node();
         }
-        let restore_focus = self.nodes[index..].iter().any(|node| node.focus_id.is_some());
-        let restore_views = self.nodes[index..].iter().any(|node| node.view_id.is_some());
+        let restore_focus = self.nodes.slices(index..self.nodes.len()).flatten().any(|node| node.focus_id.is_some());
+        let restore_views = self.nodes.slices(index..self.nodes.len()).flatten().any(|node| node.view_id.is_some());
         self.nodes.truncate(index);
+        self.parents.truncate(index);
         // Removed nodes may shadow earlier occurrences of the same ID.
         if restore_focus {
             self.focusable_node_ids.clear();
@@ -378,7 +565,7 @@ impl DispatchTree {
                 if node_id == *parent_node_id {
                     return true;
                 }
-                current_node_id = self.nodes[node_id.0].parent;
+                current_node_id = self.parent(node_id);
             }
         }
         false
@@ -389,7 +576,7 @@ impl DispatchTree {
         let mut current_node_id = Some(target);
         while let Some(node_id) = current_node_id {
             dispatch_path.push(node_id);
-            current_node_id = self.nodes.get(node_id.0).and_then(|node| node.parent);
+            current_node_id = self.parents.get(node_id.0).copied().and_then(decode_parent);
         }
         dispatch_path.reverse(); // Reverse the path so it goes from the root to the focused node.
         dispatch_path
@@ -403,7 +590,7 @@ impl DispatchTree {
             if let Some(focus_id) = node.focus_id {
                 focus_path.push(focus_id);
             }
-            current_node_id = node.parent;
+            current_node_id = self.parent(node_id);
         }
         focus_path.reverse(); // Reverse the path so it goes from the root to the focused node.
         focus_path
@@ -417,7 +604,7 @@ impl DispatchTree {
     /// Iterates the view path from the requested view toward the root without allocating.
     pub fn view_path_reversed(&self, view_id: EntityId) -> impl Iterator<Item = EntityId> + '_ {
         let current_node_id = self.view_node_ids.get(&view_id).copied();
-        std::iter::successors(current_node_id, |node_id| self.node(*node_id).parent)
+        std::iter::successors(current_node_id, |node_id| self.parent(*node_id))
             .filter_map(|node_id| self.node(node_id).view_id)
     }
 
@@ -427,13 +614,22 @@ impl DispatchTree {
         view_path
     }
 
+    fn parent(&self, id: DispatchNodeId) -> Option<DispatchNodeId> {
+        decode_parent(self.parents[id.0])
+    }
+
+    pub(crate) fn freeze(&mut self) {
+        debug_assert_eq!(self.nodes.len(), self.parents.len());
+        self.nodes.freeze();
+    }
+
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
         &self.nodes[node_id.0]
     }
 
     fn active_node(&mut self) -> &mut DispatchNode {
         let active_node_id = self.active_node_id().unwrap();
-        &mut self.nodes[active_node_id.0]
+        self.nodes.get_mut(active_node_id.0)
     }
 
     pub fn focusable_node_id(&self, target: FocusId) -> Option<DispatchNodeId> {
@@ -486,7 +682,7 @@ mod retained_dispatch_replay_tests {
             assert_eq!(parent, Some(clean));
             Some(DispatchNodeId(1))
         });
-        assert_eq!(target.nodes[5].parent, Some(DispatchNodeId(1)));
+        assert_eq!(target.parent(DispatchNodeId(5)), Some(DispatchNodeId(1)));
         assert_eq!(target.active_node_id(), Some(root));
     }
 
@@ -503,6 +699,7 @@ mod retained_dispatch_replay_tests {
         committed.on_action(TypeId::of::<u8>(), Rc::new(|_, _, _, _| {}));
         committed.pop_node();
 
+        committed.freeze();
         candidate.reuse_subtree(0..1, &committed, None);
         for tree in [&committed, &candidate] {
             assert_eq!(tree.nodes[0].key_listeners.len(), 1);
@@ -513,9 +710,47 @@ mod retained_dispatch_replay_tests {
             &committed.nodes[0].key_listeners[0],
             &candidate.nodes[0].key_listeners[0]
         ));
+        assert!(std::ptr::eq(candidate.node(DispatchNodeId(0)), committed.node(DispatchNodeId(0))));
         candidate.clear();
         assert_eq!(committed.nodes[0].action_listeners.len(), 1);
         assert_eq!(committed.nodes[0].key_listeners.len(), 1);
     }
 
+}
+
+
+#[cfg(test)]
+mod node_page_tests {
+    use super::*;
+
+    #[test]
+    fn retained_payload_pages_share_and_detach_without_editing_source() {
+        let mut source = NodeStore::default();
+        for _ in 0..NODE_PAGE_LEN * 2 + 3 { source.push(DispatchNode::default()); }
+        source.freeze();
+        let mut target = NodeStore::default();
+        target.push(DispatchNode::default());
+        target.share(&source, 0..NODE_PAGE_LEN * 2);
+        assert!(std::ptr::eq(&source[0], &target[1]));
+        assert!(std::ptr::eq(&source[NODE_PAGE_LEN], &target[NODE_PAGE_LEN + 1]));
+        target.get_mut(1).view_id = Some(EntityId::from(7_u64));
+        assert!(source[0].view_id.is_none());
+        assert_eq!(target[1].view_id, Some(EntityId::from(7_u64)));
+        assert!(std::ptr::eq(&source[NODE_PAGE_LEN], &target[NODE_PAGE_LEN + 1]));
+        target.truncate(NODE_PAGE_LEN + 2);
+        assert_eq!(target.iter().count(), NODE_PAGE_LEN + 2);
+        source.clear();
+        assert_eq!(target[1].view_id, Some(EntityId::from(7_u64)));
+    }
+
+    #[test]
+    fn sparse_fragments_do_not_pin_large_payload_pages() {
+        let mut source = NodeStore::default();
+        for _ in 0..NODE_PAGE_LEN * 2 { source.push(DispatchNode::default()); }
+        let mut target = NodeStore::default();
+        target.share(&source, 0..1);
+        target.share(&source, NODE_PAGE_LEN..NODE_PAGE_LEN + 1);
+        assert_eq!(target.pending.len(), 2);
+        assert!(source.spans.iter().all(|span| Rc::strong_count(&span.owner) == 1));
+    }
 }

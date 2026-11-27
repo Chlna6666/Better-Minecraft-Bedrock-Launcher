@@ -15,7 +15,7 @@ impl DispatchTree {
     pub fn available_actions(&self, target: DispatchNodeId) -> Vec<Box<dyn Action>> {
         let mut actions = Vec::<Box<dyn Action>>::new();
         for node_id in self.dispatch_path(target) {
-            let node = &self.nodes[node_id.0];
+            let node = self.node(node_id);
             for DispatchActionListener { action_type, .. } in &node.action_listeners {
                 if let Err(ix) = actions.binary_search_by_key(action_type, |a| a.as_any().type_id())
                 {
@@ -33,7 +33,7 @@ impl DispatchTree {
 
     pub fn is_action_available(&self, action: &dyn Action, target: DispatchNodeId) -> bool {
         for node_id in self.dispatch_path(target) {
-            let node = &self.nodes[node_id.0];
+            let node = self.node(node_id);
             if node
                 .action_listeners
                 .iter()
