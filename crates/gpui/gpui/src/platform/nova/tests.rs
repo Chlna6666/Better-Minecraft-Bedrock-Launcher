@@ -189,6 +189,28 @@ fn glyph_atlas_insert_update_remove() {
 
 #[cfg(target_os = "windows")]
 #[test]
+fn lcd_glyph_is_admitted_only_as_a_root_overlay() {
+    let atlas = NovaAtlas::new();
+    atlas.clear_pending_uploads_for_test();
+    let key = AtlasKey::Glyph(RenderGlyphParams {
+        font_id: FontId(1), glyph_id: GlyphId(2), font_size: px(14.0),
+        subpixel_variant: Point { x: 0, y: 0 }, scale_factor: 1.0,
+        grayscale_antialiasing: false, is_emoji: false, is_cjk: false,
+    });
+    assert_eq!(key.texture_kind(), AtlasTextureKind::Subpixel);
+    let tile = atlas.ensure_tile_with(key, &mut || {
+        Ok(Some((size(DevicePixels(4), DevicePixels(4)),
+            Cow::Owned(glyph_test_bytes(AtlasTextureKind::Subpixel, 16, 128)))))
+    }).unwrap().unwrap();
+    let ids = [(tile.texture_id, tile.tile_id.0)];
+    assert!(atlas.ready_root_glyphs(&ids).is_none());
+    atlas.clear_pending_uploads_for_test();
+    assert!(atlas.ready_scroll_glyphs(&ids).is_none());
+    assert_eq!(atlas.ready_root_glyphs(&ids).unwrap()[&tile.tile_id], tile);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
 fn transparent_window_glyphs_use_monochrome_atlas() {
     let mut params = RenderGlyphParams {
         font_id: FontId(1),

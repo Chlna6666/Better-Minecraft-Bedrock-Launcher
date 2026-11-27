@@ -160,6 +160,8 @@ struct SourceRun {
 /// Separate packed streams use the renderer's existing shader ABI.
 #[derive(Default)]
 struct StaticStreams {
+    // LCD is a root-only overlay, never a raster tile source.
+    root_lcd: bool,
     quads: Vec<u8>,
     shadows: Vec<u8>,
     underlines: Vec<u8>,
@@ -182,7 +184,8 @@ impl StaticStreams {
             Primitive::Quad(q) => append!(quads, PACKED_QUAD_BYTES, MAX_QUADS, write_quad, q, SourceKind::Quad),
             Primitive::Shadow(s) => append!(shadows, PACKED_SHADOW_BYTES, MAX_SHADOWS, write_shadow, s, SourceKind::Shadow),
             Primitive::Underline(u) => append!(underlines, PACKED_UNDERLINE_BYTES, MAX_UNDERLINES, write_underline, u, SourceKind::Underline),
-            Primitive::MonochromeSprite(s) if s.tile.texture_id.kind == AtlasTextureKind::Monochrome =>
+            Primitive::MonochromeSprite(s) if s.tile.texture_id.kind == AtlasTextureKind::Monochrome
+                || (self.root_lcd && s.tile.texture_id.kind == AtlasTextureKind::Subpixel) =>
                 append!(mono, PACKED_MONO_SPRITE_BYTES, MAX_MONO_SPRITES, write_monochrome_sprite, s, SourceKind::Mono(s.tile.texture_id)),
             Primitive::PolychromeSprite(s) if s.sampling != 2 &&
                 matches!(s.tile.texture_id.kind, AtlasTextureKind::Bgra | AtlasTextureKind::Rgba) =>
@@ -240,6 +243,8 @@ impl StaticStreams {
                 SourceKind::Quad => blend.quads,
                 SourceKind::Shadow => blend.shadows,
                 SourceKind::Underline => blend.underlines,
+                #[cfg(target_os = "windows")]
+                SourceKind::Mono(id) if id.kind == AtlasTextureKind::Subpixel => blend.subpixel_sprites,
                 SourceKind::Mono(_) => blend.mono_sprites,
                 SourceKind::Poly(_) => blend.poly_sprites,
             };
@@ -353,8 +358,8 @@ impl OutsideRoot {
             }
         }
         let placements = if ids.is_empty() { FxHashMap::default() }
-            else { renderer.atlas.ready_scroll_glyphs(&ids)? };
-        let mut streams = StaticStreams::default();
+            else { renderer.atlas.ready_root_glyphs(&ids)? };
+        let mut streams = StaticStreams { root_lcd: cfg!(target_os = "windows"), ..Default::default() };
         let mut boundaries = Vec::with_capacity(plans.len());
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;

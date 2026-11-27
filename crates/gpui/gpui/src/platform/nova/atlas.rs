@@ -318,12 +318,23 @@ impl NovaAtlas {
     /// samples an evicted allocation or a page whose upload is still queued.
     /// The ordinary atlas upload path can make the next presentation eligible.
     pub(super) fn ready_scroll_glyphs(&self, ids: &[(AtlasTextureId, u32)]) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
+        self.ready_composite_glyphs(ids, false)
+    }
+
+    /// LCD coverage may be sampled only against the final root background.
+    /// A transparent cached tile must never bake those color channels.
+    pub(super) fn ready_root_glyphs(&self, ids: &[(AtlasTextureId, u32)]) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
+        self.ready_composite_glyphs(ids, cfg!(target_os = "windows"))
+    }
+
+    fn ready_composite_glyphs(&self, ids: &[(AtlasTextureId, u32)], lcd: bool) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
         let state = self.state.lock().expect("nova atlas lock poisoned");
         if !state.pending_uploads.is_empty() { return None; }
         ids.iter().map(|(_, id)| {
             let id = crate::TileId(*id);
             let tile = state.placements.get(&id)?.0;
-            matches!(tile.texture_id.kind, AtlasTextureKind::Monochrome | AtlasTextureKind::Bgra | AtlasTextureKind::Rgba)
+            (matches!(tile.texture_id.kind, AtlasTextureKind::Monochrome | AtlasTextureKind::Bgra | AtlasTextureKind::Rgba)
+                || (lcd && tile.texture_id.kind == AtlasTextureKind::Subpixel))
                 .then_some((id, tile))
         }).collect()
     }
