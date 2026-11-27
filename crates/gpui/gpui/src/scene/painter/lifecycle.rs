@@ -54,6 +54,11 @@ impl Painter {
     }
 
     fn finish_with_previous(&mut self, previous: Option<&Scene>) -> bool {
+        self.scene.paint_operations.publish_fresh_draw_payloads(
+            &mut self.scene.shadows,
+            &mut self.scene.quads,
+            &mut self.scene.monochrome_sprites,
+        );
         self.scene.paint_operations.finish();
         debug_assert!(
             self.blur_captures.is_empty(),

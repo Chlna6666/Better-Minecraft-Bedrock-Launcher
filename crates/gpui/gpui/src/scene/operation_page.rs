@@ -2,7 +2,94 @@
 //! Indices are local to their immutable owner, not to the Scene or frame.
 use super::*;
 use crate::{Bounds, ScaledPixels};
-use std::{mem::size_of, ops::Range};
+use super::primitive_stream::Ordered;
+use std::{mem::size_of, ops::{Index, Range}, sync::Arc};
+
+/// Empty typed pages need only one nullable pointer. A nonempty page can
+/// publish its actual allocation to the sorted draw stream without retaining
+/// the operation page or allocating another primitive vector.
+struct TypedPayload<T>(Option<Arc<Vec<T>>>);
+
+impl<T> Default for TypedPayload<T> {
+    fn default() -> Self { Self(None) }
+}
+
+impl<T> TypedPayload<T> {
+    fn len(&self) -> usize { self.0.as_ref().map_or(0, |v| v.len()) }
+    fn capacity(&self) -> usize { self.0.as_ref().map_or(0, |v| v.capacity()) }
+    fn push(&mut self, value: T) {
+        Arc::get_mut(self.0.get_or_insert_with(|| Arc::new(Vec::new())))
+            .expect("mutable operation payload must be unique")
+            .push(value);
+    }
+    fn clear(&mut self) {
+        if let Some(owner) = &mut self.0
+            && let Some(values) = Arc::get_mut(owner)
+        {
+            values.clear();
+        } else {
+            self.0 = None;
+        }
+    }
+    fn shrink_to(&mut self, floor: usize) {
+        if let Some(owner) = &mut self.0
+            && let Some(values) = Arc::get_mut(owner)
+        {
+            values.shrink_to(floor);
+        }
+    }
+}
+
+impl<T> Index<usize> for TypedPayload<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        &self.0.as_ref().expect("nonempty typed payload")[index]
+    }
+}
+
+impl<T: Ordered + PartialEq> TypedPayload<T> {
+    /// Only a fresh, exclusively owned page whose insertion sequence agrees
+    /// exactly with the draw builder can be unified. Root blur capture mirrors
+    /// and synthetic draw streams are deliberately not inferred from counts.
+    fn publish_sorted(
+        &mut self,
+        indices: &mut [OperationIndex],
+        kind: u32,
+        stream: &mut PrimitiveStream<T>,
+    ) {
+        let Some(owner) = &mut self.0 else { return };
+        let Some(values) = Arc::get_mut(owner) else { return };
+        if values.is_empty() || !stream.matches_fresh_pending(values) {
+            return;
+        }
+
+        if !values.is_sorted_by_key(T::sort_key) {
+            // Sort narrow slot indices rather than moving large primitives
+            // through the sort. Equal keys keep their insertion order.
+            let mut sorted: Vec<usize> = (0..values.len()).collect();
+            sorted.sort_unstable_by_key(|&slot| (values[slot].sort_key(), slot));
+            let mut target = vec![0usize; values.len()];
+            for (new, old) in sorted.into_iter().enumerate() {
+                target[old] = new;
+            }
+            for index in indices {
+                if index.kind() == kind {
+                    *index = OperationIndex::new(kind, target[index.slot()]);
+                }
+            }
+            // Apply the old-to-new permutation in place. Operation indices
+            // were remapped above, before the scratch permutation is consumed.
+            for old in 0..target.len() {
+                while target[old] != old {
+                    let new = target[old];
+                    values.swap(old, new);
+                    target.swap(old, new);
+                }
+            }
+        }
+        stream.adopt_fresh_sorted(Arc::clone(owner));
+    }
+}
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -25,11 +112,11 @@ impl OperationIndex {
 #[derive(Default)]
 pub(super) struct OperationPage {
     indices: Vec<OperationIndex>,
-    shadows: Vec<Shadow>,
-    quads: Vec<Quad>,
+    shadows: TypedPayload<Shadow>,
+    quads: TypedPayload<Quad>,
     paths: Vec<Path<ScaledPixels>>,
     underlines: Vec<Underline>,
-    mono: Vec<MonochromeSprite>,
+    mono: TypedPayload<MonochromeSprite>,
     poly: Vec<PolychromeSprite>,
     surfaces: Vec<PaintSurface>,
     backdrop: Vec<PaintBackdropBlur>,
@@ -44,6 +131,19 @@ impl OperationPage {
     pub(super) fn len(&self) -> usize { self.indices.len() }
     pub(super) fn is_empty(&self) -> bool { self.indices.is_empty() }
     pub(super) fn capacity(&self) -> usize { self.indices.capacity() }
+
+    /// Publication preserves logical operation order while draw streams borrow
+    /// the very same typed allocations in physical sorted order.
+    pub(super) fn publish_fresh_draw_payloads(
+        &mut self,
+        shadows: &mut PrimitiveStream<Shadow>,
+        quads: &mut PrimitiveStream<Quad>,
+        mono: &mut PrimitiveStream<MonochromeSprite>,
+    ) {
+        self.shadows.publish_sorted(&mut self.indices, 0, shadows);
+        self.quads.publish_sorted(&mut self.indices, 1, quads);
+        self.mono.publish_sorted(&mut self.indices, 4, mono);
+    }
 
     pub(super) fn capacity_bytes(&self) -> usize {
         self.indices.capacity().saturating_mul(size_of::<OperationIndex>())
@@ -189,6 +289,52 @@ impl super::page_compaction::PagePayload for OperationPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sorted_draw_payload_is_the_same_allocation_as_logical_operations() {
+        let mut page = OperationPage::default();
+        let mut quads = PrimitiveStream::default();
+        for (order, x) in [(3, 10.), (1, 20.), (1, 30.), (2, 40.)] {
+            let mut quad = Quad { order, ..Quad::default() };
+            quad.bounds.origin.x = ScaledPixels(x);
+            quads.push(quad);
+            page.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+            page.push(PaintOperation::EndLayer);
+        }
+        page.publish_fresh_draw_payloads(
+            &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+        );
+        quads.finish();
+        let logical_to_sorted = [3, 0, 1, 2];
+        for (logical, sorted) in logical_to_sorted.into_iter().enumerate() {
+            let PaintOperationRef::Primitive(PrimitiveRef::Quad(quad)) = page.view(logical * 2) else {
+                panic!("expected quad");
+            };
+            assert!(std::ptr::eq(quad, &quads[sorted]));
+            assert_eq!(quad.bounds.origin.x, ScaledPixels(10. * (logical + 1) as f32));
+            assert!(matches!(page.view(logical * 2 + 1), PaintOperationRef::EndLayer));
+        }
+        assert_eq!(quads.slices(0..4).count(), 1);
+        page.clear();
+        assert_eq!(quads[0].bounds.origin.x, ScaledPixels(20.));
+    }
+
+    #[test]
+    fn different_draw_payload_does_not_adopt_operation_allocation() {
+        let mut page = OperationPage::default();
+        let mut quads = PrimitiveStream::default();
+        page.push(PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+        quads.push(Quad { order: 1, ..Quad::default() });
+        page.publish_fresh_draw_payloads(
+            &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+        );
+        quads.finish();
+        let PaintOperationRef::Primitive(PrimitiveRef::Quad(quad)) = page.view(0) else {
+            panic!("expected quad");
+        };
+        assert!(!std::ptr::eq(quad, &quads[0]));
+        assert_eq!(quads[0].order, 1);
+    }
+
     #[test]
     fn index_is_four_bytes_and_markers_own_no_primitive_slots() {
         assert_eq!(size_of::<OperationIndex>(), 4);

@@ -328,6 +328,19 @@ impl Operations {
         )
     }
 
+    /// A fresh operation page and its typed draw builders can share their
+    /// published allocations. Existing retained pages must never be resorted.
+    pub(super) fn publish_fresh_draw_payloads(
+        &mut self,
+        shadows: &mut super::PrimitiveStream<super::Shadow>,
+        quads: &mut super::PrimitiveStream<super::Quad>,
+        mono: &mut super::PrimitiveStream<super::MonochromeSprite>,
+    ) {
+        if self.segments.is_empty() {
+            self.pending.publish_fresh_draw_payloads(shadows, quads, mono);
+        }
+    }
+
     /// Freeze newly appended operations without rewriting any existing immutable ranges.
     pub(crate) fn finish(&mut self) {
         if !self.pending.is_empty() {

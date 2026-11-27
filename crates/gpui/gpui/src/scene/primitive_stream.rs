@@ -225,6 +225,23 @@ impl<T: Ordered> PrimitiveStream<T> {
             }
         }
     }
+    /// The original insertion sequence must agree exactly before replacing
+    /// a fresh draw builder with an operation-owned sorted allocation.
+    pub(super) fn matches_fresh_pending(&self, values: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.segments.is_empty() && self.pending.as_slice() == values
+    }
+
+    pub(super) fn adopt_fresh_sorted(&mut self, owner: Arc<Vec<T>>) {
+        debug_assert!(self.segments.is_empty() && self.pending.len() == owner.len());
+        let count = owner.len();
+        self.pending = Vec::new();
+        self.len = 0;
+        self.append(owner, 0..count);
+    }
+
     fn append(&mut self, owner: Arc<Vec<T>>, range: Range<usize>) {
         let end = self.segments.last().map_or(0, |segment| segment.end) + range.len();
         self.len += range.len();
