@@ -326,3 +326,74 @@ fn verify(backend: RendererBackend) {
     });
     renderer.destroy();
 }
+
+#[test]
+#[cfg(feature = "nova-gfx-dx12")]
+#[ignore = "requires Windows hardware D3D12 and a native presentable window"]
+fn dx12_scroll_raster_present_skips_scene_pack() {
+    verify_direct_present(RendererBackend::NovaDx12);
+}
+
+#[test]
+#[cfg(feature = "nova-gfx-vulkan")]
+#[ignore = "requires Windows hardware Vulkan and a native presentable window"]
+fn vulkan_scroll_raster_present_skips_scene_pack() {
+    verify_direct_present(RendererBackend::NovaVulkan);
+}
+
+#[cfg(any(feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan"))]
+fn verify_direct_present(backend: RendererBackend) {
+    let window = native_window::Window::renderer_fixture();
+    window.resize(64, 64);
+    let mut renderer = NovaRenderer::with_atlas(
+        &window, backend, &RendererOptions::default(), GpuSubmissionMode::Deferred,
+        crate::size(DevicePixels(64), DevicePixels(64)), false, NovaRendererAtlas::new(),
+    ).expect("direct scroll renderer");
+    let viewport = crate::ContentMask::new(crate::bounds(
+        crate::point(crate::px(0.), crate::px(0.)), crate::size(crate::px(64.), crate::px(64.)),
+    ));
+    let bounds = viewport.scale(1.).bounds;
+    let coverage = crate::bounds(
+        crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(-64.)),
+        crate::size(crate::ScaledPixels(64.), crate::ScaledPixels(192.)),
+    );
+    let quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
+        background: crate::rgb(0x00ff00).into(), ..Default::default() };
+    let mut painter = crate::scene::Painter::default();
+    painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
+    painter.finish();
+    let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
+        crate::window::PaintGeometry { layout_extent: Some((64, 64)), ..Default::default() });
+    let mut source = crate::scene::Operations::default();
+    source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(quad)));
+    paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
+    let paint = std::sync::Arc::new(paint);
+    let packet = || crate::PresentationPacket::new(paint.clone(), [], [], Instant::now(),
+        crate::DirtyRegion::full(bounds), crate::BackdropBlurDamagePlan::default(),
+        crate::PartialPresentMode::FullRedraw);
+    let encode_generation = renderer.frame_upload.encode_generation;
+    let mut physical = None;
+    let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
+    let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
+    for _ in 0..2 {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while renderer.presentation_readiness(None, Some((64, 64))).expect("scroll readiness") != PresentReadiness::Ready
+            || !renderer.draw(packet()).expect("scroll direct present")
+        {
+            assert!(Instant::now() < deadline, "scroll root must present");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        renderer.wait_pending_submissions().expect("scroll native completion");
+        assert_eq!(renderer.frame_upload.encode_generation, encode_generation, "must bypass Scene packing");
+        assert!(renderer.scroll_raster_resources.is_empty(), "all transient bindings retired");
+        let texture = renderer.raster_tiles.lookup(key, 1, tile, Format::Bgra8Unorm)
+            .expect("published native scroll texture");
+        assert_eq!(renderer.raster_tiles.bytes(), 64 * 64 * 4);
+        if let Some(previous) = physical {
+            assert_eq!(previous, texture, "resident hit must retain the physical texture");
+        }
+        physical = Some(texture);
+        super::pixels(&renderer, texture.texture, [0, 255, 0, 255]);
+    }
+    renderer.destroy();
+}
