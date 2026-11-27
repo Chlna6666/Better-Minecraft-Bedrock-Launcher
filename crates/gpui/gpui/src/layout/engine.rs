@@ -430,10 +430,12 @@ impl TaffyLayoutEngine {
         }
         self.stale_style_fingerprints.remove(&id);
         self.robbed_parents.remove(&id);
-        if !self.unrounded_layout_origins.is_empty() || !self.absolute_layout_bounds.is_empty() {
-            self.absolute_layout_bounds.clear();
-            self.unrounded_layout_origins.clear();
-        }
+        // Removing a parent can detach surviving children. Revoke the
+        // old origin proof before Taffy changes their parent links.
+        Self::invalidate_origin_subtree(
+            &self.taffy, &mut self.unrounded_layout_origins,
+            &mut self.absolute_layout_bounds, &mut self.layout_bounds_scratch_space, id,
+        );
         self.contexts.remove(node_key(id.into()));
         self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
         self.root_constraints.remove(&id);
@@ -938,13 +940,13 @@ impl TaffyLayoutEngine {
                     self.taffy.get_child_id(id.into(), index) == (*child).into()
                 });
             if !child_order_unchanged {
+                Self::invalidate_changed_child_origins(
+                    &self.taffy, &mut self.unrounded_layout_origins,
+                    &mut self.absolute_layout_bounds, &mut self.layout_bounds_scratch_space,
+                    Some(id), children,
+                );
                 Self::detach_reparented_children(&mut self.taffy, &mut self.robbed_parents,
                     Some(id), children);
-                // Even attaching a previously parentless cached node or
-                // detaching a child changes its absolute origin without a
-                // native Layout write. Reconcile topology before observing.
-                self.absolute_layout_bounds.clear();
-                self.unrounded_layout_origins.clear();
                 self.layout_changes = self.layout_changes.wrapping_add(1);
                 self.taffy
                     .set_children(id.into(), LayoutId::to_taffy_slice(children))
@@ -1046,12 +1048,13 @@ impl TaffyLayoutEngine {
         if measure.is_some() {
             self.remeasures = self.remeasures.wrapping_add(1);
         }
+        Self::invalidate_changed_child_origins(
+            &self.taffy, &mut self.unrounded_layout_origins,
+            &mut self.absolute_layout_bounds, &mut self.layout_bounds_scratch_space,
+            None, children,
+        );
         Self::detach_reparented_children(&mut self.taffy, &mut self.robbed_parents,
             None, children);
-        if !children.is_empty() {
-            self.absolute_layout_bounds.clear();
-            self.unrounded_layout_origins.clear();
-        }
         match measure {
             Some(context) => {
                 let id = self.taffy.new_leaf(style).expect(EXPECT_MESSAGE);
@@ -1498,6 +1501,70 @@ impl TaffyLayoutEngine {
         self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
     }
 
+    /// A cached descendant implies a cached origin for every ancestor.
+    /// Removing the first cached origin also deduplicates overlapping roots.
+    /// Call before structural edits, while the old descendant links exist.
+    fn invalidate_origin_subtree(
+        taffy: &TaffyTree<()>,
+        origins: &mut LayoutIdMap<(f32, f32)>,
+        bounds: &mut LayoutIdMap<Bounds<Pixels>>,
+        stack: &mut Vec<LayoutId>,
+        root: LayoutId,
+    ) {
+        bounds.remove(&root);
+        if origins.remove(&root).is_none() {
+            return;
+        }
+        stack.clear();
+        stack.extend(taffy.child_ids(root.into()).map(LayoutId::from));
+        while let Some(id) = stack.pop() {
+            if origins.remove(&id).is_none() {
+                continue;
+            }
+            bounds.remove(&id);
+            stack.extend(taffy.child_ids(id.into()).map(LayoutId::from));
+        }
+    }
+
+    /// Child order alone does not change an already computed absolute
+    /// origin. Only changed parent links revoke it immediately; subsequent
+    /// native layout writes invalidate any actual position/size changes.
+    fn invalidate_changed_child_origins(
+        taffy: &TaffyTree<()>,
+        origins: &mut LayoutIdMap<(f32, f32)>,
+        bounds: &mut LayoutIdMap<Bounds<Pixels>>,
+        stack: &mut Vec<LayoutId>,
+        parent: Option<LayoutId>,
+        children: &[LayoutId],
+    ) {
+        if origins.is_empty() && bounds.is_empty() {
+            return;
+        }
+
+        if let Some(parent) = parent {
+            // Large sibling sets use membership rather than quadratic
+            // comparisons. Small lists avoid a temporary hash allocation.
+            let membership = (children.len() > 32)
+                .then(|| children.iter().copied().collect::<FxHashSet<_>>());
+            for child in taffy.child_ids(parent.into()).map(LayoutId::from) {
+                let retained = membership.as_ref().map_or_else(
+                    || children.contains(&child), |set| set.contains(&child),
+                );
+                if !retained {
+                    Self::invalidate_origin_subtree(taffy, origins, bounds, stack, child);
+                }
+            }
+        }
+
+        for &child in children {
+            // A new parent does not have an ID yet, including when the
+            // child was previously a standalone root.
+            if parent.is_none() || taffy.parent(child.into()).map(LayoutId::from) != parent {
+                Self::invalidate_origin_subtree(taffy, origins, bounds, stack, child);
+            }
+        }
+    }
+
     fn invalidate_changed_bounds(&mut self) {
         if self.bounds_mutations.is_empty() { return; }
         let _work = crate::window::element_work::begin_named(
@@ -1506,18 +1573,15 @@ impl TaffyLayoutEngine {
         );
         // Native writes can repeat during measurement/placement. Removing
         // origins as we visit them also deduplicates overlapping dirty roots.
-        let stack = &mut self.layout_bounds_scratch_space;
-        stack.clear();
         for mutation in self.bounds_mutations.drain(..) {
-            self.absolute_layout_bounds.remove(&mutation.id);
-            if !mutation.moved { continue; }
-            stack.push(mutation.id);
-            while let Some(id) = stack.pop() {
-                if self.unrounded_layout_origins.remove(&id).is_none() {
-                    continue;
-                }
-                self.absolute_layout_bounds.remove(&id);
-                stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
+            if mutation.moved {
+                Self::invalidate_origin_subtree(
+                    &self.taffy, &mut self.unrounded_layout_origins,
+                    &mut self.absolute_layout_bounds, &mut self.layout_bounds_scratch_space,
+                    mutation.id,
+                );
+            } else {
+                self.absolute_layout_bounds.remove(&mutation.id);
             }
         }
     }
@@ -1820,6 +1884,55 @@ mod tests {
         assert!(engine.taffy.dirty(ancestor.into()).unwrap());
         engine.clear();
         assert!(engine.robbed_parents.is_empty());
+    }
+
+    #[test]
+    fn reparenting_and_removal_preserve_unrelated_absolute_bounds() {
+        let mut engine = TaffyLayoutEngine::new();
+        let leaf = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[]);
+        let branch = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[leaf]);
+        let sibling = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[]);
+        let old_parent = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[branch, sibling]);
+
+        // Seed real cache entries through the normal lookup (the native
+        // uncomputed layouts have their initial geometry).
+        engine.layout_bounds(leaf, 1.);
+        let sibling_bounds = engine.layout_bounds(sibling, 1.);
+        assert!(engine.unrounded_layout_origins.get(&old_parent).is_some());
+        let new_parent = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[branch]);
+        assert!(engine.unrounded_layout_origins.get(&branch).is_none());
+        assert!(engine.absolute_layout_bounds.get(&leaf).is_none());
+        assert_eq!(engine.absolute_layout_bounds.get(&sibling), Some(&sibling_bounds));
+
+        engine.layout_bounds(leaf, 1.);
+        engine.remove_native_node(new_parent);
+        assert!(engine.unrounded_layout_origins.get(&branch).is_none());
+        assert!(engine.absolute_layout_bounds.get(&leaf).is_none());
+        assert_eq!(engine.absolute_layout_bounds.get(&sibling), Some(&sibling_bounds));
+    }
+
+    #[test]
+    fn child_order_change_keeps_origins_until_native_layout_changes() {
+        let mut engine = TaffyLayoutEngine::new();
+        let first = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[]);
+        let second = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[]);
+        let parent = engine.request_layout(None, false, Style::default(), crate::px(16.), 1., &[first, second]);
+        engine.layout_bounds(first, 1.);
+        engine.layout_bounds(second, 1.);
+        TaffyLayoutEngine::invalidate_changed_child_origins(
+            &engine.taffy, &mut engine.unrounded_layout_origins,
+            &mut engine.absolute_layout_bounds, &mut engine.layout_bounds_scratch_space,
+            Some(parent), &[second, first],
+        );
+        assert!(engine.absolute_layout_bounds.get(&first).is_some());
+        assert!(engine.absolute_layout_bounds.get(&second).is_some());
+        TaffyLayoutEngine::invalidate_changed_child_origins(
+            &engine.taffy, &mut engine.unrounded_layout_origins,
+            &mut engine.absolute_layout_bounds, &mut engine.layout_bounds_scratch_space,
+            Some(parent), &[second],
+        );
+        assert!(engine.absolute_layout_bounds.get(&first).is_none());
+        assert!(engine.absolute_layout_bounds.get(&second).is_some());
     }
 
     #[test]
