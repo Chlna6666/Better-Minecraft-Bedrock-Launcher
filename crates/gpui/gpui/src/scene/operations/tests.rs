@@ -212,6 +212,34 @@ fn scope_boundaries_follow_append_share_compact_edit_and_clear() {
 }
 
 #[test]
+fn compact_scope_metadata_tracks_layer_presence_and_marker_identity() {
+    let mut source = operations(8);
+    source.push(PaintOperation::StartLayer(Bounds::default()));
+    source.push(PaintOperation::EndLayer);
+    source.push(PaintOperation::StartLayer(Bounds::default()));
+    source.push(PaintOperation::EndLayer);
+    source.finish();
+    assert!(source.has_layer_scopes());
+    assert!(!source.has_deferred_scroll());
+    assert_eq!(source.deferred_scroll_indices().count(), 0);
+    let mut target = Operations::default();
+    target.share(&source, 0..8);
+    assert!(!target.has_layer_scopes());
+    target.share(&source, 8..12);
+    assert!(target.has_layer_scopes());
+    assert_eq!(target.boundaries.len(), 4);
+    target.edit(8..12, |op| *op = PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+    assert!(!target.has_layer_scopes());
+    assert!(target.boundaries.is_empty());
+    target.clear();
+    target.push(PaintOperation::EndLayer);
+    assert!(!target.has_layer_scopes());
+    assert!(!target.range_is_replayable(0..1));
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(std::mem::size_of::<ReplayBoundary>(), 24);
+}
+
+#[test]
 fn range_comparison_skips_shared_runs_even_with_pending_tails() {
     let source = operations(128);
     let mut current = Operations::default();

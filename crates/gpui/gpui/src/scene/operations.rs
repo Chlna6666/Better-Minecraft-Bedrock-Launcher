@@ -43,14 +43,20 @@ pub(crate) struct OperationRange<'a> {
 #[derive(Clone, Copy, Default)]
 struct ReplayBoundary {
     after: usize,
-    blur_depth: usize,
-    layer_depth: usize,
-    deferred_scrolls: usize,
+    // Logical operation offsets remain usize. A scope depth has a much
+    // smaller practical bound and is checked on increment.
+    blur_depth: u32,
+    layer_depth: u32,
+    change: ScopeChange,
     invalid: bool,
+    has_layer: bool,
+    has_deferred: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
 enum ScopeChange {
+    #[default]
     None,
     DeferredScroll,
     StartBlur,
@@ -75,9 +81,15 @@ impl ScopeChange {
 impl ReplayBoundary {
     fn advance(mut self, after: usize, change: ScopeChange) -> Self {
         self.after = after;
+        self.change = change;
         match change {
-            ScopeChange::StartBlur => self.blur_depth += 1,
-            ScopeChange::StartLayer => self.layer_depth += 1,
+            ScopeChange::StartBlur => {
+                self.blur_depth = self.blur_depth.checked_add(1).expect("paint blur scope depth overflow");
+            }
+            ScopeChange::StartLayer => {
+                self.layer_depth = self.layer_depth.checked_add(1).expect("paint layer scope depth overflow");
+                self.has_layer = true;
+            }
             ScopeChange::EndBlur => match self.blur_depth.checked_sub(1) {
                 Some(depth) => self.blur_depth = depth,
                 None => self.invalid = true,
@@ -86,7 +98,7 @@ impl ReplayBoundary {
                 Some(depth) => self.layer_depth = depth,
                 None => self.invalid = true,
             },
-            ScopeChange::DeferredScroll => self.deferred_scrolls += 1,
+            ScopeChange::DeferredScroll => self.has_deferred = true,
             ScopeChange::None => {}
         }
         self
@@ -136,21 +148,19 @@ impl Operations {
     /// Deferred operations participate in the existing sparse prefix
     /// metadata. Sharing, editing and clearing ranges preserve the proof.
     pub(crate) fn has_deferred_scroll(&self) -> bool {
-        self.boundaries.last().is_some_and(|boundary| boundary.deferred_scrolls != 0)
+        self.boundaries.last().is_some_and(|boundary| boundary.has_deferred)
     }
 
     /// A flat root's scroll placements have no inherited ordering scope.
     /// The sparse replay metadata avoids scanning ordinary primitives.
     pub(crate) fn has_layer_scopes(&self) -> bool {
-        self.boundaries.iter().any(|boundary| boundary.layer_depth != 0)
+        self.boundaries.last().is_some_and(|boundary| boundary.has_layer)
     }
 
     pub(crate) fn deferred_scroll_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.boundaries.iter().scan(0, |previous, boundary| {
-            let changed = boundary.deferred_scrolls != *previous;
-            *previous = boundary.deferred_scrolls;
-            Some(changed.then_some(boundary.after - 1))
-        }).flatten()
+        self.boundaries.iter().filter_map(|boundary| {
+            (boundary.change == ScopeChange::DeferredScroll).then_some(boundary.after - 1)
+        })
     }
 
     pub(crate) fn deferred_scrolls(&self) -> impl Iterator<Item = &crate::window::scroll_paint::ScrollPlacement> {
@@ -346,11 +356,16 @@ impl Operations {
     pub(crate) fn share(&mut self, previous: &Self, range: Range<usize>) {
         assert!(previous.pending.is_empty(), "shared Paint must be finished");
         assert!(range.start <= range.end && range.end <= previous.len);
+        if range.is_empty() {
+            return;
+        }
         self.finish();
         let destination = self.len;
         let first_boundary = previous.boundaries.partition_point(|b| b.after <= range.start);
         for boundary in previous.boundaries[first_boundary..].iter().take_while(|b| b.after <= range.end) {
-            self.record_boundary(destination + boundary.after - range.start, ScopeChange::of(&previous[boundary.after - 1]));
+            // The immutable sparse record already owns the exact marker
+            // tag. No operation-page lookup or enum dispatch is needed.
+            self.record_boundary(destination + boundary.after - range.start, boundary.change);
         }
         let first = previous
             .segments
