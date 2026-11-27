@@ -94,14 +94,47 @@ fn intern_ranges<T: Ord + Copy + std::hash::Hash>(
     let Some(second) = nonempty.next() else {
         return intern_range(interner, scratch, &log[first]);
     };
-    scratch.clear();
-    scratch.extend_from_slice(&log[first]);
-    scratch.extend_from_slice(&log[second]);
-    for range in nonempty {
-        scratch.extend_from_slice(&log[range]);
+    let third = nonempty.next();
+    let left = &log[first];
+    let right = &log[second];
+    if third.is_none()
+        && left.windows(2).all(|pair| pair[0] <= pair[1])
+        && right.windows(2).all(|pair| pair[0] <= pair[1])
+    {
+        // Two ordered runs are common across render phases. Merge the
+        // borrowed slices directly into the existing scratch allocation.
+        merge_ordered_runs(scratch, left, right);
+    } else {
+        scratch.clear();
+        scratch.extend_from_slice(left);
+        scratch.extend_from_slice(right);
+        for range in third.into_iter().chain(nonempty) {
+            scratch.extend_from_slice(&log[range]);
+        }
+        sort_unique(scratch);
     }
-    sort_unique(scratch);
     interner.get(scratch)
+}
+
+fn merge_ordered_runs<T: Ord + Copy>(out: &mut Vec<T>, mut left: &[T], mut right: &[T]) {
+    out.clear();
+    while let (Some(&a), Some(&b)) = (left.first(), right.first()) {
+        let next = if a <= b {
+            left = &left[1..];
+            a
+        } else {
+            right = &right[1..];
+            b
+        };
+        if out.last() != Some(&next) {
+            out.push(next);
+        }
+    }
+    for &next in left.iter().chain(right) {
+        if out.last() != Some(&next) {
+            out.push(next);
+        }
+    }
 }
 
 /// The union of two sorted lists without repeats, itself sorted and without
@@ -402,26 +435,79 @@ impl AppDependencies {
 
 // StateVersion and first-read deduplication from fast/dependencies.rs,
 // adapted to keep weak state snapshots and window notification semantics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StateDomain {
+    #[default]
+    Content,
+    Placement,
+}
+
+#[derive(Clone, Copy, Default)]
+struct StateEpochs {
+    content: u64,
+    placement: u64,
+}
+
+impl StateEpochs {
+    fn all(self) -> u64 {
+        // Every mutation advances exactly one domain. Keep the existing
+        // combined generation contract for window-wide invalidation.
+        self.content.wrapping_add(self.placement)
+    }
+
+    fn advance(&mut self, domain: StateDomain) {
+        let epoch = match domain {
+            StateDomain::Content => &mut self.content,
+            StateDomain::Placement => &mut self.placement,
+        };
+        *epoch = epoch.wrapping_add(1);
+    }
+}
+
 thread_local! {
     static STATE_READ_LOG: RefCell<Option<Rc<RefCell<Vec<StateRead>>>>> = const { RefCell::new(None) };
-    static STATE_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static STATE_EPOCHS: Cell<StateEpochs> = const { Cell::new(StateEpochs { content: 0, placement: 0 }) };
 }
 
 pub(crate) fn state_generation() -> u64 {
-    STATE_GENERATION.with(Cell::get)
+    STATE_EPOCHS.with(|epochs| epochs.get().all())
+}
+
+fn advance_state_domain(domain: StateDomain) {
+    // Destruction may run during thread-local teardown.
+    let _ = STATE_EPOCHS.try_with(|epochs| {
+        let mut next = epochs.get();
+        next.advance(domain);
+        epochs.set(next);
+    });
+}
+
+#[derive(Default, Debug)]
+struct StateVersionInner {
+    value: Cell<u64>,
+    domain: StateDomain,
 }
 
 #[derive(Clone, Default, Debug)]
-pub(crate) struct StateVersion(Rc<Cell<u64>>);
+pub(crate) struct StateVersion(Rc<StateVersionInner>);
 
 impl StateVersion {
+    /// A scroll-sensitive source. Explicit reads remain dependencies even
+    /// when the caller uses the offset to generate content.
+    pub(crate) fn placement() -> Self {
+        Self(Rc::new(StateVersionInner {
+            value: Cell::new(0),
+            domain: StateDomain::Placement,
+        }))
+    }
+
     pub(crate) fn get(&self) -> u64 {
-        self.0.get()
+        self.0.value.get()
     }
 
     pub(crate) fn bump(&self) {
-        self.0.set(self.0.get().wrapping_add(1));
-        STATE_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+        self.0.value.set(self.get().wrapping_add(1));
+        advance_state_domain(self.0.domain);
     }
 
     #[inline]
@@ -445,35 +531,64 @@ impl StateVersion {
 impl Drop for StateVersion {
     fn drop(&mut self) {
         if Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) != 0 {
-            // State owners may be destroyed during thread-local teardown.
-            let _ = STATE_GENERATION.try_with(|generation| {
-                generation.set(generation.get().wrapping_add(1));
-            });
+            advance_state_domain(self.0.domain);
         }
     }
 }
 
-/// A successful validation can be reused only while the generation remains
-/// unchanged. Never certify a newly captured or merged snapshot implicitly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ValidatedEpoch {
+    #[default]
+    Unchecked,
+    Content(u64),
+    Placement(u64),
+    Mixed(u64),
+}
+
+impl ValidatedEpoch {
+    fn matches(self, epochs: StateEpochs) -> bool {
+        match self {
+            Self::Unchecked => false,
+            Self::Content(epoch) => epoch == epochs.content,
+            Self::Placement(epoch) => epoch == epochs.placement,
+            Self::Mixed(epoch) => epoch == epochs.all(),
+        }
+    }
+}
+
+/// A successful validation records the domains actually read. No additional
+/// per-read field, dependency registry or second weak-reference traversal.
 #[derive(Clone, Default)]
-pub(crate) struct StateReadValidation(Cell<Option<u64>>);
+pub(crate) struct StateReadValidation(Cell<ValidatedEpoch>);
 
 impl StateReadValidation {
     pub(crate) fn unchanged(&self, reads: &[StateRead]) -> bool {
         if reads.is_empty() {
             return true;
         }
-        let generation = state_generation();
-        if self.0.get() == Some(generation) {
+        let epochs = STATE_EPOCHS.with(Cell::get);
+        if self.0.get().matches(epochs) {
             return true;
         }
-        if reads.iter().all(|read| read.status() == StateReadStatus::Unchanged) {
-            self.0.set(Some(generation));
-            true
-        } else {
-            self.0.set(None);
-            false
+        let mut content = false;
+        let mut placement = false;
+        for read in reads {
+            match read.unchanged_domain() {
+                Some(StateDomain::Content) => content = true,
+                Some(StateDomain::Placement) => placement = true,
+                None => {
+                    self.0.set(ValidatedEpoch::Unchecked);
+                    return false;
+                }
+            }
         }
+        self.0.set(match (content, placement) {
+            (true, true) => ValidatedEpoch::Mixed(epochs.all()),
+            (true, false) => ValidatedEpoch::Content(epochs.content),
+            (false, true) => ValidatedEpoch::Placement(epochs.placement),
+            (false, false) => ValidatedEpoch::Unchecked,
+        });
+        true
     }
 }
 
@@ -482,7 +597,7 @@ pub(crate) enum StateReadStatus { Unchanged, Changed, Dead }
 
 #[derive(Clone)]
 pub(crate) struct StateRead {
-    state: Weak<Cell<u64>>,
+    state: Weak<StateVersionInner>,
     at: u64,
 }
 
@@ -505,9 +620,14 @@ impl StateRead {
         self.state.as_ptr() == Rc::as_ptr(&version.0)
     }
 
+    fn unchanged_domain(&self) -> Option<StateDomain> {
+        let state = self.state.upgrade()?;
+        (state.value.get() == self.at).then_some(state.domain)
+    }
+
     pub(crate) fn status(&self) -> StateReadStatus {
         match self.state.upgrade() {
-            Some(state) if state.get() == self.at => StateReadStatus::Unchanged,
+            Some(state) if state.value.get() == self.at => StateReadStatus::Unchanged,
             Some(_) => StateReadStatus::Changed,
             None => StateReadStatus::Dead,
         }
@@ -625,7 +745,7 @@ mod state_dedup_tests {
         assert!(validation.unchanged(&reads));
         let generation = state_generation();
         assert!(validation.unchanged(&reads));
-        assert_eq!(validation.0.get(), Some(generation));
+        assert_eq!(validation.0.get(), ValidatedEpoch::Content(STATE_EPOCHS.with(Cell::get).content));
         let clone = state.clone();
         drop(clone);
         assert_eq!(state_generation(), generation);
@@ -640,7 +760,41 @@ mod state_dedup_tests {
         assert!(validation.unchanged(&reads));
         state.bump();
         assert!(!validation.unchanged(&reads));
-        assert_eq!(validation.0.get(), None);
+        assert_eq!(validation.0.get(), ValidatedEpoch::Unchecked);
+    }
+
+    #[test]
+    fn state_validation_ignores_only_unread_domains() {
+        let content = StateVersion::default();
+        let placement = StateVersion::placement();
+        let content_reads = [StateRead::new(&content)];
+        let placement_reads = [StateRead::new(&placement)];
+        let mixed_reads = [content_reads[0].clone(), placement_reads[0].clone()];
+        let content_proof = StateReadValidation::default();
+        let placement_proof = StateReadValidation::default();
+        let mixed_proof = StateReadValidation::default();
+        assert!(content_proof.unchanged(&content_reads));
+        assert!(placement_proof.unchanged(&placement_reads));
+        assert!(mixed_proof.unchanged(&mixed_reads));
+        let before = STATE_EPOCHS.with(Cell::get);
+        placement.bump();
+        let after = STATE_EPOCHS.with(Cell::get);
+        assert_eq!(before.content, after.content);
+        assert_ne!(before.placement, after.placement);
+        assert!(content_proof.0.get().matches(after));
+        assert!(content_proof.unchanged(&content_reads));
+        assert!(!placement_proof.unchanged(&placement_reads));
+        assert!(!mixed_proof.unchanged(&mixed_reads));
+
+        let placement_reads = [StateRead::new(&placement)];
+        assert!(placement_proof.unchanged(&placement_reads));
+        content.bump();
+        assert!(placement_proof.0.get().matches(STATE_EPOCHS.with(Cell::get)));
+        assert!(placement_proof.unchanged(&placement_reads));
+        assert!(!content_proof.unchanged(&content_reads));
+        drop(placement);
+        assert!(!placement_proof.unchanged(&placement_reads));
+        assert_eq!(placement_reads[0].status(), StateReadStatus::Dead);
     }
 
     #[test]
@@ -664,6 +818,25 @@ mod state_dedup_tests {
         assert!(Rc::ptr_eq(&merge_sorted(&dense, &sparse), &dense));
         let missing: Rc<[u32]> = Rc::from([511, 1024]);
         assert_eq!(merge_sorted(&dense, &missing).len(), 1025);
+    }
+
+    #[test]
+    fn two_ordered_runs_merge_repeats_without_sorting() {
+        let mut scratch = Vec::new();
+        for a in 0..32_u32 {
+            for b in 0..32_u32 {
+                let left: Vec<u32> = (0..5).filter(|i| a & (1 << i) != 0)
+                    .flat_map(|i| [i, i]).collect();
+                let right: Vec<u32> = (0..5).filter(|i| b & (1 << i) != 0).collect();
+                merge_ordered_runs(&mut scratch, &left, &right);
+                let expected: Vec<u32> = (0..5).filter(|i| (a | b) & (1 << i) != 0).collect();
+                assert_eq!(scratch, expected);
+            }
+        }
+        let mut interner = Interned::default();
+        let log = [1, 1, 3, 2, 3, 4];
+        let result = intern_ranges(&mut interner, &mut scratch, &log, [0..3, 3..6].into_iter());
+        assert_eq!(&*result, &[1, 2, 3, 4]);
     }
 
     #[test]

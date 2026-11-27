@@ -81,7 +81,10 @@ impl ListState {
     /// the eager behavior of [Self::measure_all].
     pub fn new(item_count: usize, alignment: ListAlignment, overdraw: Pixels) -> Self {
         let this = Self(Rc::new(RefCell::new(StateInner {
-            version: StateVersion::default(),
+            // The aggregate list handle tracks scrolling and list geometry.
+            // A row that reads it remains scroll-sensitive; item and
+            // structure revisions keep their independent content domain.
+            version: StateVersion::placement(),
             items_version: StateVersion::default(),
             structure_version: StateVersion::default(),
             last_layout_bounds: None,

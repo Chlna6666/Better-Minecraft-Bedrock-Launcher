@@ -10,10 +10,19 @@ use std::{
 
 /// Shared offset storage records actual changes at every mutable borrow,
 /// including wheel, clamping, and uniform-list writes.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub(crate) struct ScrollOffset {
     value: RefCell<Point<Pixels>>,
     pub(crate) version: StateVersion,
+}
+
+impl Default for ScrollOffset {
+    fn default() -> Self {
+        Self {
+            value: RefCell::default(),
+            version: StateVersion::placement(),
+        }
+    }
 }
 
 impl ScrollOffset {
