@@ -413,8 +413,14 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
     if let Some(glyph) = glyph {
         painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
     }
+    // Keep an ordinary root interval between two independent promoted layers.
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
-        background: crate::rgb(0x0000ff).into(), ..Default::default() });
+        background: crate::rgb(0x800000).into(), ..Default::default() });
+    let second_quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
+        background: crate::rgb(0x0000ff).into(), ..Default::default() };
+    painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..second_quad });
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0x808080).into(), ..Default::default() });
     painter.finish();
     let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
         crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
@@ -427,6 +433,11 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
     let end = if with_glyph { 3 } else { 2 };
     paint.layers.certify_fixture_root(&paint.scene, 1..end);
     assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..end)));
+    let mut second_source = crate::scene::Operations::default();
+    second_source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(second_quad)));
+    paint.layers.raster_fixture(second_source, coverage, viewport, [0, 0]);
+    paint.layers.certify_fixture_root(&paint.scene, end+1..end+2);
+    assert_eq!(paint.layers.frames[1].root_static_span(), Some(&(end+1..end+2)));
     let mut protected = FxHashSet::default();
     paint.layers.collect_atlas_tile_ids_into(&mut protected);
     if let Some(glyph) = glyph {
@@ -438,9 +449,11 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
         crate::PartialPresentMode::FullRedraw);
     let encode_generation = renderer.frame_upload.encode_generation;
     let mut physical = None;
+    let mut second_physical = None;
     let mut composite_buffers = None;
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
     let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
+    let second_key = RasterTileKey { layer: paint.layers.frames[1].id, x: 0, y: 0 };
     for _ in 0..2 {
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while renderer.presentation_readiness(None, Some((64, 64))).expect("scroll readiness") != PresentReadiness::Ready
@@ -460,7 +473,15 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
         composite_buffers = Some(handles);
         let texture = renderer.raster_tiles.lookup(key, 1, tile, Format::Bgra8Unorm)
             .expect("published native scroll texture");
-        assert_eq!(renderer.raster_tiles.bytes(), 64 * 64 * 4);
+        let second = renderer.raster_tiles.lookup(second_key, 1, tile, Format::Bgra8Unorm)
+            .expect("second native scroll texture");
+        assert_ne!(texture, second);
+        if let Some(previous) = second_physical {
+            assert_eq!(previous, second, "second layer must retain its physical texture");
+        }
+        second_physical = Some(second);
+        super::pixels(&renderer, second.texture, [255, 0, 0, 255]);
+        assert_eq!(renderer.raster_tiles.bytes(), 2 * 64 * 64 * 4);
         if let Some(previous) = physical {
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }

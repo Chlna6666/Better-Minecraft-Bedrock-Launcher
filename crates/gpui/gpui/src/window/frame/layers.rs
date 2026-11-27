@@ -569,8 +569,9 @@ impl SceneLayers {
             &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), &atlas_tiles,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
+        let id = self.frames.len() as u64 + 1;
         self.frames.push(LayerFrame {
-            layout_key: 1, id: 1, generation: 1,
+            layout_key: id, id, generation: 1,
             static_root_span: Some(0..0),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
@@ -598,7 +599,7 @@ impl SceneLayers {
 
     #[cfg(test)]
     pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
-        self.frames[0].static_root_span = ordered_static_root(scene)
+        self.frames.last_mut().expect("raster fixture").static_root_span = ordered_static_root(scene)
             .then(|| static_root_span(scene, range)).flatten();
     }
 

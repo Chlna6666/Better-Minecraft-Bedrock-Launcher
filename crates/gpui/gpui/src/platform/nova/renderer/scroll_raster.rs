@@ -282,6 +282,18 @@ fn layer_plan<'a>(layers: &'a [crate::window::LayerFrame], scene_len: usize, siz
     candidates
 }
 
+fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::ops::Range<usize>>> {
+    let mut ranges = Vec::with_capacity(plans.len() + 1);
+    let mut start = 0;
+    for plan in plans {
+        if start > plan.span.start || plan.span.end > scene_len { return None; }
+        ranges.push(start..plan.span.start);
+        start = plan.span.end;
+    }
+    ranges.push(start..scene_len);
+    Some(ranges)
+}
+
 struct OutsideRoot {
     streams: StaticStreams,
     boundaries: Vec<usize>,
@@ -301,14 +313,7 @@ fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId
 
 impl OutsideRoot {
     fn pack(renderer: &NovaRenderer, plans: &[LayerPlan<'_>], scene: &crate::Scene) -> Option<Self> {
-        let mut ranges = Vec::with_capacity(plans.len() + 1);
-        let mut start = 0;
-        for plan in plans {
-            if start > plan.span.start { return None; }
-            ranges.push(start..plan.span.start);
-            start = plan.span.end;
-        }
-        ranges.push(start..scene.len());
+        let ranges = outside_ranges(plans, scene.len())?;
         let mut ids = Vec::new();
         for range in &ranges {
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
@@ -837,6 +842,35 @@ mod tests {
         assert_eq!(plan[1].key.y, 0);
         assert_eq!(plan[2].bounds.top(), ScaledPixels(320.));
         assert_eq!(plan[2].bounds.bottom(), ScaledPixels(576.));
+    }
+
+    #[test]
+    fn multiple_scroll_layers_preserve_root_gaps_and_reject_nested_duplicate_draws() {
+        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(128.), crate::px(512.))));
+        let coverage = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(-512.)),
+            crate::size(ScaledPixels(128.), ScaledPixels(1536.)));
+        let quad = Quad { bounds: viewport.scale(1.).bounds, content_mask: viewport.scale(1.),
+            ..Default::default() };
+        let mut painter = crate::scene::Painter::default();
+        for _ in 0..7 { painter.insert_primitive(quad); }
+        painter.finish();
+        let scene = painter.into_scene();
+        let mut paint = crate::window::Paint::default();
+        for span in [4..6, 1..3, 1..2] {
+            let mut source = crate::scene::Operations::default();
+            source.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                content_mask: ContentMask::new(coverage), ..quad
+            })));
+            paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
+            paint.layers.certify_fixture_root(&scene, span);
+        }
+        let plans = layer_plan(&paint.layers.frames, scene.len(), DrawableSize { width: 128, height: 512 });
+        assert_eq!(plans.iter().map(|p| (p.layer.id, p.span.clone())).collect::<Vec<_>>(),
+            vec![(2, 1..3), (1, 4..6)]);
+        assert_eq!(outside_ranges(&plans, scene.len()), Some(vec![0..1, 3..4, 6..7]));
+        assert_eq!(plans.iter().map(|p| p.requests.len()).sum::<usize>(), 4);
+        assert_ne!(plans[0].requests[0].key, plans[1].requests[0].key);
     }
 
     #[test]
