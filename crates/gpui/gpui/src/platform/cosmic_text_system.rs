@@ -105,8 +105,7 @@ struct SystemFallbackFace {
 
 struct CosmicTextSystemState {
     font_system: FontSystem,
-    swash_cache: SwashCache,
-    stable_vertical_frame_bounds_cache: HashMap<StableVerticalFrameKey, Bounds<DevicePixels>>,
+    raster: RasterState,
     platform_font_family: SharedString,
     system_fonts_loaded: bool,
     system_coverage_fallback_face: Option<SystemFallbackFace>,
@@ -121,6 +120,72 @@ struct CosmicTextSystemState {
     loaded_font_paths: HashSet<PathBuf>,
     loaded_embedded_font_hashes: HashSet<u64>,
     missing_glyph_sink: Option<Arc<dyn MissingGlyphSink>>,
+}
+
+// The GPU atlas is the long-lived bitmap owner. CPU images are only a
+// bounded handoff between measuring a glyph and consuming its pixels.
+const PENDING_GLYPH_LIMIT: usize = 256;
+const PENDING_GLYPH_BYTES: usize = 2 * 1024 * 1024;
+
+struct RasterState {
+    swash: SwashCache,
+    pending: HashMap<CacheKey, SwashImage>,
+    pending_bytes: usize,
+    stable_frames: HashMap<StableVerticalFrameKey, Bounds<DevicePixels>>,
+}
+
+impl RasterState {
+    fn new() -> Self {
+        Self {
+            swash: SwashCache::new(),
+            pending: HashMap::default(),
+            pending_bytes: 0,
+            stable_frames: HashMap::default(),
+        }
+    }
+
+    fn take(&mut self, key: CacheKey) -> Option<SwashImage> {
+        let image = self.pending.remove(&key)?;
+        self.pending_bytes -= image.data.capacity();
+        Some(image)
+    }
+
+    fn remember(&mut self, key: CacheKey, image: SwashImage) {
+        let bytes = image.data.capacity();
+        if bytes > PENDING_GLYPH_BYTES || self.pending.contains_key(&key) {
+            return;
+        }
+        if self.pending.len() >= PENDING_GLYPH_LIMIT
+            || self.pending_bytes > PENDING_GLYPH_BYTES - bytes
+        {
+            self.pending.clear();
+            self.pending_bytes = 0;
+        }
+        self.pending_bytes += bytes;
+        self.pending.insert(key, image);
+    }
+
+    fn image(&mut self, font_system: &mut FontSystem, key: CacheKey) -> Option<SwashImage> {
+        self.take(key)
+            .or_else(|| self.swash.get_image_uncached(font_system, key))
+    }
+
+    fn bounds(
+        &mut self,
+        font_system: &mut FontSystem,
+        key: CacheKey,
+        retain_image: bool,
+    ) -> Option<Bounds<DevicePixels>> {
+        if let Some(image) = self.pending.get(&key) {
+            return Some(swash_image_bounds(image));
+        }
+        let image = self.swash.get_image_uncached(font_system, key)?;
+        let bounds = swash_image_bounds(&image);
+        if retain_image && bounds.size.width.0 > 0 && bounds.size.height.0 > 0 {
+            self.remember(key, image);
+        }
+        Some(bounds)
+    }
 }
 
 struct LoadedFont {
@@ -203,8 +268,7 @@ impl CosmicTextSystem {
         Self(RwLock::new(CosmicTextSystemState {
             font_system,
             platform_font_family,
-            swash_cache: SwashCache::new(),
-            stable_vertical_frame_bounds_cache: HashMap::default(),
+            raster: RasterState::new(),
             system_fonts_loaded,
             system_coverage_fallback_face: None,
             system_coverage_fallback_computed: false,
@@ -387,9 +451,9 @@ impl PlatformTextSystem for CosmicTextSystem {
         if raster_bounds.size.width.0 == 0 || raster_bounds.size.height.0 == 0 {
             anyhow::bail!("glyph bounds are empty");
         }
-        // Swash owns its font and glyph caches behind the mutable state.
-        // Only obtain the owned image there. Channel conversion, mask
-        // expansion and stable-frame padding have no font-state dependency.
+        // Transfer pending pixels out of the raster state before conversion.
+        // Channel conversion, mask expansion and stable-frame padding have
+        // no font-state dependency.
         let image = self.with_state(TextOperation::Rasterize, |state| {
             state.glyph_image(params).with_context(|| {
                 let font = &state.loaded_fonts[params.font_id.0].font;
@@ -499,8 +563,7 @@ impl CosmicTextSystemState {
 
         if changed {
             self.font_ids_by_family_cache.clear();
-            self.swash_cache = SwashCache::new();
-            self.stable_vertical_frame_bounds_cache.clear();
+            self.raster = RasterState::new();
             self.system_coverage_fallback_face = None;
             self.system_coverage_fallback_computed = false;
             self.coverage_best_fallback_logged = false;
@@ -577,8 +640,7 @@ impl CosmicTextSystemState {
             .db_mut()
             .set_sans_serif_family(resolved_family.to_string());
         self.font_ids_by_family_cache.clear();
-        self.swash_cache = SwashCache::new();
-        self.stable_vertical_frame_bounds_cache.clear();
+        self.raster = RasterState::new();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -771,8 +833,7 @@ impl CosmicTextSystemState {
             self.loaded_embedded_font_hashes.insert(font_hash);
         }
         self.font_ids_by_family_cache.clear();
-        self.swash_cache = SwashCache::new();
-        self.stable_vertical_frame_bounds_cache.clear();
+        self.raster = RasterState::new();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -792,8 +853,7 @@ impl CosmicTextSystemState {
             self.loaded_font_paths.insert(path);
         }
         self.font_ids_by_family_cache.clear();
-        self.swash_cache = SwashCache::new();
-        self.stable_vertical_frame_bounds_cache.clear();
+        self.raster = RasterState::new();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -1076,17 +1136,16 @@ impl CosmicTextSystemState {
 
     fn glyph_image(&mut self, params: &RenderGlyphParams) -> Option<SwashImage> {
         let cache_key = self.glyph_cache_key(params);
-        self.swash_cache
-            .get_image(&mut self.font_system, cache_key)
-            .clone()
+        self.raster.image(&mut self.font_system, cache_key)
     }
 
-    fn glyph_image_bounds(&mut self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
+    fn glyph_image_bounds(
+        &mut self,
+        params: &RenderGlyphParams,
+        retain_image: bool,
+    ) -> Option<Bounds<DevicePixels>> {
         let key = self.glyph_cache_key(params);
-        // Bounds depend only on Placement. Do not clone SwashImage::data
-        // for a metrics query (including every stable-frame sample glyph).
-        self.swash_cache.get_image(&mut self.font_system, key)
-            .as_ref().map(swash_image_bounds)
+        self.raster.bounds(&mut self.font_system, key, retain_image)
     }
 
     fn stable_vertical_raster_frame(
@@ -1098,7 +1157,7 @@ impl CosmicTextSystemState {
             font_size_bits: params.font_size.0.to_bits(),
             scale_factor_bits: params.scale_factor.to_bits(),
         };
-        if let Some(bounds) = self.stable_vertical_frame_bounds_cache.get(&key).copied() {
+        if let Some(bounds) = self.raster.stable_frames.get(&key).copied() {
             return StableVerticalRasterFrame {
                 origin_y: bounds.origin.y,
                 height: bounds.size.height,
@@ -1125,13 +1184,13 @@ impl CosmicTextSystemState {
                 sample_params.glyph_id = glyph_id;
                 sample_params.is_cjk = false;
                 sample_params.is_emoji = false;
-                if let Some(sample_bounds) = self.glyph_image_bounds(&sample_params) {
+                if let Some(sample_bounds) = self.glyph_image_bounds(&sample_params, false) {
                     bounds = union_stable_vertical_frame_bounds(sample_bounds, bounds);
                 }
             }
         }
 
-        match self.stable_vertical_frame_bounds_cache.entry(key) {
+        match self.raster.stable_frames.entry(key) {
             Entry::Occupied(entry) => {
                 let bounds = *entry.get();
                 StableVerticalRasterFrame {
@@ -1150,7 +1209,7 @@ impl CosmicTextSystemState {
     }
 
     fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        let Some(glyph_bounds) = self.glyph_image_bounds(params) else {
+        let Some(glyph_bounds) = self.glyph_image_bounds(params, true) else {
             return Ok(Bounds::default());
         };
         if params.is_cjk && !params.is_emoji {
@@ -3324,6 +3383,71 @@ mod tests {
 #[cfg(test)]
 mod owned_raster_tests {
     use super::*;
+
+    fn glyph_key(glyph: u16) -> CacheKey {
+        CacheKey::new(
+            cosmic_text::fontdb::ID::dummy(),
+            glyph,
+            16.0,
+            (0.0, 0.0),
+            Weight::NORMAL,
+            CacheKeyFlags::empty(),
+        )
+        .0
+    }
+
+    #[test]
+    fn pending_bitmap_transfers_its_allocation() {
+        let mut raster = RasterState::new();
+        let image = SwashImage {
+            data: vec![7; 1024],
+            ..Default::default()
+        };
+        let pointer = image.data.as_ptr();
+        let capacity = image.data.capacity();
+        let key = glyph_key(1);
+        raster.remember(key, image);
+        assert_eq!(raster.pending_bytes, capacity);
+        let output = raster.take(key).expect("pending bitmap");
+        assert_eq!(output.data.as_ptr(), pointer);
+        assert_eq!(raster.pending_bytes, 0);
+        assert!(raster.pending.is_empty());
+    }
+
+    #[test]
+    fn pending_bitmaps_have_bounded_count_and_capacity() {
+        let mut raster = RasterState::new();
+        for index in 0..=PENDING_GLYPH_LIMIT {
+            raster.remember(
+                glyph_key(index as u16),
+                SwashImage {
+                    data: vec![0; 1],
+                    ..Default::default()
+                },
+            );
+            assert!(raster.pending.len() <= PENDING_GLYPH_LIMIT);
+        }
+        for index in 0..3 {
+            raster.remember(
+                glyph_key(index + 300),
+                SwashImage {
+                    data: vec![0; PENDING_GLYPH_BYTES / 2],
+                    ..Default::default()
+                },
+            );
+            assert!(raster.pending_bytes <= PENDING_GLYPH_BYTES);
+        }
+        let before = raster.pending_bytes;
+        raster.remember(
+            glyph_key(400),
+            SwashImage {
+                data: vec![0; PENDING_GLYPH_BYTES + 1],
+                ..Default::default()
+            },
+        );
+        assert_eq!(raster.pending_bytes, before);
+        assert!(!raster.pending.contains_key(&glyph_key(400)));
+    }
 
     #[test]
     fn stable_frame_with_identical_bounds_reuses_bitmap_allocation() {
