@@ -27,7 +27,7 @@ pub(crate) struct Operations {
     pending: OperationPage,
     len: usize,
     // Sparse prefix states belong to the authoritative operation sequence.
-    boundaries: Vec<ReplayBoundary>,
+    boundaries: ReplayBoundaries,
 }
 
 /// A bounded logical view that can cross allocation boundaries.
@@ -89,6 +89,45 @@ impl<'a> OperationRun<'a> {
     fn same_storage(self, other: OperationRun<'_>) -> bool {
         self.len() == other.len() && self.start == other.start
             && self.owner.zip(other.owner).is_some_and(|(a, b)| std::ptr::eq(a, b))
+    }
+}
+
+// Immutable placement variants have identical scope tags and prefix
+// states. Share their sparse index, retaining a unique append buffer
+// only for ordinary builds. Empty scenes allocate no boundary table.
+#[derive(Clone, Default)]
+struct ReplayBoundaries(Option<Arc<Vec<ReplayBoundary>>>);
+
+impl std::ops::Deref for ReplayBoundaries {
+    type Target = [ReplayBoundary];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl ReplayBoundaries {
+    fn push(&mut self, boundary: ReplayBoundary) {
+        Arc::make_mut(self.0.get_or_insert_with(Arc::default)).push(boundary);
+    }
+
+    fn clear(&mut self) {
+        if let Some(boundaries) = self.0.as_mut().and_then(Arc::get_mut) {
+            boundaries.clear();
+        } else {
+            self.0 = None;
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.0.as_ref().filter(|owner| Arc::strong_count(owner) == 1)
+            .map_or(0, |owner| owner.capacity())
+    }
+
+    fn shrink_to_fit(&mut self) {
+        if let Some(boundaries) = self.0.as_mut().and_then(Arc::get_mut) {
+            boundaries.shrink_to_fit();
+        }
     }
 }
 
@@ -431,6 +470,63 @@ impl Operations {
             && self.segments.iter().zip(&previous.segments).all(|(a, b)| {
                 Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
             })
+    }
+
+    /// Replace a single certified scroll marker without regenerating
+    /// prefix states or rechecking the ordinary pages just borrowed.
+    /// Reject mixed payload pages just as the general placement proof does.
+    pub(super) fn with_scroll_placement(
+        &self,
+        index: usize,
+        placement: crate::window::scroll_paint::ScrollPlacement,
+    ) -> Option<Self> {
+        if !self.pending.is_empty() || index >= self.len {
+            return None;
+        }
+        let slot = self.segments.partition_point(|segment| segment.end <= index);
+        let segment = self.segments.get(slot)?;
+        if !segment.owner.is_scroll_only() {
+            return None;
+        }
+        let local = segment.range.start + index - segment.start();
+        let PaintOperationRef::DeferredScroll(old) = segment.owner.view(local) else {
+            return None;
+        };
+        if !placement.same_source_placement_domain(old)
+            || placement.visual_bounds() != old.visual_bounds()
+            || placement.same_paint(old)
+        {
+            return None;
+        }
+
+        let mut result = Self {
+            boundaries: self.boundaries.clone(),
+            segments: Vec::with_capacity(self.segments.len().saturating_add(2)),
+            ..Self::default()
+        };
+        for segment in &self.segments[..slot] {
+            result.append(Arc::clone(&segment.owner), segment.range.clone());
+        }
+        if segment.range.start < local {
+            result.append(Arc::clone(&segment.owner), segment.range.start..local);
+        }
+        let mut marker = OperationPage::default();
+        marker.push(PaintOperation::DeferredScroll(placement));
+        result.append(Arc::new(marker), 0..1);
+        if local + 1 < segment.range.end {
+            result.append(Arc::clone(&segment.owner), local + 1..segment.range.end);
+        }
+        for segment in &self.segments[slot + 1..] {
+            result.append(Arc::clone(&segment.owner), segment.range.clone());
+        }
+        debug_assert_eq!(result.len, self.len);
+        Some(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_boundary_storage(&self, other: &Self) -> bool {
+        self.boundaries.0.as_ref().zip(other.boundaries.0.as_ref())
+            .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
     }
 
     /// A placement-only variant retains exactly the same ordinary storage.

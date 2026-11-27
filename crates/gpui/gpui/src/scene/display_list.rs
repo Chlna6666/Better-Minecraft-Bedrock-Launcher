@@ -90,22 +90,10 @@ impl Scene {
         {
             return None;
         }
-        let PaintOperationRef::DeferredScroll(old) = self.paint_operations.view(index)? else {
-            return None;
+        let mut scene = Self {
+            paint_operations: self.paint_operations.with_scroll_placement(index, placement)?,
+            ..Self::default()
         };
-        if !placement.same_source_placement_domain(old)
-            || placement.visual_bounds() != old.visual_bounds() || placement.same_paint(old)
-        {
-            return None;
-        }
-        let mut scene = Self::default();
-        scene.paint_operations.share(&self.paint_operations, 0..index);
-        scene.paint_operations.push_scroll_placement(placement);
-        scene.paint_operations.share(&self.paint_operations, index + 1..self.len());
-        scene.paint_operations.finish();
-        if scene.paint_operations.placement_storage_matches(&self.paint_operations) != Some(false) {
-            return None;
-        }
         scene.shadows.share(&self.shadows, 0..self.shadows.len());
         scene.quads.share(&self.quads, 0..self.quads.len());
         scene.monochrome_sprites.share(&self.monochrome_sprites, 0..self.monochrome_sprites.len());

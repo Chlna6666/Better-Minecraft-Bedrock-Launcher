@@ -571,6 +571,9 @@ mod tests {
         assert!(publication.layers.single_scroll_placement(0, &moved, true).is_none());
         assert_ne!(next.scene.revision, publication.scene.revision);
         assert_eq!(next.scene.len(), publication.scene.len());
+        assert!(next.scene.paint_operations.shares_boundary_storage(&publication.scene.paint_operations));
+        assert_eq!(next.scene.paint_operations.placement_storage_matches(&publication.scene.paint_operations), Some(false));
+        assert_eq!(next.scene.paint_operations.deferred_scroll_indices().collect::<Vec<_>>(), vec![1]);
         assert!(std::ptr::eq(&next.scene.quads[0], &publication.scene.quads[0]));
         assert!(std::ptr::eq(&next.scene.quads[1], &publication.scene.quads[1]));
         assert!(matches!(publication.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(old)) if old.same_paint(&first)));
