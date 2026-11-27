@@ -99,14 +99,19 @@ pub(super) struct Resources {
 }
 
 impl Resources {
-    fn buffer<D: ResourceDevice>(&mut self, device: &mut D, bytes: &[u8], usage: BufferUsage) -> Result<BufferId> {
+    fn allocate_buffer<D: ResourceDevice>(&mut self, device: &mut D, size: usize, usage: BufferUsage) -> Result<BufferId> {
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("scroll raster stream".into()),
-            size: bytes.len() as u64,
+            size: size as u64,
             usage: usage | BufferUsage::COPY_DST,
             memory_location: MemoryLocation::CpuToGpu,
         })?;
         self.buffers.push(buffer);
+        Ok(buffer)
+    }
+
+    fn buffer<D: ResourceDevice>(&mut self, device: &mut D, bytes: &[u8], usage: BufferUsage) -> Result<BufferId> {
+        let buffer = self.allocate_buffer(device, bytes.len(), usage)?;
         device.write_buffer(buffer, 0, bytes)?;
         Ok(buffer)
     }
@@ -133,6 +138,68 @@ impl Resources {
         }
         for (texture, view) in self.depths {
             destroy_depth_target(device, texture, view, "scroll raster");
+        }
+    }
+}
+
+// One aligned allocation and one upload for all projection uniforms in
+// an accepted writer cohort. Descriptor offsets use the native device's
+// reported limits; unknown limits keep the existing dedicated-buffer path.
+struct ProjectionArena {
+    buffer: Option<BufferId>,
+    stride: usize,
+    capacity: usize,
+    bytes: Vec<u8>,
+}
+
+fn projection_arena_layout(limits: gfx_core::BufferBindingLimits, records: usize) -> Option<(usize, usize)> {
+    let alignment = usize::try_from(limits.uniform_offset_alignment).ok()?;
+    if alignment == 0 || limits.max_uniform_binding_bytes < GLOBAL_UPLOAD_BYTES as u64 {
+        return None;
+    }
+    let stride = GLOBAL_UPLOAD_BYTES.checked_add(alignment - 1)? / alignment * alignment;
+    let capacity = stride.checked_mul(records)?;
+    // D3D11's entire constant allocation, not only each descriptor
+    // range, is bounded by 64 KiB. Use a portable conservative limit.
+    (capacity != 0 && capacity <= 64 * 1024).then_some((stride, capacity))
+}
+
+impl ProjectionArena {
+    fn new<D: ResourceDevice>(device: &mut D, resources: &mut Resources, records: usize) -> Result<Self> {
+        let Some((stride, capacity)) = projection_arena_layout(device.buffer_binding_limits(), records) else {
+            return Ok(Self { buffer: None, stride: 0, capacity: 0, bytes: Vec::new() });
+        };
+        let buffer = resources.allocate_buffer(device, capacity, BufferUsage::UNIFORM)?;
+        Ok(Self { buffer: Some(buffer), stride, capacity, bytes: Vec::with_capacity(capacity) })
+    }
+
+    fn push<D: ResourceDevice>(&mut self, device: &mut D, resources: &mut Resources,
+        globals: &[u8]) -> Result<(BufferId, u64)> {
+        if let Some(buffer) = self.buffer {
+            let offset = self.bytes.len();
+            anyhow::ensure!(globals.len() == GLOBAL_UPLOAD_BYTES && offset + self.stride <= self.capacity,
+                "scroll projection arena capacity exceeded");
+            self.bytes.extend_from_slice(globals);
+            self.bytes.resize(offset + self.stride, 0);
+            Ok((buffer, offset as u64))
+        } else {
+            Ok((resources.buffer(device, globals, BufferUsage::UNIFORM)?, 0))
+        }
+    }
+
+    fn upload<D: ResourceDevice>(&self, device: &mut D) -> Result<()> {
+        if let Some(buffer) = self.buffer && !self.bytes.is_empty() {
+            device.write_buffer(buffer, 0, &self.bytes)?;
+        }
+        Ok(())
+    }
+}
+
+fn projection_binding_offset(entries: &mut [BindGroupEntry], offset: u64) {
+    if offset == 0 { return; }
+    for entry in entries {
+        if entry.binding == 0 && let BindingResource::Buffer(binding) = &mut entry.resource {
+            binding.offset = offset;
         }
     }
 }
@@ -245,7 +312,7 @@ impl StaticStreams {
     }
 
     fn commands<D: ResourceDevice>(&self, renderer: &NovaRenderer, device: &mut D,
-        resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines,
+        resources: &mut Resources, buffers: FrameResourceBuffers, global_offset: u64, blend: BlendPipelines,
         extension_steps: &[Vec<RenderCommand>],
         mut resident: Option<&mut FxHashMap<SourceKind, BindGroupId>>) -> Result<Vec<RenderCommand>> {
         let mut bindings = FxHashMap::default();
@@ -277,7 +344,7 @@ impl StaticStreams {
             };
             let cached = if retain { resident.as_ref().and_then(|map| map.get(&run.kind)).copied() } else { None };
             let group = if let Some(group) = cached.or_else(|| bindings.get(&run.kind).copied()) { group } else {
-                let (layout, entries) = match run.kind {
+                let (layout, mut entries) = match run.kind {
                     SourceKind::Quad => (renderer.quad_bind_group_layout, quad_resource_bindings(&buffers)),
                     SourceKind::Shadow => (renderer.shadow_bind_group_layout, shadow_resource_bindings(&buffers)),
                     SourceKind::Underline => {
@@ -297,6 +364,7 @@ impl StaticStreams {
                         poly_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
                     SourceKind::Extension => unreachable!("extension run has no static binding"),
                 };
+                projection_binding_offset(&mut entries, global_offset);
                 if retain && let Some(map) = resident.as_mut() {
                     let group = device.create_bind_group(&BindGroupDescriptor {
                         label: Some("resident scroll outside binding".into()), layout, entries,
@@ -991,6 +1059,7 @@ impl NovaRenderer {
             let mut resources = Resources::default();
             let mut passes = Vec::<RasterPass>::with_capacity(misses);
             let prepare = (|| -> Result<bool> {
+                let mut projection = ProjectionArena::new(device, &mut resources, misses * 2)?;
                 let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
                 let mut clear_bindings = FxHashMap::<(u32, u32), BindGroupId>::default();
                 let paged = shared_raster_pages(device, self.backend_info.kind().ok());
@@ -1089,9 +1158,9 @@ impl NovaRenderer {
                         let prepared = (|| -> Result<_> {
                             let globals = pack_global_params(DrawableSize { width: target_extent.width(), height: target_extent.height() },
                                 true, [raster.origin.x as f32 - region.x as f32, raster.origin.y as f32 - region.y as f32]);
-                            let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
+                            let (global_buffer, global_offset) = projection.push(device, &mut resources, &globals)?;
                             let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                            let mut commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[], None)?;
+                            let mut commands = streams.commands(self, device, &mut resources, buffers, global_offset, self.pipelines.premultiplied, &[], None)?;
                             if paged {
                                 for command in &mut commands {
                                     let RenderCommand::Draw(draw) = command else {
@@ -1111,9 +1180,11 @@ impl NovaRenderer {
                                         background: crate::rgba(0).into(), ..Default::default() });
                                     let clear_buffer = resources.buffer(device, &clear, BufferUsage::STORAGE)?;
                                     let globals = pack_global_params(DrawableSize { width: class.0, height: class.1 }, true, [0., 0.]);
-                                    let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
+                                    let (global_buffer, global_offset) = projection.push(device, &mut resources, &globals)?;
                                     let clear_buffers = FrameResourceBuffers { global_buffer, quad_buffer: clear_buffer, quad_capacity: 1, ..buffers };
-                                    let group = resources.binding(device, self.quad_bind_group_layout, quad_resource_bindings(&clear_buffers))?;
+                                    let mut entries = quad_resource_bindings(&clear_buffers);
+                                    projection_binding_offset(&mut entries, global_offset);
+                                    let group = resources.binding(device, self.quad_bind_group_layout, entries)?;
                                     clear_bindings.insert(class, group);
                                     group
                                 };
@@ -1137,6 +1208,7 @@ impl NovaRenderer {
                         }
                     }
                 }
+                projection.upload(device)?;
                 Ok(true)
             })();
             if !matches!(prepare, Ok(true)) {
@@ -1267,7 +1339,7 @@ impl NovaRenderer {
             composite_slot.outside.root = Arc::downgrade(&outside);
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
             let mut resident = std::mem::take(&mut composite_slot.outside.bindings);
-            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, &extension_steps, Some(&mut resident));
+            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, 0, blend, &extension_steps, Some(&mut resident));
             self.scroll_composite_slots[slot].outside.bindings = resident;
             let root_commands = root_commands?;
             let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
@@ -1373,6 +1445,18 @@ mod tests {
         let mut paint = crate::window::Paint::default();
         paint.layers.raster_fixture(operations, coverage, viewport, translation);
         paint
+    }
+
+    #[test]
+    fn projection_arena_uses_native_alignment_and_bounds_allocation() {
+        let limits = gfx_core::BufferBindingLimits { uniform_offset_alignment: 256,
+            max_uniform_binding_bytes: 64 * 1024, ..Default::default() };
+        assert_eq!(projection_arena_layout(limits, 128), Some((256, 32768)));
+        assert_eq!(projection_arena_layout(limits, 257), None);
+        assert_eq!(projection_arena_layout(Default::default(), 4), None);
+        let limits = gfx_core::BufferBindingLimits { uniform_offset_alignment: 512, ..limits };
+        assert_eq!(projection_arena_layout(limits, 128), Some((512, 65536)));
+        assert_eq!(projection_arena_layout(limits, 129), None);
     }
 
     #[test]
