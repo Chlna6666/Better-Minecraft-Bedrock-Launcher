@@ -7,13 +7,13 @@ use crate::{
     AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
     ScrollCapture, Size, StateRead, StateReadStatus, Window,
 };
-use collections::FxHashMap;
+use collections::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
     rows: FxHashMap<(u64, usize), RowRecord>,
-    measurements: FxHashMap<GlobalElementId, Rc<RowMeasurement>>,
+    measurements: FxHashMap<GlobalElementId, (u64, Rc<RowMeasurement>)>,
     pub(super) enabled: bool,
     blocked: bool,
 }
@@ -46,6 +46,7 @@ impl ScrollRows {
 
 #[derive(PartialEq)]
 struct ListContext {
+    owner: crate::EntityId,
     identity: RowListIdentity,
     item_count: usize,
     available_space: Size<AvailableSpace>,
@@ -61,6 +62,7 @@ pub(crate) enum RowListIdentity {
 pub(crate) struct RowPlan {
     key: u64,
     revision: u64,
+    placement_only: bool,
     context: Rc<ListContext>,
     // Rows captured by one plan share exactly one immutable context.
     // Compare its inherited style and list identity once per source group.
@@ -122,7 +124,7 @@ struct RowRecord {
 }
 
 struct RowMeasurement {
-    revision: u64,
+    owner: crate::EntityId,
     index: usize,
     count: usize,
     context: RetainedPaintContext,
@@ -130,7 +132,44 @@ struct RowMeasurement {
     size: Size<Pixels>,
 }
 
+// Both the committed and current owner path must agree. A directly dirty
+// ancestor may have changed an otherwise untracked closure capture. A
+// dirty descendant also prevents reusing the parent's row render records.
+fn clean_owner_path(
+    owner: crate::EntityId,
+    current: &[crate::EntityId],
+    committed: impl Iterator<Item = crate::EntityId>,
+    dirty: &FxHashSet<crate::EntityId>,
+    direct: &FxHashSet<crate::EntityId>,
+) -> bool {
+    current.last() == Some(&owner)
+        && !dirty.contains(&owner)
+        && current.iter().all(|id| !direct.contains(id))
+        && committed.eq(current.iter().rev().copied())
+}
+
 impl Window {
+    fn row_replay_admission(&self) -> Option<(crate::EntityId, u64, bool)> {
+        if !self.scroll_row_replay_is_enabled() || self.force_view_cache_refresh {
+            return None;
+        }
+        let owner = self.rendered_entity_stack.last().copied()?;
+        let (revision, placement_only) = self.invalidator.row_replay_revision()?;
+        if !placement_only
+            && (!self.has_completed_rendered_frame
+                || self.rendered_frame.focus != self.focus
+                || self.rendered_frame.window_active != self.active.get()
+                || !clean_owner_path(
+                    owner, &self.rendered_entity_stack,
+                    self.rendered_frame.dispatch_tree.view_path_reversed(owner),
+                    &self.dirty_views, &self.direct_dirty_views,
+                ))
+        {
+            return None;
+        }
+        Some((owner, revision, placement_only))
+    }
+
     pub(crate) fn scroll_row_replay_is_enabled(&self) -> bool {
         let rows = &self.next_frame.scroll_rows;
         rows.enabled && !rows.blocked
@@ -147,20 +186,22 @@ impl Window {
         cx: &mut App,
         measure: impl FnOnce(&mut Self, &mut App) -> (Size<Pixels>, bool),
     ) -> Size<Pixels> {
-        let Some(id) = id.filter(|_| self.scroll_row_replay_is_enabled() && !self.force_view_cache_refresh) else {
+        let Some(id) = id else {
             return measure(self, cx).0;
         };
-        let (revision, placement_only) = self.invalidator.scroll_content_revision();
-        if !placement_only { return measure(self, cx).0; }
-        if let Some(previous) = self.rendered_frame.scroll_rows.measurements.get(id)
-            && previous.revision == revision
+        let Some((owner, revision, placement_only)) = self.row_replay_admission() else {
+            return measure(self, cx).0;
+        };
+        if let Some((previous_revision, previous)) = self.rendered_frame.scroll_rows.measurements.get(id)
+            && previous.owner == owner
+            && (!placement_only || *previous_revision == revision)
             && previous.index == index
             && previous.count == count
             && self.retained_paint_context_matches(&previous.context)
             && previous.reads.iter().all(|read| read.status() == StateReadStatus::Unchanged)
         {
             let size = previous.size;
-            self.next_frame.scroll_rows.measurements.insert(id.clone(), previous.clone());
+            self.next_frame.scroll_rows.measurements.insert(id.clone(), (revision, previous.clone()));
             self.replayed_view_owners.insert(self.current_view());
             return size;
         }
@@ -169,14 +210,14 @@ impl Window {
         let start = cx.entities.state_read_index();
         let (size, cacheable) = measure(self, cx);
         if cacheable {
-            self.next_frame.scroll_rows.measurements.insert(id.clone(), Rc::new(RowMeasurement {
-                revision,
+            self.next_frame.scroll_rows.measurements.insert(id.clone(), (revision, Rc::new(RowMeasurement {
+                owner,
                 index,
                 count,
                 context,
                 reads: cx.entities.state_reads_since(start),
                 size,
-            }));
+            })));
         }
         size
     }
@@ -204,11 +245,9 @@ impl Window {
         available_space: Size<AvailableSpace>,
         cx: &App,
     ) -> Option<RowPlan> {
-        let (revision, placement_only) = self.invalidator.scroll_content_revision();
+        let (owner, revision, placement_only) = self.row_replay_admission()?;
         let viewport = self.visual_content_mask();
-        if !placement_only || !self.scroll_row_replay_is_enabled()
-            || self.force_view_cache_refresh
-            || self.visual_scale() != 1.
+        if self.visual_scale() != 1.
             || self.content_mask() != viewport
             || self.element_visual_transform.translation != Point::default()
             || viewport.bounds.is_empty()
@@ -232,10 +271,12 @@ impl Window {
         Some(RowPlan {
             key,
             revision,
+            placement_only,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
             previous_context: RefCell::new(None),
             context: Rc::new(ListContext {
+                owner,
                 identity,
                 item_count,
                 available_space,
@@ -253,9 +294,14 @@ impl Window {
         let Some(record) = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row)) else {
             return false;
         };
-        if record.revision != plan.revision || !plan.matches_context(&record.context) {
+        if (plan.placement_only && record.revision != plan.revision)
+            || !plan.matches_context(&record.context)
+        {
             return false;
         }
+        // Scoped records are only borrowed from the previous committed
+        // frame, after the entire owner path was certified. A carried row
+        // is stamped with the current revision when remembered below.
         let scale = self.scale_factor();
         let viewport = plan
             .context
@@ -445,4 +491,29 @@ impl Window {
 
 fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
     prepaint.records.start.hitboxes_index..prepaint.records.end.hitboxes_index
+}
+
+#[cfg(test)]
+mod scoped_row_tests {
+    use super::*;
+    use crate::EntityId;
+
+    #[test]
+    fn unrelated_sibling_can_reuse_but_dirty_owner_or_ancestor_cannot() {
+        let root = EntityId::from(1);
+        let left = EntityId::from(2);
+        let right = EntityId::from(3);
+        let path = [root, right];
+        let mut dirty = FxHashSet::from_iter([root, left]);
+        let mut direct = FxHashSet::from_iter([left]);
+        assert!(clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        direct.insert(root);
+        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        direct.remove(&root);
+        dirty.insert(right);
+        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        dirty.remove(&right);
+        assert!(!clean_owner_path(right, &path, [right, left, root].into_iter(), &dirty, &direct));
+        assert!(!clean_owner_path(right, &path, std::iter::empty(), &dirty, &direct));
+    }
 }

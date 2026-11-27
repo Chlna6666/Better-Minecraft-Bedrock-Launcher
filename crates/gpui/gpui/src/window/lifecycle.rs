@@ -163,6 +163,7 @@ struct WindowInvalidatorInner {
     scroll_placement_revision: u64,
     pending_work: FrameWork,
     drawing_placement: Option<PlacementEpoch>,
+    drawing_scoped_content: Option<PlacementEpoch>,
 }
 
 #[derive(Clone)]
@@ -192,6 +193,7 @@ impl WindowInvalidator {
                 scroll_placement_revision: 0,
                 pending_work: FrameWork(FrameWork::CONTENT),
                 drawing_placement: None,
+                drawing_scoped_content: None,
             })),
         }
     }
@@ -542,15 +544,20 @@ impl WindowInvalidator {
             inner.pending_work.insert(FrameWork::CONTENT);
             inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
             inner.drawing_placement = None;
+            inner.drawing_scoped_content = None;
         } else {
             inner.active_view_scoped = inner.pending_view_scoped;
             inner.pending_view_scoped = false;
             let work = std::mem::take(&mut inner.pending_work);
-            inner.drawing_placement = (inner.active_view_scoped && work.placement_only())
-                .then_some(PlacementEpoch {
-                    content: inner.scroll_content_revision,
-                    placement: inner.scroll_placement_revision,
-                });
+            let epoch = PlacementEpoch {
+                content: inner.scroll_content_revision,
+                placement: inner.scroll_placement_revision,
+            };
+            inner.drawing_placement =
+                (inner.active_view_scoped && work.placement_only()).then_some(epoch);
+            inner.drawing_scoped_content = (inner.active_view_scoped
+                && work.contains(FrameWork::CONTENT)
+                && !work.contains(FrameWork::OVERLAY)).then_some(epoch);
         }
         inner.dirty = is_dirty;
     }
@@ -581,6 +588,7 @@ impl WindowInvalidator {
         inner.pending_view_scoped = false;
         inner.active_view_scoped = false;
         inner.drawing_placement = None;
+        inner.drawing_scoped_content = None;
         inner.dirty = false;
         true
     }
@@ -594,6 +602,25 @@ impl WindowInvalidator {
         (current.content, inner.drawing_placement == Some(current))
     }
 
+    /// A scoped content draw can retain rows from a provably clean owner.
+    /// The epoch also revokes admission if new work arrives during preparation.
+    /// The boolean distinguishes the existing placement-only proof from the
+    /// stricter owner-path proof required for a content draw.
+    pub(super) fn row_replay_revision(&self) -> Option<(u64, bool)> {
+        let inner = self.inner.borrow();
+        let current = PlacementEpoch {
+            content: inner.scroll_content_revision,
+            placement: inner.scroll_placement_revision,
+        };
+        if inner.drawing_placement == Some(current) {
+            Some((current.content, true))
+        } else if inner.drawing_scoped_content == Some(current) {
+            Some((current.content, false))
+        } else {
+            None
+        }
+    }
+
     /// Window-owned overlay work does not invalidate an application view.
     pub(in crate::window) fn set_replay_only_dirty(&self) {
         let mut inner = self.inner.borrow_mut();
@@ -601,6 +628,7 @@ impl WindowInvalidator {
         // An overlay change during preparation revokes placement admission
         // without invalidating the content generation itself.
         inner.drawing_placement = None;
+        inner.drawing_scoped_content = None;
         inner
             .dirty_to_present_started_at
             .get_or_insert_with(Instant::now);
@@ -833,6 +861,33 @@ mod view_invalidation_tests {
         assert!(!invalidator.scroll_content_revision().1);
         invalidator.set_phase(DrawPhase::None);
         assert_eq!(invalidator.take_views(), FxHashSet::from_iter([owner]));
+    }
+
+    #[test]
+    fn scoped_row_epoch_is_revoked_by_new_content_or_overlay_work() {
+        let owner = EntityId::from(1);
+        for overlay in [false, true] {
+            let invalidator = WindowInvalidator::new();
+            invalidator.set_dirty(false);
+            invalidator.invalidate_owned_view(owner);
+            invalidator.take_views();
+            invalidator.set_dirty(false);
+            assert_eq!(invalidator.row_replay_revision(),
+                Some((invalidator.scroll_content_revision().0, false)));
+            assert!(!invalidator.scroll_content_revision().1);
+            invalidator.set_phase(DrawPhase::Prepaint);
+            if overlay {
+                invalidator.set_replay_only_dirty();
+            } else {
+                invalidator.invalidate_owned_view(owner);
+            }
+            assert!(invalidator.row_replay_revision().is_none());
+        }
+        let invalidator = WindowInvalidator::new();
+        invalidator.set_dirty(true);
+        invalidator.invalidate_owned_view(owner);
+        invalidator.set_dirty(false);
+        assert!(invalidator.row_replay_revision().is_none());
     }
 
     #[test]
