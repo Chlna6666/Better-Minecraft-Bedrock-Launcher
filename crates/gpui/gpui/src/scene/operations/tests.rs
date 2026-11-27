@@ -48,6 +48,35 @@ fn borrowed_runs_preserve_payload_identity_and_shared_comparison() {
 }
 
 #[test]
+fn tightening_pending_capture_does_not_freeze_or_copy_primitives() {
+    let mut operations = Operations::default();
+    let bounds = crate::bounds(crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(0.)),
+        crate::size(crate::ScaledPixels(20.), crate::ScaledPixels(20.)));
+    let tight = crate::bounds(bounds.origin, crate::size(crate::ScaledPixels(5.), crate::ScaledPixels(5.)));
+    operations.push(PaintOperation::StartBlur(crate::BlurCapture {
+        animation_id: None, layer_id: None, bounds, content_mask: crate::ContentMask::default(),
+        radius: crate::ScaledPixels(0.), opacity: 1.,
+    }));
+    operations.push(PaintOperation::StartLayer(bounds));
+    operations.push(PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+    operations.push(PaintOperation::EndLayer);
+    let identity = operations.storage_identity(2);
+    operations.tighten_capture(0, 4, tight);
+    assert!(operations.segments.is_empty());
+    assert_eq!(operations.storage_identity(2), identity);
+    assert!(matches!(operations.view(0), Some(PaintOperationRef::StartBlur(capture)) if capture.bounds == tight));
+    assert!(matches!(operations.view(1), Some(PaintOperationRef::StartLayer(bounds)) if *bounds == tight));
+    operations.finish();
+    let mut shared = Operations::default();
+    shared.share(&operations, 0..4);
+    let smaller = crate::bounds(bounds.origin, crate::size(crate::ScaledPixels(2.), crate::ScaledPixels(2.)));
+    shared.tighten_capture(0, 4, smaller);
+    assert_eq!(shared.storage_identity(2), identity);
+    assert!(matches!(shared.view(0), Some(PaintOperationRef::StartBlur(capture)) if capture.bounds == smaller));
+    assert!(matches!(operations.view(0), Some(PaintOperationRef::StartBlur(capture)) if capture.bounds == tight));
+}
+
+#[test]
 fn shared_ranges_survive_source_clear_and_preserve_new_insertions() {
     let mut source = operations(12);
     let first = source.storage_identity(2);

@@ -1,5 +1,5 @@
 //! Immutable scroll content publication, adapted from GPUI Fast's LayerContent.
-use crate::{Bounds, ContentMask, Pixels, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperationRef, PrimitiveRef, Scene}};
+use crate::{Bounds, ContentMask, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperationRef, PrimitiveRef, Scene}};
 use collections::{FxHashMap, FxHashSet};
 use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
@@ -740,7 +740,7 @@ fn raster_background(scene: &Scene, index: usize, visible: Bounds<ScaledPixels>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Bounds, Quad, ScaledPixels, point, size, scene::{Painter, PaintOperation, Primitive}};
+    use crate::{Bounds, Pixels, Quad, ScaledPixels, point, size, scene::{Painter, PaintOperation, Primitive}};
 
     #[test]
     fn ordered_root_retains_both_outside_spans() {

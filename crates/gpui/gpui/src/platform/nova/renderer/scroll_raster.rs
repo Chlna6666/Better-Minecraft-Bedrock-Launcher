@@ -571,7 +571,7 @@ impl OutsideRoot {
         if ranges.len() != self.source_ends.len() { return false; }
         let mut start = 0;
         for (range, &end) in ranges.iter().zip(&self.source_ends) {
-            if !self.source.range(start..end).matches_views(scene.range(range.clone()), PaintOperationRef::same_paint) {
+            if !self.source.range(start..end).matches_views(scene.range(range.clone()), |left, right| left.same_paint(right)) {
                 return false;
             }
             start = end;

@@ -411,6 +411,23 @@ impl Operations {
     /// Shared pages detach only the affected scope record. The sparse index
     /// identifies precisely which operations need modification.
     pub(crate) fn tighten_capture(&mut self, start: usize, end: usize, tight: Bounds<ScaledPixels>) {
+        debug_assert!(start < end && end <= self.len);
+        let pending_start = self.len - self.pending.len();
+        if start >= pending_start {
+            // Most fresh captures are wholly in the current builder. Keep
+            // that page mutable and visit only its sparse scope records.
+            let first = self.boundaries.partition_point(|boundary| boundary.after <= start);
+            for boundary in self.boundaries[first..].iter().take_while(|b| b.after <= end) {
+                let index = boundary.after - 1;
+                let local = index - pending_start;
+                if index == start && boundary.change == ScopeChange::StartBlur {
+                    self.pending.set_blur_bounds(local, tight);
+                } else if index > start && boundary.change == ScopeChange::StartLayer {
+                    self.pending.clip_layer(local, tight);
+                }
+            }
+            return;
+        }
         self.finish();
         let boundaries = std::mem::take(&mut self.boundaries);
         let first = boundaries.partition_point(|boundary| boundary.after <= start);

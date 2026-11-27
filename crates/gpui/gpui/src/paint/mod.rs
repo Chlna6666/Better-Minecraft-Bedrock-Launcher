@@ -16,11 +16,13 @@ pub(crate) use geometry::*;
 use crate::scene::{blur_influence_radius, PaintOperationRef, PrimitiveRef};
 use crate::scene::geometry::is_solid_quad;
 use crate::{
-    BlurCapture, Bounds, DrawOrder, PaintBackdropBlur, Primitive, ScaledPixels,
+    BlurCapture, Bounds, DrawOrder, PaintBackdropBlur, ScaledPixels,
     Scene, SceneAnimationId, SceneAnimationValue, TransitionProperty,
 };
 use smallvec::SmallVec;
 use std::ops::Range;
 
+#[cfg(test)]
+use crate::Primitive;
 #[cfg(test)]
 mod tests;
