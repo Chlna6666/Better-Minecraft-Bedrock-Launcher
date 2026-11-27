@@ -373,7 +373,7 @@ impl ExtensionSubmission<'_> {
         Ok(last)
     }
 }
-fn attach_extension_submission(
+pub(super) fn attach_extension_submission(
     pending: &mut Vec<PendingSubmission>,
     predecessor: Option<SubmissionId>,
 ) {
@@ -854,6 +854,16 @@ impl NovaRenderer {
                     .saturating_add(filtered_width.saturating_mul(source_height))
                     .saturating_add(filtered_width.saturating_mul(filtered_height))
             })
+    }
+
+    /// Reuse the ordinary extension producer submission chain for direct
+    /// mixed roots. Native Graphics/Compute dependencies and retirement
+    /// are not reimplemented by the scroll compositor.
+    pub(super) fn submit_prepared_extensions<D: PresentationDevice + ResourceDevice + PipelineDevice + SubmissionDevice>(
+        &mut self, device: &mut D, slot: usize,
+    ) -> Result<Option<SubmissionId>> {
+        ExtensionSubmission { registry: &mut self.renderer_registry,
+            pending: &mut self.pending_submissions, frame_resource_index: slot }.submit(device)
     }
 
     pub(super) fn draw_present(

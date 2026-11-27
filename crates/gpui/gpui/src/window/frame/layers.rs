@@ -521,6 +521,7 @@ impl LayerFrame {
 pub(in crate::window) struct StaticPaintOrder {
     scopes: smallvec::SmallVec<[ScopeOrder; 4]>,
     root_lcd: bool,
+    root_extension: bool,
 }
 
 struct ScopeOrder {
@@ -556,7 +557,7 @@ impl ScopeOrder {
 
 impl StaticPaintOrder {
     pub(in crate::window) fn root() -> Self {
-        Self { root_lcd: cfg!(target_os = "windows"), ..Self::default() }
+        Self { root_lcd: cfg!(target_os = "windows"), root_extension: true, ..Self::default() }
     }
 
     pub(in crate::window) fn accept(&mut self, operation: &PaintOperation) -> bool {
@@ -582,6 +583,16 @@ impl StaticPaintOrder {
                     // source's independent primitive orders into one order.
                     placement.has_scoped_order() && scope.append_isolated(placement.visual_bounds())
                 } else { true }
+            }
+            PaintOperation::Primitive(Primitive::RendererExtension(extension)) => {
+                // First mixed-root admission: independent root extension,
+                // integer scissor, no animation or filter capture. Never
+                // treat custom shader output as an immutable tile source.
+                self.root_extension && self.scopes.is_empty()
+                    && extension.animation_id.is_none()
+                    && [extension.bounds, extension.content_mask.bounds].into_iter().all(|bounds|
+                        [bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0]
+                            .into_iter().all(|v| v.is_finite() && v.fract() == 0.))
             }
             PaintOperation::Primitive(primitive) => {
                 let lcd = self.root_lcd && matches!(primitive, Primitive::MonochromeSprite(sprite)
@@ -638,15 +649,19 @@ impl StaticPaintOrder {
 // DrawOrder can reorder nested layers. Reject inversions rather than
 // guessing which overlapping primitives can safely commute.
 fn ordered_static_root(scene: &Scene) -> bool {
-    if !scene.animation_values.is_empty() || !scene.renderer_extensions.is_empty()
+    if !scene.animation_values.is_empty()
         || !scene.blurs.is_empty() || !scene.backdrop_blurs.is_empty()
     {
         return false;
     }
     if scene.paint_operations.has_deferred_scroll() {
+        // Preparation order between multiple mutable extension instances
+        // needs an independent proof of the final native order.
+        if scene.renderer_extensions.len() > 1 { return false; }
         let mut proof = StaticPaintOrder::root();
         return scene.paint_operations.iter().all(|operation| proof.accept(operation)) && proof.complete();
     }
+    if !scene.renderer_extensions.is_empty() { return false; }
     let mut previous = None;
     for operation in scene.paint_operations.iter() {
         match operation {

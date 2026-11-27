@@ -106,90 +106,56 @@ impl NovaRenderer {
     }
 
     pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
-        self.renderer_registry.begin_frame();
-        let extension_count = self.frame_upload.renderer_extensions.len();
-        reset_extension_steps(
-            &mut self.frame_upload.renderer_extension_steps,
-            extension_count,
-        );
-        let viewport = Extent2d::new(self.active_size.width, self.active_size.height)?;
-        let active_types = self.active_renderer_extension_types();
-        self.release_inactive_renderer_extensions(&active_types);
-        for index in 0..extension_count {
-            self.prepare_renderer_extension(index, viewport, frame_time)?;
-        }
-        Ok(())
+        let inputs = std::mem::take(&mut self.frame_upload.renderer_extensions);
+        let mut steps = std::mem::take(&mut self.frame_upload.renderer_extension_steps);
+        let backend = Arc::clone(&self.backend);
+        let result = lock_backend(&backend).with_extension_device(|device| {
+            self.prepare_renderer_extensions_on(&inputs, &mut steps, frame_time, device)
+        });
+        self.frame_upload.renderer_extensions = inputs;
+        self.frame_upload.renderer_extension_steps = steps;
+        result
     }
 
-    fn active_renderer_extension_types(&self) -> SmallVec<[std::any::TypeId; 4]> {
-        let mut active_types = SmallVec::new();
-        for extension in &self.frame_upload.renderer_extensions {
+    /// One registry, preparation ABI and auxiliary fence registration for
+    /// ordinary packed frames and direct mixed scroll roots. The caller
+    /// supplies the already-owned device, avoiding recursive backend locks.
+    pub(super) fn prepare_renderer_extensions_on(
+        &mut self,
+        inputs: &[crate::PaintRendererExtension],
+        steps: &mut Vec<Vec<RenderCommand>>,
+        frame_time: Instant,
+        device: &mut dyn crate::ExtensionDevice,
+    ) -> Result<()> {
+        self.renderer_registry.begin_frame();
+        reset_extension_steps(steps, inputs.len());
+        let viewport = Extent2d::new(self.active_size.width, self.active_size.height)?;
+        let mut active_types = SmallVec::<[std::any::TypeId; 4]>::new();
+        for extension in inputs {
             let type_id = extension.extension.renderer_type();
             if !active_types.contains(&type_id) {
                 active_types.push(type_id);
             }
         }
-        active_types
-    }
-
-    fn release_inactive_renderer_extensions(&mut self, active_types: &[std::any::TypeId]) {
-        if !self.renderer_registry.has_inactive(active_types) {
-            return;
+        if self.renderer_registry.has_inactive(&active_types) {
+            self.renderer_registry.retain(&active_types, device);
         }
-        let registry = &mut self.renderer_registry;
-        if let Err(error) = lock_backend(&self.backend).with_extension_device(|device| {
-            registry.retain(active_types, device);
-            Ok(())
-        }) {
-            log::debug!("failed to access nova-gfx device to release extensions: {error}");
+        for (extension, steps) in inputs.iter().zip(steps) {
+            let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.active_size) else { continue; };
+            let Some(mask_scissor) = bounds_to_scissor(extension.content_mask.bounds, self.active_size) else { continue; };
+            let scissor = intersect_scissor_rects(bounds_scissor, mask_scissor);
+            if scissor.is_empty() { continue; }
+            let context = crate::RendererExtensionContext::new(
+                self.backend_info.kind()?, self.render_pass, self.surface_config.format,
+                viewport, extension.bounds, extension.content_mask, scissor, frame_time,
+            );
+            let auxiliary = &mut self.auxiliary_submissions;
+            self.renderer_registry.prepare(extension.extension.as_ref(), device, context, steps, |id| {
+                // Register accepted native work even when preparation fails.
+                if !auxiliary.contains(&id) { auxiliary.push(id); }
+            })?;
+            apply_scissor_to_steps(steps, scissor);
         }
-    }
-
-    fn prepare_renderer_extension(
-        &mut self,
-        index: usize,
-        viewport: Extent2d,
-        frame_time: Instant,
-    ) -> Result<()> {
-        let extension = self.frame_upload.renderer_extensions[index].clone();
-        let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.active_size) else {
-            return Ok(());
-        };
-        let Some(mask_scissor) = bounds_to_scissor(extension.content_mask.bounds, self.active_size)
-        else {
-            return Ok(());
-        };
-        let scissor = intersect_scissor_rects(bounds_scissor, mask_scissor);
-        if scissor.is_empty() {
-            return Ok(());
-        }
-
-        let context = crate::RendererExtensionContext::new(
-            self.backend_info.kind()?,
-            self.render_pass,
-            self.surface_config.format,
-            viewport,
-            extension.bounds,
-            extension.content_mask,
-            scissor,
-            frame_time,
-        );
-        let mut backend = lock_backend(&self.backend);
-        let (registry, steps, auxiliary) = (
-            &mut self.renderer_registry,
-            &mut self.frame_upload.renderer_extension_steps[index],
-            &mut self.auxiliary_submissions,
-        );
-        backend.with_extension_device(|device| {
-            registry.prepare(extension.extension.as_ref(), device, context, steps, |id| {
-                // Register as soon as the resource preparation returns, even
-                // if its render failed after native work was accepted.
-                if !auxiliary.contains(&id) {
-                    auxiliary.push(id);
-                }
-            })
-        })?;
-        apply_scissor_to_steps(steps, scissor);
         Ok(())
     }
 

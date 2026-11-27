@@ -147,6 +147,7 @@ enum SourceKind {
     Underline,
     Mono(AtlasTextureId),
     Poly(AtlasTextureId),
+    Extension,
 }
 
 #[derive(Clone, Copy)]
@@ -235,10 +236,15 @@ impl StaticStreams {
     }
 
     fn commands<D: ResourceDevice>(&self, renderer: &NovaRenderer, device: &mut D,
-        resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines) -> Result<Vec<RenderCommand>> {
+        resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines,
+        extension_steps: &[RenderCommand]) -> Result<Vec<RenderCommand>> {
         let mut bindings = FxHashMap::default();
         let mut commands = Vec::with_capacity(self.runs.len());
         for run in &self.runs {
+            if run.kind == SourceKind::Extension {
+                commands.extend_from_slice(extension_steps);
+                continue;
+            }
             let pipeline = match run.kind {
                 SourceKind::Quad => blend.quads,
                 SourceKind::Shadow => blend.shadows,
@@ -247,6 +253,7 @@ impl StaticStreams {
                 SourceKind::Mono(id) if id.kind == AtlasTextureKind::Subpixel => blend.subpixel_sprites,
                 SourceKind::Mono(_) => blend.mono_sprites,
                 SourceKind::Poly(_) => blend.poly_sprites,
+                SourceKind::Extension => unreachable!("extension run was expanded"),
             };
             let group = if let Some(&group) = bindings.get(&run.kind) { group } else {
                 let (layout, entries) = match run.kind {
@@ -267,6 +274,7 @@ impl StaticStreams {
                         mono_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
                     SourceKind::Poly(id) => (renderer.poly_sprite_bind_group_layout,
                         poly_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
+                    SourceKind::Extension => unreachable!("extension run has no static binding"),
                 };
                 let group = resources.binding(device, layout, entries)?;
                 bindings.insert(run.kind, group);
@@ -330,6 +338,15 @@ fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::
 struct OutsideRoot {
     streams: StaticStreams,
     boundaries: Vec<usize>,
+    extension: Option<crate::PaintRendererExtension>,
+}
+
+fn expanded_boundary(boundary: usize, extension_run: Option<usize>, extension_steps: usize) -> usize {
+    if extension_run.is_some_and(|index| index < boundary) {
+        boundary - 1 + extension_steps
+    } else {
+        boundary
+    }
 }
 
 fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId, AtlasTile>,
@@ -361,10 +378,16 @@ impl OutsideRoot {
             else { renderer.atlas.ready_root_glyphs(&ids)? };
         let mut streams = StaticStreams { root_lcd: cfg!(target_os = "windows"), ..Default::default() };
         let mut boundaries = Vec::with_capacity(plans.len());
+        let mut extension = None;
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
                 match operation {
+                    PaintOperation::Primitive(Primitive::RendererExtension(input)) => {
+                        if extension.replace(input.clone()).is_some() { return None; }
+                        streams.runs.push(SourceRun { kind: SourceKind::Extension, first: 0, count: 1 });
+                        split = true;
+                    }
                     PaintOperation::Primitive(primitive) => {
                         let primitive = resolve_primitive(primitive, &placements, &renderer.gpu_atlas_textures)?;
                         streams.push(&primitive, split)?;
@@ -376,7 +399,7 @@ impl OutsideRoot {
             }
             if index < plans.len() { boundaries.push(streams.runs.len()); }
         }
-        Some(Self { streams, boundaries })
+        Some(Self { streams, boundaries, extension })
     }
 }
 
@@ -503,7 +526,6 @@ impl NovaRenderer {
             || self.surface_format != Format::Bgra8Unorm
             || !packet.presentation_animation_values.is_empty()
             || !packet.presentation_animation_timelines.is_empty()
-            || !self.frame_upload.renderer_extensions.is_empty()
             || packet.paint.layers.frames.is_empty()
         {
             return Ok(None);
@@ -575,15 +597,15 @@ impl NovaRenderer {
         });
         let result = match &mut *lock_backend(&backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
+            NovaBackend::Dx11(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),
             #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
-            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
+            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
+            NovaBackend::Dx12(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
+            NovaBackend::Metal(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),
             #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
-            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
+            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
         };
@@ -618,8 +640,9 @@ impl NovaRenderer {
         Ok(outcome)
     }
 
-    fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice>(
+    fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice + PipelineDevice + SubmissionDevice>(
         &mut self, device: &mut D, plans: &[LayerPlan<'_>], scene: &crate::Scene, slot: usize,
+        frame_time: Instant,
     ) -> Result<Option<bool>> {
         let Some(outside) = OutsideRoot::pack(self, plans, scene) else { return Ok(None); };
         let format = self.surface_format;
@@ -711,7 +734,7 @@ impl NovaRenderer {
                             true, [raster.origin.x as f32, raster.origin.y as f32]);
                         let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
                         let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied)?;
+                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[])?;
                         let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
                             let target = create_depth_target(device, "scroll raster", raster.extent)?;
                             resources.depths.push(target);
@@ -763,6 +786,13 @@ impl NovaRenderer {
             }
         }
         let reads: Vec<_> = reads.into_iter().collect::<Option<Vec<_>>>().context("incomplete scroll tile set")?;
+        // All decline/fallback decisions precede extension preparation.
+        // From here a custom producer may accept native work; errors retain
+        // the exact registered fences, rather than preparing it a second time.
+        let mut extension_steps = Vec::new();
+        self.prepare_renderer_extensions_on(outside.extension.as_slice(), &mut extension_steps, frame_time, device)?;
+        let extension_steps = extension_steps.first().map_or(&[][..], Vec::as_slice);
+        let extension_run = outside.streams.runs.iter().position(|run| run.kind == SourceKind::Extension);
         if self.scroll_composite_slots.len() <= slot {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
@@ -801,12 +831,13 @@ impl NovaRenderer {
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
                 &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
-            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend)?;
+            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, extension_steps)?;
             let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
             let mut root = root_commands.into_iter();
             let mut root_offset = 0;
             let mut tile_offset = 0;
             for (plan, &boundary) in plans.iter().zip(&outside.boundaries) {
+                let boundary = expanded_boundary(boundary, extension_run, extension_steps.len());
                 commands.extend(root.by_ref().take(boundary - root_offset));
                 root_offset = boundary;
                 let end = tile_offset + plan.requests.len();
@@ -833,6 +864,14 @@ impl NovaRenderer {
             resources.destroy(device);
             return Err(error.into());
         }
+        // Submit custom native producers using exactly the ordinary
+        // renderer's Graphics/Compute contract, before the root consumer.
+        let extension_submission = if outside.extension.is_some() {
+            match self.submit_prepared_extensions(device, slot) {
+                Ok(submission) => submission,
+                Err(error) => { resources.destroy(device); return Err(error); }
+            }
+        } else { None };
         // Preserve root prefix -> resident tiles -> root suffix. The
         // promoted fragment is never encoded or drawn on this path.
         let outcome = match device.render_and_present_tracked(&PresentFrameDescriptor {
@@ -863,6 +902,8 @@ impl NovaRenderer {
             self.pending_submissions.push(PendingSubmission { submission: reader,
                 predecessors, frame_resource_index: slot, publication: None });
             self.scroll_raster_resources.push((reader, resources));
+            super::present::attach_extension_submission(&mut self.pending_submissions, extension_submission);
+            self.renderer_registry.gpu_submission_accepted(reader);
             for read in reads { self.raster_tiles.record_ordered_reader(read, reader)?; }
         } else if outcome.frame().is_none() {
             resources.destroy(device);
@@ -988,6 +1029,14 @@ mod tests {
         assert_eq!(row.bounds.bottom(), ScaledPixels(26.));
         assert_eq!(layer.root_static_raster().unwrap().0, viewport.scale(1.).bounds);
         assert_eq!(layer.adopt_tile(1, [6, 22, 110, 58], 1.), Some(1));
+    }
+
+    #[test]
+    fn extension_command_expansion_preserves_tile_insertion_boundaries() {
+        assert_eq!(expanded_boundary(1, Some(1), 3), 1);
+        assert_eq!(expanded_boundary(2, Some(1), 3), 4);
+        assert_eq!(expanded_boundary(3, Some(1), 0), 2);
+        assert_eq!(expanded_boundary(3, None, 0), 3);
     }
 
     #[test]
