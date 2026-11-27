@@ -417,3 +417,50 @@ fn damage_edges_skip_shared_pages_and_stop_at_first_real_mismatch() {
         panic!("shared suffix must not compare primitives")
     }), 624);
 }
+
+#[test]
+fn joint_compaction_preserves_one_allocation_for_disjoint_operation_and_draw_coverage() {
+    use crate::scene::{PrimitiveRef, PrimitiveStream};
+    let mut source = Operations::default();
+    let mut source_quads = PrimitiveStream::default();
+    for order in 0..128 {
+        let quad = Quad { order, ..Quad::default() };
+        source.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        source_quads.push(quad);
+    }
+    source.publish_fresh_draw_payloads(
+        &mut PrimitiveStream::default(), &mut source_quads, &mut PrimitiveStream::default(),
+    );
+    source.finish();
+
+    let mut current = Operations::default();
+    let mut quads = PrimitiveStream::default();
+    current.share(&source, 10..14);
+    current.share(&source, 100..104);
+    current.share(&source, 10..14);
+    quads.share(&source_quads, 12..16);
+    quads.share(&source_quads, 100..104);
+    quads.finish();
+    current.compact_with_draws(
+        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+    );
+
+    // The union contains 6 low slots and 4 high slots, even though
+    // operation views repeat and two slots are used only by Draw.
+    assert_eq!(quads.physical_ranges().next().unwrap().0.len(), 10);
+    for (operation, draw) in [(2, 0), (3, 1), (4, 4), (7, 7), (10, 0)] {
+        let PaintOperationRef::Primitive(PrimitiveRef::Quad(quad)) = current.view(operation).unwrap() else {
+            panic!("expected quad");
+        };
+        assert!(std::ptr::eq(quad, &quads[draw]));
+    }
+    drop(source);
+    drop(source_quads);
+    assert_eq!(quads[3].order, 15);
+    assert_eq!(quads[7].order, 103);
+    let identity = current.storage_identity(0);
+    current.compact_with_draws(
+        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+    );
+    assert_eq!(identity, current.storage_identity(0));
+}

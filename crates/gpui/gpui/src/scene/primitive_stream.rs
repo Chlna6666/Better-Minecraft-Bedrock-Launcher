@@ -342,6 +342,11 @@ impl<T: Ordered> PrimitiveStream<T> {
         self.remap_pages(&compacted);
     }
 
+    pub(super) fn has_full_physical_ranges(&self) -> bool {
+        debug_assert!(self.pending.is_empty());
+        self.segments.iter().all(|segment| segment.range.len() == segment.owner.len())
+    }
+
     pub(super) fn physical_ranges(&self) -> impl Iterator<Item = (&Arc<Vec<T>>, &Range<usize>)> {
         debug_assert!(self.pending.is_empty());
         self.segments.iter().map(|segment| (&segment.owner, &segment.range))

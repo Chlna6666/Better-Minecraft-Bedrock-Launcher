@@ -49,8 +49,8 @@ impl<T> Index<usize> for TypedPayload<T> {
 }
 
 impl<T: Ordered + PartialEq> TypedPayload<T> {
-    /// Directly share a physically contiguous, already sorted logical run.
-    /// Arbitrary operation permutations are not assumed to be contiguous.
+    /// Directly share sorted physical ranges, including a logical permutation
+    /// when the sorted slots can be represented by a bounded number of runs.
     fn share_sorted_run(
         &self,
         indices: &[OperationIndex],
@@ -60,16 +60,43 @@ impl<T: Ordered + PartialEq> TypedPayload<T> {
         let Some(owner) = &self.0 else { return false };
         let Some(first) = indices.first() else { return false };
         let start = first.slot();
-        if !indices.iter().enumerate().all(|(i, index)| {
+        if indices.iter().enumerate().all(|(i, index)| {
             index.kind() == kind && index.slot() == start + i
         }) {
+            let range = start..start + indices.len();
+            if owner[range.clone()].is_sorted_by_key(T::sort_key) {
+                stream.share_sorted_page(owner, range);
+                return true;
+            }
+        }
+
+        // The logical sequence may be permuted relative to the already
+        // sorted physical page. Sort narrow operation slots, not primitives.
+        // Preserve logical insertion order for equal keys.
+        if indices.iter().any(|index| index.kind() != kind) {
             return false;
         }
-        let range = start..start + indices.len();
-        if !owner[range.clone()].is_sorted_by_key(T::sort_key) {
-            return false;
+        let mut slots: Vec<_> = indices.iter().map(|index| index.slot()).collect();
+        slots.sort_by_key(|&slot| owner[slot].sort_key());
+        let mut ranges = smallvec::SmallVec::<[Range<usize>; 8]>::new();
+        // Bound descriptor and encoder fragmentation, not just payload bytes.
+        // A rejected candidate has not mutated the destination stream.
+        let max_runs = (slots.len() / 4).max(8).min(
+            (slots.len().saturating_mul(size_of::<T>()) / (4 * size_of::<usize>())).max(1),
+        );
+        for slot in slots {
+            if let Some(last) = ranges.last_mut()
+                && last.end == slot
+            {
+                last.end += 1;
+            } else {
+                if ranges.len() >= max_runs { return false; }
+                ranges.push(slot..slot + 1);
+            }
         }
-        stream.share_sorted_page(owner, range);
+        for range in ranges {
+            stream.share_sorted_page(owner, range);
+        }
         true
     }
 
@@ -344,6 +371,7 @@ impl OperationPage {
 /// Typed coverage is shared by logical Paint and sorted draw ranges.
 pub(super) trait DrawPayload<T: Ordered> {
     fn draw_owner(&self) -> Option<&Arc<Vec<T>>>;
+    fn has_sparse_draw_coverage(&self) -> bool;
     fn draw_coverage<'a>(&'a self, out: &mut Vec<(&'a Arc<Vec<T>>, Range<usize>)>);
     fn remap_draw(&mut self, page: &super::page_compaction::CompactedPage<Vec<T>>);
 }
@@ -353,6 +381,10 @@ macro_rules! draw_payload {
         impl DrawPayload<$ty> for OperationPage {
             fn draw_owner(&self) -> Option<&Arc<Vec<$ty>>> {
                 self.$field.0.as_ref()
+            }
+
+            fn has_sparse_draw_coverage(&self) -> bool {
+                self.sparse_typed & (1 << $tag) != 0
             }
 
             fn draw_coverage<'a>(&'a self, out: &mut Vec<(&'a Arc<Vec<$ty>>, Range<usize>)>) {
@@ -449,7 +481,10 @@ mod tests {
         for order in [2, 3, 1, 4] {
             page.push(PaintOperation::Primitive(Primitive::Quad(Quad { order, ..Quad::default() })));
         }
-        assert!(!page.share_quad_run(0..4, &mut quads));
+        let mut permuted = PrimitiveStream::default();
+        assert!(page.share_quad_run(0..4, &mut permuted));
+        permuted.finish();
+        assert_eq!(permuted.iter().map(|quad| quad.order).collect::<Vec<_>>(), [1, 2, 3, 4]);
         assert!(page.share_quad_run(0..2, &mut quads));
         assert!(page.share_quad_run(2..4, &mut quads));
         quads.finish();
@@ -459,6 +494,7 @@ mod tests {
                 panic!("expected quad");
             };
             assert!(std::ptr::eq(quad, &quads[sorted]));
+            assert!(std::ptr::eq(quad, &permuted[sorted]));
         }
     }
 

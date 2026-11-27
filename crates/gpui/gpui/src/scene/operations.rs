@@ -401,8 +401,17 @@ impl Operations {
     where
         OperationPage: super::operation_page::DrawPayload<T>,
     {
-        use super::operation_page::DrawPayload;
         use collections::{FxHashMap, FxHashSet};
+
+        // A fresh dense scene has no sparse typed coverage at all.
+        // Avoid allocating temporary coverage maps on this hot path.
+        if stream.has_full_physical_ranges()
+            && self.segments.iter().all(|segment| {
+                !<OperationPage as super::operation_page::DrawPayload<T>>::has_sparse_draw_coverage(&segment.owner)
+            })
+        {
+            return;
+        }
 
         // Multiple logical segments may retain the same operation page.
         // Count each physical page once. Fully covered typed payload is
