@@ -16,6 +16,8 @@ pub(in crate::window) struct ScrollPaint {
     operations: Arc<Operations>,
     raster_eligible: bool,
     static_order: bool,
+    // Allocated only for a source actually published as a native layer.
+    native_id: std::sync::OnceLock<u64>,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
@@ -131,6 +133,7 @@ impl ScrollPaint {
             operations: Arc::new(operations),
             raster_eligible,
             static_order: raster_eligible && static_order && order.complete(),
+            native_id: std::sync::OnceLock::new(),
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
         }
@@ -202,7 +205,23 @@ impl ScrollPaint {
         (self.raster_eligible && self.covers(viewport.bounds, delta)
             && viewport.corner_radii == Default::default()
             && [delta.x.0, delta.y.0].into_iter().all(|v| v.is_finite() && v.fract() == 0.))
-            .then(|| ScrollPlacement { source: Arc::clone(self), viewport, delta })
+            .then(|| ScrollPlacement { source: Arc::clone(self), viewport, delta, native: None })
+    }
+
+    /// Native layers are named by the immutable source lifetime and use
+    /// its original physical coordinates as content space. No enclosing
+    /// scroll container identity or measured paint range is required.
+    pub(super) fn native_placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
+        scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
+        if !self.static_order || !scale.is_finite() || scale <= 0.
+            || [delta.x.0, delta.y.0].into_iter().any(|v| v.abs() > 1_048_576.)
+        {
+            return None;
+        }
+        let mut placement = self.placement(viewport.scale(scale), delta)?;
+        let id = *self.native_id.get_or_init(super::frame::next_layer_id);
+        placement.native = Some(NativeScrollGeometry { id, viewport, scale });
+        Some(placement)
     }
 
     pub(super) fn replay(
@@ -253,12 +272,20 @@ impl ScrollPaint {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::window) struct NativeScrollGeometry {
+    pub(in crate::window) id: u64,
+    pub(in crate::window) viewport: ContentMask<Pixels>,
+    pub(in crate::window) scale: f32,
+}
+
 /// Immutable placement, suitable for a published Paint generation.
 #[derive(Clone)]
 pub(crate) struct ScrollPlacement {
     source: Arc<ScrollPaint>,
     viewport: ContentMask<ScaledPixels>,
     delta: Point<ScaledPixels>,
+    native: Option<NativeScrollGeometry>,
 }
 
 impl ScrollPlacement {
@@ -269,12 +296,15 @@ impl ScrollPlacement {
 
     pub(in crate::window) fn viewport(&self) -> ContentMask<ScaledPixels> { self.viewport }
 
+    pub(in crate::window) fn native_geometry(&self) -> Option<NativeScrollGeometry> { self.native }
+
     pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
 
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.source, &other.source)
             && self.viewport == other.viewport
             && self.delta == other.delta
+            && self.native == other.native
     }
 
     /// The viewport is a conservative damage bound for every projected
@@ -423,7 +453,8 @@ mod tests {
             })));
         }
         let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
-        let placement = source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let logical_viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let placement = source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
         let outside = |y| Quad { bounds: bounds(y), content_mask: viewport, ..Default::default() };
         let mut deferred = Painter::default();
         deferred.insert_primitive(outside(0.));
@@ -441,6 +472,27 @@ mod tests {
         assert_eq!(scene.len(), 3);
         assert!(scene.paint_operations.has_deferred_scroll());
         assert_eq!(scene.paint_operations.deferred_scrolls().count(), 1);
+        let layers = crate::window::SceneLayers::capture(
+            &scene, &[], &Default::default(), &[], None,
+        );
+        assert_eq!(layers.frames.len(), 1);
+        assert_eq!(layers.frames[0].root_static_span(), Some(&(1..2)));
+        assert_eq!(layers.frames[0].root_static_raster(), Some((viewport.bounds, [0, -16])));
+        let (tile_ops, origin) = layers.frames[0].raster_source_for_tile([0, 16, 40, 80]).unwrap();
+        assert!(std::ptr::eq(tile_ops, source.operations.as_ref()));
+        assert_eq!(origin, [0, 16]);
+        let mut moved = Painter::default();
+        moved.insert_primitive(outside(0.));
+        let later = source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-32.))).unwrap();
+        assert!(moved.push_deferred_scroll(later));
+        moved.insert_primitive(outside(32.));
+        moved.finish();
+        let next = crate::window::SceneLayers::capture(
+            &moved.scene, &[], &Default::default(), &[], Some(&layers),
+        );
+        assert_eq!(next.frames[0].id, layers.frames[0].id);
+        assert_eq!(next.frames[0].generation, layers.frames[0].generation);
+        assert!(Arc::ptr_eq(&next.frames[0].content, &layers.frames[0].content));
         assert_eq!(scene.bounds_for_range(1..2), Some(viewport.bounds));
         let mut shared = Operations::default();
         shared.share(&scene.paint_operations, 1..2);

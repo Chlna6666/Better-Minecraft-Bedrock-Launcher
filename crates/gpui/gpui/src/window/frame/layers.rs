@@ -9,6 +9,10 @@ use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
 static NEXT_LAYER_ID: AtomicU64 = AtomicU64::new(1);
 
+pub(in crate::window) fn next_layer_id() -> u64 {
+    NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A contiguous part of a layer. Lists retain logical row identities; gaps
 /// (decorations or other content) keep their original painter order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -359,7 +363,8 @@ pub(in crate::window) fn static_scroll_raster_operation(
 }
 
 pub(crate) struct LayerFrame {
-    layout_key: u64,
+    // Native placements use their source identity instead of a container key.
+    layout_key: Option<u64>,
     /// Stable within one mounted lifetime; not a transient HitboxId.
     pub(crate) id: u64,
     pub(crate) generation: u64,
@@ -692,7 +697,7 @@ impl SceneLayers {
         assert!(Arc::ptr_eq(&operations, &content.operations));
         let id = self.frames.len() as u64 + 1;
         self.frames.push(LayerFrame {
-            layout_key: id, id, generation: 1,
+            layout_key: Some(id), id, generation: 1,
             static_root_span: Some(0..0),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
@@ -715,7 +720,7 @@ impl SceneLayers {
         let content = LayerContent::from_visible_rows(scene, range.clone(), &rows, viewport.scale(1.), Some(translation))
             .expect("visible row capture");
         self.frames.push(LayerFrame {
-            layout_key: 1, id: 1, generation: 1,
+            layout_key: Some(1), id: 1, generation: 1,
             static_root_span: static_root_span(scene, range),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.), viewport,
@@ -731,6 +736,51 @@ impl SceneLayers {
             .then(|| static_root_span(scene, range)).flatten();
     }
 
+    fn capture_native(scene: &Scene, previous: Option<&Self>) -> Self {
+        if !ordered_static_root(scene) { return Self::default(); }
+        let mut seen = FxHashSet::default();
+        let old: FxHashMap<_, _> = previous.into_iter().flat_map(|layers| &layers.frames)
+            .filter(|layer| layer.layout_key.is_none())
+            .map(|layer| (layer.id, layer)).collect();
+        let mut frames = Vec::new();
+        for index in scene.paint_operations.deferred_scroll_indices() {
+            let Some(PaintOperation::DeferredScroll(placement)) = scene.paint_operations.get(index) else {
+                return Self::default();
+            };
+            let Some(geometry) = placement.native_geometry() else { return Self::default(); };
+            // A source may not be instanced twice in one root using the
+            // same cache identity. Reject the entire native plan.
+            if !seen.insert(geometry.id) { return Self::default(); }
+            let source_viewport = placement.viewport();
+            let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
+            let translation = Some([delta.x.0 as i32, delta.y.0 as i32]);
+            // The source lifetime is the generation. A recapture has a
+            // new ID, so a reused address cannot resurrect old GPU pixels.
+            // Capture coordinates == tile content coordinates (origin 0).
+            let content = if let Some(previous) = old.get(&geometry.id)
+                && previous.source_viewport == source_viewport
+                && Arc::ptr_eq(&previous.content.operations, operations)
+            {
+                Arc::clone(&previous.content)
+            } else {
+                let Some(content) = LayerContent::from_scroll(
+                    operations, coverage, delta, translation, source_viewport, atlas_tiles,
+                ) else { return Self::default(); };
+                Arc::new(content)
+            };
+            if !scene.can_reuse_range_bounds(index..index + 1) { return Self::default(); }
+            frames.push(LayerFrame {
+                layout_key: None, id: geometry.id, generation: 1,
+                static_root_span: Some(index..index + 1),
+                damage: LayerDamage::Full, previous_coverage: None,
+                translation, source_viewport, viewport: geometry.viewport,
+                offset: LayerScrollPosition::Pixels(point(crate::px(delta.x.0 / geometry.scale), crate::px(delta.y.0 / geometry.scale))),
+                content, placement: Some(placement.clone()),
+            });
+        }
+        Self { frames }
+    }
+
     pub(super) fn capture(
         scene: &Scene,
         records: &[LayerRecord],
@@ -738,6 +788,11 @@ impl SceneLayers {
         view_records: &[crate::window::view_retention::ViewRecordSlot],
         previous: Option<&Self>,
     ) -> Self {
+        // Native placements have their own identity, geometry and exact
+        // operation index. Do not infer them from enclosing LayerRecords.
+        if scene.paint_operations.has_deferred_scroll() {
+            return Self::capture_native(scene, previous);
+        }
         if records.is_empty() {
             return Self::default();
         }
@@ -752,36 +807,23 @@ impl SceneLayers {
         }
         let old: FxHashMap<_, _> = previous.into_iter()
             .flat_map(|layers| &layers.frames)
-            .map(|layer| (layer.layout_key, layer))
+            .filter_map(|layer| layer.layout_key.map(|key| (key, layer)))
             .collect();
         let mut frames = Vec::new();
         // Evaluate at most once per published root, regardless of candidate count.
         let mut ordered_root = None;
         let mut sources = None;
-        let deferred_root = scene.paint_operations.has_deferred_scroll();
         for record in records {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
             let range = paint.start.scene_index..paint.end.scene_index;
             // Derive the physical scale from the owning retained view, not the
             // current native drawable (which can already have resized).
-            // The native operation owns the placement. Only an exact
-            // singleton span can replace it; surrounding ordinary paint
-            // must stay in the root, even if an enclosing record exists.
-            let native_placement = if record.rows.is_empty() && range.len() == 1 {
-                match scene.paint_operations.get(range.start) {
-                    Some(PaintOperation::DeferredScroll(placement))
-                        if placement.viewport() == record.source_viewport => Some(placement.clone()),
-                    _ => None,
-                }
+            let placement = if record.rows.is_empty() && !range.is_empty() {
+                sources.get_or_insert_with(|| scroll_views.raster_sources(view_records))
+                    .get(&(range.start, range.end)).and_then(|candidates|
+                        scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
             } else { None };
-            let native = native_placement.is_some();
-            let placement = if native { native_placement }
-                else if record.rows.is_empty() && !range.is_empty() && !deferred_root {
-                    sources.get_or_insert_with(|| scroll_views.raster_sources(view_records))
-                        .get(&(range.start, range.end)).and_then(|candidates|
-                            scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
-                } else { None };
             let direct = if let Some(placement) = &placement {
                 let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
                 LayerContent::from_scroll(operations, coverage, delta, record.translation,
@@ -790,8 +832,7 @@ impl SceneLayers {
                 LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
                     record.source_viewport, record.translation)
             } else { None };
-            let static_root_span = if (!deferred_root || native)
-                && direct.as_ref().is_some_and(|content| content.raster.is_some())
+            let static_root_span = if direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
             {
@@ -826,13 +867,13 @@ impl SceneLayers {
                     } else { (LayerDamage::Full, None) };
                     (previous.id, next, Arc::new(content), damage, coverage)
                 } else {
-                    (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
+                    (next_layer_id(), 1, Arc::new(content), LayerDamage::Full, None)
                 }
             } else {
-                (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
+                (next_layer_id(), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, static_root_span, damage, previous_coverage,
+                layout_key: Some(key), id, generation, static_root_span, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
                 placement,
@@ -925,7 +966,7 @@ mod tests {
             size(crate::px(1024.), crate::px(1024.)),
         ));
         let frame = LayerFrame {
-            layout_key: 1, id: 1, generation: 4,
+            layout_key: Some(1), id: 1, generation: 4,
             static_root_span: None,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),

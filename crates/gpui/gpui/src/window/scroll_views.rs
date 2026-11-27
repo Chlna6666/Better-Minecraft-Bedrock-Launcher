@@ -351,8 +351,7 @@ impl Window {
         let deferred = (!unchanged || was_deferred)
             && self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
-            && source.source.placement(viewport, delta)
-                .filter(ScrollPlacement::has_static_order)
+            && source.source.native_placement(source.viewport, scale, delta)
                 .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
         if !deferred {
             if unchanged && !was_deferred {
