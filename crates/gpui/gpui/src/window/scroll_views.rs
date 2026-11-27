@@ -9,7 +9,7 @@ use crate::{
     Task, Window,
 };
 use collections::{FxHashMap, FxHashSet};
-use std::{ops::Range, rc::Rc, time::{Duration, Instant}};
+use std::{ops::Range, rc::Rc, sync::Arc, time::{Duration, Instant}};
 
 const SCROLL_HOVER_DELAY: Duration = Duration::from_millis(100);
 
@@ -31,6 +31,34 @@ impl ScrollViews {
     pub(super) fn clear(&mut self) {
         self.viewport = None;
         self.views.clear();
+    }
+
+    /// The view must own the entire requested paint span. Do not replace a
+    /// parent range with a child capture, or combine unrelated paint sources.
+    pub(super) fn raster_source(
+        &self,
+        records: &[super::view_retention::ViewRecordSlot],
+        range: &Range<usize>,
+        viewport: ContentMask<Pixels>,
+        scale: f32,
+    ) -> Option<(&Arc<crate::scene::Operations>, Bounds<crate::ScaledPixels>, Point<crate::ScaledPixels>)> {
+        let mut candidates = records.iter().filter_map(|slot| {
+            let view = self.views.get(&slot.key)?;
+            let record = slot.record.as_ref()?;
+            if view.owner != slot.owner || view.viewport != viewport
+                || record.context.device_scale_factor != scale
+                || record.context.visual_content_mask != viewport
+                || record.paint_range.start.scene_index != range.start
+                || record.paint_range.end.scene_index != range.end
+            {
+                return None;
+            }
+            let delta = view.source.translation(record.context.element_offset, scale)?;
+            let (operations, coverage) = view.source.raster_operations()?;
+            Some((operations, coverage, delta))
+        });
+        let source = candidates.next()?;
+        candidates.next().is_none().then_some(source)
     }
 
     pub(super) fn carry(&mut self, key: u64, previous: &Self) {

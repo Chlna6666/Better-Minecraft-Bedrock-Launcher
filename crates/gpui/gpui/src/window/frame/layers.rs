@@ -1,8 +1,7 @@
 //! Immutable scroll content publication, adapted from GPUI Fast's LayerContent/LayerPart.
 //!
-//! The painter still culls to the viewport. Only the intersection of two
-//! certified content-space captures can inherit translated pixels; newly
-//! exposed regions and rounded clips must use the ordinary drawing stream.
+//! Prefer an exact overscanned view's immutable source; ordinary visible
+//! Scene ranges remain the fallback for incomplete or unsupported captures.
 use super::{LayerRecord, LayerScrollPosition};
 use crate::{Bounds, ContentMask, Pixels, Point, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperation, Primitive, Scene}};
 use collections::{FxHashMap, FxHashSet};
@@ -21,8 +20,9 @@ pub(crate) struct LayerPart {
 pub(crate) struct LayerContent {
     // Reuses the original immutable operation pages instead of copying a
     // Scene per row. This payload never retains the enclosing Scene itself.
-    operations: Operations,
+    operations: Arc<Operations>,
     parts: Box<[LayerPart]>,
+    raster: Option<ContentRaster>,
 }
 
 impl LayerContent {
@@ -58,7 +58,36 @@ impl LayerContent {
         }
         let mut operations = Operations::default();
         operations.share(&scene.paint_operations, range);
-        Some(Self { operations, parts: parts.into_boxed_slice() })
+        Some(Self { operations: Arc::new(operations), parts: parts.into_boxed_slice(), raster: None })
+    }
+
+    fn from_scroll(
+        operations: &Arc<Operations>,
+        source_coverage: Bounds<ScaledPixels>,
+        delta: Point<ScaledPixels>,
+        record: &LayerRecord,
+    ) -> Option<Self> {
+        let [x, y] = record.translation?;
+        // Capture coordinates = stable content coordinates + source origin.
+        // The viewport moved by delta since this capture was painted.
+        let origin = translation_point([x, y]) - delta;
+        let integral = |v: ScaledPixels| {
+            (v.0.is_finite() && v.0.fract() == 0. && v.0.abs() <= 1_048_576.)
+                .then_some(v.0 as i32)
+        };
+        let source_origin = [integral(origin.x)?, integral(origin.y)?];
+        let coverage = translated_bounds(source_coverage, Point::default() - origin);
+        let visible = LayerFrame::coverage(record.source_viewport, record.translation);
+        if coverage.intersect(&visible) != visible
+            || record.source_viewport.corner_radii != Default::default()
+        {
+            return None;
+        }
+        Some(Self {
+            operations: Arc::clone(operations),
+            parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
+            raster: Some(ContentRaster { source_origin, coverage }),
+        })
     }
 
     // GPUI Fast inherits a tile only when its ordered contributing paint
@@ -146,8 +175,34 @@ impl LayerContent {
     }
 
     fn matches(&self, other: &Self) -> bool {
-        self.parts == other.parts
+        self.raster == other.raster && self.parts == other.parts
             && self.operations.matches_by(&other.operations, PaintOperation::same_paint)
+    }
+}
+
+/// Rasterization uses the source's original coordinates; only the signed
+/// RasterTile origin changes. No UI-side translation or new primitive stream.
+#[derive(Clone, Copy, PartialEq)]
+struct ContentRaster {
+    source_origin: [i32; 2],
+    coverage: Bounds<ScaledPixels>,
+}
+
+impl ContentRaster {
+    fn source_origin_for_tile(self, rect: [i64; 4]) -> Option<[i32; 2]> {
+        let [left, top, right, bottom] = rect;
+        if left >= right || top >= bottom
+            || (left as f64) < f64::from(self.coverage.left().0)
+            || (top as f64) < f64::from(self.coverage.top().0)
+            || right as f64 > f64::from(self.coverage.right().0)
+            || bottom as f64 > f64::from(self.coverage.bottom().0)
+        {
+            return None;
+        }
+        Some([
+            i32::try_from(left.checked_add(i64::from(self.source_origin[0]))?).ok()?,
+            i32::try_from(top.checked_add(i64::from(self.source_origin[1]))?).ok()?,
+        ])
     }
 }
 
@@ -244,6 +299,28 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
         .into_iter().all(f32::is_finite).then_some(bounds)
 }
 
+// First production admission is deliberately narrow: only independently
+// compositable static primitives with the original rectangular capture mask.
+// Effects, LCD coverage and transformed glyphs must keep the ordinary path.
+pub(in crate::window) fn static_scroll_raster_operation(
+    operation: &PaintOperation,
+    coverage: Bounds<ScaledPixels>,
+) -> bool {
+    match operation {
+        PaintOperation::StartLayer(bounds) => [
+            bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0,
+        ].into_iter().all(f32::is_finite),
+        PaintOperation::EndLayer => true,
+        PaintOperation::Primitive(primitive) => {
+            primitive.content_mask().bounds == coverage
+                && primitive.content_mask().corner_radii == Default::default()
+                && matches!(primitive, Primitive::Quad(_) | Primitive::MonochromeSprite(_))
+                && static_raster_bounds(primitive).is_some()
+        }
+        _ => false,
+    }
+}
+
 pub(crate) struct LayerFrame {
     layout_key: u64,
     /// Stable within one mounted lifetime; not a transient HitboxId.
@@ -301,6 +378,12 @@ impl LayerFrame {
     /// Only adjacent generations can inherit a tile. Its coordinates are
     /// stable content pixels, NOT the current viewport placement.
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {
+        // Overscan residency is keyed in stable content space. A same-generation
+        // tile is valid only within the immutable source's certified coverage.
+        if let Some(raster) = self.content.raster {
+            raster.source_origin_for_tile(rect)?;
+            return (generation == self.generation).then_some(generation);
+        }
         if generation == self.generation {
             return Some(generation);
         }
@@ -337,7 +420,13 @@ pub(crate) struct SceneLayers {
 }
 
 impl SceneLayers {
-    pub(super) fn capture(scene: &Scene, records: &[LayerRecord], previous: Option<&Self>) -> Self {
+    pub(super) fn capture(
+        scene: &Scene,
+        records: &[LayerRecord],
+        scroll_views: &crate::window::scroll_views::ScrollViews,
+        view_records: &[crate::window::view_retention::ViewRecordSlot],
+        previous: Option<&Self>,
+    ) -> Self {
         if records.is_empty() {
             return Self::default();
         }
@@ -359,10 +448,32 @@ impl SceneLayers {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
             let range = paint.start.scene_index..paint.end.scene_index;
-            let Some(content) = LayerContent::capture(scene, range, &record.rows) else { continue; };
+            // Derive the physical scale from the owning retained view, not the
+            // current native drawable (which can already have resized).
+            let direct = if record.rows.is_empty() && !range.is_empty() {
+                view_records.iter().find_map(|slot| {
+                    let view = slot.record.as_ref()?;
+                    (view.paint_range.start.scene_index == range.start
+                        && view.paint_range.end.scene_index == range.end)
+                        .then_some(view.context.device_scale_factor)
+                }).and_then(|scale| {
+                    if record.viewport.scale(scale) != record.source_viewport { return None; }
+                    let (operations, coverage, delta) = scroll_views.raster_source(
+                        view_records, &range, record.viewport, scale,
+                    )?;
+                    LayerContent::from_scroll(operations, coverage, delta, record)
+                })
+            } else { None };
+            let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
             let (id, generation, content, damage, previous_coverage) = if let Some(previous) = previous {
-                if previous.viewport == record.viewport && previous.offset == record.offset
+                if content.raster.is_some() && previous.content.raster == content.raster
+                    && Arc::ptr_eq(&previous.content.operations, &content.operations)
+                    && previous.source_viewport == record.source_viewport
+                {
+                    // Scroll changes the composite placement, not the source.
+                    (previous.id, previous.generation, Arc::clone(&previous.content), LayerDamage::Full, None)
+                } else if previous.viewport == record.viewport && previous.offset == record.offset
                     && previous.source_viewport == record.source_viewport
                     && previous.translation == record.translation
                     && previous.content.matches(&content)
@@ -375,7 +486,9 @@ impl SceneLayers {
                     // has not yet consumed it.
                     (previous.id, previous.generation, content, previous.damage, previous.previous_coverage)
                 } else if let Some(next) = previous.generation.checked_add(1) {
-                    let (damage, coverage) = previous.transition(record, &content);
+                    let (damage, coverage) = if content.raster.is_some() || previous.content.raster.is_some() {
+                        (LayerDamage::Full, None)
+                    } else { previous.transition(record, &content) };
                     (previous.id, next, Arc::new(content), damage, coverage)
                 } else {
                     (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
@@ -399,6 +512,18 @@ mod tests {
     use crate::{Bounds, Quad, ScaledPixels, point, size, scene::Painter};
 
     #[test]
+    fn overscan_source_maps_signed_content_tiles_without_viewport_projection() {
+        let source = ContentRaster {
+            source_origin: [0, -128],
+            coverage: Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
+                size(ScaledPixels(512.), ScaledPixels(1024.))),
+        };
+        assert_eq!(source.source_origin_for_tile([0, 0, 256, 256]), Some([0, -128]));
+        assert_eq!(source.source_origin_for_tile([0, 768, 256, 1024]), Some([0, 640]));
+        assert_eq!(source.source_origin_for_tile([0, 900, 256, 1156]), None);
+    }
+
+    #[test]
     fn tile_adoption_requires_adjacent_generation_and_complete_coverage() {
         let viewport = ContentMask::new(Bounds::new(
             point(crate::px(0.), crate::px(0.)),
@@ -415,7 +540,7 @@ mod tests {
             translation: Some([0, 0]),
             previous_coverage: Some(viewport.scale(1.).bounds),
             offset: LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(0.))),
-            content: Arc::new(LayerContent { operations: Operations::default(), parts: Box::new([]) }),
+            content: Arc::new(LayerContent { operations: Arc::new(Operations::default()), parts: Box::new([]), raster: None }),
         };
         assert_eq!(frame.adopt_tile(3, [0, 0, 512, 512], 1.), Some(4));
         assert_eq!(frame.adopt_tile(3, [512, 0, 1024, 512], 1.), None);
@@ -476,7 +601,7 @@ mod tests {
             for quad in quads {
                 operations.push(PaintOperation::Primitive(Primitive::Quad(*quad)));
             }
-            LayerContent { operations, parts: Box::new([]) }
+            LayerContent { operations: Arc::new(operations), parts: Box::new([]), raster: None }
         };
         let old = content(&[quad(20.), quad(300.)]);
         // The first old row is no longer visible; two new rows are outside

@@ -5,6 +5,7 @@ mod paint;
 mod retained_scene_index;
 mod layers;
 pub(crate) use layers::SceneLayers;
+pub(super) use layers::static_scroll_raster_operation;
 use layers::LayerPart;
 pub(crate) use paint::{Paint, PaintGeometry};
 use retained_scene_index::Entry;
@@ -825,6 +826,8 @@ impl Frame {
         self.pending_scene_layers = SceneLayers::capture(
             &self.painter.scene,
             &self.layer_records,
+            &self.scroll_views,
+            &self.view_retention_records,
             prev_frame.paint.as_ref().map(|paint| &paint.layers),
         );
     }

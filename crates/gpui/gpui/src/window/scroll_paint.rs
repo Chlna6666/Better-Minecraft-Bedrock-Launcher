@@ -5,7 +5,7 @@ use crate::{
     scene::{Operations, PaintOperation, Painter, Primitive},
 };
 use smallvec::SmallVec;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 const OPERATIONS_PER_BLOCK: usize = 32;
 const MIN_INDEXED_OPERATIONS: usize = 128;
@@ -13,7 +13,8 @@ const MIN_INDEXED_OPERATIONS: usize = 128;
 pub(super) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
-    operations: Operations,
+    operations: Arc<Operations>,
+    raster_eligible: bool,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
@@ -92,7 +93,12 @@ impl Window {
 }
 
 impl ScrollPaint {
-    fn new(origin: Point<Pixels>, coverage: Bounds<ScaledPixels>, operations: Operations) -> Self {
+    fn new(origin: Point<Pixels>, coverage: Bounds<ScaledPixels>, mut operations: Operations) -> Self {
+        operations.finish();
+        // Qualify once, not on each scrolled frame or GPU owner request.
+        let raster_eligible = operations.len() != 0
+            && operations.range_is_replayable(0..operations.len())
+            && operations.iter().all(|operation| super::frame::static_scroll_raster_operation(operation, coverage));
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
             Self::blocks(&operations).map(Self::block_bounds).collect()
         } else {
@@ -101,9 +107,15 @@ impl ScrollPaint {
         Self {
             origin,
             coverage,
-            operations,
+            operations: Arc::new(operations),
+            raster_eligible,
             block_bounds,
         }
+    }
+
+    /// The GPU owner may share the frozen pages without retaining UI state.
+    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>)> {
+        self.raster_eligible.then_some((&self.operations, self.coverage))
     }
 
     fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {
