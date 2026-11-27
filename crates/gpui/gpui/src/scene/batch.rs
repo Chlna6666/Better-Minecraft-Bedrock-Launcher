@@ -47,9 +47,7 @@ pub(super) struct BatchIterator<'a> {
     pub(super) underlines_start: usize,
     pub(super) underlines_iter: Peekable<slice::Iter<'a, Underline>>,
     pub(super) monochrome_sprites_iter: super::primitive_stream::Cursor<'a, MonochromeSprite>,
-    pub(super) polychrome_sprites: &'a [PolychromeSprite],
-    pub(super) polychrome_sprites_start: usize,
-    pub(super) polychrome_sprites_iter: Peekable<slice::Iter<'a, PolychromeSprite>>,
+    pub(super) polychrome_sprites_iter: super::primitive_stream::Cursor<'a, PolychromeSprite>,
     pub(super) surfaces: &'a [PaintSurface],
     pub(super) surfaces_start: usize,
     pub(super) surfaces_iter: Peekable<slice::Iter<'a, PaintSurface>>,
@@ -191,24 +189,17 @@ impl<'a> Iterator for BatchIterator<'a> {
                 })
             }
             PrimitiveKind::PolychromeSprite => {
-                let texture_id = self.polychrome_sprites_iter.peek().unwrap().tile.texture_id;
-                let sprites_start = self.polychrome_sprites_start;
-                let mut sprites_end = self.polychrome_sprites_start + 1;
-                self.polychrome_sprites_iter.next();
-                while self
-                    .polychrome_sprites_iter
-                    .next_if(|sprite| {
-                        (sprite.order, batch_kind) < max_order_and_kind
-                            && sprite.tile.texture_id == texture_id
-                    })
-                    .is_some()
-                {
-                    sprites_end += 1;
-                }
-                self.polychrome_sprites_start = sprites_end;
+                let start = self.polychrome_sprites_iter.position();
+                let sprites = self.polychrome_sprites_iter.remaining();
+                let texture_id = sprites[0].tile.texture_id;
+                let count = sprites.iter().take_while(|sprite| {
+                    (sprite.order, batch_kind) < max_order_and_kind
+                        && sprite.tile.texture_id == texture_id
+                }).count();
+                debug_assert!(count > 0);
+                self.polychrome_sprites_iter.advance(count);
                 Some(PrimitiveBatch::PolychromeSprites {
-                    texture_id,
-                    sprites: &self.polychrome_sprites[sprites_start..sprites_end],
+                    texture_id, sprites: &sprites[..count], range: start..start + count,
                 })
             }
             PrimitiveKind::Surface => {
@@ -305,6 +296,7 @@ pub(crate) enum PrimitiveBatch<'a> {
     PolychromeSprites {
         texture_id: AtlasTextureId,
         sprites: &'a [PolychromeSprite],
+        range: Range<usize>,
     },
     Surfaces(&'a [PaintSurface]),
     BackdropBlurs(&'a [PaintBackdropBlur]),

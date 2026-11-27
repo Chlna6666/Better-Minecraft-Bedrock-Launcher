@@ -787,8 +787,12 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                     ImagePaintRequest::new(second_bounds, image.as_ref()),
                 ])
                 .unwrap();
-            assert_eq!(window.next_frame.painter.polychrome_sprites[0].sampling, 1);
-            assert_eq!(window.next_frame.painter.polychrome_sprites[1].sampling, 0);
+            let samples: Vec<_> = window.next_frame.painter.paint_operations.views()
+                .filter_map(|operation| match operation {
+                    crate::scene::PaintOperationRef::Primitive(crate::scene::PrimitiveRef::PolychromeSprite(sprite)) => Some(sprite.sampling),
+                    _ => None,
+                }).collect();
+            assert_eq!(samples, [1, 0]);
             assert_eq!(window.image_paint_tile_cache.len(), 1);
 
             window.drop_image(image).unwrap();

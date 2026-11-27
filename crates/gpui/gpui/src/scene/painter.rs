@@ -74,6 +74,7 @@ impl Painter {
             &mut self.scene.shadows,
             &mut self.scene.quads,
             &mut self.scene.monochrome_sprites,
+            &mut self.scene.polychrome_sprites,
             &mut self.draw_permutation,
             true,
         );
@@ -92,6 +93,15 @@ impl Painter {
 
     /// An image can be evicted while its element is still being captured.
     /// Pending capture operations have not reached the ordinary Scene yet.
+    pub(crate) fn collect_polychrome_tile_ids_into(&self, live: &mut FxHashSet<(crate::AtlasTextureId, u32)>) {
+        self.scene.collect_polychrome_tile_ids_into(live);
+        // Image eviction may run during Paint, before the new draw page is
+        // published. The typed pending owner is the authoritative source.
+        if self.frame_builder {
+            self.scene.paint_operations.collect_pending_poly_tiles(live);
+        }
+    }
+
     pub(crate) fn collect_scroll_capture_tile_ids_into(
         &self,
         live: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
@@ -426,7 +436,7 @@ impl Painter {
         record_operation: bool,
     ) {
         if self.frame_builder && record_operation
-            && matches!(&primitive, Primitive::Shadow(_) | Primitive::Quad(_) | Primitive::MonochromeSprite(_))
+            && matches!(&primitive, Primitive::Shadow(_) | Primitive::Quad(_) | Primitive::MonochromeSprite(_) | Primitive::PolychromeSprite(_))
         {
             primitive.set_order(order);
             self.scene.paint_operations.push(PaintOperation::Primitive(primitive));

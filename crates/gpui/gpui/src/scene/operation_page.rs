@@ -163,7 +163,7 @@ pub(super) struct OperationPage {
     paths: Vec<Path<ScaledPixels>>,
     underlines: Vec<Underline>,
     mono: TypedPayload<MonochromeSprite>,
-    poly: Vec<PolychromeSprite>,
+    poly: TypedPayload<PolychromeSprite>,
     surfaces: Vec<PaintSurface>,
     backdrop: Vec<PaintBackdropBlur>,
     blurs: Vec<PaintBlur>,
@@ -187,7 +187,7 @@ impl OperationPage {
         quads: &mut PrimitiveStream<Quad>,
         mono: &mut PrimitiveStream<MonochromeSprite>,
     ) {
-        self.publish_draw_payloads(shadows, quads, mono, &mut DrawPermutation::default(), false);
+        self.publish_draw_payloads(shadows, quads, mono, &mut PrimitiveStream::default(), &mut DrawPermutation::default(), false);
     }
 
     pub(super) fn publish_draw_payloads(
@@ -195,12 +195,14 @@ impl OperationPage {
         shadows: &mut PrimitiveStream<Shadow>,
         quads: &mut PrimitiveStream<Quad>,
         mono: &mut PrimitiveStream<MonochromeSprite>,
+        poly: &mut PrimitiveStream<PolychromeSprite>,
         scratch: &mut DrawPermutation,
         exclusive: bool,
     ) {
         self.shadows.publish_sorted(&mut self.indices, 0, shadows, scratch, exclusive);
         self.quads.publish_sorted(&mut self.indices, 1, quads, scratch, exclusive);
         self.mono.publish_sorted(&mut self.indices, 4, mono, scratch, exclusive);
+        self.poly.publish_sorted(&mut self.indices, 5, poly, scratch, exclusive);
     }
 
     pub(super) fn share_quad_run(
@@ -213,6 +215,18 @@ impl OperationPage {
         &self, range: Range<usize>, stream: &mut PrimitiveStream<MonochromeSprite>,
     ) -> bool {
         self.mono.share_sorted_run(&self.indices[range], 4, stream)
+    }
+
+    pub(super) fn share_poly_run(
+        &self, range: Range<usize>, stream: &mut PrimitiveStream<PolychromeSprite>,
+    ) -> bool {
+        self.poly.share_sorted_run(&self.indices[range], 5, stream)
+    }
+
+    pub(super) fn collect_pending_poly_tiles(&self, ids: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
+        if let Some(owner) = &self.poly.0 {
+            ids.extend(owner.iter().map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)));
+        }
     }
 
     pub(super) fn capacity_bytes(&self) -> usize {
@@ -350,6 +364,7 @@ impl OperationPage {
                 0 => retain!(shadows),
                 1 => retain!(quads),
                 4 => retain!(mono),
+                5 => retain!(poly),
                 _ => self.push(source.view(i).to_operation()),
             }
         }
@@ -434,6 +449,7 @@ macro_rules! draw_payload {
 draw_payload!(Shadow, shadows, 0);
 draw_payload!(Quad, quads, 1);
 draw_payload!(MonochromeSprite, mono, 4);
+draw_payload!(PolychromeSprite, poly, 5);
 
 impl super::page_compaction::PagePayload for OperationPage {
     fn len(&self) -> usize { self.len() }

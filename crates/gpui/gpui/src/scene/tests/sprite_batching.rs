@@ -70,6 +70,7 @@ fn sprites_group_by_texture_and_sampling_within_draw_order() {
             PrimitiveBatch::PolychromeSprites {
                 texture_id,
                 sprites,
+                    ..
             } => Some((texture_id.kind, texture_id.index, sprites.len())),
             _ => None,
         })

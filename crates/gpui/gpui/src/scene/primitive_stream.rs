@@ -3,7 +3,7 @@ mod sort;
 pub(super) use sort::DrawPermutation;
 #[cfg(test)]
 mod tests;
-use super::{DrawOrder, MonochromeSprite, Quad, Shadow};
+use super::{DrawOrder, MonochromeSprite, PolychromeSprite, Quad, Shadow};
 
 pub(crate) trait Ordered: Copy {
     type SortKey: Ord + Copy;
@@ -58,6 +58,29 @@ impl Ordered for MonochromeSprite {
     fn sort_key(&self) -> Self::SortKey {
         (self.order(), self.tile.texture_id.kind as u32,
             self.tile.texture_id.index, self.sampling() as u32)
+    }
+
+    fn sort_pending(items: &mut [Self]) {
+        if !items.is_sorted_by_key(Self::sort_key) {
+            items.sort_by_key(Self::sort_key);
+        }
+    }
+}
+
+impl Ordered for PolychromeSprite {
+    type SortKey = (DrawOrder, u32, u32);
+    const ORDER_ONLY: bool = false;
+
+    fn order(&self) -> DrawOrder { self.order }
+
+    fn sort_key(&self) -> Self::SortKey {
+        (self.order, self.tile.texture_id.kind as u32, self.tile.texture_id.index)
+    }
+
+    fn packed_sort_key(&self, slot: u32) -> u128 {
+        let (order, kind, texture) = self.sort_key();
+        (u128::from(order) << 96) | (u128::from(kind) << 64)
+            | (u128::from(texture) << 32) | u128::from(slot)
     }
 
     fn sort_pending(items: &mut [Self]) {
@@ -149,6 +172,8 @@ impl<T: Ordered> PrimitiveStream<T> {
     pub(crate) fn len(&self) -> usize {
         self.len
     }
+    pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
+
     pub(crate) fn push(&mut self, quad: T) {
         self.pending.push(quad);
         self.len += 1;

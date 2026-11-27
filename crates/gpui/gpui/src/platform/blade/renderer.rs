@@ -966,6 +966,7 @@ impl BladeRenderer {
                 PrimitiveBatch::PolychromeSprites {
                     texture_id,
                     sprites,
+                    ..
                 } => {
                     let tex_info = self.atlas.texture_info(texture_id);
                     let instance_buf =

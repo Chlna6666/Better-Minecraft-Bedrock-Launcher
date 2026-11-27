@@ -14,6 +14,7 @@ impl Painter {
             self.scene.shadows.release_draw_aliases();
             self.scene.quads.release_draw_aliases();
             self.scene.monochrome_sprites.release_draw_aliases();
+            self.scene.polychrome_sprites.release_draw_aliases();
         }
         self.scene.paint_operations.clear();
         self.draw_payload_pending = false;
@@ -67,6 +68,7 @@ impl Painter {
                 &mut self.scene.shadows,
                 &mut self.scene.quads,
                 &mut self.scene.monochrome_sprites,
+                &mut self.scene.polychrome_sprites,
                 &mut self.draw_permutation,
                 false,
             );
@@ -83,15 +85,7 @@ impl Painter {
             .underlines
             .sort_unstable_by_key(|underline| underline.order);
         self.scene.monochrome_sprites.finish();
-        self.scene
-            .polychrome_sprites
-            .sort_unstable_by_key(|sprite| {
-                (
-                    sprite.order,
-                    sprite.tile.texture_id.kind as u32,
-                    sprite.tile.texture_id.index,
-                )
-            });
+        self.scene.polychrome_sprites.finish();
         self.scene
             .surfaces
             .sort_unstable_by_key(|surface| surface.order);
@@ -111,6 +105,7 @@ impl Painter {
                 && self.scene.shadows.same_physical_ranges(&previous.shadows)
                 && self.scene.quads.same_physical_ranges(&previous.quads)
                 && self.scene.monochrome_sprites.same_physical_ranges(&previous.monochrome_sprites)
+                && self.scene.polychrome_sprites.same_physical_ranges(&previous.polychrome_sprites)
         });
         let reuse = previous.map(|previous| {
             if same_physical {
@@ -126,6 +121,7 @@ impl Painter {
                 &mut self.scene.shadows,
                 &mut self.scene.quads,
                 &mut self.scene.monochrome_sprites,
+                &mut self.scene.polychrome_sprites,
             );
         }
         static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
@@ -252,11 +248,11 @@ impl Painter {
         {
             self.scene.monochrome_sprites.shrink_to(primitive_floor);
         }
-        trim_vec_capacity(
-            &mut self.scene.polychrome_sprites,
-            primitive_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.scene.polychrome_sprites.capacity()
+            > primitive_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.scene.polychrome_sprites.shrink_to(primitive_floor);
+        }
         trim_vec_capacity(
             &mut self.scene.surfaces,
             primitive_floor,
@@ -357,6 +353,20 @@ impl Painter {
                 }
                 continue;
             }
+            if let PrimitiveBatch::PolychromeSprites { texture_id, ref range, .. } = batch {
+                if let Some(PreparedSceneBatch::PolychromeSprites {
+                    texture_id: previous_texture, range: previous,
+                }) = prepared.last_mut()
+                    && *previous_texture == texture_id && previous.end == range.start
+                {
+                    previous.end = range.end;
+                } else {
+                    prepared.push(PreparedSceneBatch::PolychromeSprites {
+                        texture_id, range: range.clone(),
+                    });
+                }
+                continue;
+            }
             prepared.push(match batch {
                 PrimitiveBatch::Shadows { .. } => {
                     unreachable!("shadow segments are merged before this match")
@@ -373,12 +383,8 @@ impl Painter {
                 PrimitiveBatch::MonochromeSprites { .. } => {
                     unreachable!("glyph segments are merged before this match")
                 }
-                PrimitiveBatch::PolychromeSprites {
-                    texture_id,
-                    sprites,
-                } => PreparedSceneBatch::PolychromeSprites {
-                    texture_id,
-                    range: slice_range(&self.scene.polychrome_sprites, sprites),
+                PrimitiveBatch::PolychromeSprites { .. } => {
+                    unreachable!("color sprite segments are merged before this match")
                 },
                 PrimitiveBatch::Surfaces(surfaces) => {
                     PreparedSceneBatch::Surfaces(slice_range(&self.scene.surfaces, surfaces))

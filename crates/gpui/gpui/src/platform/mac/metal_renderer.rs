@@ -537,6 +537,7 @@ impl MetalRenderer {
                 PrimitiveBatch::PolychromeSprites {
                     texture_id,
                     sprites,
+                    ..
                 } => self.draw_polychrome_sprites(
                     texture_id,
                     sprites,

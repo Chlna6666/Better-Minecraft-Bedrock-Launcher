@@ -78,6 +78,10 @@ impl<'a> OperationRun<'a> {
         self.owner.is_some_and(|owner| owner.share_mono_run(self.start..self.end, stream))
     }
 
+    pub(super) fn share_poly_run(self, stream: &mut super::PrimitiveStream<super::PolychromeSprite>) -> bool {
+        self.owner.is_some_and(|owner| owner.share_poly_run(self.start..self.end, stream))
+    }
+
     fn same_storage(self, other: OperationRun<'_>) -> bool {
         self.len() == other.len() && self.start == other.start
             && self.owner.zip(other.owner).is_some_and(|(a, b)| std::ptr::eq(a, b))
@@ -234,6 +238,10 @@ impl Operations {
         self.segments.shrink_to(self.segments.len());
         self.boundaries.shrink_to_fit();
     }
+    pub(super) fn collect_pending_poly_tiles(&self, ids: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
+        self.pending.collect_pending_poly_tiles(ids);
+    }
+
     pub(crate) fn push(&mut self, operation: PaintOperation) {
         self.len += 1;
         self.record_boundary(self.len, ScopeChange::of(operation.as_ref()));
@@ -346,7 +354,8 @@ impl Operations {
         mono: &mut super::PrimitiveStream<super::MonochromeSprite>,
     ) {
         self.publish_draw_payloads(
-            shadows, quads, mono, &mut super::primitive_stream::DrawPermutation::default(), false,
+            shadows, quads, mono, &mut super::PrimitiveStream::default(),
+            &mut super::primitive_stream::DrawPermutation::default(), false,
         );
     }
 
@@ -355,11 +364,12 @@ impl Operations {
         shadows: &mut super::PrimitiveStream<super::Shadow>,
         quads: &mut super::PrimitiveStream<super::Quad>,
         mono: &mut super::PrimitiveStream<super::MonochromeSprite>,
+        poly: &mut super::PrimitiveStream<super::PolychromeSprite>,
         scratch: &mut super::primitive_stream::DrawPermutation,
         exclusive: bool,
     ) {
         if exclusive || self.segments.is_empty() {
-            self.pending.publish_draw_payloads(shadows, quads, mono, scratch, exclusive);
+            self.pending.publish_draw_payloads(shadows, quads, mono, poly, scratch, exclusive);
         }
     }
 
@@ -410,11 +420,13 @@ impl Operations {
         shadows: &mut super::PrimitiveStream<super::Shadow>,
         quads: &mut super::PrimitiveStream<super::Quad>,
         mono: &mut super::PrimitiveStream<super::MonochromeSprite>,
+        poly: &mut super::PrimitiveStream<super::PolychromeSprite>,
     ) {
         self.compact_pages(true);
         self.compact_draw(shadows);
         self.compact_draw(quads);
         self.compact_draw(mono);
+        self.compact_draw(poly);
     }
 
     fn compact_draw<T: super::primitive_stream::Ordered>(

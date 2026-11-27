@@ -387,6 +387,20 @@ impl Painter {
                 cursor = end;
                 continue;
             }
+            if matches!(operations.get(cursor).expect("qualified operation"), PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(_))) {
+                let end = cursor + operations.range(cursor..count).iter().take_while(|op| {
+                    matches!(op, PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(_)))
+                }).count();
+                let run = operations.range(cursor..end);
+                if !run.share_poly_run(&mut self.scene.polychrome_sprites) {
+                    for op in run.iter() {
+                        let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
+                        self.push_ordered_primitive(primitive.to_primitive(), primitive.order(), false);
+                    }
+                }
+                cursor = end;
+                continue;
+            }
             let PaintOperationRef::Primitive(primitive) = operations.get(cursor).expect("qualified operation") else { unreachable!() };
             self.push_ordered_primitive(primitive.to_primitive(), primitive.order(), false);
             cursor += 1;

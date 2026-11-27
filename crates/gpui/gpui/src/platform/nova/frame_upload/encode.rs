@@ -404,13 +404,15 @@ impl FrameUpload {
                     );
                 }
                 PreparedSceneBatch::PolychromeSprites { range, .. } => {
-                    self.encode_polychrome_sprites(
-                        &scene.polychrome_sprites[range.clone()],
-                        &mut summary,
-                        (drawable_size.width == target_size.width
-                            && drawable_size.height == target_size.height)
-                            .then_some(drawable_size),
-                    );
+                    for sprites in scene.polychrome_sprites.slices(range.clone()) {
+                        self.encode_polychrome_sprites(
+                            sprites,
+                            &mut summary,
+                            (drawable_size.width == target_size.width
+                                && drawable_size.height == target_size.height)
+                                .then_some(drawable_size),
+                        );
+                    }
                 }
                 PreparedSceneBatch::Underlines(range) => {
                     self.encode_underlines(&scene.underlines[range.clone()], &mut summary);

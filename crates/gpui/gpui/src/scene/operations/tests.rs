@@ -442,7 +442,7 @@ fn joint_compaction_preserves_one_allocation_for_disjoint_operation_and_draw_cov
     quads.share(&source_quads, 100..104);
     quads.finish();
     current.compact_with_draws(
-        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(), &mut PrimitiveStream::default(),
     );
 
     // The union contains 6 low slots and 4 high slots, even though
@@ -460,7 +460,7 @@ fn joint_compaction_preserves_one_allocation_for_disjoint_operation_and_draw_cov
     assert_eq!(quads[7].order, 103);
     let identity = current.storage_identity(0);
     current.compact_with_draws(
-        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(),
+        &mut PrimitiveStream::default(), &mut quads, &mut PrimitiveStream::default(), &mut PrimitiveStream::default(),
     );
     assert_eq!(identity, current.storage_identity(0));
 }
