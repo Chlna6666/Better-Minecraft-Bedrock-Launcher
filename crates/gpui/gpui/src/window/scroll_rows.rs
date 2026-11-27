@@ -115,7 +115,7 @@ struct RowMeasurement {
 impl Window {
     pub(crate) fn scroll_row_replay_is_enabled(&self) -> bool {
         let rows = &self.next_frame.scroll_rows;
-        rows.enabled && !rows.blocked
+        rows.enabled && !rows.blocked && self.invalidator.scroll_content_revision().1
     }
 
     /// A uniform list need only rebuild its measurement sample when its
