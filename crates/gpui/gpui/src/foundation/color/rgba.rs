@@ -218,6 +218,108 @@ fn simd_rgba_rows<S: Simd>(simd: S, buffer: &mut [u8], row_bytes: usize, row_cou
     }
 }
 
+/// Copy and swizzle complete RGBA pixels in one pass. Destination rows
+/// begin at their image interior, so callers can replicate already converted
+/// edge pixels without reading/writing the full upload a second time.
+pub(crate) fn copy_rgba_to_bgra_rows(
+    source: &[u8],
+    destination: &mut [u8],
+    row_bytes: usize,
+    destination_stride: usize,
+    rows: usize,
+) -> Option<()> {
+    if rows == 0 || row_bytes == 0 { return Some(()); }
+    if row_bytes % 4 != 0 || destination_stride < row_bytes { return None; }
+    let source = source.get(..row_bytes.checked_mul(rows)?)?;
+    let needed = destination_stride.checked_mul(rows - 1)?.checked_add(row_bytes)?;
+    let destination = destination.get_mut(..needed)?;
+    if row_bytes < SIMD_RGBA_ROW_BYTES {
+        scalar_copy_rgba_rows(source, destination, row_bytes, destination_stride);
+        return Some(());
+    }
+    let level = *RGBA_SIMD_LEVEL;
+    if level.is_fallback() {
+        scalar_copy_rgba_rows(source, destination, row_bytes, destination_stride);
+        return Some(());
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        dispatch!(Level::Avx2(avx2), simd => simd_copy_rgba_rows(
+            simd, source, destination, row_bytes, destination_stride
+        ));
+        return Some(());
+    }
+    dispatch!(level, simd => simd_copy_rgba_rows(
+        simd, source, destination, row_bytes, destination_stride
+    ));
+    Some(())
+}
+
+#[inline(always)]
+fn scalar_copy_rgba_row(source: &[u8], destination: &mut [u8]) {
+    for (input, output) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+        output.copy_from_slice(&[input[2], input[1], input[0], input[3]]);
+    }
+}
+
+fn scalar_copy_rgba_rows(source: &[u8], destination: &mut [u8], row_bytes: usize, stride: usize) {
+    for (input, output) in source.chunks_exact(row_bytes).zip(destination.chunks_mut(stride)) {
+        scalar_copy_rgba_row(input, &mut output[..row_bytes]);
+    }
+}
+
+#[inline(always)]
+fn simd_copy_rgba_rows<S: Simd>(
+    simd: S, source: &[u8], destination: &mut [u8], row_bytes: usize, stride: usize,
+) {
+    for (input, output) in source.chunks_exact(row_bytes).zip(destination.chunks_mut(stride)) {
+        let output = &mut output[..row_bytes];
+        let mut inputs = input.chunks_exact(SIMD_RGBA_ROW_BYTES);
+        let mut outputs = output.chunks_exact_mut(SIMD_RGBA_ROW_BYTES);
+        for (input, output) in (&mut inputs).zip(&mut outputs) {
+            let [red, green, blue, alpha] = u8x16::load_four_interleaved(simd, input);
+            u8x16::store_four_interleaved([blue, green, red, alpha], output);
+        }
+        scalar_copy_rgba_row(inputs.remainder(), outputs.into_remainder());
+    }
+}
+
+#[cfg(test)]
+mod fused_copy_tests {
+    use super::*;
+
+    #[test]
+    fn fused_copy_preserves_padding_tail_and_every_channel() {
+        for width in [1, 15, 16, 17, 31, 32, 33, 257] {
+            for rows in [1, 3, 17] {
+                let row_bytes = width * 4;
+                let stride = row_bytes + 12;
+                let source: Vec<u8> = (0..row_bytes * rows)
+                    .map(|i| (i * 73 + 29) as u8).collect();
+                let mut destination = vec![0xa5; stride * rows + 8];
+                let mut expected = destination.clone();
+                for (input, output) in source.chunks_exact(row_bytes)
+                    .zip(expected.chunks_mut(stride))
+                {
+                    output[..row_bytes].copy_from_slice(input);
+                    scalar_rgba_rows(&mut output[..row_bytes], row_bytes, 1);
+                }
+                copy_rgba_to_bgra_rows(&source, &mut destination, row_bytes, stride, rows).unwrap();
+                assert_eq!(destination, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn fused_copy_rejects_invalid_dimensions_without_touching_destination() {
+        let mut destination = [0x5a; 32];
+        assert!(copy_rgba_to_bgra_rows(&[0; 32], &mut destination, 16, 12, 2).is_none());
+        assert!(copy_rgba_to_bgra_rows(&[0; 31], &mut destination, 16, 16, 2).is_none());
+        assert!(copy_rgba_to_bgra_rows(&[0; 32], &mut destination, 16, 20, 2).is_none());
+        assert_eq!(destination, [0x5a; 32]);
+    }
+}
+
 struct RgbaVisitor;
 
 impl Visitor<'_> for RgbaVisitor {

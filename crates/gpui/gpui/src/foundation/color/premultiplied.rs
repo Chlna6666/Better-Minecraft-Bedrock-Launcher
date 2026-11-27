@@ -60,25 +60,28 @@ const fn build_alpha_divisor_lut() -> [f32; 256] {
 const ALPHA_NORM_LUT: [f32; 256] = build_alpha_norm_lut();
 const ALPHA_DIVISOR_LUT: [f32; 256] = build_alpha_divisor_lut();
 
-/// Converts an in-place RGBA premultiplied-alpha pixel buffer to BGRA straight alpha.
-///
-/// Medium and large buffers use Fearless SIMD runtime multiversioning. Very large buffers may be
-/// split across a small number of scoped workers, and each worker still dispatches to the strongest
-/// available safe SIMD backend. Only one conversion may fan out at a time; concurrent huge
-/// conversions fall back immediately to single-threaded SIMD instead of oversubscribing the
-/// process. Small buffers retain the historical scalar conversion. Trailing bytes that do not form
-/// a complete RGBA pixel are left untouched.
+/// UI-safe conversion: no topology lookup, thread spawn, permit or wait.
 pub(crate) fn swap_rgba_pa_to_bgra_buffer(buffer: &mut [u8]) {
     let pixel_bytes = buffer.len() & !3;
+    serial_buffer(&mut buffer[..pixel_bytes]);
+}
+
+/// Large asynchronous asset decodes may use bounded scoped parallel work.
+/// Never use this entry for synchronous glyph rasterization or Paint.
+/// Only one large decode fans out at a time; the caller is one of the workers.
+pub(crate) fn swap_rgba_pa_to_bgra_buffer_background(buffer: &mut [u8]) {
+    let pixel_bytes = buffer.len() & !3;
     let (pixels, _) = buffer.split_at_mut(pixel_bytes);
-    let workers = parallel_worker_count(pixels.len());
-    if workers > 1 {
-        if let Some(_permit) = ParallelPixelPermit::try_acquire() {
+    if pixels.len() >= PARALLEL_MIN_BYTES
+        && let Some(_permit) = ParallelPixelPermit::try_acquire()
+    {
+        let workers = parallel_worker_count(pixels.len());
+        if workers > 1 {
             parallel_buffer(pixels, workers);
             return;
         }
     }
-    serial_buffer(pixels);
+    swap_rgba_pa_to_bgra_buffer(pixels);
 }
 
 #[inline]
@@ -91,14 +94,13 @@ fn parallel_worker_count(buffer_len: usize) -> usize {
 
 #[inline]
 fn parallel_worker_count_for(buffer_len: usize, cpus: usize) -> usize {
-    if buffer_len < PARALLEL_MIN_BYTES || cpus < 3 {
+    if buffer_len < PARALLEL_MIN_BYTES || cpus < 4 {
         return 1;
     }
 
-    // Leave one logical CPU available for the UI/platform thread and cap fan-out so a large image
-    // decode cannot monopolize high-core-count desktops. Require enough bytes per worker to amortize
-    // scoped-thread creation and cache handoff costs.
-    cpus.saturating_sub(1)
+    // Keep capacity for both the UI and GPU owner. Count the current
+    // background task as one worker, not an extra blocked thread.
+    cpus.saturating_sub(2)
         .min(MAX_PARALLEL_WORKERS)
         .min(buffer_len / PARALLEL_MIN_BYTES_PER_WORKER)
         .max(1)
@@ -111,9 +113,12 @@ fn parallel_buffer(buffer: &mut [u8], workers: usize) {
     let target = buffer.len().div_ceil(workers);
     let chunk_bytes = target.saturating_add(63) & !63;
     std::thread::scope(|scope| {
-        for chunk in buffer.chunks_mut(chunk_bytes) {
+        let mut chunks = buffer.chunks_mut(chunk_bytes);
+        let first = chunks.next().expect("nonempty parallel image");
+        for chunk in chunks {
             scope.spawn(move || serial_buffer(chunk));
         }
+        serial_buffer(first);
     });
 }
 
@@ -265,8 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn parallel_policy_caps_workers_and_leaves_one_cpu_free() {
-        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 4), 3);
+    fn parallel_policy_caps_workers_and_reserves_ui_and_gpu_capacity() {
+        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 3), 1);
+        assert_eq!(parallel_worker_count_for(PARALLEL_MIN_BYTES, 4), 2);
         assert_eq!(parallel_worker_count_for(64 * 1024 * 1024, 32), 4);
     }
 
@@ -294,6 +300,9 @@ mod tests {
         let expected = scalar_reference(input.clone());
         parallel_buffer(&mut input, 4);
         assert_eq!(input, expected);
+        let mut background = expected.clone();
+        swap_rgba_pa_to_bgra_buffer_background(&mut background);
+        assert_eq!(background, scalar_reference(expected));
     }
 
     #[test]

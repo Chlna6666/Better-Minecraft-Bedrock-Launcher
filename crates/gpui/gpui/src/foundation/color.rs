@@ -17,7 +17,8 @@ pub use hsla::{
     Hsla, black, blue, green, hsla, opaque_grey, red, transparent_black, transparent_white, white,
     yellow,
 };
-pub(crate) use premultiplied::swap_rgba_pa_to_bgra_buffer;
+pub(crate) use premultiplied::{swap_rgba_pa_to_bgra_buffer, swap_rgba_pa_to_bgra_buffer_background};
+pub(crate) use rgba::copy_rgba_to_bgra_rows;
 pub(crate) use rgba::swap_rgba_to_bgra_rows;
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use rgba::swap_rgba_to_bgra_rows_scalar;

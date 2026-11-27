@@ -1,5 +1,5 @@
 use super::*;
-use crate::swap_rgba_to_bgra_rows;
+use crate::copy_rgba_to_bgra_rows;
 #[cfg(feature = "bench-support")]
 use crate::{swap_rgba_to_bgra_rows_scalar, swap_rgba_to_bgra_rows_simd};
 
@@ -360,16 +360,23 @@ fn encode_rgba_upload(
     upload_height: usize,
     padding: usize,
 ) -> Option<()> {
-    encode_rgba_upload_with_swap(
-        pixels,
-        bytes,
-        width,
-        height,
-        upload_width,
-        upload_height,
-        padding,
-        swap_rgba_to_bgra_rows,
-    )
+    let source_row_bytes = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let source_len = source_row_bytes.checked_mul(height)?;
+    let source = bytes.get(..source_len)?;
+    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_len = upload_row_bytes.checked_mul(upload_height)?;
+    let destination = pixels.get_mut(..upload_len)?;
+    if padding == 0 {
+        // Even narrow rows form one contiguous conversion without padding.
+        return copy_rgba_to_bgra_rows(source, destination, source_len, source_len, 1);
+    }
+    let first_row = padding.checked_mul(upload_row_bytes)?;
+    let center_start = first_row.checked_add(padding.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?)?;
+    copy_rgba_to_bgra_rows(source, &mut destination[center_start..], source_row_bytes, upload_row_bytes, height)?;
+    for row in destination[first_row..].chunks_exact_mut(upload_row_bytes).take(height) {
+        replicate_horizontal_padding(row, width, padding)?;
+    }
+    replicate_vertical_padding(destination, upload_width, height, padding)
 }
 
 #[cfg(feature = "bench-support")]
@@ -416,6 +423,7 @@ fn encode_rgba_upload_simd(
     )
 }
 
+#[cfg(feature = "bench-support")]
 fn encode_rgba_upload_with_swap(
     pixels: &mut [u8],
     bytes: &[u8],

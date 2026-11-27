@@ -55,7 +55,7 @@ fn append_expected_pixel(
 
 #[test]
 fn atlas_padding_replicates_converted_edge_pixels() {
-    for (width, height) in [(1, 1), (2, 3), (7, 4)] {
+    for (width, height) in [(1, 1), (2, 3), (7, 4), (15, 3), (16, 3), (17, 3), (33, 7), (257, 19)] {
         for padding in [0, 1, 2] {
             for texture_kind in [
                 AtlasTextureKind::Monochrome,

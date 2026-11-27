@@ -5,7 +5,7 @@ use crate::{
     AnimatedFrame, App, Asset, AssetLocation, Bounds, CompressedImageBytes, EncodedImage,
     ImageRenderRecord, ImageRenderSize, ObjectFit, Pixels, RenderImage, SMOOTH_SVG_SCALE_FACTOR,
     SharedString, Size, SvgSize, Window, hash, record_image_asset_retained, record_image_metrics,
-    swap_rgba_pa_to_bgra_buffer,
+    swap_rgba_pa_to_bgra_buffer_background,
 };
 use anyhow::{Context as _, Result};
 use futures::{AsyncReadExt, Future};
@@ -301,7 +301,7 @@ impl Asset for ImageAssetLoader {
 
                 let mut buffer =
                     ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take()).unwrap();
-                swap_rgba_pa_to_bgra_buffer(buffer.as_mut());
+                swap_rgba_pa_to_bgra_buffer_background(buffer.as_mut());
 
                 let mut image = RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1));
                 image.scale_factor = SMOOTH_SVG_SCALE_FACTOR;
@@ -463,7 +463,7 @@ fn render_sized_bytes(
     };
     let mut buffer = ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
         .ok_or_else(|| anyhow::anyhow!("invalid SVG raster dimensions"))?;
-    swap_rgba_pa_to_bgra_buffer(buffer.as_mut());
+    swap_rgba_pa_to_bgra_buffer_background(buffer.as_mut());
 
     Ok((
         RenderImage::from_resident_frames(SmallVec::from_elem(

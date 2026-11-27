@@ -85,8 +85,13 @@ fn frame_upload(criterion: &mut Criterion) {
             );
             let mut rgba_simd = AtlasPixelEncodingBenchmark::rgba(width, height, padding);
             pixels.bench_function(
-                format!("fearless_simd/rgba_{pixel_count}_pixels_padding_{padding}"),
+                format!("legacy_simd_copy_then_swap/rgba_{pixel_count}_pixels_padding_{padding}"),
                 |bencher| bencher.iter(|| black_box(rgba_simd.encode_simd())),
+            );
+            let mut rgba_fused = AtlasPixelEncodingBenchmark::rgba(width, height, padding);
+            pixels.bench_function(
+                format!("fused_copy_swizzle/rgba_{pixel_count}_pixels_padding_{padding}"),
+                |bencher| bencher.iter(|| black_box(rgba_fused.encode())),
             );
         }
     }

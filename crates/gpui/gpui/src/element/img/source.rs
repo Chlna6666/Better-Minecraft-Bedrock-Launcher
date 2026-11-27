@@ -278,7 +278,7 @@ impl EncodedImageBytes {
                 let mut buffer =
                     image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
                         .ok_or_else(|| anyhow::anyhow!("invalid SVG raster dimensions"))?;
-                crate::swap_rgba_pa_to_bgra_buffer(buffer.as_mut());
+                crate::swap_rgba_pa_to_bgra_buffer_background(buffer.as_mut());
                 RenderImage::new(smallvec::SmallVec::from_elem(image::Frame::new(buffer), 1))
             }
             format => crate::EncodedImage::new(
