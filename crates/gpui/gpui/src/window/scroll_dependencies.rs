@@ -60,6 +60,20 @@ impl MountedScrollSource {
     fn new(listener_index: usize, owner: EntityId, version: &StateVersion) -> Self {
         Self { listener_index, owner, read: StateRead::new(version) }
     }
+
+    pub(super) fn changed_for(&self, owner: EntityId, version: &StateVersion) -> bool {
+        self.owner == owner && self.read.belongs_to(version)
+            && self.read.status() == StateReadStatus::Changed
+    }
+
+    pub(super) fn unchanged(&self) -> bool {
+        self.read.status() == StateReadStatus::Unchanged
+    }
+
+    pub(super) fn acknowledge(&mut self, version: &StateVersion) {
+        debug_assert!(self.read.belongs_to(version));
+        self.read = StateRead::new(version);
+    }
 }
 
 /// Copy only the sources belonging to a replayed listener span. Indices

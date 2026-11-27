@@ -142,8 +142,7 @@ impl Painter {
                 &mut self.scene.polychrome_sprites,
             );
         }
-        static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
-        if let Some((previous, (same_paint, same_batch_topology))) = previous.zip(reuse) {
+         if let Some((previous, (same_paint, same_batch_topology))) = previous.zip(reuse) {
             if same_paint || same_batch_topology {
                 self.scene
                     .prepared_batches
@@ -151,16 +150,16 @@ impl Painter {
                 self.scene.revision = if same_paint {
                     previous.revision
                 } else {
-                    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
+                    super::super::display_list::next_scene_revision()
                 };
             } else {
                 self.prepare_batches();
-                self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+                self.scene.revision = super::super::display_list::next_scene_revision();
             }
             (same_paint, physical_reuse == Some(false))
         } else {
             self.prepare_batches();
-            self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+            self.scene.revision = super::super::display_list::next_scene_revision();
             (false, false)
         }
     }

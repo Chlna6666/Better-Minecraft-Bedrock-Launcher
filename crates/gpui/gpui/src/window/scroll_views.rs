@@ -42,7 +42,13 @@ impl ScrollViews {
 
     pub(super) fn carry(&mut self, key: u64, previous: &Self) {
         if let Some(source) = previous.views.get(&key) {
-            self.views.entry(key).or_insert_with(|| source.clone());
+            self.views.entry(key).or_insert_with(|| {
+                let mut source = source.clone();
+                // Whole-view replay has not re-established sole-child
+                // ownership under the current scroller.
+                source.binding.direct = None;
+                source
+            });
         }
     }
 }
@@ -53,6 +59,8 @@ impl ScrollViews {
 struct ScrollBinding {
     offset: Weak<ScrollOffset>,
     sampled: Point<Pixels>,
+    // (native scroller owner, sole direct child view)
+    direct: Option<(EntityId, EntityId)>,
 }
 
 impl ScrollBinding {
@@ -63,7 +71,7 @@ impl ScrollBinding {
         {
             return None;
         }
-        Some(Self { offset, sampled })
+        Some(Self { offset, sampled, direct: None })
     }
 
     fn same_source(&self, other: &Self) -> bool {
@@ -107,11 +115,220 @@ fn hitboxes(range: &Range<PrepaintStateIndex>) -> Range<usize> {
     range.start.hitboxes_index..range.end.hitboxes_index
 }
 
+// An owned candidate contains only the changed position, immutable Paint
+// and identifiers into the same UI-owned frame. Preparing it never consumes
+// invalidations or edits committed records.
+struct PlacementTransaction {
+    epoch: super::lifecycle::PlacementEpoch,
+    scroll_owner: EntityId,
+    source_revision: u64,
+    key: u64,
+    slot: usize,
+    mounted_source: usize,
+    offset: Rc<ScrollOffset>,
+    sampled: Point<Pixels>,
+    delta: Point<Pixels>,
+    hitboxes: Range<usize>,
+    paint: Arc<super::Paint>,
+    damage: Bounds<crate::ScaledPixels>,
+    stale_input: bool,
+}
+
 impl Window {
+    /// The narrow first direct-commit path: one native vertical scroller
+    /// and one complete retained child with unchanged logical operation
+    /// indices. No virtual-list rows, tracked handles, external effects,
+    /// changed dependencies or partially captured content are admitted.
+    fn prepare_scroll_placement(&self, cx: &App) -> Option<PlacementTransaction> {
+        let (epoch, scroll_owner) = self.invalidator.pending_placement()?;
+        if !self.has_completed_rendered_frame || self.force_full_redraw.get()
+            || self.force_view_cache_refresh || self.recovering_degraded_draw
+            || self.live_resize_active || self.refreshing
+            || self.viewport_epoch != self.committed_epoch
+            || self.scale_factor != self.committed_scale_factor
+            || !self.dirty_views.is_empty() || !self.direct_dirty_views.is_empty()
+            || self.rendered_frame.window_active != self.active.get()
+            || self.rendered_frame.focus != self.focus
+            || self.prompt.is_some() || self.tooltip_bounds.is_some()
+            || !self.rendered_frame.deferred_draws.is_empty()
+            || self.rendered_frame.tooltip_requests.iter().any(Option::is_some)
+            || !self.animation_dirty_region.is_empty() || self.scene_animation_needs_commit.get()
+            || cx.has_active_drag() || self.is_inspector_picking(cx)
+            || !self.platform_window.supports_deferred_scroll()
+        {
+            return None;
+        }
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        if self.inspector.is_some() { return None; }
+        #[cfg(debug_assertions)]
+        if cx.has_global::<crate::DebugBelow>() { return None; }
+        let debug = self.debug_visualization(cx);
+        if debug.show_layout_bounds || debug.show_element_updates
+            || debug.frame_time_overlay != super::DebugFrameOverlayMode::Hidden
+        {
+            return None;
+        }
+
+        let frame = &self.rendered_frame;
+        let old_paint = frame.published_paint_ref()?;
+        let mut moved = frame.scroll_views.views.iter().filter_map(|(&key, view)| {
+            if view.binding.direct != Some((scroll_owner, view.owner)) { return None; }
+            let offset = view.binding.offset.upgrade()?;
+            let sampled = *offset.borrow();
+            (sampled != view.binding.sampled).then_some((key, view, offset, sampled))
+        });
+        let (key, view, offset, sampled) = moved.next()?;
+        if moved.next().is_some() || view.capture_revision != epoch.content
+            || view.reads.iter().any(|read| read.status() != StateReadStatus::Unchanged)
+        {
+            return None;
+        }
+        // Every changed mounted source must be this very offset/version.
+        // A second source (including a tracked handle's geometry state)
+        // requires the ordinary traversal. Dead sources also revoke proof.
+        let mut changed = frame.mounted_scroll_sources.iter().enumerate()
+            .filter(|(_, source)| !source.unchanged());
+        let (mounted_source, mounted) = changed.next()?;
+        if changed.next().is_some() || !mounted.changed_for(scroll_owner, &offset.version) {
+            return None;
+        }
+        let delta = sampled - view.binding.sampled;
+        if delta.x != Pixels::ZERO || delta.y == Pixels::ZERO
+            || !sampled.y.0.is_finite() || !delta.y.0.is_finite() || sampled.y > Pixels::ZERO
+        {
+            return None;
+        }
+
+        let slot = *frame.view_retentions.get(&key)?;
+        let entry = frame.view_retention_records.get(slot)?;
+        if entry.key != key || entry.owner != view.owner { return None; }
+        let record = entry.record.as_ref()?;
+        let input = hitboxes(&record.prepaint_range);
+        let pre = &record.prepaint_range;
+        let paint = &record.paint_range;
+        if !record.nested.is_empty() || !record.scene_segments.is_empty()
+            || !frame.hitboxes.contains(&input)
+            || record.context.visual_content_mask != view.viewport
+            || pre.start.tooltips_index != pre.end.tooltips_index
+            || pre.start.deferred_draws_index != pre.end.deferred_draws_index
+            || paint.start.input_handlers_index != paint.end.input_handlers_index
+            || paint.start.window_control_hitboxes_index != paint.end.window_control_hitboxes_index
+            || paint.start.tab_handle_index != paint.end.tab_handle_index
+            || paint.start.cursor_styles_index != paint.end.cursor_styles_index
+        {
+            return None;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if paint.start.debug_bounds_index != paint.end.debug_bounds_index { return None; }
+        let listeners = paint.start.mouse_listeners_index != paint.end.mouse_listeners_index;
+        let hover_held = self.scroll_hover.deadline
+            .is_some_and(|end| cx.background_executor().now() < end);
+        if !hover_held && (listeners || view.stale_input
+            || self.hits_scroll_row(&frame.hitboxes, input.clone(), Point::default())
+            || self.hits_scroll_row(&frame.hitboxes, input.clone(), delta))
+        {
+            return None;
+        }
+        let marker = paint.start.scene_index;
+        if paint.end.scene_index != marker + 1 { return None; }
+        let crate::scene::PaintOperationRef::DeferredScroll(old) =
+            old_paint.scene.paint_operations.view(marker)? else { return None; };
+        let scale = self.scale_factor();
+        let old_delta = view.source.translation(record.context.element_offset, scale)?;
+        let old_expected = view.source.native_placement(view.viewport, scale, old_delta)?;
+        if !old.same_paint(&old_expected) { return None; }
+        let physical = view.source.translation(record.context.element_offset + delta, scale)?;
+        let placement = view.source.native_placement(view.viewport, scale, physical)?;
+        let damage = placement.visual_bounds();
+        // The View and enclosing damage records keep the same fixed
+        // viewport. No stale damage bounds may survive the transaction.
+        let segment = frame.retained_scene_segments.get(record.scene_segments.end)?;
+        if segment.entity_id != view.owner || segment.scene_range != (marker..marker + 1)
+            || segment.bounds != damage
+        {
+            return None;
+        }
+        let new_paint = old_paint.with_scroll_placement(marker, placement,
+            self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)?;
+        Some(PlacementTransaction {
+            epoch, scroll_owner, source_revision: old_paint.scene.revision, key, slot,
+            mounted_source, offset, sampled, delta, hitboxes: input,
+            paint: new_paint, damage,
+            stale_input: view.stale_input || listeners || (hover_held && !hitboxes(pre).is_empty()),
+        })
+    }
+
+    /// Commit before begin_draw_cycle. All rejection paths are side-effect
+    /// free with respect to the frame and leave the dirty request available
+    /// for normal rendering. No app callbacks execute between the final
+    /// generation check and committing the CPU records + immutable Paint.
+    pub(super) fn try_commit_scroll_placement(&mut self, cx: &mut App) -> bool {
+        if self.invalidator.pending_placement().is_none() { return false; }
+        // Also covers synchronous Window::draw callers outside platform RAF.
+        self.invalidate_scroll_reads();
+        let started = Instant::now();
+        let Some(transaction) = self.prepare_scroll_placement(cx) else { return false; };
+        if self.rendered_frame.scene().revision != transaction.source_revision
+            || *transaction.offset.borrow() != transaction.sampled
+            || !self.invalidator.commit_placement(transaction.epoch, transaction.scroll_owner)
+        {
+            return false;
+        }
+        let frame = &mut self.rendered_frame;
+        let record = frame.view_retention_records[transaction.slot].record.as_mut()
+            .expect("validated retained view");
+        record.bounds.origin += transaction.delta;
+        Rc::make_mut(&mut record.context).element_offset += transaction.delta;
+        // A normal traversal will re-establish the splice/layout context.
+        record.splice_safe = false;
+        let view = frame.scroll_views.views.get_mut(&transaction.key).expect("validated scroll view");
+        view.binding.sampled = transaction.sampled;
+        view.stale_input = transaction.stale_input;
+        frame.mounted_scroll_sources[transaction.mounted_source].acknowledge(&transaction.offset.version);
+        frame.commit_scroll_placement(Arc::clone(&transaction.paint), transaction.hitboxes, transaction.delta);
+        self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
+        if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
+            self.active_dirty_to_present_started_at = Some(
+                self.active_dirty_to_present_started_at.map_or(started_at, |active| active.min(started_at)));
+        }
+        if !self.needs_present.get() {
+            self.render_dirty_region = super::DirtyRegion::empty();
+        }
+        self.render_dirty_region.push(transaction.damage);
+        let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
+        self.render_dirty_region.coalesce_if_large(viewport, super::DIRTY_REGION_FULL_REDRAW_RATIO);
+        self.render_present_mode = if self.render_dirty_region.is_full() {
+            super::PartialPresentMode::FullRedraw
+        } else { super::PartialPresentMode::Partial };
+        self.render_trim_policy = super::RetainedResourceTrimPolicy::None;
+        self.idle_render_frames = 0;
+        self.backdrop_blur_damage = Default::default();
+        self.presentation_state.publish_pending(transaction.paint, Vec::new());
+        self.needs_present.set(true);
+        self.dirty_frame_scheduled = false;
+        self.draw_was_degraded = false;
+        self.frame_can_degrade = false;
+        self.draw_deadline = None;
+        self.checked_scroll_generation = Some(crate::state_generation());
+        self.last_generation_stats = super::state::FrameGenerationStats::default();
+        self.last_generation_stats.scene = self.rendered_frame.scene().frame_metrics();
+        self.last_generation_stats.frame_retained_capacity = self.rendered_frame.retained_capacity();
+        self.last_generation_stats.scene_finish_elapsed = started.elapsed();
+        self.last_generation_stats.finalize_elapsed = started.elapsed();
+        super::record_dirty_region_metrics(self.render_dirty_region.rect_count(), self.render_dirty_region.area() as usize);
+        super::record_scene_frame_metrics(self.last_generation_stats.scene);
+        super::record_frame_retained_capacity(self.last_generation_stats.frame_retained_capacity);
+        self.reset_cursor_style(cx);
+        if transaction.stale_input { self.schedule_scroll_hover_restore(cx); }
+        log::trace!(target: "gpui::diagnostics", "gpui placement-only frame committed without root traversal");
+        true
+    }
+
     pub(crate) fn with_scroll_viewport<R>(
         &mut self,
         scroll_source: Option<Weak<ScrollOffset>>,
         offset: Point<Pixels>,
+        direct_child: Option<EntityId>,
         prepaint: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let Some(scroll_source) = scroll_source.filter(|_| self.scroll_row_replay_is_enabled()) else {
@@ -125,8 +342,10 @@ impl Window {
             && self.content_mask() == viewport
             && !viewport.bounds.is_empty()
             && offset.x == Pixels::ZERO
-            && let Some(binding) = ScrollBinding::new(scroll_source, offset)
+            && let Some(mut binding) = ScrollBinding::new(scroll_source, offset)
         {
+            let owner = self.current_view();
+            binding.direct = direct_child.filter(|child| *child != owner).map(|child| (owner, child));
             self.next_frame.scroll_views.viewport = Some(ScrollViewport { clip: viewport, binding });
         }
         let result = prepaint(self);
@@ -192,7 +411,7 @@ impl Window {
         current: &RetainedPaintContext,
         bounds: Bounds<Pixels>,
         cx: &App,
-    ) -> Option<(Range<PrepaintStateIndex>, Point<Pixels>)> {
+    ) -> Option<(Range<PrepaintStateIndex>, Point<Pixels>, Option<EntityId>)> {
         let delta = self.scroll_view_translation(previous, current, bounds, cx)?;
         let binding = &self.scroll_viewport(cx)?.binding;
         let viewport = current.visual_content_mask;
@@ -203,6 +422,7 @@ impl Window {
             return None;
         }
         let sampled_offset = binding.sampled;
+        let direct_owner = binding.direct.filter(|(_, child)| *child == owner).map(|(owner, _)| owner);
         let scale = self.scale_factor();
         let physical = source.source.translation(current.element_offset, scale)?;
         if source.owner != owner
@@ -232,7 +452,7 @@ impl Window {
         }
         let parent = self.next_frame.dispatch_tree.active_node_id();
         self.replay_prepaint_records(previous.prepaint_range.clone(), |_| parent);
-        Some((start..self.prepaint_index(), sampled_offset))
+        Some((start..self.prepaint_index(), sampled_offset, direct_owner))
     }
 
     pub(crate) fn plan_scroll_view_capture(
@@ -255,11 +475,13 @@ impl Window {
         {
             return None;
         }
+        let mut binding = scope.binding.clone();
+        binding.direct = binding.direct.filter(|(_, child)| *child == self.current_view());
         Some(Box::new(ScrollViewCapture {
             key: key?,
             revision: self.invalidator.scroll_content_revision().0,
             viewport,
-            binding: scope.binding.clone(),
+            binding,
             reads: cx.entities.state_reads_since(read_start),
         }))
     }
@@ -335,6 +557,7 @@ impl Window {
         &mut self,
         key: u64,
         sampled_offset: Point<Pixels>,
+        direct_owner: Option<EntityId>,
         previous: &RetainedViewRecord,
         context: &RetainedPaintContext,
         cx: &App,
@@ -343,6 +566,7 @@ impl Window {
         // Use the placement proven in Prepaint, not a fresh read after
         // application callbacks may have mutated the scroll handle.
         source.binding.sampled = sampled_offset;
+        source.binding.direct = direct_owner.map(|owner| (owner, source.owner));
         let scale = self.scale_factor();
         let delta = source
             .source

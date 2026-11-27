@@ -129,8 +129,8 @@ impl FrameWork {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PlacementEpoch {
-    content: u64,
+pub(super) struct PlacementEpoch {
+    pub(super) content: u64,
     placement: u64,
 }
 
@@ -553,6 +553,32 @@ impl WindowInvalidator {
                 });
         }
         inner.dirty = is_dirty;
+    }
+
+    /// Peek without consuming the ordinary traversal's invalidation set.
+    /// A failed direct transaction leaves every pending request intact.
+    pub(super) fn pending_placement(&self) -> Option<(PlacementEpoch, EntityId)> {
+        let inner = self.inner.borrow();
+        if !inner.dirty || inner.draw_phase != DrawPhase::None || !inner.pending_view_scoped
+            || !inner.pending_work.placement_only() || !inner.dirty_views.is_empty()
+            || inner.pending_placement_views.len() != 1
+        {
+            return None;
+        }
+        Some((PlacementEpoch { content: inner.scroll_content_revision,
+            placement: inner.scroll_placement_revision }, inner.pending_placement_views[0]))
+    }
+
+    pub(super) fn commit_placement(&self, epoch: PlacementEpoch, owner: EntityId) -> bool {
+        if self.pending_placement() != Some((epoch, owner)) { return false; }
+        let mut inner = self.inner.borrow_mut();
+        inner.pending_placement_views.clear();
+        inner.pending_work = FrameWork::default();
+        inner.pending_view_scoped = false;
+        inner.active_view_scoped = false;
+        inner.drawing_placement = None;
+        inner.dirty = false;
+        true
     }
 
     pub(super) fn scroll_content_revision(&self) -> (u64, bool) {

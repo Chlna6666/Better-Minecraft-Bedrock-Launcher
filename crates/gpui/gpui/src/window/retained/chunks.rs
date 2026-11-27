@@ -127,6 +127,24 @@ impl RetainedPaint {
         true
     }
 
+    /// An independently constructed placement-only Scene preserves every
+    /// candidate and the exclusive ordinary draw-order domain. No planner
+    /// or candidate sorting is necessary; the old publication stays live.
+    pub(crate) fn placement_variant(&self, old: &Scene, current: &Scene) -> Option<Self> {
+        if !self.finished || self.revision != old.revision || old.revision == current.revision {
+            return None;
+        }
+        let mut result = Self {
+            retained_chunk_candidates: self.retained_chunk_candidates.iter().cloned()
+                .map(|mut candidate| { candidate.replayed = true; candidate }).collect(),
+            ..Self::default()
+        };
+        if !result.reuse_prepared_chunks(current, self, true) { return None; }
+        result.finished = true;
+        result.revision = current.revision;
+        Some(result)
+    }
+
     /// Borrows ranges for the paired Paint generation only.
     /// Independently captured or unpaired scenes use ordinary drawing.
     pub(crate) fn chunks_for(&self, scene: &Scene) -> &[PreparedRetainedQuadChunk] {

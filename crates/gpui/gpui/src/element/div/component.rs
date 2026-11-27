@@ -411,6 +411,22 @@ impl Element for Div {
         let scroll_source = if global_id.is_some() && window.scroll_row_replay_is_enabled() {
             self.interactivity.scroll_offset.as_ref().map(std::rc::Rc::downgrade)
         } else { None };
+        // Only a sole direct retained View owns every moving child.
+        // Tracked handles can additionally drive application scrollbars,
+        // active-item requests and geometry observers; keep them on the
+        // complete lifecycle until those dependencies are certified.
+        let direct_child = if scroll_source.is_some()
+            && self.interactivity.tracked_scroll_handle.is_none()
+            && self.prepaint_listener.is_none()
+            && self.image_cache.is_none()
+            && self.children.len() == 1
+        {
+            self.children[0].downcast_mut::<crate::ViewElement>()
+                .and_then(|view| match view.id() {
+                    Some(crate::ElementId::View(id)) => Some(id),
+                    _ => None,
+                })
+        } else { None };
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -433,7 +449,7 @@ impl Element for Div {
                         let scrolls = global_id.is_some()
                             && style.overflow.y == Overflow::Scroll
                             && style.overflow.x != Overflow::Scroll;
-                        window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, |window| {
+                        window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, direct_child, |window| {
                             window.with_element_offset(scroll_offset, |window| {
                                 for child in &mut self.children {
                                     child.prepaint(window, cx);

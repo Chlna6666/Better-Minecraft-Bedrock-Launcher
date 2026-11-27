@@ -3,7 +3,6 @@ use collections::FxHashSet;
 
 use super::BoundsTree;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{

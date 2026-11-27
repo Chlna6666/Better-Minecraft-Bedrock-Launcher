@@ -213,6 +213,33 @@ impl HitboxStore {
         }
     }
 
+    /// Split at most two page descriptors and translate the retained
+    /// range in place. Hitbox payloads, IDs, order and fixed clips remain
+    /// untouched. Called only after the Frame transaction validates it.
+    pub(in crate::window) fn translate_committed(&mut self, range: Range<usize>, delta: Point<Pixels>) {
+        assert!(self.pending.is_empty() && self.contains(&range));
+        if range.is_empty() || delta == Point::default() { return; }
+        self.split_at(range.start);
+        self.split_at(range.end);
+        let first = self.spans.partition_point(|span| span.end <= range.start);
+        let end = self.spans.partition_point(|span| span.end <= range.end);
+        for span in &mut self.spans[first..end] {
+            span.translation = span.translation.shifted(delta);
+        }
+    }
+
+    fn split_at(&mut self, index: usize) {
+        let slot = self.spans.partition_point(|span| span.end <= index);
+        let Some(span) = self.spans.get_mut(slot) else { return; };
+        if index == span.begin() { return; }
+        let left = index - span.begin();
+        let right = Span { owner: span.owner.clone(), start: span.start + left,
+            len: span.len - left, end: span.end, translation: span.translation };
+        span.len = left;
+        span.end = index;
+        self.spans.insert(slot + 1, right);
+    }
+
     pub(in crate::window) fn truncate(&mut self, len: usize) {
         if len >= self.len { return; }
         let pending_start = self.len - self.pending.len();

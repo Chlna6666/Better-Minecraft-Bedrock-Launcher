@@ -104,6 +104,14 @@ impl Window {
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         let _element_arena_scope = ElementArenaScope::enter();
         let frame_started_at = Instant::now();
+        if self.try_commit_scroll_placement(cx) {
+            record_draw_phase_metrics(FramePhaseMetrics {
+                build: frame_started_at.elapsed(),
+                scene_finish: self.last_generation_stats.scene_finish_elapsed,
+                ..FramePhaseMetrics::default()
+            });
+            return ArenaClearNeeded::new();
+        }
         // The geometry this frame is laid out with is fixed for its whole
         // lifetime; a native resize arriving later is a new generation.
         self.next_frame_epoch = self.viewport_epoch;

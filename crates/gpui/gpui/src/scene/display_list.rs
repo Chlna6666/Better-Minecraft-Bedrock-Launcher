@@ -1,7 +1,12 @@
 use crate::{Bounds, ScaledPixels, SceneFrameMetrics};
 use collections::FxHashSet;
 
-use std::ops::Range;
+use std::{ops::Range, sync::atomic::{AtomicU64, Ordering}};
+
+pub(super) fn next_scene_revision() -> u64 {
+    static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
+}
 
 use super::{
     BatchIterator, MonochromeSprite, PaintBackdropBlur, PaintBlur, PaintOperationRef, PrimitiveRef,
@@ -72,6 +77,45 @@ mod time_dependent_extension_tests {
 }
 
 impl Scene {
+    /// Build a new immutable publication from one changed native marker.
+    /// The first direct-commit path deliberately excludes draw formats
+    /// whose physical storage is not yet independently shareable.
+    pub(crate) fn with_scroll_placement(
+        &self, index: usize, placement: crate::window::scroll_paint::ScrollPlacement,
+    ) -> Option<Self> {
+        if self.revision == 0 || !self.paths.is_empty() || !self.underlines.is_empty()
+            || !self.surfaces.is_empty() || !self.backdrop_blurs.is_empty()
+            || !self.blurs.is_empty() || !self.capture_groups.is_empty()
+            || !self.renderer_extensions.is_empty() || !self.animation_values.is_empty()
+        {
+            return None;
+        }
+        let PaintOperationRef::DeferredScroll(old) = self.paint_operations.view(index)? else {
+            return None;
+        };
+        if !placement.same_source_placement_domain(old)
+            || placement.visual_bounds() != old.visual_bounds() || placement.same_paint(old)
+        {
+            return None;
+        }
+        let mut scene = Self::default();
+        scene.paint_operations.share(&self.paint_operations, 0..index);
+        scene.paint_operations.push_scroll_placement(placement);
+        scene.paint_operations.share(&self.paint_operations, index + 1..self.len());
+        scene.paint_operations.finish();
+        if scene.paint_operations.placement_storage_matches(&self.paint_operations) != Some(false) {
+            return None;
+        }
+        scene.shadows.share(&self.shadows, 0..self.shadows.len());
+        scene.quads.share(&self.quads, 0..self.quads.len());
+        scene.monochrome_sprites.share(&self.monochrome_sprites, 0..self.monochrome_sprites.len());
+        scene.polychrome_sprites.share(&self.polychrome_sprites, 0..self.polychrome_sprites.len());
+        scene.prepared_batches.share_from(&self.prepared_batches);
+        scene.replayed_primitives = self.primitive_count();
+        scene.revision = next_scene_revision();
+        Some(scene)
+    }
+
     pub(crate) fn has_time_dependent_extensions(&self) -> bool {
         self.renderer_extensions
             .iter()

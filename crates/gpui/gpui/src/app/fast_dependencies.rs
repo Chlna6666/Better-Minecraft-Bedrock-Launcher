@@ -358,6 +358,10 @@ impl StateRead {
         self.state.as_ptr() as usize
     }
 
+    pub(crate) fn belongs_to(&self, version: &StateVersion) -> bool {
+        self.state.as_ptr() == Rc::as_ptr(&version.0)
+    }
+
     pub(crate) fn status(&self) -> StateReadStatus {
         match self.state.upgrade() {
             Some(state) if state.get() == self.at => StateReadStatus::Unchanged,
