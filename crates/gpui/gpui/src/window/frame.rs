@@ -636,7 +636,7 @@ impl Frame {
             .mouse_listeners
             .iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
-        let same_paint = self.painter.finish_against(prev_frame.scene());
+        let (same_paint, placement_only) = self.painter.finish_against_with_storage(prev_frame.scene());
         let retention = Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention");
         let previous_scene = prev_frame.scene();
@@ -648,6 +648,7 @@ impl Frame {
                 previous_scene,
                 &prev_frame.retained_paint,
                 same_paint,
+                placement_only,
             );
         }
     }

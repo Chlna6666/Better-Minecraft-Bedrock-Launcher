@@ -30,7 +30,7 @@ pub(crate) struct PreparedRetainedMonochromeSpriteChunk {
 
 impl RetainedPaint {
     pub(crate) fn finish(&mut self, scene: &mut Scene) {
-        self.finish_with_previous(scene, None, false);
+        self.finish_with_previous(scene, None, false, false);
     }
 
     /// The source Scene must be the publication paired with previous retention.
@@ -42,8 +42,9 @@ impl RetainedPaint {
         previous_scene: &Scene,
         previous: &Self,
         same_paint: bool,
+        placement_only: bool,
     ) {
-        self.finish_with_previous(scene, Some((previous_scene, previous)), same_paint);
+        self.finish_with_previous(scene, Some((previous_scene, previous)), same_paint, placement_only);
     }
 
     fn finish_with_previous(
@@ -51,6 +52,7 @@ impl RetainedPaint {
         scene: &mut Scene,
         previous: Option<(&Scene, &Self)>,
         same_paint: bool,
+        placement_only: bool,
     ) {
         // Preserve one candidate authority and sort it in place. Recording
         // remains cheap append-only during Paint; finished retention permits
@@ -74,21 +76,24 @@ impl RetainedPaint {
         let previous = previous.filter(|(source, retention)| {
             retention.finished && source.revision != 0 && source.revision == retention.revision
         });
-        if !(same_paint && previous.is_some_and(|(_, old)| self.reuse_prepared_chunks(scene, old))) {
+        if !((same_paint || placement_only) && previous.is_some_and(|(_, old)|
+            self.reuse_prepared_chunks(scene, old, placement_only))) {
             self.prepare_retained_chunks(scene, previous);
         }
         self.finished = true;
         self.revision = scene.revision;
     }
 
-    /// Whole-Paint equality is not enough on its own: new candidate
-    /// ownership or a different split can change exclusive chunk selection.
-    /// Reuse the finished proof only when every candidate was carried at
-    /// the same position with the same identity.
-    fn reuse_prepared_chunks(&mut self, scene: &Scene, previous: &Self) -> bool {
+    /// Whole-Paint equality (or the Painter's physical placement-only proof)
+    /// is not enough on its own: new candidate ownership or a different
+    /// split can change exclusive chunk selection. Reuse the finished
+    /// proof only when every candidate was carried with its original identity.
+    /// A marker contributes no primitive DrawOrder, so the placement-only
+    /// proof also preserves the complete exclusive order input.
+    fn reuse_prepared_chunks(&mut self, scene: &Scene, previous: &Self, placement_only: bool) -> bool {
         if !previous.finished
             || scene.revision == 0
-            || scene.revision != previous.revision
+            || (!placement_only && scene.revision != previous.revision)
             || self.retained_chunk_candidates.len() != previous.retained_chunk_candidates.len()
             || !self.retained_chunk_candidates.iter().zip(&previous.retained_chunk_candidates)
                 .all(|(current, old)| current.replayed
@@ -401,18 +406,18 @@ mod tests {
         let mut current = crate::window::retained::PaintFixture::default();
         current.replay(0..32, &previous);
         assert!(current.paint.finish_against(&previous.paint));
-        assert!(current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
+        assert!(current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention, false));
         let prepared = current.retention.prepared.as_deref().unwrap();
         assert_eq!(prepared.quads[0].id, previous.chunks()[0].id);
         assert!(prepared.quads[0].replayed);
         assert_eq!(prepared.replay_quad_indices, previous.retention.prepared.as_deref().unwrap().replay_quad_indices);
-        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true);
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true, false);
         assert_eq!(current.chunks().len(), 1);
 
         let mut next = crate::window::retained::PaintFixture::default();
         next.replay(0..32, &current);
         assert!(next.paint.finish_against(&current.paint));
-        next.retention.finish_against(&mut next.paint.scene, &current.paint.scene, &current.retention, true);
+        next.retention.finish_against(&mut next.paint.scene, &current.paint.scene, &current.retention, true, false);
         assert!(Arc::ptr_eq(next.retention.prepared.as_ref().unwrap(), current.retention.prepared.as_ref().unwrap()));
         assert!(!previous.chunks()[0].replayed);
         next.retention.clear();
@@ -421,8 +426,8 @@ mod tests {
         // An identical Scene with a different owner or candidate split must
         // still go through normal chunk qualification.
         current.record(GlobalElementId::from_path(&["different".into()]), 1, 0..32);
-        assert!(!current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention));
-        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true);
+        assert!(!current.retention.reuse_prepared_chunks(&current.paint.scene, &previous.retention, false));
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, true, false);
         assert_eq!(current.chunks().len(), 1);
     }
 

@@ -57,10 +57,16 @@ impl Painter {
     }
 
     pub(crate) fn finish_against(&mut self, previous: &Scene) -> bool {
+        self.finish_with_previous(Some(previous)).0
+    }
+
+    /// (same paint, certified placement-only change). Chunk qualification
+    /// consumes the same physical proof instead of repeating Scene scans.
+    pub(crate) fn finish_against_with_storage(&mut self, previous: &Scene) -> (bool, bool) {
         self.finish_with_previous(Some(previous))
     }
 
-    fn finish_with_previous(&mut self, previous: Option<&Scene>) -> bool {
+    fn finish_with_previous(&mut self, previous: Option<&Scene>) -> (bool, bool) {
         if self.frame_builder {
             self.flush_draw_payloads();
         } else {
@@ -151,11 +157,11 @@ impl Painter {
                 self.prepare_batches();
                 self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
             }
-            same_paint
+            (same_paint, physical_reuse == Some(false))
         } else {
             self.prepare_batches();
             self.scene.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
-            false
+            (false, false)
         }
     }
 

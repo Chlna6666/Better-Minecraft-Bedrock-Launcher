@@ -537,6 +537,46 @@ mod tests {
     }
 
     #[test]
+    fn placement_only_finish_carries_retained_gpu_chunk_qualification() {
+        use crate::window::retained::RetainedPaint;
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let quad = Quad {
+            bounds: Bounds::new(point(px(0.), px(16.)), size(px(40.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(coverage), ..Default::default()
+        };
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let first = source.native_placement(viewport, 1., Point::default()).unwrap();
+        let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let mut old = Painter::for_frame();
+        for _ in 0..32 { old.insert_primitive(quad); }
+        assert!(old.push_deferred_scroll(first));
+        old.finish();
+        let mut old_retention = RetainedPaint::default();
+        old_retention.record(crate::GlobalElementId::from_path(&["placement".into()]), 1, 0..32);
+        old_retention.finish(&mut old.scene);
+        assert_eq!(old_retention.chunks_for(&old.scene).len(), 1);
+        let mut current = Painter::for_frame();
+        assert!(current.replay_with_ordering(0..32, &old.scene,
+            old_retention.replay_quads(&old.scene, 0..32), Some(&old)));
+        assert!(current.push_scroll_placement_against(&old.scene, 32..33, moved));
+        let proof = current.finish_against_with_storage(&old.scene);
+        assert_eq!(proof, (false, true));
+        let mut retention = RetainedPaint::default();
+        retention.replay(0..32, &old_retention, 0);
+        retention.finish_against(&mut current.scene, &old.scene, &old_retention, proof.0, proof.1);
+        let old_chunk = &old_retention.chunks_for(&old.scene)[0];
+        let new_chunk = &retention.chunks_for(&current.scene)[0];
+        assert_eq!(new_chunk.id, old_chunk.id);
+        assert_eq!(new_chunk.quad_range, old_chunk.quad_range);
+        assert!(new_chunk.replayed);
+        assert!(!old_chunk.replayed);
+        assert!(retention.chunks_for(&old.scene).is_empty());
+    }
+
+    #[test]
     fn native_marker_run_replay_shares_slots_and_replaces_only_changed_marker() {
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
         let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
