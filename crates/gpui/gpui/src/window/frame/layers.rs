@@ -477,10 +477,12 @@ impl StaticPaintOrder {
 // that same order. Scope markers themselves draw nothing, but inherited
 // DrawOrder can reorder nested layers. Reject inversions rather than
 // guessing which overlapping primitives can safely commute.
+fn root_order_eligible(scene: &Scene) -> bool {
+    scene.animation_values.is_empty() && scene.blurs.is_empty() && scene.backdrop_blurs.is_empty()
+}
+
 fn ordered_static_root(scene: &Scene) -> bool {
-    if !scene.animation_values.is_empty()
-        || !scene.blurs.is_empty() || !scene.backdrop_blurs.is_empty()
-    {
+    if !root_order_eligible(scene) {
         return false;
     }
     if scene.paint_operations.has_deferred_scroll() {
@@ -520,9 +522,29 @@ fn static_root_span(scene: &Scene, range: Range<usize>) -> Option<Range<usize>> 
     (!range.is_empty() && range.end <= scene.len()).then_some(range)
 }
 
+// The order proof depends on static geometry and scope order, not on the
+// scroll source's generation or its content-space translation. Shared
+// immutable operation pages already prove every input in those pages.
+fn root_order_inputs_match(current: &Scene, previous: &Scene, flat_root: bool) -> bool {
+    root_order_eligible(current) && current.paint_operations.all().matches_by(
+        previous.paint_operations.all(),
+        |current, previous| match (current, previous) {
+            (PaintOperation::DeferredScroll(a), PaintOperation::DeferredScroll(b)) => {
+                a.has_static_order() == b.has_static_order()
+                    && (flat_root || (a.has_scoped_order() == b.has_scoped_order()
+                        && a.visual_bounds() == b.visual_bounds()))
+            }
+            _ => current.same_paint(previous),
+        },
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct SceneLayers {
     pub(crate) frames: Vec<LayerFrame>,
+    // A positive proof belongs only to this immutable root publication.
+    ordered: bool,
+    flat_root: bool,
 }
 
 impl SceneLayers {
@@ -576,13 +598,39 @@ impl SceneLayers {
             .then(|| static_root_span(scene, range)).flatten();
     }
 
+    #[cfg(test)]
     pub(crate) fn capture(scene: &Scene, previous: Option<&Self>, window_opaque: bool) -> Self {
+        Self::capture_layers(scene, previous, window_opaque, ordered_static_root(scene),
+            !scene.paint_operations.has_layer_scopes())
+    }
+
+    pub(in crate::window) fn capture_against(
+        scene: &Scene,
+        previous: Option<(&Scene, &Self)>,
+        window_opaque: bool,
+    ) -> Self {
+        if !scene.paint_operations.has_deferred_scroll() {
+            return Self::default();
+        }
+        // Reuse the preceding positive proof only when every input is
+        // equivalent. On failure, run the authoritative full proof.
+        let inherited = previous.is_some_and(|(old_scene, old_layers)| old_layers.ordered
+            && root_order_inputs_match(scene, old_scene, old_layers.flat_root));
+        let (ordered, flat_root) = if inherited {
+            (true, previous.expect("inherited root proof").1.flat_root)
+        } else {
+            (ordered_static_root(scene), !scene.paint_operations.has_layer_scopes())
+        };
+        Self::capture_layers(scene, previous.map(|(_, layers)| layers), window_opaque, ordered, flat_root)
+    }
+
+    fn capture_layers(scene: &Scene, previous: Option<&Self>, window_opaque: bool,
+        ordered: bool, flat_root: bool) -> Self {
         if !scene.paint_operations.has_deferred_scroll() {
             return Self::default();
         }
         // Composition eligibility is not a source-lifetime proof. A
         // dynamic root can still own immutable, reusable scroll textures.
-        let ordered = ordered_static_root(scene);
         let mut seen = FxHashSet::default();
         let old = previous.map_or(&[][..], |layers| layers.frames.as_slice());
         // The common scroll publication preserves row order. Match that
@@ -654,7 +702,7 @@ impl SceneLayers {
                 }),
             });
         }
-        Self { frames }
+        Self { frames, ordered, flat_root }
     }
 
 

@@ -283,9 +283,9 @@ impl Frame {
             Arc::clone(&self.retained_paint),
             geometry,
         );
-        paint.layers = SceneLayers::capture(
+        paint.layers = SceneLayers::capture_against(
             &paint.scene,
-            previous.and_then(|frame| frame.paint.as_ref()).map(|paint| &paint.layers),
+            previous.and_then(|frame| frame.paint.as_ref()).map(|paint| (&paint.scene, &paint.layers)),
             window_opaque,
         );
         let paint = Arc::new(paint);

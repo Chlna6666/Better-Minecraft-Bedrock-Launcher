@@ -799,7 +799,7 @@ mod tests {
         assert!(moved.push_deferred_scroll(later));
         moved.insert_primitive(outside(32.));
         moved.finish();
-        let next = crate::window::SceneLayers::capture(&moved.scene, Some(&layers), true);
+        let next = crate::window::SceneLayers::capture_against(&moved.scene, Some((&scene, &layers)), true);
         assert_eq!(next.frames[0].id, layers.frames[0].id);
         assert_eq!(next.frames[0].generation, layers.frames[0].generation);
         assert!(Arc::ptr_eq(&next.frames[0].content, &layers.frames[0].content));
@@ -831,7 +831,7 @@ mod tests {
         assert!(conflict.push_deferred_scroll(placement.clone()));
         conflict.pop_layer();
         conflict.finish();
-        let conflict_layers = crate::window::SceneLayers::capture(&conflict.scene, Some(&layers), true);
+        let conflict_layers = crate::window::SceneLayers::capture_against(&conflict.scene, Some((&scene, &layers)), true);
         assert_eq!(conflict_layers.frames.len(), 1);
         assert!(conflict_layers.frames[0].root_static_span().is_none());
         let nested_paint = crate::window::Paint::new(nested.into_scene(), Arc::default(), Default::default());

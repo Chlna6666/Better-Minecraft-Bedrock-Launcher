@@ -139,6 +139,12 @@ impl Operations {
         self.boundaries.last().is_some_and(|boundary| boundary.deferred_scrolls != 0)
     }
 
+    /// A flat root's scroll placements have no inherited ordering scope.
+    /// The sparse replay metadata avoids scanning ordinary primitives.
+    pub(crate) fn has_layer_scopes(&self) -> bool {
+        self.boundaries.iter().any(|boundary| boundary.layer_depth != 0)
+    }
+
     pub(crate) fn deferred_scroll_indices(&self) -> impl Iterator<Item = usize> + '_ {
         self.boundaries.iter().scan(0, |previous, boundary| {
             let changed = boundary.deferred_scrolls != *previous;
