@@ -555,13 +555,48 @@ pub(super) struct CompositeSlot {
     sprites: Option<BufferId>,
     global_bytes: Vec<u8>,
     sprite_bytes: Vec<u8>,
-    sprite_records: Vec<CompositeRecord>,
+    sprite_records: Vec<Option<CompositeRecord>>,
+    layer_slots: StableSlots<u64>,
+    tile_slots: StableSlots<RasterTileKey>,
     placements: Option<BufferId>,
     placement_bytes: Vec<u8>,
     outside: OutsideGpuStreams,
     // Dedicated immutable animation sentinel; never bind a growable normal
     // renderer animation buffer into a resident tile descriptor.
     static_animation: Option<BufferId>,
+}
+
+// The existing free presentation slot is the ownership boundary. Keep
+// surviving identities at their physical indices; only departed identities
+// release slots. Paint order is carried by commands, not buffer order.
+struct StableSlots<K> {
+    slots: FxHashMap<K, u32>,
+}
+
+impl<K> Default for StableSlots<K> {
+    fn default() -> Self { Self { slots: FxHashMap::default() } }
+}
+
+impl<K: Copy + Eq + std::hash::Hash> StableSlots<K> {
+    fn reconcile(&mut self, keys: impl IntoIterator<Item = K>) -> Result<Vec<u32>> {
+        let keys: SmallVec<[K; 64]> = keys.into_iter().collect();
+        let live: FxHashSet<_> = keys.iter().copied().collect();
+        anyhow::ensure!(live.len() == keys.len() && live.len() <= MAX_TILES,
+            "invalid scroll composite identities");
+        self.slots.retain(|key, _| live.contains(key));
+        let mut occupied = self.slots.values().fold(0u64, |mask, &slot| mask | (1u64 << slot));
+        let mut ordered = Vec::with_capacity(keys.len());
+        for key in keys {
+            let slot = *self.slots.entry(key).or_insert_with(|| {
+                let slot = (!occupied).trailing_zeros();
+                debug_assert!(slot < MAX_TILES as u32);
+                occupied |= 1u64 << slot;
+                slot
+            });
+            ordered.push(slot);
+        }
+        Ok(ordered)
+    }
 }
 
 // Physical region and content-space geometry remain immutable while a
@@ -1274,18 +1309,30 @@ impl NovaRenderer {
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Vec<RenderCommand>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
-            let mut placement_bytes = Vec::with_capacity(plans.len() * PACKED_ANIMATION_VALUE_BYTES);
-            let mut records = Vec::with_capacity(requests.len());
+            let layer_slots = composite_slot.layer_slots.reconcile(plans.iter().map(|plan| plan.layer.id))?;
+            let instances = composite_slot.tile_slots.reconcile(requests.iter().map(|(_, request)| request.key))?;
+            let mut placement_bytes = composite_slot.placement_bytes.clone();
+            let mut changes = Vec::new();
             let mut offset = 0;
-            for (index, plan) in plans.iter().enumerate() {
+            for (plan, &layer_slot) in plans.iter().zip(&layer_slots) {
                 let (viewport, translation) = plan.layer.root_static_raster().context("missing scroll viewport")?;
-                append_placement(&mut placement_bytes, viewport, translation);
-                for (request, read) in plan.requests.iter().zip(&reads[offset..offset + plan.requests.len()]) {
+                let start = layer_slot as usize * PACKED_ANIMATION_VALUE_BYTES;
+                let end = start + PACKED_ANIMATION_VALUE_BYTES;
+                if placement_bytes.len() < end { placement_bytes.resize(end, 0); }
+                let mut record = Vec::with_capacity(PACKED_ANIMATION_VALUE_BYTES);
+                append_placement(&mut record, viewport, translation);
+                placement_bytes[start..end].copy_from_slice(&record);
+                for (index, request) in plan.requests.iter().enumerate() {
                     debug_assert_eq!(request.bounds.origin, crate::point(
                         ScaledPixels((request.raster.origin.x + translation[0]) as f32),
                         ScaledPixels((request.raster.origin.y + translation[1]) as f32)));
-                    records.push(CompositeRecord { layer_slot: (index + 1) as u32, raster: request.raster,
-                        region: read.region() });
+                    let instance = instances[offset + index] as usize;
+                    let record = CompositeRecord { layer_slot: layer_slot + 1, raster: request.raster,
+                        region: reads[offset + index].region() };
+                    if composite_slot.sprite_records.get(instance).and_then(|entry| *entry) != Some(record)
+                        || composite_slot.sprite_bytes.len() < (instance + 1) * PACKED_POLY_SPRITE_BYTES {
+                        changes.push((instance, record));
+                    }
                 }
                 offset += plan.requests.len();
             }
@@ -1296,23 +1343,30 @@ impl NovaRenderer {
             let globals = pack_global_params(self.active_size, premultiplied, [0., 0.]);
             let global_buffer = CompositeSlot::write_changed(device, &mut composite_slot.global,
                 &mut composite_slot.global_bytes, &globals, GLOBAL_UPLOAD_BYTES, globals.len(), BufferUsage::UNIFORM)?;
-            let poly_sprite_buffer = if composite_slot.sprite_records == records && composite_slot.sprites.is_some()
-                && composite_slot.sprite_bytes.len() == records.len() * PACKED_POLY_SPRITE_BYTES {
-                composite_slot.sprites.unwrap()
+            let poly_sprite_buffer = if changes.is_empty() && let Some(buffer) = composite_slot.sprites {
+                buffer
             } else {
-                let mut bytes = Vec::with_capacity(records.len() * PACKED_POLY_SPRITE_BYTES);
-                for (index, &record) in records.iter().enumerate() {
-                    let start = index * PACKED_POLY_SPRITE_BYTES;
-                    if composite_slot.sprite_records.get(index) == Some(&record)
-                        && let Some(previous) = composite_slot.sprite_bytes.get(start..start + PACKED_POLY_SPRITE_BYTES)
-                    {
-                        bytes.extend_from_slice(previous);
-                    } else { record.encode(&mut bytes); }
+                // Sparse slots retain their bytes even while unreachable.
+                // Reordering or inserting a row never moves surviving records.
+                let mut bytes = composite_slot.sprite_bytes.clone();
+                let mut encoded = Vec::with_capacity(PACKED_POLY_SPRITE_BYTES);
+                for &(instance, record) in &changes {
+                    let start = instance * PACKED_POLY_SPRITE_BYTES;
+                    let end = start + PACKED_POLY_SPRITE_BYTES;
+                    if bytes.len() < end { bytes.resize(end, 0); }
+                    encoded.clear();
+                    record.encode(&mut encoded);
+                    bytes[start..end].copy_from_slice(&encoded);
                 }
                 let buffer = CompositeSlot::write_changed(device, &mut composite_slot.sprites,
                     &mut composite_slot.sprite_bytes, &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES,
                     PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
-                composite_slot.sprite_records = records;
+                for (instance, record) in changes {
+                    if composite_slot.sprite_records.len() <= instance {
+                        composite_slot.sprite_records.resize(instance + 1, None);
+                    }
+                    composite_slot.sprite_records[instance] = Some(record);
+                }
                 buffer
             };
             let animation_value_buffer = if let Some(buffer) = composite_slot.static_animation {
@@ -1358,7 +1412,7 @@ impl NovaRenderer {
                         layout: self.poly_sprite_bind_group_layout,
                         entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
                     })?;
-                    append_composite_tile(&mut commands, previous_tile, pipeline, group, (tile_offset + index) as u32);
+                    append_composite_tile(&mut commands, previous_tile, pipeline, group, instances[tile_offset + index]);
                     previous_tile = true;
                 }
                 tile_offset = end;
@@ -1445,6 +1499,19 @@ mod tests {
         let mut paint = crate::window::Paint::default();
         paint.layers.raster_fixture(operations, coverage, viewport, translation);
         paint
+    }
+
+    #[test]
+    fn stable_slots_preserve_survivors_on_insertion_reorder_and_removal() {
+        let mut slots = StableSlots::<u64>::default();
+        assert_eq!(slots.reconcile([10, 20, 30]).unwrap(), [0, 1, 2]);
+        assert_eq!(slots.reconcile([40, 30, 10, 20]).unwrap(), [3, 2, 0, 1]);
+        assert_eq!(slots.reconcile([40, 20, 50, 10]).unwrap(), [3, 1, 2, 0]);
+        assert!(slots.reconcile([10, 10]).is_err());
+        let mut full = StableSlots::<u64>::default();
+        assert_eq!(full.reconcile(0..64).unwrap(), (0..64u32).collect::<Vec<_>>());
+        assert_eq!(full.reconcile((1..64).chain([64])).unwrap()[63], 0);
+        assert!(full.reconcile(0..65).is_err());
     }
 
     #[test]
