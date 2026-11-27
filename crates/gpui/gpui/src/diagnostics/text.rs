@@ -13,7 +13,7 @@ const HISTORY_CAPACITY: usize = 256;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TextBackend {
-    /// Cosmic Text shaping and Swash glyph generation under its existing state lock.
+    /// Cosmic Text shaping and Swash glyph generation.
     Cosmic,
     /// Windows DirectWrite. Only instrumented operations appear in snapshots.
     DirectWrite,
@@ -49,7 +49,8 @@ pub struct TextDurationDistribution {
 /// Lifetime totals and the most recent 256 calls for one backend/operation.
 ///
 /// Includes calls returning errors. Method time excludes the observed lock acquisition
-/// but can include preemption, fallback/font loading and cache work; it is not CPU time.
+/// but can include preemption, fallback/font loading, cache work and raster context contention;
+/// it is not CPU time.
 /// These process-wide observations have no WindowId and are not text-layout cache hit rates.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TextOperationMetricsSnapshot {
@@ -61,7 +62,7 @@ pub struct TextOperationMetricsSnapshot {
     pub calls: u64,
     /// Cumulative acquisition wall time for the instrumented state lock.
     pub lock_wait_total_us: u64,
-    /// Cumulative operation wall time after acquisition and before releasing that lock.
+    /// Cumulative operation wall time after the observed acquisition; may include other locks.
     pub method_total_us: u64,
     /// Recent acquisition wall times, not all locks inside the implementation.
     pub lock_wait: TextDurationDistribution,

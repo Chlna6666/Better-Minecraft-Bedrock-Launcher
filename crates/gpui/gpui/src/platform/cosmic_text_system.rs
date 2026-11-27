@@ -19,7 +19,7 @@ use cosmic_text::{
 };
 
 use crate::diagnostics::text::{self, TextBackend, TextOperation};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use smallvec::SmallVec;
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
@@ -47,7 +47,7 @@ use windows::Win32::{
 #[doc(hidden)]
 pub struct CosmicTextSystem {
     state: RwLock<CosmicTextSystemState>,
-    raster: Mutex<RasterState>,
+    raster: Rasterizer,
 }
 
 #[cfg(target_os = "linux")]
@@ -134,7 +134,6 @@ const PENDING_GLYPH_BYTES: usize = 2 * 1024 * 1024;
 
 struct RasterState {
     generation: u64,
-    context: ScaleContext,
     pending: HashMap<CacheKey, SwashImage>,
     pending_bytes: usize,
     stable_frames: HashMap<StableVerticalFrameKey, Bounds<DevicePixels>>,
@@ -144,7 +143,6 @@ impl RasterState {
     fn new() -> Self {
         Self {
             generation: 0,
-            context: ScaleContext::new(),
             pending: HashMap::default(),
             pending_bytes: 0,
             stable_frames: HashMap::default(),
@@ -172,24 +170,79 @@ impl RasterState {
         self.pending.insert(key, image);
     }
 
-    fn image(&mut self, font: &CosmicTextFont, key: CacheKey) -> Option<SwashImage> {
-        self.take(key)
-            .or_else(|| render_glyph(&mut self.context, font, key))
+}
+
+const MAX_RASTER_CONTEXTS: usize = 4;
+
+struct Rasterizer {
+    cache: Mutex<RasterState>,
+    contexts: Box<[Mutex<Option<ScaleContext>>]>,
+}
+
+impl Rasterizer {
+    fn new() -> Self {
+        let count = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(MAX_RASTER_CONTEXTS);
+        Self::with_capacity(count)
+    }
+
+    fn with_capacity(count: usize) -> Self {
+        Self {
+            cache: Mutex::new(RasterState::new()),
+            contexts: (0..count.clamp(1, MAX_RASTER_CONTEXTS))
+                .map(|_| Mutex::new(None))
+                .collect(),
+        }
+    }
+
+    // Never hold a cache or registry guard while borrowing a scaler.
+    // Contexts are created only when concurrent cache misses need them.
+    fn with_context<R>(&self, work: impl FnOnce(&mut ScaleContext) -> R) -> R {
+        let mut slot = self
+            .contexts
+            .iter()
+            .find_map(|slot| slot.try_lock())
+            .unwrap_or_else(|| self.contexts[0].lock());
+        work(slot.get_or_insert_with(ScaleContext::new))
+    }
+
+    fn cache(&self, generation: u64) -> Option<MutexGuard<'_, RasterState>> {
+        let mut cache = self.cache.lock();
+        if generation < cache.generation {
+            return None;
+        }
+        if generation != cache.generation {
+            *cache = RasterState::new();
+            cache.generation = generation;
+        }
+        Some(cache)
+    }
+
+    fn image(&self, font: &RasterFont) -> Option<SwashImage> {
+        if let Some(image) = self.cache(font.generation).and_then(|mut cache| cache.take(font.key)) {
+            return Some(image);
+        }
+        self.with_context(|context| render_glyph(context, &font.font, font.key))
     }
 
     fn bounds(
-        &mut self,
-        font: &CosmicTextFont,
+        &self,
+        font: &RasterFont,
         key: CacheKey,
         retain_image: bool,
     ) -> Option<Bounds<DevicePixels>> {
-        if let Some(image) = self.pending.get(&key) {
-            return Some(swash_image_bounds(image));
+        if let Some(bounds) = self.cache(font.generation).and_then(|cache| {
+            cache.pending.get(&key).map(swash_image_bounds)
+        }) {
+            return Some(bounds);
         }
-        let image = render_glyph(&mut self.context, font, key)?;
+        let image = self.with_context(|context| render_glyph(context, &font.font, key))?;
         let bounds = swash_image_bounds(&image);
-        if retain_image && bounds.size.width.0 > 0 && bounds.size.height.0 > 0 {
-            self.remember(key, image);
+        if retain_image && bounds.size.width.0 > 0 && bounds.size.height.0 > 0
+            && let Some(mut cache) = self.cache(font.generation)
+        {
+            cache.remember(key, image);
         }
         Some(bounds)
     }
@@ -234,9 +287,9 @@ fn render_glyph(
     .render(&mut scaler, key.glyph_id)
 }
 
-impl RasterState {
+impl Rasterizer {
     fn stable_vertical_frame(
-        &mut self,
+        &self,
         font: &RasterFont,
         params: &RenderGlyphParams,
     ) -> StableVerticalRasterFrame {
@@ -245,7 +298,8 @@ impl RasterState {
             font_size_bits: params.font_size.0.to_bits(),
             scale_factor_bits: params.scale_factor.to_bits(),
         };
-        let bounds = if let Some(bounds) = self.stable_frames.get(&key).copied() {
+        let cached = self.cache(font.generation).and_then(|cache| cache.stable_frames.get(&key).copied());
+        let bounds = if let Some(bounds) = cached {
             bounds
         } else {
             let face = font.font.as_swash();
@@ -261,13 +315,18 @@ impl RasterState {
                 let glyph_id = face.charmap().map(*sample);
                 if glyph_id != 0 {
                     let sample_key = CacheKey { glyph_id, ..font.key };
-                    if let Some(sample_bounds) = self.bounds(&font.font, sample_key, false) {
+                    if let Some(sample_bounds) = self.bounds(font, sample_key, false) {
                         bounds = union_stable_vertical_frame_bounds(sample_bounds, bounds);
                     }
                 }
             }
-            self.stable_frames.insert(key, bounds);
-            bounds
+            // Another caller may have published this frame while we computed it.
+            // Adopt the published frame, but never repopulate an obsolete generation.
+            if let Some(mut cache) = self.cache(font.generation) {
+                *cache.stable_frames.entry(key).or_insert(bounds)
+            } else {
+                bounds
+            }
         };
         StableVerticalRasterFrame {
             origin_y: bounds.origin.y,
@@ -276,11 +335,11 @@ impl RasterState {
     }
 
     fn raster_bounds(
-        &mut self,
+        &self,
         font: &RasterFont,
         params: &RenderGlyphParams,
     ) -> Result<Bounds<DevicePixels>> {
-        let Some(bounds) = self.bounds(&font.font, font.key, true) else {
+        let Some(bounds) = self.bounds(font, font.key, true) else {
             return Ok(Bounds::default());
         };
         if params.is_cjk && !params.is_emoji {
@@ -373,26 +432,12 @@ impl CosmicTextSystem {
         &self,
         operation: TextOperation,
         params: &RenderGlyphParams,
-        work: impl FnOnce(&mut RasterState, &RasterFont) -> R,
+        work: impl FnOnce(&Rasterizer, &RasterFont) -> R,
     ) -> R {
         let started = std::time::Instant::now();
         let font = self.state.read().raster_font(params);
-        let mut raster = self.raster.lock();
         let acquired = std::time::Instant::now();
-        let result = if font.generation < raster.generation {
-            // A previously captured font can finish, but cannot populate
-            // the newer generation's handoff or stable-frame cache.
-            drop(raster);
-            work(&mut RasterState::new(), &font)
-        } else {
-            if font.generation != raster.generation {
-                *raster = RasterState::new();
-                raster.generation = font.generation;
-            }
-            let result = work(&mut raster, &font);
-            drop(raster);
-            result
-        };
+        let result = work(&self.raster, &font);
         text::record(
             TextBackend::Cosmic,
             operation,
@@ -426,7 +471,7 @@ impl CosmicTextSystem {
                 loaded_embedded_font_hashes: HashSet::default(),
                 missing_glyph_sink: None,
             }),
-            raster: Mutex::new(RasterState::new()),
+            raster: Rasterizer::new(),
         }
     }
 }
@@ -603,7 +648,7 @@ impl PlatformTextSystem for CosmicTextSystem {
         // Channel conversion, mask expansion and stable-frame padding have
         // no font-state dependency.
         let image = self.with_raster(TextOperation::Rasterize, params, |raster, font| {
-            raster.image(&font.font, font.key).with_context(|| {
+            raster.image(font).with_context(|| {
                 format!("no image for {params:?} in font {:?}", font.font)
             })
         })?;
@@ -3357,7 +3402,7 @@ mod tests {
         drop(state);
         let exact_bounds = swash_image_bounds(&image);
         let actual = text_system.with_raster(TextOperation::Rasterize, &params, |raster, font| {
-            raster.image(&font.font, font.key).expect("direct glyph image")
+            raster.image(font).expect("direct glyph image")
         });
         assert_eq!(actual.content, image.content);
         assert_eq!(swash_image_bounds(&actual), exact_bounds);
@@ -3488,6 +3533,33 @@ mod owned_raster_tests {
         assert_eq!(output.data.as_ptr(), pointer);
         assert_eq!(raster.pending_bytes, 0);
         assert!(raster.pending.is_empty());
+    }
+
+    #[test]
+    fn raster_contexts_are_lazy_and_use_an_available_slot() {
+        let raster = Rasterizer::with_capacity(2);
+        let first = raster.contexts[0].lock();
+        assert!(first.is_none());
+        raster.with_context(|_| {
+            assert!(raster.contexts[1].try_lock().is_none());
+        });
+        assert!(raster.contexts[1].lock().is_some());
+        assert!(first.is_none());
+    }
+
+    #[test]
+    fn stale_raster_generation_cannot_repopulate_cache() {
+        let raster = Rasterizer::with_capacity(1);
+        raster.cache(1).expect("initial generation").remember(
+            glyph_key(1),
+            SwashImage {
+                data: vec![1; 8],
+                ..Default::default()
+            },
+        );
+        assert_eq!(raster.cache(2).expect("new generation").pending_bytes, 0);
+        assert!(raster.cache(1).is_none());
+        assert_eq!(raster.cache(2).expect("current generation").generation, 2);
     }
 
     #[test]
