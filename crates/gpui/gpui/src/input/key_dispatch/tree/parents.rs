@@ -49,6 +49,12 @@ impl Span {
         self.end - self.len
     }
 
+    // The minimum covers the entire physical page, so it is also a
+    // conservative proof for sliced and relocated spans.
+    fn certifies_parents_from(&self, start: usize) -> bool {
+        self.begin() as i64 - self.start as i64 + self.page.min_parent >= start as i64
+    }
+
     fn slice(&self, range: &Range<usize>) -> (usize, &[u32]) {
         let begin = self.begin().max(range.start);
         let end = self.end.min(range.end);
@@ -126,6 +132,7 @@ impl ParentStore {
         decode(index, distance)
     }
 
+    #[cfg(test)]
     pub(super) fn iter(&self, range: Range<usize>) -> impl Iterator<Item = Option<DispatchNodeId>> + '_ {
         assert!(range.start <= range.end && range.end <= self.len);
         let pending_start = self.len - self.pending.len();
@@ -135,6 +142,43 @@ impl ParentStore {
             .map(move |span| span.slice(&range))
             .chain(std::iter::once((tail_start, tail)))
             .flat_map(|(start, edges)| edges.iter().enumerate().map(move |(offset, &distance)| decode(start + offset, distance)))
+    }
+
+    /// Check only edges leaving a retained partition. Internal edges on
+    /// certified pages need neither decoding nor per-node validation.
+    pub(super) fn all_external_parents(
+        &self,
+        range: Range<usize>,
+        mut valid: impl FnMut(Option<DispatchNodeId>) -> bool,
+    ) -> bool {
+        assert!(range.start <= range.end && range.end <= self.len);
+        if range.is_empty() {
+            return true;
+        }
+
+        let mut check_slice = |begin: usize, edges: &[u32]| {
+            edges.iter().enumerate().all(|(offset, &distance)| {
+                let index = begin + offset;
+                if distance != NO_PARENT && distance as usize <= index - range.start {
+                    true
+                } else {
+                    valid(decode(index, distance))
+                }
+            })
+        };
+
+        for span in self.spans_in(&range) {
+            if !span.certifies_parents_from(range.start) {
+                let (begin, edges) = span.slice(&range);
+                if !check_slice(begin, edges) {
+                    return false;
+                }
+            }
+        }
+        let pending_start = self.len - self.pending.len();
+        let tail = &self.pending[range.start.saturating_sub(pending_start)
+            ..range.end.saturating_sub(pending_start)];
+        check_slice(range.start.max(pending_start), tail)
     }
 
     fn share(&mut self, span: &Span, start: usize, edges: &[u32]) {
@@ -190,8 +234,7 @@ impl ParentStore {
         }
         for span in source.spans_in(&range) {
             let (begin, edges) = span.slice(&range);
-            let earliest = span.begin() as i64 - span.start as i64 + span.page.min_parent;
-            if earliest >= range.start as i64 {
+            if span.certifies_parents_from(range.start) {
                 // Every edge in the physical page stays inside the retained
                 // range. Distances remain valid after a logical relocation.
                 self.share(span, span.start + begin - span.begin(), edges);
@@ -282,6 +325,49 @@ mod tests {
         assert_eq!(target.parent(PAGE_LEN + 17), Some(DispatchNodeId(0)));
         source.clear();
         assert_eq!(target.parent(PAGE_LEN + 16), Some(DispatchNodeId(2)));
+    }
+
+    fn assert_external_parents(store: &ParentStore, range: Range<usize>) {
+        let expected: Vec<_> = store
+            .iter(range.clone())
+            .filter(|parent| parent.is_none_or(|parent| parent.0 < range.start))
+            .collect();
+        let mut actual = Vec::new();
+        assert!(store.all_external_parents(range.clone(), |parent| {
+            actual.push(parent);
+            true
+        }));
+        assert_eq!(actual, expected);
+        assert_eq!(
+            store.all_external_parents(range, |_| false),
+            expected.is_empty()
+        );
+    }
+
+    #[test]
+    fn external_parent_validation_matches_scalar_after_splicing() {
+        let mut source = ParentStore::default();
+        source.push(None);
+        for index in 1..PAGE_LEN * 3 + 19 {
+            let parent = if index % 1031 == 0 { 0 } else { index - 1 };
+            source.push(Some(DispatchNodeId(parent)));
+        }
+        for start in [0, 1, PAGE_LEN - 1, PAGE_LEN, PAGE_LEN + 7, PAGE_LEN * 3 + 5] {
+            for end in [start, (start + 11).min(source.len()), source.len()] {
+                assert_external_parents(&source, start..end);
+            }
+        }
+
+        let mut target = ParentStore::default();
+        target.push(None);
+        target.push(Some(DispatchNodeId(0)));
+        target.replay(&source, 17..source.len() - 4, |_| Some(DispatchNodeId(1)));
+        target.freeze();
+        target.truncate(PAGE_LEN * 2 + 13);
+        target.push(Some(DispatchNodeId(0)));
+        for start in [0, 2, PAGE_LEN, PAGE_LEN + 5, target.len() - 1] {
+            assert_external_parents(&target, start..target.len());
+        }
     }
 
     #[test]

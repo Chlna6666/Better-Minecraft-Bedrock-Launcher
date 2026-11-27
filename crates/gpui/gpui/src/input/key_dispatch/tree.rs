@@ -472,17 +472,16 @@ impl DispatchTree {
             .chain(std::iter::once((outer.end, outer.end)))
         {
             let (end, next) = end_and_gap;
-            for (offset, parent) in self.parents.iter(start..end).enumerate() {
-                let index = start + offset;
-                if parent == anchor { continue; }
-                let Some(parent) = parent else { return false; };
-                if parent.0 >= start && parent.0 < index { continue; }
-                if parent.0 < outer.start || parent.0 >= index
-                    || gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
-                        .is_some_and(|(gap, _)| gap.contains(&parent.0))
-                {
-                    return false;
+            if !self.parents.all_external_parents(start..end, |parent| {
+                if parent == anchor {
+                    return true;
                 }
+                let Some(parent) = parent else { return false; };
+                parent.0 >= outer.start
+                    && !gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
+                        .is_some_and(|(gap, _)| gap.contains(&parent.0))
+            }) {
+                return false;
             }
             start = next;
         }
