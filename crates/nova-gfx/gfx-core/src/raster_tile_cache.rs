@@ -25,6 +25,24 @@ pub struct RasterTileTexture {
     pub view: TextureViewId,
 }
 
+/// Sampling lease for a completed tile or a writer ordered before the reader.
+/// This is not a completion certificate. The caller must establish native
+/// queue ordering (or a GPU wait) before submitting the sampling commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct RasterTileRead {
+    key: RasterTileKey,
+    serial: u64,
+    texture: RasterTileTexture,
+    writer: Option<SubmissionId>,
+}
+impl RasterTileRead {
+    /// Native sampled texture.
+    pub fn texture(self) -> RasterTileTexture { self.texture }
+    /// The outstanding writer which must precede the consumer.
+    pub fn writer(self) -> Option<SubmissionId> { self.writer }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State { Invalid, Reserved, Submitted(SubmissionId), Ready }
 
@@ -158,6 +176,44 @@ impl RasterTileCache {
             || e.raster != raster || e.format != format { return None; }
         e.last_used = self.frame;
         e.handles()
+    }
+
+    /// Resolve a sampling lease. Pending writes may be selected only when
+    /// the caller can establish ordering after their exact native submission.
+    /// Ordinary lookup continues to require completed pixels.
+    pub fn lookup_ordered(
+        &mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
+        ordered_after: impl FnOnce(SubmissionId) -> bool,
+    ) -> Option<RasterTileRead> {
+        let e = self.entries.get_mut(&key)?;
+        if e.stale || e.generation != generation || e.raster != raster || e.format != format {
+            return None;
+        }
+        let writer = match e.state {
+            State::Ready => None,
+            State::Submitted(id) if ordered_after(id) => Some(id),
+            _ => return None,
+        };
+        let texture = e.handles()?;
+        e.last_used = self.frame;
+        Some(RasterTileRead { key, serial: e.serial, texture, writer })
+    }
+
+    /// Register an accepted native reader of an ordered lease. The consumer
+    /// must actually have been submitted after the lease's writer; neither
+    /// recording this fence nor the dependency makes that writer complete.
+    /// Call before further cache mutation, including on rejected WSI presents.
+    pub fn record_ordered_reader(&mut self, read: RasterTileRead, submission: SubmissionId) -> Result<()> {
+        let e = self.entries.get_mut(&read.key)
+            .filter(|e| e.serial == read.serial && e.handles() == Some(read.texture)
+                && !e.stale && match e.state {
+                    State::Ready => true,
+                    State::Submitted(writer) => read.writer == Some(writer) && writer != submission,
+                    _ => false,
+                })
+            .ok_or_else(|| Error::InvalidInput("reader references an unordered or superseded tile".into()))?;
+        if !e.readers.contains(&submission) { e.readers.push(submission); }
+        Ok(())
     }
 
     /// Reserve an attachment for repaint. Call lookup first; a busy or
@@ -351,6 +407,44 @@ mod tests {
         assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_some());
         c.retain_generations(|_| None);
         assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_none());
+    }
+
+    #[test]
+    fn ordered_reader_keeps_writer_and_reader_fences_distinct() {
+        let mut c = RasterTileCache::new(4096);
+        let writer = SubmissionId::from_parts(4, 1);
+        let reader = SubmissionId::from_parts(5, 1);
+        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        assert!(c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| false).is_none());
+        let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |id| id == writer).unwrap();
+        assert_eq!(read.writer(), Some(writer));
+        assert!(c.record_ordered_reader(read, writer).is_err());
+        c.record_ordered_reader(read, reader).unwrap();
+        assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
+        c.complete(writer);
+        assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_some());
+        c.invalidate_layer(7);
+        assert!(!c.entries[&key(0)].idle());
+        c.complete(reader);
+        assert!(c.entries[&key(0)].idle());
+        assert!(c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| true).is_none());
+    }
+
+    #[test]
+    fn ordered_reader_completion_does_not_certify_writer() {
+        let mut c = RasterTileCache::new(4096);
+        let writer = SubmissionId::from_parts(4, 1);
+        let reader = SubmissionId::from_parts(5, 1);
+        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |id| id == writer).unwrap();
+        c.record_ordered_reader(read, reader).unwrap();
+        c.complete(reader);
+        assert!(!c.entries[&key(0)].idle());
+        assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
+        c.invalidate_all();
+        c.complete(writer);
+        assert!(c.entries[&key(0)].idle());
+        assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
     }
 
     #[test]
