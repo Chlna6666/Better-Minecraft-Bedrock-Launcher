@@ -33,21 +33,21 @@ fn visit_changed_bounds(
         && scene.surfaces.is_empty() && scene.renderer_extensions.is_empty()
         && scene.blurs.is_empty() && !scene.has_backdrop_blurs();
     let skip_shared = static_scene(scene) && static_scene(previous);
-    let compare = |a: &PaintOperation, b: &PaintOperation|
+    let compare = |a: PaintOperationRef<'_>, b: PaintOperationRef<'_>|
         paint_operations_match(scene, a, previous, b);
     let prefix_len = if skip_shared {
-        current.common_prefix_by(previous_operations, compare)
+        current.common_prefix_views(previous_operations, compare)
     } else {
-        current.iter().zip(previous_operations.iter())
-            .take_while(|(a, b)| compare(a, b)).count()
+        current.views().zip(previous_operations.views())
+            .take_while(|(a, b)| compare(*a, *b)).count()
     };
     let max_suffix_len = current.len().min(previous_operations.len()).saturating_sub(prefix_len);
     let suffix_len = if skip_shared {
         current.range(prefix_len..current.len())
-            .common_suffix_by(previous_operations.range(prefix_len..previous_operations.len()), compare)
+            .common_suffix_views(previous_operations.range(prefix_len..previous_operations.len()), compare)
     } else {
-        current.iter().rev().zip(previous_operations.iter().rev())
-            .take(max_suffix_len).take_while(|(a, b)| compare(a, b)).count()
+        current.views().rev().zip(previous_operations.views().rev())
+            .take(max_suffix_len).take_while(|(a, b)| compare(*a, *b)).count()
     };
 
     let previous_changed =
@@ -65,15 +65,15 @@ fn visit_changed_bounds(
     // uncertainty falls back to the full old/new output bounds below.
     let refined_identity_capture = match (
         previous_changed.len(),
-        previous_changed.get(0),
+        previous_changed.view(0),
         current_changed.len(),
-        current_changed.get(0),
+        current_changed.view(0),
     ) {
         (
             1,
-            Some(PaintOperation::Primitive(Primitive::Blur(old))),
+            Some(PaintOperationRef::Primitive(PrimitiveRef::Blur(old))),
             1,
-            Some(PaintOperation::Primitive(Primitive::Blur(new))),
+            Some(PaintOperationRef::Primitive(PrimitiveRef::Blur(new))),
         ) if old.order == new.order
             && old.layer_id == new.layer_id
             && old.animation_id.is_none()
@@ -116,7 +116,7 @@ fn visit_changed_bounds(
     if !refined_identity_capture {
         if current_changed.len() == previous_changed.len() {
             for (current_operation, previous_operation) in
-                current_changed.iter().zip(previous_changed.iter())
+                current_changed.views().zip(previous_changed.views())
             {
                 // Equal ordinary fills between changed siblings contribute no
                 // independent damage. Never skip filter/capture barriers here:
@@ -132,7 +132,7 @@ fn visit_changed_bounds(
                 }
             }
         } else {
-            for operation in previous_changed.iter().chain(current_changed.iter()) {
+            for operation in previous_changed.views().chain(current_changed.views()) {
                 if let Some(bounds) = operation.visual_bounds() {
                     visit(bounds);
                 }
@@ -163,8 +163,8 @@ pub(crate) fn for_each_element_blur_damage(
         // bounds (or changed capture descriptor) already describe the output damage.
         // Keep visiting enclosing Gaussian/transformed captures independently.
         if matches!(
-            scene.paint_operations.get(group_range.start),
-            Some(PaintOperation::StartBlur(capture))
+            scene.paint_operations.view(group_range.start),
+            Some(PaintOperationRef::StartBlur(capture))
                 if capture.radius.0 == 0.0 && capture.animation_id.is_none()
         ) {
             return;
@@ -186,12 +186,12 @@ pub(crate) fn requires_full_redraw_fallback(scene: &Scene) -> bool {
 
 // Only a static, equal quad is independent of retained animation samples
 // and filter source dependencies. Keep all other middle operations conservative.
-fn unchanged_static_quad(current: &PaintOperation, previous: &PaintOperation) -> bool {
+fn unchanged_static_quad(current: PaintOperationRef<'_>, previous: PaintOperationRef<'_>) -> bool {
     matches!(
         (current, previous),
         (
-            PaintOperation::Primitive(Primitive::Quad(current)),
-            PaintOperation::Primitive(Primitive::Quad(previous)),
+            PaintOperationRef::Primitive(PrimitiveRef::Quad(current)),
+            PaintOperationRef::Primitive(PrimitiveRef::Quad(previous)),
         ) if current.animation_id.is_none() && previous.animation_id.is_none() && current == previous
     )
 }
@@ -203,17 +203,17 @@ pub(crate) fn collect_paint_operation_damage(
     mut visit: impl FnMut(Bounds<ScaledPixels>),
 ) {
     let prefix_len = current
-        .iter()
-        .zip(previous.iter())
-        .take_while(|(current, previous)| current.visually_eq(previous))
+        .views()
+        .zip(previous.views())
+        .take_while(|(current, previous)| current.visually_eq(*previous))
         .count();
     let max_suffix_len = current.len().min(previous.len()).saturating_sub(prefix_len);
     let suffix_len = current
-        .iter()
+        .views()
         .rev()
-        .zip(previous.iter().rev())
+        .zip(previous.views().rev())
         .take(max_suffix_len)
-        .take_while(|(current, previous)| current.visually_eq(previous))
+        .take_while(|(current, previous)| current.visually_eq(*previous))
         .count();
 
     let current_changed = current.range(prefix_len..current.len().saturating_sub(suffix_len));
@@ -221,7 +221,7 @@ pub(crate) fn collect_paint_operation_damage(
 
     if current_changed.len() == previous_changed.len() {
         for (current_operation, previous_operation) in
-            current_changed.iter().zip(previous_changed.iter())
+            current_changed.views().zip(previous_changed.views())
         {
             if unchanged_static_quad(current_operation, previous_operation) {
                 continue;
@@ -241,13 +241,13 @@ pub(crate) fn collect_paint_operation_damage(
     }
 
     current_changed
-        .iter()
-        .chain(previous_changed.iter())
+        .views()
+        .chain(previous_changed.views())
         .for_each(|operation| visit_operation_damage(operation, region, &mut visit));
 }
 
 pub(crate) fn visit_operation_damage(
-    operation: &PaintOperation,
+    operation: PaintOperationRef<'_>,
     region: Bounds<ScaledPixels>,
     visit: &mut impl FnMut(Bounds<ScaledPixels>),
 ) {
@@ -265,14 +265,14 @@ pub(crate) fn visit_operation_damage(
 /// backdrop source. Keep the predicate deliberately strict; any uncertainty falls back to the
 /// ordinary old+new bounds damage path.
 pub(crate) fn visit_opaque_solid_quad_move_damage(
-    current: &PaintOperation,
-    previous: &PaintOperation,
+    current: PaintOperationRef<'_>,
+    previous: PaintOperationRef<'_>,
     region: Bounds<ScaledPixels>,
     visit: &mut impl FnMut(Bounds<ScaledPixels>),
 ) -> bool {
     let (
-        PaintOperation::Primitive(Primitive::Quad(current)),
-        PaintOperation::Primitive(Primitive::Quad(previous)),
+        PaintOperationRef::Primitive(PrimitiveRef::Quad(current)),
+        PaintOperationRef::Primitive(PrimitiveRef::Quad(previous)),
     ) = (current, previous)
     else {
         return false;
@@ -355,9 +355,9 @@ pub(crate) fn visit_clipped_damage(
 
 pub(crate) fn paint_operations_match(
     current_scene: &Scene,
-    current: &PaintOperation,
+    current: PaintOperationRef<'_>,
     previous_scene: &Scene,
-    previous: &PaintOperation,
+    previous: PaintOperationRef<'_>,
 ) -> bool {
     if !current.visually_eq(previous) {
         return false;
@@ -365,8 +365,8 @@ pub(crate) fn paint_operations_match(
 
     match (current, previous) {
         (
-            PaintOperation::Primitive(current_primitive),
-            PaintOperation::Primitive(previous_primitive),
+            PaintOperationRef::Primitive(current_primitive),
+            PaintOperationRef::Primitive(previous_primitive),
         ) => {
             let Some(current_animation_id) = current_primitive.animation_id() else {
                 return true;
@@ -377,7 +377,7 @@ pub(crate) fn paint_operations_match(
             current_scene.animation_value(current_animation_id)
                 == previous_scene.animation_value(previous_animation_id)
         }
-        (PaintOperation::StartBlur(current_blur), PaintOperation::StartBlur(previous_blur)) => {
+        (PaintOperationRef::StartBlur(current_blur), PaintOperationRef::StartBlur(previous_blur)) => {
             match (current_blur.animation_id, previous_blur.animation_id) {
                 (Some(current_animation_id), Some(previous_animation_id)) => {
                     current_scene.animation_value(current_animation_id)

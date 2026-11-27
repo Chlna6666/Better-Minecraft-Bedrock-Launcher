@@ -10,6 +10,44 @@ fn operations(count: usize) -> Operations {
 }
 
 #[test]
+fn borrowed_runs_preserve_payload_identity_and_shared_comparison() {
+    let source = operations(16);
+    let mut target = Operations::default();
+    target.share(&source, 3..10);
+    target.push(PaintOperation::EndLayer);
+    target.share(&source, 12..16);
+    target.push(PaintOperation::StartLayer(Bounds::default()));
+    let all = target.all();
+    assert_eq!(all.views().count(), target.len());
+    for start in 0..=target.len() {
+        for end in start..=target.len() {
+            let range = target.range(start..end);
+            let mut index = start;
+            for run in range.runs() {
+                for view in run.iter() {
+                    assert!(view.same_paint(target.view(index).unwrap()));
+                    if let PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Quad(quad)) = view {
+                        let PaintOperation::Primitive(Primitive::Quad(expected)) = &target[index] else {
+                            panic!("view kind differs from owned kind");
+                        };
+                        assert!(std::ptr::eq(quad, expected));
+                    }
+                    index += 1;
+                }
+            }
+            assert_eq!(index, end);
+            assert_eq!(range.views().rev().count(), end - start);
+        }
+    }
+    assert_eq!(target.range(0..7).common_prefix_views(source.range(3..10), |_, _| {
+        panic!("shared views must not visit individual primitives")
+    }), 7);
+    assert!(target.range(8..12).matches_views(source.range(12..16), |_, _| {
+        panic!("shared views must preserve the storage identity proof")
+    }));
+}
+
+#[test]
 fn shared_ranges_survive_source_clear_and_preserve_new_insertions() {
     let mut source = operations(12);
     let first = &source[2] as *const _;

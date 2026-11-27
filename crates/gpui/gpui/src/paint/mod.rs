@@ -13,10 +13,10 @@ pub(crate) use damage::*;
 pub(crate) use filter_damage::*;
 pub(crate) use geometry::*;
 
-use crate::scene::blur_influence_radius;
+use crate::scene::{blur_influence_radius, PaintOperationRef, PrimitiveRef};
 use crate::scene::geometry::is_solid_quad;
 use crate::{
-    BlurCapture, Bounds, DrawOrder, PaintBackdropBlur, PaintOperation, Primitive, ScaledPixels,
+    BlurCapture, Bounds, DrawOrder, PaintBackdropBlur, Primitive, ScaledPixels,
     Scene, SceneAnimationId, SceneAnimationValue, TransitionProperty,
 };
 use smallvec::SmallVec;

@@ -1,4 +1,4 @@
-use super::{PaintOperation, Scene, SceneAnimationId};
+use super::{PaintOperationRef, Scene, SceneAnimationId};
 use crate::{Bounds, ScaledPixels};
 
 impl Scene {
@@ -10,24 +10,24 @@ impl Scene {
         animation_id: SceneAnimationId,
     ) -> Option<Bounds<ScaledPixels>> {
         self.paint_operations
-            .iter()
+            .views()
             .filter_map(|operation| match operation {
-                PaintOperation::Primitive(primitive)
+                PaintOperationRef::Primitive(primitive)
                     if primitive.animation_id() == Some(animation_id) =>
                 {
                     operation.visual_bounds()
                 }
-                PaintOperation::StartBlur(capture)
+                PaintOperationRef::StartBlur(capture)
                     if capture.animation_id == Some(animation_id) =>
                 {
                     operation.visual_bounds()
                 }
-                PaintOperation::Primitive(_)
-                | PaintOperation::StartLayer(_)
-                | PaintOperation::EndLayer
-                | PaintOperation::StartBlur(_)
-                | PaintOperation::EndBlur
-                | PaintOperation::DeferredScroll(_) => None,
+                PaintOperationRef::Primitive(_)
+                | PaintOperationRef::StartLayer(_)
+                | PaintOperationRef::EndLayer
+                | PaintOperationRef::StartBlur(_)
+                | PaintOperationRef::EndBlur
+                | PaintOperationRef::DeferredScroll(_) => None,
             })
             .reduce(|left, right| left.union(&right))
     }

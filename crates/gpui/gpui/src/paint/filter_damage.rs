@@ -144,9 +144,9 @@ pub(crate) fn compute_backdrop_blur_damage(
         let common_end = current_index.min(previous_index);
         if !prefix_diverged {
             let matched = scene.paint_operations.range(verified_prefix..common_end)
-                .iter()
-                .zip(previous.paint_operations.range(verified_prefix..common_end).iter())
-                .take_while(|(current, old)| current.visually_eq(old))
+                .views()
+                .zip(previous.paint_operations.range(verified_prefix..common_end).views())
+                .take_while(|(current, old)| current.visually_eq(*old))
                 .count();
             verified_prefix += matched;
             prefix_diverged = verified_prefix < common_end;
@@ -296,9 +296,9 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
         if source_region.is_empty() {
             continue;
         }
-        for operation in scene.paint_operations.range(scanned_until..blur_index).iter() {
+        for operation in scene.paint_operations.range(scanned_until..blur_index).views() {
             let damage = match operation {
-                PaintOperation::Primitive(primitive)
+                PaintOperationRef::Primitive(primitive)
                     if animation_value_changed(
                         scene,
                         previous_scene,
@@ -315,7 +315,7 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
                         previous_presentation_values,
                     ))
                 }
-                PaintOperation::StartBlur(capture)
+                PaintOperationRef::StartBlur(capture)
                     if animation_value_changed(
                         scene,
                         previous_scene,
@@ -332,12 +332,12 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
                         previous_presentation_values,
                     ))
                 }
-                PaintOperation::Primitive(_)
-                | PaintOperation::StartLayer(_)
-                | PaintOperation::EndLayer
-                | PaintOperation::StartBlur(_)
-                | PaintOperation::EndBlur
-                | PaintOperation::DeferredScroll(_) => None,
+                PaintOperationRef::Primitive(_)
+                | PaintOperationRef::StartLayer(_)
+                | PaintOperationRef::EndLayer
+                | PaintOperationRef::StartBlur(_)
+                | PaintOperationRef::EndBlur
+                | PaintOperationRef::DeferredScroll(_) => None,
             };
             if let Some(damage) = damage
                 && !damage.is_empty()
@@ -417,16 +417,16 @@ pub(crate) fn backdrop_blur_operations(
     operations: crate::scene::OperationRange<'_>,
 ) -> impl Iterator<Item = (usize, &PaintBackdropBlur)> + Clone {
     operations
-        .iter()
+        .views()
         .enumerate()
         .filter_map(|(index, operation)| match operation {
-            PaintOperation::Primitive(Primitive::BackdropBlur(blur)) => Some((index, blur)),
-            PaintOperation::Primitive(_)
-            | PaintOperation::StartLayer(_)
-            | PaintOperation::EndLayer
-            | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur
-            | PaintOperation::DeferredScroll(_) => None,
+            PaintOperationRef::Primitive(PrimitiveRef::BackdropBlur(blur)) => Some((index, blur)),
+            PaintOperationRef::Primitive(_)
+            | PaintOperationRef::StartLayer(_)
+            | PaintOperationRef::EndLayer
+            | PaintOperationRef::StartBlur(_)
+            | PaintOperationRef::EndBlur
+            | PaintOperationRef::DeferredScroll(_) => None,
         })
 }
 

@@ -106,7 +106,7 @@ pub(crate) fn animation_value_changed(
 pub(crate) fn animation_swept_bounds(
     scene: &Scene,
     previous_scene: &Scene,
-    primitive: &Primitive,
+    primitive: PrimitiveRef<'_>,
     presentation_values: &[SceneAnimationValue],
     previous_presentation_values: &[SceneAnimationValue],
 ) -> Bounds<ScaledPixels> {
@@ -179,16 +179,17 @@ pub(crate) fn animation_sampled_blur_capture_bounds(
     }
 }
 
-pub(crate) fn animation_sampled_bounds(
-    primitive: &Primitive,
+pub(crate) fn animation_sampled_bounds<'a>(
+    primitive: impl Into<PrimitiveRef<'a>>,
     value: Option<&SceneAnimationValue>,
 ) -> Bounds<ScaledPixels> {
+    let primitive = primitive.into();
     let Some(value) = value else {
         return primitive.visual_bounds();
     };
     let sampled = sampled_animation_components(value);
     if value.property == TransitionProperty::HorizontalEdges
-        && matches!(primitive, Primitive::Quad(_) | Primitive::Shadow(_))
+        && matches!(primitive, PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_))
     {
         // Match the renderer's independent edge springs before applying the fixed mask.
         let mut bounds = primitive.unclipped_visual_bounds();
@@ -197,7 +198,7 @@ pub(crate) fn animation_sampled_bounds(
         return bounds.intersect(&primitive.content_mask().bounds);
     }
     if value.property == TransitionProperty::VerticalEdges
-        && let Primitive::Quad(quad) = primitive
+        && let PrimitiveRef::Quad(quad) = primitive
     {
         let mut bounds = quad.bounds;
         bounds.origin.y += ScaledPixels(sampled[0]);
@@ -210,11 +211,11 @@ pub(crate) fn animation_sampled_bounds(
         TransitionProperty::Translation | TransitionProperty::VisualState
     ) && matches!(
         primitive,
-        Primitive::Quad(_)
-            | Primitive::Shadow(_)
-            | Primitive::MonochromeSprite(_)
-            | Primitive::PolychromeSprite(_)
-            | Primitive::BackdropBlur(_)
+        PrimitiveRef::Quad(_)
+            | PrimitiveRef::Shadow(_)
+            | PrimitiveRef::MonochromeSprite(_)
+            | PrimitiveRef::PolychromeSprite(_)
+            | PrimitiveRef::BackdropBlur(_)
     ) {
         let mut translated = primitive.unclipped_visual_bounds();
         let mut mask = primitive.content_mask().bounds;
@@ -231,12 +232,12 @@ pub(crate) fn animation_sampled_bounds(
         TransitionProperty::Translation
             if matches!(
                 primitive,
-                Primitive::Quad(_)
-                    | Primitive::Shadow(_)
-                    | Primitive::MonochromeSprite(_)
-                    | Primitive::PolychromeSprite(_)
-                    | Primitive::BackdropBlur(_)
-                    | Primitive::Blur(_)
+                PrimitiveRef::Quad(_)
+                    | PrimitiveRef::Shadow(_)
+                    | PrimitiveRef::MonochromeSprite(_)
+                    | PrimitiveRef::PolychromeSprite(_)
+                    | PrimitiveRef::BackdropBlur(_)
+                    | PrimitiveRef::Blur(_)
             ) =>
         {
             Bounds {

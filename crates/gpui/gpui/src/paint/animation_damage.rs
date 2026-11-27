@@ -24,11 +24,11 @@ pub(crate) fn gpu_sample_damage(
     }
     let mut damage = SmallVec::new();
     let mut changed_operations = SmallVec::<[usize; 8]>::new();
-    for (index, operation) in scene.paint_operations.iter().enumerate() {
+    for (index, operation) in scene.paint_operations.views().enumerate() {
         let animation_id = match operation {
-            PaintOperation::Primitive(primitive) => primitive.animation_id(),
-            PaintOperation::StartBlur(capture) => capture.animation_id,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => {
+            PaintOperationRef::Primitive(primitive) => primitive.animation_id(),
+            PaintOperationRef::StartBlur(capture) => capture.animation_id,
+            PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer | PaintOperationRef::EndBlur | PaintOperationRef::DeferredScroll(_) => {
                 None
             }
         };
@@ -57,10 +57,10 @@ pub(crate) fn gpu_sample_damage(
                 // swept output for those masks; this does not repaint the
                 // retained capture source or introduce another GPU pass.
                 let rounded_reveal = match operation {
-                    PaintOperation::Primitive(primitive) => {
+                    PaintOperationRef::Primitive(primitive) => {
                         primitive.content_mask().corner_radii != crate::Corners::default()
                     }
-                    PaintOperation::StartBlur(capture) => {
+                    PaintOperationRef::StartBlur(capture) => {
                         capture.content_mask.corner_radii != crate::Corners::default()
                     }
                     _ => false,
@@ -73,8 +73,8 @@ pub(crate) fn gpu_sample_damage(
                     })
                     .and_then(|(before, after)| {
                         let base = match operation {
-                            PaintOperation::Primitive(primitive) => primitive.visual_bounds(),
-                            PaintOperation::StartBlur(capture) => {
+                            PaintOperationRef::Primitive(primitive) => primitive.visual_bounds(),
+                            PaintOperationRef::StartBlur(capture) => {
                                 blur_capture_visual_bounds(capture)
                             }
                             _ => return None,
@@ -86,11 +86,11 @@ pub(crate) fn gpu_sample_damage(
                         )
                     });
                 let bounds = clip_delta.unwrap_or_else(|| match operation {
-                    PaintOperation::Primitive(primitive) => {
+                    PaintOperationRef::Primitive(primitive) => {
                         animation_sampled_bounds(primitive, last)
                             .union(&animation_sampled_bounds(primitive, now))
                     }
-                    PaintOperation::StartBlur(capture) => {
+                    PaintOperationRef::StartBlur(capture) => {
                         animation_sampled_blur_capture_bounds(capture, last)
                             .union(&animation_sampled_blur_capture_bounds(capture, now))
                     }
@@ -102,7 +102,7 @@ pub(crate) fn gpu_sample_damage(
                 }
             }
         }
-        if let PaintOperation::Primitive(Primitive::Blur(blur)) = operation {
+        if let PaintOperationRef::Primitive(PrimitiveRef::Blur(blur)) = operation {
             let child_damage = crate::paint::gpu_sample_damage(&blur.content, previous, current);
             let local = crate::paint::capture_preserves_source_coordinates(
                 blur.radius,
@@ -129,7 +129,7 @@ pub(crate) fn gpu_sample_damage(
     }
     if !changed_operations.is_empty() {
         crate::scene::geometry::for_each_capture_group(scene, |range, bounds| {
-            if let PaintOperation::StartBlur(capture) = &scene.paint_operations[range.start]
+            if let Some(PaintOperationRef::StartBlur(capture)) = scene.paint_operations.view(range.start)
                 && crate::paint::capture_preserves_source_coordinates(
                     capture.radius,
                     capture.animation_id,

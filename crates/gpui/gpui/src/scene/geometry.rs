@@ -1,5 +1,5 @@
-use super::blur_influence_radius;
-use crate::{BlurCapture, Bounds, PaintOperation, ScaledPixels, Scene};
+use super::{blur_influence_radius, PaintOperationRef};
+use crate::{BlurCapture, Bounds, ScaledPixels, Scene};
 use std::ops::Range;
 
 use super::Quad;
@@ -41,8 +41,8 @@ impl CaptureGroup {
         // The old traversal also included all raw source primitive bounds
         // and the expanded bounds of nested captures. Keep that conservative
         // behavior, but only visit this capture's source, once at close.
-        for operation in scene.paint_operations.range(start + 1..end).iter() {
-            if let PaintOperation::Primitive(primitive) = operation {
+        for operation in scene.paint_operations.range(start + 1..end).views() {
+            if let PaintOperationRef::Primitive(primitive) = operation {
                 bounds = bounds.union(&primitive.visual_bounds());
             }
         }
@@ -93,12 +93,12 @@ pub(super) fn scan_capture_groups(
     }
     let mut stack = smallvec::SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
 
-    for (index, operation) in scene.paint_operations.iter().enumerate() {
+    for (index, operation) in scene.paint_operations.views().enumerate() {
         match operation {
-            PaintOperation::StartBlur(config) => {
+            PaintOperationRef::StartBlur(config) => {
                 stack.push((index, config, config.bounds));
             }
-            PaintOperation::Primitive(primitive) => {
+            PaintOperationRef::Primitive(primitive) => {
                 let primitive_bounds = primitive.visual_bounds();
                 for (_, _, bounds) in &mut stack {
                     *bounds = bounds.union(&primitive_bounds);
@@ -106,13 +106,13 @@ pub(super) fn scan_capture_groups(
             }
             // The layer only groups primitives for draw ordering. Its own bounds
             // must not inflate an isolated filter's pixel-producing footprint.
-            PaintOperation::DeferredScroll(placement) => {
+            PaintOperationRef::DeferredScroll(placement) => {
                 for (_, _, bounds) in &mut stack {
                     *bounds = bounds.union(&placement.visual_bounds());
                 }
             }
-            PaintOperation::StartLayer(_) => {}
-            PaintOperation::EndBlur => {
+            PaintOperationRef::StartLayer(_) => {}
+            PaintOperationRef::EndBlur => {
                 let Some((start, config, bounds)) = stack.pop() else {
                     continue;
                 };
@@ -124,7 +124,7 @@ pub(super) fn scan_capture_groups(
                 }
                 visit(start..index + 1, bounds);
             }
-            PaintOperation::EndLayer => {}
+            PaintOperationRef::EndLayer => {}
         }
     }
 }

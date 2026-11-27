@@ -114,6 +114,10 @@ impl PaintOperation {
     }
 }
 
+impl<'a> From<&'a Primitive> for PrimitiveRef<'a> {
+    fn from(value: &'a Primitive) -> Self { value.as_ref() }
+}
+
 impl<'a> PrimitiveRef<'a> {
     pub(crate) fn to_primitive(self) -> Primitive {
         match self {

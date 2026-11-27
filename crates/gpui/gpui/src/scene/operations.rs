@@ -502,6 +502,24 @@ impl<'a> OperationRange<'a> {
             end: self.start + range.end,
         }
     }
+    pub(crate) fn view(self, index: usize) -> Option<PaintOperationRef<'a>> {
+        self.get(index).map(PaintOperation::as_ref)
+    }
+
+    pub(crate) fn common_prefix_views(
+        self, other: OperationRange<'_>,
+        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
+    ) -> usize {
+        self.common_prefix_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
+    }
+
+    pub(crate) fn common_suffix_views(
+        self, other: OperationRange<'_>,
+        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
+    ) -> usize {
+        self.common_suffix_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
+    }
+
     pub(crate) fn runs(self) -> impl DoubleEndedIterator<Item = OperationRun<'a>> + Clone {
         self.slices().map(|operations| OperationRun { operations })
     }
