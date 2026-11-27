@@ -33,8 +33,18 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let sprite = b_poly_sprites[instance_id];
     let animation = resolve_visual_animation(sprite.animation_slot, sprite.bounds);
-    let bounds = animation_bounds(sprite.bounds, animation);
-    let content_mask = animation_content_mask(sprite.content_mask, animation);
+    var bounds = animation_bounds(sprite.bounds, animation);
+    var content_mask = animation_content_mask(sprite.content_mask, animation);
+    // Resident tiles use binding 17 as a placement table, independent of
+    // normal animation state. Geometry moves while the viewport stays fixed.
+    if (sprite.sampling == 2u && sprite.animation_slot != 0u) {
+        let placement = b_animation_values[sprite.animation_slot - 1u];
+        bounds = sprite.bounds;
+        bounds.origin += placement.from_value.xy;
+        let viewport = Bounds(placement.to_value.xy, placement.to_value.zw);
+        content_mask.bounds = viewport;
+        content_mask.corner_bounds = viewport;
+    }
     let corner_radii = animation_corners(sprite.corner_radii, animation);
 
     var out = PolySpriteVarying();

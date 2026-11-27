@@ -487,10 +487,55 @@ pub(super) struct CompositeSlot {
     sprites: Option<BufferId>,
     global_bytes: Vec<u8>,
     sprite_bytes: Vec<u8>,
+    sprite_records: Vec<CompositeRecord>,
+    placements: Option<BufferId>,
+    placement_bytes: Vec<u8>,
     outside: OutsideGpuStreams,
     // Dedicated immutable animation sentinel; never bind a growable normal
     // renderer animation buffer into a resident tile descriptor.
     static_animation: Option<BufferId>,
+}
+
+// Physical region and content-space geometry remain immutable while a
+// layer scrolls. The compact per-layer table owns translation and clipping.
+#[derive(Clone, Copy, PartialEq)]
+struct CompositeRecord {
+    layer_slot: u32,
+    raster: RasterTile,
+    region: gfx_core::ScissorRect,
+}
+
+impl CompositeRecord {
+    fn encode(self, bytes: &mut Vec<u8>) {
+        let bounds = crate::bounds(crate::point(ScaledPixels(self.raster.origin.x as f32),
+            ScaledPixels(self.raster.origin.y as f32)),
+            crate::size(ScaledPixels(self.raster.extent.width() as f32), ScaledPixels(self.raster.extent.height() as f32)));
+        let start = bytes.len();
+        write_polychrome_sprite(bytes, &PolychromeSprite {
+            order: 0, bounds, content_mask: ContentMask::new(bounds),
+            corner_radii: Default::default(), grayscale: false, opacity: 1., sampling: 2, animation_id: None,
+            tile: AtlasTile { texture_id: AtlasTextureId { index: u32::MAX, kind: AtlasTextureKind::Bgra },
+                tile_id: crate::TileId(u32::MAX), padding: 0,
+                bounds: crate::bounds(crate::point(DevicePixels(self.region.x as i32), DevicePixels(self.region.y as i32)),
+                    crate::size(DevicePixels(self.region.width as i32), DevicePixels(self.region.height as i32))) },
+        });
+        // Reuse binding 17's 64-byte record ABI; sampling=2 selects the
+        // placement interpretation. Slot zero retains the existing sprite
+        // semantics, including ordinary native raster tests.
+        bytes[start..start + 4].copy_from_slice(&self.layer_slot.to_ne_bytes());
+    }
+}
+
+fn append_placement(bytes: &mut Vec<u8>, viewport: Bounds<ScaledPixels>, translation: [i32; 2]) {
+    let mut record = [0u8; PACKED_ANIMATION_VALUE_BYTES];
+    for (index, value) in [translation[0] as f32, translation[1] as f32].into_iter().enumerate() {
+        record[16 + index * 4..20 + index * 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    for (index, value) in [viewport.origin.x.0, viewport.origin.y.0,
+        viewport.size.width.0, viewport.size.height.0].into_iter().enumerate() {
+        record[32 + index * 4..36 + index * 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    bytes.extend_from_slice(&record);
 }
 
 // Limit physical retention independently of Scene size. Large streams
@@ -634,7 +679,7 @@ impl CompositeSlot {
             log::debug!("scroll outside binding retirement failed: {error}");
             return;
         }
-        for buffer in [self.global, self.sprites, self.static_animation].into_iter()
+        for buffer in [self.global, self.sprites, self.static_animation, self.placements].into_iter()
             .chain(self.outside.handles()).flatten() {
             if let Err(error) = device.destroy_buffer(buffer) {
                 log::debug!("scroll composite slot retirement failed: {error}");
@@ -1152,26 +1197,44 @@ impl NovaRenderer {
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Vec<RenderCommand>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
-            let mut bytes = Vec::with_capacity(requests.len() * PACKED_POLY_SPRITE_BYTES);
-            for ((layer, request), read) in requests.iter().zip(&reads) {
-                let (viewport, _) = layer.root_static_raster().context("missing scroll viewport")?;
-                let region = read.region();
-                write_polychrome_sprite(&mut bytes, &PolychromeSprite {
-                    order: 0, bounds: request.bounds, content_mask: ContentMask::new(viewport),
-                    corner_radii: Default::default(), grayscale: false, opacity: 1., sampling: 2, animation_id: None,
-                    tile: AtlasTile { texture_id: AtlasTextureId { index: u32::MAX, kind: AtlasTextureKind::Bgra },
-                        tile_id: crate::TileId(u32::MAX), padding: 0,
-                        bounds: crate::bounds(crate::point(DevicePixels(region.x as i32), DevicePixels(region.y as i32)),
-                            crate::size(DevicePixels(region.width as i32), DevicePixels(region.height as i32))) },
-                });
+            let mut placement_bytes = Vec::with_capacity(plans.len() * PACKED_ANIMATION_VALUE_BYTES);
+            let mut records = Vec::with_capacity(requests.len());
+            let mut offset = 0;
+            for (index, plan) in plans.iter().enumerate() {
+                let (viewport, translation) = plan.layer.root_static_raster().context("missing scroll viewport")?;
+                append_placement(&mut placement_bytes, viewport, translation);
+                for (request, read) in plan.requests.iter().zip(&reads[offset..offset + plan.requests.len()]) {
+                    records.push(CompositeRecord { layer_slot: (index + 1) as u32, raster: request.raster,
+                        region: read.region() });
+                }
+                offset += plan.requests.len();
             }
+            let placement_buffer = CompositeSlot::write_changed(device, &mut composite_slot.placements,
+                &mut composite_slot.placement_bytes, &placement_bytes, MAX_TILES * PACKED_ANIMATION_VALUE_BYTES,
+                PACKED_ANIMATION_VALUE_BYTES, BufferUsage::STORAGE)?;
             let premultiplied = self.surface_alpha.outputs_premultiplied_alpha();
             let globals = pack_global_params(self.active_size, premultiplied, [0., 0.]);
             let global_buffer = CompositeSlot::write_changed(device, &mut composite_slot.global,
                 &mut composite_slot.global_bytes, &globals, GLOBAL_UPLOAD_BYTES, globals.len(), BufferUsage::UNIFORM)?;
-            let poly_sprite_buffer = CompositeSlot::write_changed(device, &mut composite_slot.sprites,
-                &mut composite_slot.sprite_bytes, &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES,
-                PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
+            let poly_sprite_buffer = if composite_slot.sprite_records == records && composite_slot.sprites.is_some()
+                && composite_slot.sprite_bytes.len() == records.len() * PACKED_POLY_SPRITE_BYTES {
+                composite_slot.sprites.unwrap()
+            } else {
+                let mut bytes = Vec::with_capacity(records.len() * PACKED_POLY_SPRITE_BYTES);
+                for (index, &record) in records.iter().enumerate() {
+                    let start = index * PACKED_POLY_SPRITE_BYTES;
+                    if composite_slot.sprite_records.get(index) == Some(&record)
+                        && let Some(previous) = composite_slot.sprite_bytes.get(start..start + PACKED_POLY_SPRITE_BYTES)
+                    {
+                        bytes.extend_from_slice(previous);
+                    } else { record.encode(&mut bytes); }
+                }
+                let buffer = CompositeSlot::write_changed(device, &mut composite_slot.sprites,
+                    &mut composite_slot.sprite_bytes, &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES,
+                    PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
+                composite_slot.sprite_records = records;
+                buffer
+            };
             let animation_value_buffer = if let Some(buffer) = composite_slot.static_animation {
                 buffer
             } else {
@@ -1182,6 +1245,8 @@ impl NovaRenderer {
                 global_buffer, poly_sprite_buffer, poly_sprite_capacity: MAX_TILES,
                 animation_value_buffer, animation_value_capacity: 1, ..original
             };
+            let tile_buffers = FrameResourceBuffers { animation_value_buffer: placement_buffer,
+                animation_value_capacity: MAX_TILES, ..buffers };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
             if !unchanged {
@@ -1211,7 +1276,7 @@ impl NovaRenderer {
                     let group = self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
                         label: Some("resident scroll composite binding".into()),
                         layout: self.poly_sprite_bind_group_layout,
-                        entries: poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler),
+                        entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
                     })?;
                     append_composite_tile(&mut commands, previous_tile, pipeline, group, (tile_offset + index) as u32);
                     previous_tile = true;
@@ -1300,6 +1365,29 @@ mod tests {
         let mut paint = crate::window::Paint::default();
         paint.layers.raster_fixture(operations, coverage, viewport, translation);
         paint
+    }
+
+    #[test]
+    fn placement_updates_leave_content_space_sprite_records_unchanged() {
+        let raster = RasterTile { origin: SignedOrigin2d { x: 4, y: -64 }, extent: Extent2d::new(32, 64).unwrap() };
+        let record = CompositeRecord { layer_slot: 1, raster, region: gfx_core::ScissorRect { x: 0, y: 64, width: 32, height: 64 } };
+        let mut sprites = Vec::new();
+        record.encode(&mut sprites);
+        assert_eq!(sprites.len(), PACKED_POLY_SPRITE_BYTES);
+        assert_eq!(&sprites[..4], &1u32.to_ne_bytes());
+        let viewport = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(128.), ScaledPixels(256.)));
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        append_placement(&mut before, viewport, [0, 64]);
+        append_placement(&mut after, viewport, [0, 128]);
+        assert_eq!(before.len(), PACKED_ANIMATION_VALUE_BYTES);
+        assert_ne!(before, after);
+        assert_eq!(&before[32..48], &after[32..48]);
+        assert_eq!(&after[20..24], &128f32.to_ne_bytes());
+        let mut same = Vec::new();
+        record.encode(&mut same);
+        assert_eq!(sprites, same);
     }
 
     #[test]
