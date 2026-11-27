@@ -332,9 +332,10 @@ fn verify(backend: RendererBackend) {
 #[ignore = "requires Windows hardware D3D12 and a native presentable window"]
 fn dx12_scroll_raster_present_skips_scene_pack() {
     for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaDx12, false, native);
-        verify_direct_present(RendererBackend::NovaDx12, true, native);
+        verify_direct_present(RendererBackend::NovaDx12, false, native, false);
+        verify_direct_present(RendererBackend::NovaDx12, true, native, false);
     }
+    verify_direct_present(RendererBackend::NovaDx12, false, true, true);
 }
 
 #[test]
@@ -342,9 +343,10 @@ fn dx12_scroll_raster_present_skips_scene_pack() {
 #[ignore = "requires Windows hardware Vulkan and a native presentable window"]
 fn vulkan_scroll_raster_present_skips_scene_pack() {
     for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaVulkan, false, native);
-        verify_direct_present(RendererBackend::NovaVulkan, true, native);
+        verify_direct_present(RendererBackend::NovaVulkan, false, native, false);
+        verify_direct_present(RendererBackend::NovaVulkan, true, native, false);
     }
+    verify_direct_present(RendererBackend::NovaVulkan, false, true, true);
 }
 
 #[test]
@@ -352,9 +354,10 @@ fn vulkan_scroll_raster_present_skips_scene_pack() {
 #[ignore = "requires Windows hardware D3D11 and a native presentable window"]
 fn dx11_scroll_raster_present_skips_scene_pack() {
     for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaDx11, false, native);
-        verify_direct_present(RendererBackend::NovaDx11, true, native);
+        verify_direct_present(RendererBackend::NovaDx11, false, native, false);
+        verify_direct_present(RendererBackend::NovaDx11, true, native, false);
     }
+    verify_direct_present(RendererBackend::NovaDx11, false, true, true);
 }
 
 #[test]
@@ -362,13 +365,53 @@ fn dx11_scroll_raster_present_skips_scene_pack() {
 #[ignore = "requires Windows OpenGL 4.5 and a native presentable window"]
 fn opengl_scroll_raster_present_skips_scene_pack() {
     for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaOpenGl, false, native);
-        verify_direct_present(RendererBackend::NovaOpenGl, true, native);
+        verify_direct_present(RendererBackend::NovaOpenGl, false, native, false);
+        verify_direct_present(RendererBackend::NovaOpenGl, true, native, false);
+    }
+    verify_direct_present(RendererBackend::NovaOpenGl, false, true, true);
+}
+
+#[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
+mod mixed_extension {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    #[derive(Default)]
+    pub(super) struct Counts {
+        pub(super) prepared: AtomicUsize,
+        pub(super) accepted: AtomicUsize,
+        pub(super) completed: AtomicUsize,
+    }
+
+    pub(super) struct Input(pub(super) Arc<Counts>);
+    struct Renderer(Arc<Counts>);
+
+    impl crate::RendererExtension for Input {
+        fn is_time_dependent(&self) -> bool { true }
+        fn create_renderer(&self, _: &mut dyn crate::ExtensionDevice, _: crate::RendererExtensionContext)
+            -> crate::Result<Box<dyn crate::RendererExtensionRenderer>> {
+            Ok(Box::new(Renderer(Arc::clone(&self.0))))
+        }
+    }
+
+    impl crate::RendererExtensionRenderer for Renderer {
+        fn render(&mut self, _: &dyn crate::RendererExtension, _: &mut dyn crate::ExtensionDevice,
+            _: crate::RendererExtensionContext, _: &mut Vec<RenderCommand>) -> crate::Result<()> {
+            self.0.prepared.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn gpu_submission_accepted(&mut self, _: SubmissionId) {
+            self.0.accepted.fetch_add(1, Ordering::Relaxed);
+        }
+        fn gpu_submission_completed(&mut self, _: SubmissionId) {
+            self.0.completed.fetch_add(1, Ordering::Relaxed);
+        }
+        fn destroy(&mut self, _: &mut dyn crate::ExtensionDevice) -> crate::Result<()> { Ok(()) }
     }
 }
 
 #[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
-fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: bool) {
+fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: bool, with_extension: bool) {
     let window = native_window::Window::renderer_fixture();
     window.resize(64, 64);
     let mut renderer = NovaRenderer::with_atlas(
@@ -434,8 +477,18 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         }
     }
     // Keep an ordinary root interval between two independent promoted layers.
-    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
-        background: crate::rgb(0x800000).into(), ..Default::default() });
+    // The optional extension owns the same logical operation position and
+    // emits no draws: test registry preparation/consumer fences even when
+    // expansion produces an empty command run.
+    let extension_counts = std::sync::Arc::new(mixed_extension::Counts::default());
+    if with_extension {
+        assert!(native);
+        painter.insert_primitive(crate::PaintRendererExtension::new(bounds, viewport.scale(1.),
+            std::sync::Arc::new(mixed_extension::Input(extension_counts.clone()))));
+    } else {
+        painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+            background: crate::rgb(0x800000).into(), ..Default::default() });
+    }
     if native {
         assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
             std::mem::take(&mut second_source), coverage, viewport)));
@@ -450,7 +503,8 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     let end = if with_glyph && !native { 3 } else { 2 };
     if native {
         assert_eq!(paint.scene.len(), 5);
-        assert_eq!(paint.scene.quads.len(), 3);
+        assert_eq!(paint.scene.quads.len(), if with_extension { 2 } else { 3 });
+        assert_eq!(paint.scene.renderer_extensions.len(), usize::from(with_extension));
         assert!(paint.scene.monochrome_sprites.is_empty());
         paint.layers = crate::window::SceneLayers::capture_native(&paint.scene, None);
     } else {
@@ -523,6 +577,12 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         physical = Some(texture);
         super::pixels(&renderer, texture.texture,
             if with_glyph { [255, 255, 255, 255] } else { [0, 255, 0, 255] });
+    }
+    if with_extension {
+        use std::sync::atomic::Ordering;
+        assert!(extension_counts.prepared.load(Ordering::Relaxed) >= 2);
+        assert!(extension_counts.accepted.load(Ordering::Relaxed) >= 2);
+        assert!(extension_counts.completed.load(Ordering::Relaxed) >= 2);
     }
     renderer.destroy();
 }

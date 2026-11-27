@@ -106,6 +106,12 @@ impl NovaRenderer {
     }
 
     pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
+        // Do not take a native backend lock on an ordinary static frame.
+        if self.frame_upload.renderer_extensions.is_empty() && self.renderer_registry.is_empty() {
+            self.renderer_registry.begin_frame();
+            self.frame_upload.renderer_extension_steps.clear();
+            return Ok(());
+        }
         let inputs = std::mem::take(&mut self.frame_upload.renderer_extensions);
         let mut steps = std::mem::take(&mut self.frame_upload.renderer_extension_steps);
         let backend = Arc::clone(&self.backend);
