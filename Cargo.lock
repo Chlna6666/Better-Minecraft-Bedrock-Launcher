@@ -1000,6 +1000,7 @@ dependencies = [
  "gpui-router",
  "gpui_3d",
  "gpui_hooks",
+ "gpui_platform",
  "gpui_tokio",
  "hex",
  "image",
@@ -2651,6 +2652,7 @@ dependencies = [
  "fluent-bundle",
  "futures-util",
  "gpui",
+ "gpui_platform",
  "rayon",
  "serde",
  "serde_json",
@@ -2885,6 +2887,12 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 dependencies = [
  "getrandom 0.2.16",
 ]
+
+[[package]]
+name = "fax"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
 
 [[package]]
 name = "fdeflate"
@@ -3758,8 +3766,6 @@ name = "gpui"
 version = "0.2.2"
 dependencies = [
  "anyhow",
- "as-raw-xcb-connection",
- "ashpd",
  "async-channel 2.5.0",
  "async-task",
  "async-tungstenite",
@@ -3770,8 +3776,6 @@ dependencies = [
  "blade-util",
  "block",
  "bytemuck",
- "calloop 0.14.4",
- "calloop-wayland-source 0.4.1",
  "cbindgen",
  "cocoa 0.26.0",
  "cocoa-foundation 0.2.0",
@@ -3784,18 +3788,14 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "ctor 0.10.0",
- "cursor-icon",
  "derive_more 2.1.1",
  "dhat",
  "dioxus-cli-config",
  "dioxus-devtools-types",
- "dpi",
  "embed-resource",
- "enumflags2",
  "env_logger",
  "etagere",
  "fearless_simd",
- "filedescriptor",
  "flume",
  "foreign-types 0.5.0",
  "futures",
@@ -3809,16 +3809,14 @@ dependencies = [
  "gfx-vulkan",
  "gpui_collections",
  "gpui_http_client",
- "gpui_linux",
- "gpui_macos",
  "gpui_macros",
  "gpui_media",
+ "gpui_platform",
  "gpui_refineable",
  "gpui_semantic_version",
  "gpui_sum_tree",
  "gpui_util",
  "gpui_util_macros",
- "gpui_windows",
  "icu_segmenter",
  "image",
  "inventory",
@@ -3837,8 +3835,6 @@ dependencies = [
  "objc",
  "objc2 0.6.3",
  "objc2-metal 0.3.2",
- "oo7",
- "open",
  "parking",
  "parking_lot",
  "pathfinder_geometry",
@@ -3849,19 +3845,18 @@ dependencies = [
  "pretty_assertions",
  "profiling",
  "rand 0.10.2",
+ "raw-window-handle",
  "resvg",
  "schemars",
- "sctk-adwaita 0.10.1",
  "seahash",
  "serde",
  "serde_json",
  "slotmap",
  "smallvec",
- "smithay-client-toolkit",
  "smol",
  "smol_str 0.3.6",
  "stacksafe",
- "strum",
+ "strum 0.28.0",
  "subsecond",
  "swash",
  "sysinfo",
@@ -3872,20 +3867,11 @@ dependencies = [
  "usvg",
  "uuid",
  "waker-fn",
- "wayland-backend",
- "wayland-client",
- "wayland-cursor",
- "wayland-protocols",
- "wayland-protocols-plasma",
  "windows",
  "windows-core",
  "windows-numerics",
  "windows-registry 0.6.1",
  "winit",
- "x11-clipboard",
- "x11rb",
- "xkbcommon 0.9.0",
- "zed-xim",
 ]
 
 [[package]]
@@ -3927,6 +3913,7 @@ dependencies = [
  "gfx-vulkan",
  "gltf",
  "gpui",
+ "gpui_platform",
  "image",
  "log",
  "raw-window-handle",
@@ -4005,9 +3992,44 @@ name = "gpui_linux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "as-raw-xcb-connection",
  "ashpd",
+ "async-task",
+ "bytemuck",
  "calloop 0.14.4",
+ "calloop-wayland-source 0.4.1",
+ "enumflags2",
+ "filedescriptor",
+ "flume",
+ "futures",
+ "gfx-core",
+ "gpui",
+ "gpui_collections",
+ "gpui_http_client",
+ "gpui_util",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "oo7",
+ "open",
+ "parking_lot",
+ "raw-window-handle",
+ "sctk-adwaita",
+ "smallvec",
+ "smithay-client-toolkit",
  "smol",
+ "strum 0.27.2",
+ "unicode-segmentation",
+ "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-cursor",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "x11-clipboard",
+ "x11rb",
+ "xkbcommon 0.9.0",
+ "zed-xim",
 ]
 
 [[package]]
@@ -4015,10 +4037,33 @@ name = "gpui_macos"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-task",
  "bindgen 0.73.2",
+ "block",
+ "cocoa 0.26.0",
+ "cocoa-foundation 0.2.0",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
  "core-graphics 0.25.0",
+ "core-text",
+ "core-video 0.6.1",
+ "ctor 0.4.3",
  "foreign-types 0.5.0",
+ "futures",
+ "gpui",
+ "gpui_collections",
  "gpui_util",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "metal 0.33.0",
+ "objc",
+ "parking_lot",
+ "raw-window-handle",
+ "smallvec",
+ "strum 0.27.2",
+ "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
@@ -4056,6 +4101,16 @@ dependencies = [
  "gpui_collections",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "gpui_platform"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_linux",
+ "gpui_macos",
+ "gpui_windows",
 ]
 
 [[package]]
@@ -4153,9 +4208,27 @@ name = "gpui_windows"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-task",
+ "cursor-icon",
+ "dpi",
+ "flume",
  "futures",
+ "gpui",
+ "gpui_collections",
+ "gpui_util",
+ "image",
+ "itertools 0.14.0",
  "log",
+ "parking_lot",
+ "slotmap",
+ "smallvec",
+ "unicode-segmentation",
+ "uuid",
  "windows",
+ "windows-core",
+ "windows-numerics",
+ "windows-registry 0.6.1",
+ "winit",
 ]
 
 [[package]]
@@ -4681,8 +4754,9 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png",
- "zune-core",
- "zune-jpeg",
+ "tiff",
+ "zune-core 0.5.0",
+ "zune-jpeg 0.5.5",
 ]
 
 [[package]]
@@ -8117,19 +8191,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sctk-adwaita"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6277f0217056f77f1d8f49f2950ac6c278c0d607c45f5ee99328d792ede24ec"
-dependencies = [
- "ab_glyph",
- "log",
- "memmap2 0.9.9",
- "smithay-client-toolkit",
- "tiny-skia 0.11.4",
-]
-
-[[package]]
 name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8843,11 +8904,32 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.28.0",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]
@@ -9216,6 +9298,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiff"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af9605de7fee8d9551863fd692cce7637f548dbd9db9180fcc07ccc6d26c336f"
+dependencies = [
+ "fax",
+ "flate2",
+ "half",
+ "quick-error",
+ "weezl",
+ "zune-jpeg 0.4.21",
 ]
 
 [[package]]
@@ -11271,12 +11367,10 @@ version = "0.30.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
- "ahash",
  "android-activity",
  "atomic-waker",
  "bitflags 2.13.1",
  "block2 0.5.1",
- "bytemuck",
  "calloop 0.13.0",
  "cfg_aliases",
  "concurrent-queue",
@@ -11286,34 +11380,24 @@ dependencies = [
  "dpi",
  "js-sys",
  "libc",
- "memmap2 0.9.9",
  "ndk",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit 0.2.2",
  "orbclient",
- "percent-encoding",
  "pin-project",
  "raw-window-handle",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
- "sctk-adwaita 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "smithay-client-toolkit",
  "smol_str 0.2.2",
  "tracing",
  "unicode-segmentation",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-plasma",
  "web-sys",
  "web-time",
  "windows-sys 0.52.0",
- "x11-dl",
- "x11rb",
  "xkbcommon-dl",
 ]
 
@@ -11648,8 +11732,6 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
- "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
  "xcursor",
@@ -12193,9 +12275,24 @@ dependencies = [
 
 [[package]]
 name = "zune-core"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
+
+[[package]]
+name = "zune-core"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "111f7d9820f05fd715df3144e254d6fc02ee4088b0644c0ffd0efc9e6d9d2773"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.4.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
+dependencies = [
+ "zune-core 0.4.12",
+]
 
 [[package]]
 name = "zune-jpeg"
@@ -12203,7 +12300,7 @@ version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fb7703e32e9a07fb3f757360338b3a567a5054f21b5f52a666752e333d58e"
 dependencies = [
- "zune-core",
+ "zune-core 0.5.0",
 ]
 
 [[package]]

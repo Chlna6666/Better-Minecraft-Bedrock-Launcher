@@ -1,0 +1,23 @@
+[package]
+name = "gpui_platform"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["nova-gfx-metal"]
+nova-gfx-metal = ["gpui_macos/nova-gfx-metal"]
+macos-blade = ["gpui_macos/macos-blade"]
+
+[dependencies]
+gpui = { path = "../gpui", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows = { path = "../gpui_windows" }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_linux = { path = "../gpui_linux", features = ["wayland", "x11"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos = { path = "../gpui_macos" }

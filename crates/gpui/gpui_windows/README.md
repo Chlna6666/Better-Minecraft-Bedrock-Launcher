@@ -1,7 +1,8 @@
-# gpui_windows
+# GPUI windows
 
-Win32 services used by GPUI. The display clock schedules compositor, monitor and native resize wakes. The dialog module owns the native dialog calls and COM apartment lifetime. GPUI consumes the wake events, owns the window tree and uses Nova-GFX for rendering.
+Win32 windows, input, DirectWrite, clipboard, dialogs and display clock.
 
-```powershell
-cargo test -p gpui_windows
-```
+`gpui_platform` selects this provider on the corresponding desktop target.
+The provider implements GPUI platform contracts and uses its shared presentation pipeline.
+
+[简体中文](README.zh-CN.md)

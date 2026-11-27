@@ -1,3 +1,8 @@
-# gpui_macos
+# GPUI macos
 
-macOS display and dispatch services used by GPUI. The CoreVideo display link coalesces display ticks onto the main dispatch queue. The crate generates bindings to the platform SDK's libdispatch definitions.
+AppKit windows, input and clipboard, with CoreVideo and libdispatch scheduling.
+
+`gpui_platform` selects this provider on the corresponding desktop target.
+The provider implements GPUI platform contracts and uses its shared presentation pipeline.
+
+[简体中文](README.zh-CN.md)

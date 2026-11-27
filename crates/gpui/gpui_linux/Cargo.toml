@@ -6,12 +6,171 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-wayland = ["portal-settings"]
-x11 = ["portal-settings"]
-portal-settings = ["dep:anyhow", "dep:ashpd", "dep:calloop", "dep:smol"]
+wayland = [
+    "gpui/wayland",
+    "dep:sctk-adwaita",
+    "dep:smithay-client-toolkit",
+    "ashpd/wayland",
+    "calloop-wayland-source",
+    "wayland-backend",
+    "wayland-client",
+    "wayland-cursor",
+    "wayland-protocols",
+    "wayland-protocols-plasma",
+    "filedescriptor",
+    "xkbcommon",
+    "open",
+]
+x11 = [
+    "gpui/x11",
+    "dep:bytemuck",
+    "dep:ashpd",
+    "as-raw-xcb-connection",
+    "x11rb",
+    "xkbcommon",
+    "xim",
+    "x11-clipboard",
+    "filedescriptor",
+    "open",
+]
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-anyhow = { version = "1", optional = true }
-ashpd = { version = "0.13.10", default-features = false, features = ["async-io", "settings"], optional = true }
-calloop = { version = "0.14.4", optional = true }
-smol = { version = "2.0", optional = true }
+anyhow = "1.0"
+async-task = "4"
+bytemuck = { version = "1.24", optional = true }
+collections = { version = "0.2.2", package = "gpui_collections" }
+futures = "0.3"
+gfx-core = { path = "../../nova-gfx/gfx-core" }
+gpui = { path = "../gpui", default-features = false }
+http_client = { version = "0.2.2", package = "gpui_http_client" }
+itertools = "0.14"
+libc = "0.2"
+log = "0.4"
+parking_lot = "0.12"
+smallvec = "1.15"
+smol = "2"
+strum = { version = "0.27", features = ["derive"] }
+unicode-segmentation = "1"
+util = { version = "0.2.2", package = "gpui_util" }
+uuid = { version = "1", features = ["v4"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.as-raw-xcb-connection]
+version = "1"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.ashpd]
+version = "0.13.10"
+features = [
+    "async-io",
+    "settings",
+    "file_chooser",
+    "open_uri",
+    "inhibit",
+]
+optional = true
+default-features = false
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.calloop]
+version = "0.14.4"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.calloop-wayland-source]
+version = "0.4.1"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.filedescriptor]
+version = "0.8.2"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.enumflags2]
+version = "0.7.12"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.flume]
+version = "0.12.0"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
+version = "0.6.0"
+features = [
+    "async-std",
+    "native_crypto",
+]
+default-features = false
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.sctk-adwaita]
+version = "0.10.1"
+path = "../../../vendor/sctk-adwaita"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.smithay-client-toolkit]
+version = "0.19.2"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.open]
+version = "5.2.0"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-backend]
+version = "0.3.3"
+features = [
+    "client_system",
+    "dlopen",
+]
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-client]
+version = "0.31.2"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-cursor]
+version = "0.31.1"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-protocols]
+version = "0.32.12"
+features = [
+    "client",
+    "staging",
+    "unstable",
+]
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wayland-protocols-plasma]
+version = "0.3.12"
+features = ["client"]
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.x11-clipboard]
+version = "0.9.3"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.x11rb]
+version = "0.13.1"
+features = [
+    "allow-unsafe-code",
+    "xkb",
+    "randr",
+    "dri3",
+    "present",
+    "xinput",
+    "cursor",
+    "resource_manager",
+    "sync",
+]
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.xim]
+version = "0.4.0-zed"
+features = [
+    "x11rb-xcb",
+    "x11rb-client",
+]
+optional = true
+package = "zed-xim"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.xkbcommon]
+version = "0.9.0"
+features = [
+    "wayland",
+    "x11",
+]
+optional = true

@@ -1,0 +1,2147 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wayland window boundary constructs raw window handles"
+)]
+
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    ffi::c_void,
+    num::NonZeroU32,
+    ptr::NonNull,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use collections::HashMap;
+use futures::channel::oneshot::Receiver;
+use sctk_adwaita::{AdwaitaFrame, FrameConfig, TitleMask};
+use smithay_client_toolkit::{
+    compositor::SurfaceData,
+    reexports::csd_frame::{
+        CursorIcon, DecorationsFrame, FrameAction, FrameClick, ResizeEdge as CsdResizeEdge,
+        WindowManagerCapabilities, WindowState,
+    },
+    shell::WaylandSurface,
+};
+
+use wayland_backend::client::ObjectId;
+use wayland_client::WEnum;
+use wayland_client::{Proxy, protocol::wl_surface};
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+use wayland_protocols::wp::viewporter::client::wp_viewport;
+use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
+use wayland_protocols::xdg::shell::client::xdg_surface;
+use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
+use wayland_protocols::{
+    wp::fractional_scale::v1::client::wp_fractional_scale_v1,
+    xdg::shell::client::xdg_toplevel::XdgToplevel,
+};
+use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
+use raw_window_handle;
+
+use gpui::WindowKind;
+use gpui::{
+    AnyWindowHandle,
+    Bounds,
+    CursorStyle,
+    Decorations,
+    DevicePixels,
+    GpuSpecs,
+    GpuiMemoryTrimLevel,
+    Modifiers,
+    MouseButton,
+    Pixels,
+    PlatformDisplay,
+    PlatformFrameRequest,
+    PlatformFrameResult,
+    PlatformInput,
+    Point,
+    PresentationPacket,
+    PromptButton,
+    PromptLevel,
+    RendererOptions,
+    ResizeEdge,
+    SceneAnimationCompletion,
+    Size,
+    WindowAppearance,
+    WindowBackgroundAppearance,
+    WindowBounds,
+    WindowControlArea,
+    WindowControls,
+    WindowDecorations,
+    WindowParams,
+    WindowVisibility,
+    point,
+    px,
+    size,
+};
+use crate::{
+    Globals,
+    Output,
+    Tiling,
+    WaylandClientStatePtr,
+};
+use gpui::{
+    Capslock,
+    platform::NovaRenderer,
+    platform::OwnedNovaRenderer,
+    platform::PlatformAtlas,
+    platform::PlatformInputHandler,
+    platform::PlatformTextSystem,
+    platform::PlatformWindow,
+};
+use crate::{
+    wayland::{display::WaylandDisplay, serial::SerialKind},
+};
+use util::ResultExt;
+
+#[derive(Default)]
+pub(crate) struct Callbacks {
+    request_frame: Option<gpui::platform::frame::PlatformFrameRequestSender>,
+    presentation_animation_completed:
+        Option<gpui::platform::frame::SceneAnimationCompletionSender>,
+    input: Option<Box<dyn FnMut(gpui::PlatformInput) -> gpui::DispatchEventResult>>,
+    active_status_change: Option<Box<dyn FnMut(bool)>>,
+    visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
+    hover_status_change: Option<Box<dyn FnMut(bool)>>,
+    resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
+    moved: Option<Box<dyn FnMut()>>,
+    should_close: Option<Box<dyn FnMut() -> bool>>,
+    close: Option<Box<dyn FnOnce()>>,
+    appearance_changed: Option<Box<dyn FnMut()>>,
+}
+
+struct RawWindow {
+    // Native handle identities only. The platform retains the wl_surface/display until the
+    // GPU owner's destruction barrier completes; no Wayland proxy or UI state crosses threads.
+    window: usize,
+    display: usize,
+}
+
+struct BaseSurface(wl_surface::WlSurface);
+
+impl WaylandSurface for BaseSurface {
+    fn wl_surface(&self) -> &wl_surface::WlSurface {
+        &self.0
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for RawWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let window = NonNull::new(self.window as *mut c_void).expect("live Wayland surface");
+        let handle = raw_window_handle::WaylandWindowHandle::new(window);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+impl raw_window_handle::HasDisplayHandle for RawWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let display = NonNull::new(self.display as *mut c_void).expect("live Wayland display");
+        let handle = raw_window_handle::WaylandDisplayHandle::new(display);
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
+    }
+}
+
+#[derive(Debug)]
+struct InProgressConfigure {
+    size: Option<Size<Pixels>>,
+    fullscreen: bool,
+    maximized: bool,
+    visibility: WindowVisibility,
+    tiling: Tiling,
+}
+
+pub struct WaylandWindowState {
+    xdg_surface: xdg_surface::XdgSurface,
+    acknowledged_first_configure: bool,
+    pub surface: wl_surface::WlSurface,
+    decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+    app_id: Option<String>,
+    appearance: WindowAppearance,
+    blur: Option<org_kde_kwin_blur::OrgKdeKwinBlur>,
+    background_effect: Option<ExtBackgroundEffectSurfaceV1>,
+    toplevel: xdg_toplevel::XdgToplevel,
+    viewport: Option<wp_viewport::WpViewport>,
+    viewport_destination_active: bool,
+    outputs: HashMap<ObjectId, Output>,
+    display: Option<(ObjectId, Output)>,
+    globals: Globals,
+    renderer: OwnedNovaRenderer,
+    presentation_clock: super::presentation_clock::FrameClock,
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    input_handler: Option<PlatformInputHandler>,
+    decorations: WindowDecorations,
+    background_appearance: WindowBackgroundAppearance,
+    fullscreen: bool,
+    maximized: bool,
+    visibility: WindowVisibility,
+    tiling: Tiling,
+    window_bounds: Bounds<Pixels>,
+    client: WaylandClientStatePtr,
+    handle: AnyWindowHandle,
+    active: bool,
+    hovered: bool,
+    in_progress_configure: Option<InProgressConfigure>,
+    in_progress_window_controls: Option<WindowControls>,
+    window_controls: WindowControls,
+    client_inset: Option<Pixels>,
+    pending_frame_request: PlatformFrameRequest,
+    frame_callback_pending: Option<u64>,
+    frame_callback_generation: u64,
+    /// True while GPUI is synchronously servicing the compositor callback.
+    ///
+    /// Requests raised during this interval are latched and armed by completed_frame so the next
+    /// callback is committed together with the current rendered surface, rather than by an early
+    /// empty wl_surface commit.
+    frame_in_progress: bool,
+    ui_frame_cadence: gpui::platform::FrameCadence,
+    callback_timestamp: Option<(u32, Instant)>,
+    client_frame: Option<AdwaitaFrame<WaylandClientStatePtr>>,
+    text_system: Arc<dyn PlatformTextSystem>,
+    title: String,
+    requested_decorations: WindowDecorations,
+    decoration_mode_configured: bool,
+}
+
+#[derive(Clone)]
+pub struct WaylandWindowStatePtr {
+    state: Rc<RefCell<WaylandWindowState>>,
+    callbacks: Rc<RefCell<Callbacks>>,
+}
+
+impl WaylandWindowState {
+    pub(crate) fn new(
+        handle: AnyWindowHandle,
+        surface: wl_surface::WlSurface,
+        xdg_surface: xdg_surface::XdgSurface,
+        toplevel: xdg_toplevel::XdgToplevel,
+        decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+        appearance: WindowAppearance,
+        viewport: Option<wp_viewport::WpViewport>,
+        client: WaylandClientStatePtr,
+        globals: Globals,
+        renderer_options: &RendererOptions,
+        text_system: Arc<dyn PlatformTextSystem>,
+        options: WindowParams,
+    ) -> anyhow::Result<Self> {
+        let renderer = {
+            let raw_window = RawWindow {
+                window: surface.id().as_ptr() as usize,
+                display: surface.backend().upgrade().unwrap().display_ptr() as usize,
+            };
+            let drawable_size = Size {
+                width: DevicePixels(f32::from(options.bounds.size.width).max(1.0) as i32),
+                height: DevicePixels(f32::from(options.bounds.size.height).max(1.0) as i32),
+            };
+            let transparent = options.window_background != WindowBackgroundAppearance::Opaque;
+            let renderer_options = renderer_options.clone();
+            OwnedNovaRenderer::new(move || {
+                NovaRenderer::new(
+                    &raw_window,
+                    renderer_options.backend,
+                    &renderer_options,
+                    gpui::GpuSubmissionMode::Deferred,
+                    drawable_size,
+                    transparent,
+                )
+            })?
+        };
+        let title = options
+            .titlebar
+            .as_ref()
+            .and_then(|titlebar| titlebar.title.as_ref())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let presentation_clock = globals
+            .presentation_clock()?
+            .register(
+                surface.clone(),
+                renderer.presentation_tick_sender(),
+                renderer.presentation_metrics_id(),
+                renderer.presentation_feedback_mailbox()?,
+            )?;
+        renderer.set_presentation_clock(presentation_clock.request_callback());
+        let client_frame = match (
+            options.titlebar.as_ref(),
+            globals.csd_compositor.as_ref(),
+            globals.csd_subcompositor.as_ref(),
+        ) {
+            (Some(_), Some(compositor), Some(subcompositor)) => {
+                match AdwaitaFrame::new(
+                    &BaseSurface(surface.clone()),
+                    &globals.csd_shm,
+                    compositor.clone(),
+                    subcompositor.clone(),
+                    globals.qh.clone(),
+                    match appearance {
+                        WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                            FrameConfig::dark().use_system_button_layout(false)
+                        }
+                        _ => FrameConfig::light().use_system_button_layout(false),
+                    },
+                ) {
+                    Ok(mut frame) => {
+                        frame.set_hidden(true);
+                        frame.set_resizable(options.is_resizable);
+                        frame.set_title(title.clone());
+                        Some(frame)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "wayland: failed to create independent client decorations: {error}"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let mut state = Self {
+            xdg_surface,
+            acknowledged_first_configure: false,
+            surface,
+            decoration,
+            app_id: None,
+            blur: None,
+            background_effect: None,
+            toplevel,
+            viewport,
+            viewport_destination_active: false,
+            globals,
+            outputs: HashMap::default(),
+            display: None,
+            renderer,
+            presentation_clock,
+            bounds: options.bounds,
+            scale: 1.0,
+            input_handler: None,
+            decorations: WindowDecorations::Client,
+            background_appearance: options.window_background,
+            fullscreen: false,
+            maximized: false,
+            visibility: WindowVisibility::Visible,
+            tiling: Tiling::default(),
+            window_bounds: options.bounds,
+            in_progress_configure: None,
+            client,
+            appearance,
+            handle,
+            active: false,
+            hovered: false,
+            in_progress_window_controls: None,
+            window_controls: WindowControls::default(),
+            client_inset: None,
+            pending_frame_request: PlatformFrameRequest::default(),
+            frame_callback_pending: None,
+            frame_callback_generation: 0,
+            frame_in_progress: false,
+            ui_frame_cadence: gpui::platform::FrameCadence::default(),
+            callback_timestamp: None,
+            client_frame,
+            text_system,
+            title,
+            requested_decorations: WindowDecorations::Client,
+            decoration_mode_configured: false,
+        };
+        state.refresh_client_frame_title();
+        state.sync_presentation_visibility();
+        Ok(state)
+    }
+
+    pub fn is_transparent(&self) -> bool {
+        // Client-side decorations do not require an alpha surface. The application paints
+        // the complete window, so transparency is determined by the requested appearance.
+        self.background_appearance != WindowBackgroundAppearance::Opaque
+    }
+
+    pub fn primary_output_scale(&mut self) -> i32 {
+        let mut scale = 1;
+        let mut current_output = self
+            .display
+            .take()
+            .and_then(|(id, _)| self.outputs.get(&id).cloned().map(|output| (id, output)));
+        for (id, output) in self.outputs.iter() {
+            if let Some((_, output_data)) = &current_output {
+                if output.scale > output_data.scale {
+                    current_output = Some((id.clone(), output.clone()));
+                }
+            } else {
+                current_output = Some((id.clone(), output.clone()));
+            }
+            scale = scale.max(output.scale);
+        }
+        self.display = current_output;
+        scale
+    }
+
+    fn sync_presentation_visibility(&self) {
+        let visible = self.visibility == WindowVisibility::Visible;
+        self.renderer.set_presentation_visibility(visible);
+        self.presentation_clock.set_visible(visible);
+    }
+
+    pub fn inset(&self) -> Pixels {
+        match self.decorations {
+            WindowDecorations::Server => px(0.0),
+            WindowDecorations::Client => self.client_inset.unwrap_or(px(0.0)),
+        }
+    }
+
+    fn client_frame_visible(&self) -> bool {
+        self.requested_decorations == WindowDecorations::Server
+            && self.decorations == WindowDecorations::Client
+            && (self.decoration.is_none() || self.decoration_mode_configured)
+    }
+
+    fn client_frame_window_state(&self) -> WindowState {
+        let mut state = WindowState::empty();
+        state.set(WindowState::ACTIVATED, self.active);
+        state.set(WindowState::FULLSCREEN, self.fullscreen);
+        state.set(WindowState::MAXIMIZED, self.maximized);
+        state.set(WindowState::TILED_LEFT, self.tiling.left);
+        state.set(WindowState::TILED_RIGHT, self.tiling.right);
+        state.set(WindowState::TILED_TOP, self.tiling.top);
+        state.set(WindowState::TILED_BOTTOM, self.tiling.bottom);
+        state
+    }
+
+    fn client_frame_capabilities(&self) -> WindowManagerCapabilities {
+        let mut capabilities = WindowManagerCapabilities::empty();
+        capabilities.set(
+            WindowManagerCapabilities::WINDOW_MENU,
+            self.window_controls.window_menu,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::MAXIMIZE,
+            self.window_controls.maximize,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::FULLSCREEN,
+            self.window_controls.fullscreen,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::MINIMIZE,
+            self.window_controls.minimize,
+        );
+        capabilities
+    }
+
+    fn refresh_client_frame(&mut self) {
+        let visible = self.client_frame_visible();
+        let window_state = self.client_frame_window_state();
+        let capabilities = self.client_frame_capabilities();
+        let scale = f64::from(self.scale);
+        let width = NonZeroU32::new(f32::from(self.bounds.size.width).ceil().max(1.0) as u32);
+        let height = NonZeroU32::new(f32::from(self.bounds.size.height).ceil().max(1.0) as u32);
+        let Some(frame) = self.client_frame.as_mut() else {
+            return;
+        };
+
+        if frame.is_hidden() == visible {
+            frame.set_hidden(!visible);
+        }
+        if !visible {
+            return;
+        }
+
+        frame.update_state(window_state);
+        frame.update_wm_capabilities(capabilities);
+        frame.set_scaling_factor(scale);
+        if let (Some(width), Some(height)) = (width, height) {
+            frame.resize(width, height);
+        }
+        if frame.is_dirty() {
+            frame.draw();
+        }
+    }
+
+    fn refresh_client_frame_title(&mut self) {
+        let frame_scale = self.scale.clamp(0.1, 64.0).ceil();
+        let title_mask =
+            gpui::rasterize_platform_title(self.text_system.as_ref(), &self.title, frame_scale);
+        let Some(frame) = self.client_frame.as_mut() else {
+            return;
+        };
+
+        match title_mask {
+            Ok(Some(mask)) => {
+                let Some(mask) = TitleMask::new(mask.width, mask.height, mask.alpha) else {
+                    log::warn!("wayland: GPUI produced an invalid client decoration title mask");
+                    frame.clear_title_mask();
+                    return;
+                };
+                if !frame.set_title_mask(mask) {
+                    log::warn!("wayland: failed to install the GPUI-rendered title mask");
+                    frame.clear_title_mask();
+                }
+            }
+            Ok(None) => frame.clear_title_mask(),
+            Err(error) => {
+                log::warn!("wayland: failed to rasterize window title through GPUI: {error:#}");
+                frame.clear_title_mask();
+            }
+        }
+    }
+
+    fn client_frame_geometry(&self) -> Option<(Point<i32>, Size<i32>)> {
+        let frame = self
+            .client_frame
+            .as_ref()
+            .filter(|frame| !frame.is_hidden())?;
+        let (x, y) = frame.location();
+        let width = f32::from(self.bounds.size.width).ceil().max(1.0) as u32;
+        let height = f32::from(self.bounds.size.height).ceil().max(1.0) as u32;
+        let (width, height) = frame.add_borders(width, height);
+        Some((point(x, y), size(width as i32, height as i32)))
+    }
+
+    /// xdg_window_geometry is expressed in surface-local logical coordinates.
+    /// Never feed it the physical drawable size (which scales with DPI).
+    fn sync_window_geometry(&self) {
+        let (origin, size) = self.client_frame_geometry().unwrap_or_else(|| {
+            let bounds = inset_by_tiling(
+                self.bounds.map_origin(|_| px(0.0)),
+                self.inset(),
+                self.tiling,
+            )
+            .map(|value| value.0 as i32)
+            .map_size(|value| if value <= 0 { 1 } else { value });
+            (bounds.origin, bounds.size)
+        });
+        self.xdg_surface
+            .set_window_geometry(origin.x, origin.y, size.width, size.height);
+    }
+
+    fn subtract_client_frame_borders(&self, configured_size: Size<Pixels>) -> Size<Pixels> {
+        let Some(frame) = self
+            .client_frame
+            .as_ref()
+            .filter(|frame| !frame.is_hidden())
+        else {
+            return configured_size;
+        };
+        let Some(width) = NonZeroU32::new(f32::from(configured_size.width).ceil().max(1.0) as u32) else {
+            return configured_size;
+        };
+        let Some(height) = NonZeroU32::new(f32::from(configured_size.height).ceil().max(1.0) as u32) else {
+            return configured_size;
+        };
+        let (width, height) = frame.subtract_borders(width, height);
+        size(
+            px(width.map_or(1.0, |value| value.get() as f32)),
+            px(height.map_or(1.0, |value| value.get() as f32)),
+        )
+    }
+}
+
+pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
+pub enum ImeInput {
+    InsertText(String),
+    SetMarkedText(String),
+    UnmarkText,
+    DeleteText,
+}
+
+impl Drop for WaylandWindow {
+    fn drop(&mut self) {
+        let mut state = self.0.state.borrow_mut();
+        let surface_id = state.surface.id();
+        let client = state.client.clone();
+
+        state.presentation_clock.close();
+        state.renderer.destroy();
+        state.client_frame.take();
+        if let Some(decoration) = &state.decoration {
+            decoration.destroy();
+        }
+        if let Some(blur) = &state.blur {
+            blur.release();
+        }
+        if let Some(effect) = state.background_effect.take() {
+            effect.destroy();
+        }
+        state.toplevel.destroy();
+        if let Some(viewport) = &state.viewport {
+            viewport.destroy();
+        }
+        state.xdg_surface.destroy();
+        state.surface.destroy();
+
+        let state_ptr = self.0.clone();
+        state
+            .globals
+            .executor
+            .spawn(async move {
+                state_ptr.close();
+                client.drop_window(&surface_id)
+            })
+            .detach();
+        drop(state);
+    }
+}
+
+impl WaylandWindow {
+    fn borrow(&self) -> Ref<'_, WaylandWindowState> {
+        self.0.state.borrow()
+    }
+
+    fn borrow_mut(&self) -> RefMut<'_, WaylandWindowState> {
+        self.0.state.borrow_mut()
+    }
+
+    pub fn new(
+        handle: AnyWindowHandle,
+        globals: Globals,
+        renderer_options: &RendererOptions,
+        text_system: Arc<dyn PlatformTextSystem>,
+        client: WaylandClientStatePtr,
+        params: WindowParams,
+        appearance: WindowAppearance,
+        parent: Option<XdgToplevel>,
+    ) -> anyhow::Result<(Self, ObjectId)> {
+        let surface = globals
+            .compositor
+            .create_surface(&globals.qh, SurfaceData::default());
+        let xdg_surface = globals
+            .wm_base
+            .get_xdg_surface(&surface, &globals.qh, surface.id());
+        let toplevel = xdg_surface.get_toplevel(&globals.qh, surface.id());
+
+        if params.kind == WindowKind::Floating {
+            toplevel.set_parent(parent.as_ref());
+        }
+
+        if let Some(size) = params.window_min_size {
+            toplevel.set_min_size(f32::from(size.width) as i32, f32::from(size.height) as i32);
+        }
+
+        if let Some(fractional_scale_manager) = globals.fractional_scale_manager.as_ref() {
+            fractional_scale_manager.get_fractional_scale(&surface, &globals.qh, surface.id());
+        }
+
+        // Attempt to set up window decorations based on the requested configuration
+        let decoration = globals
+            .decoration_manager
+            .as_ref()
+            .map(|decoration_manager| {
+                decoration_manager.get_toplevel_decoration(&toplevel, &globals.qh, surface.id())
+            });
+
+        let viewport = globals
+            .viewporter
+            .as_ref()
+            .map(|viewporter| viewporter.get_viewport(&surface, &globals.qh, ()));
+
+        let this = Self(WaylandWindowStatePtr {
+            state: Rc::new(RefCell::new(WaylandWindowState::new(
+                handle,
+                surface.clone(),
+                xdg_surface,
+                toplevel,
+                decoration,
+                appearance,
+                viewport,
+                client,
+                globals,
+                renderer_options,
+                text_system,
+                params,
+            )?)),
+            callbacks: Rc::new(RefCell::new(Callbacks::default())),
+        });
+
+        // Kick things off
+        surface.commit();
+
+        Ok((this, surface.id()))
+    }
+}
+
+fn arm_frame_callback(state: &mut WaylandWindowState) {
+    if state.frame_callback_pending.is_some() {
+        return;
+    }
+
+    let generation = state.frame_callback_generation.wrapping_add(1);
+    state.frame_callback_generation = generation;
+    state
+        .surface
+        .frame(&state.globals.qh, (state.surface.id(), generation));
+    state.frame_callback_pending = Some(generation);
+}
+
+impl WaylandWindowStatePtr {
+    pub(super) fn refresh_background_effects(&self) {
+        update_window(self.state.borrow_mut());
+        self.surface().commit();
+    }
+
+    pub fn handle(&self) -> AnyWindowHandle {
+        self.state.borrow().handle
+    }
+
+    pub fn surface(&self) -> wl_surface::WlSurface {
+        self.state.borrow().surface.clone()
+    }
+
+    pub fn toplevel(&self) -> xdg_toplevel::XdgToplevel {
+        self.state.borrow().toplevel.clone()
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.state, &other.state)
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<gpui::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<gpui::platform::frame::ActivePresentationFrame>> {
+        let mut state = self.state.borrow_mut();
+        if state.visibility != WindowVisibility::Visible {
+            return Ok(None);
+        }
+        state.renderer.present_active_frame(now)
+    }
+
+    fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
+        let callbacks = self.callbacks.borrow();
+        if let Some(sender) = callbacks.presentation_animation_completed.as_ref()
+            && sender.unbounded_send(completion).is_err()
+        {
+            log::trace!("discarding presentation completion after its UI receiver closed");
+        }
+    }
+
+    fn finish_frame(&self) {
+        let mut state = self.state.borrow_mut();
+        state.frame_in_progress = false;
+        if state.pending_frame_request.requires_frame() {
+            arm_frame_callback(&mut state);
+        }
+        state.surface.commit();
+    }
+
+    pub fn handle_client_frame_pointer_motion(
+        &self,
+        surface_id: &ObjectId,
+        x: f64,
+        y: f64,
+        timestamp: u32,
+    ) -> Option<CursorStyle> {
+        let mut state = self.state.borrow_mut();
+        let Some(frame) = state.client_frame.as_mut() else {
+            return None;
+        };
+        let cursor = frame.click_point_moved(
+            Duration::from_millis(u64::from(timestamp)),
+            surface_id,
+            x,
+            y,
+        );
+        if cursor.is_some() && frame.is_dirty() {
+            frame.draw();
+            state.surface.commit();
+        }
+        cursor.map(client_frame_cursor_style)
+    }
+
+    pub fn handle_client_frame_pointer_leave(&self) {
+        let mut state = self.state.borrow_mut();
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.click_point_left();
+            if frame.is_dirty() {
+                frame.draw();
+                state.surface.commit();
+            }
+        }
+    }
+
+    pub fn handle_client_frame_pointer_button(
+        &self,
+        timestamp: u32,
+        button: MouseButton,
+        pressed: bool,
+    ) {
+        let click = match button {
+            MouseButton::Left => FrameClick::Normal,
+            MouseButton::Right => FrameClick::Alternate,
+            _ => return,
+        };
+        let action = {
+            let mut state = self.state.borrow_mut();
+            let Some(frame) = state.client_frame.as_mut() else {
+                return;
+            };
+            let action =
+                frame.on_click(Duration::from_millis(u64::from(timestamp)), click, pressed);
+            if frame.is_dirty() {
+                frame.draw();
+                state.surface.commit();
+            }
+            action
+        };
+        if let Some(action) = action {
+            self.apply_client_frame_action(action);
+        }
+    }
+
+    fn apply_client_frame_action(&self, action: FrameAction) {
+        let state = self.state.borrow();
+        match action {
+            FrameAction::Minimize => state.toplevel.set_minimized(),
+            FrameAction::Maximize => state.toplevel.set_maximized(),
+            FrameAction::UnMaximize => state.toplevel.unset_maximized(),
+            FrameAction::Move => state.toplevel._move(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+            ),
+            FrameAction::Resize(edge) => state.toplevel.resize(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+                client_frame_resize_edge(edge),
+            ),
+            FrameAction::ShowMenu(x, y) => state.toplevel.show_window_menu(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+                x,
+                y,
+            ),
+            FrameAction::Close => {
+                drop(state);
+                let mut callbacks = self.callbacks.borrow_mut();
+                let should_close = if let Some(mut callback) = callbacks.should_close.take() {
+                    let result = callback();
+                    callbacks.should_close = Some(callback);
+                    result
+                } else {
+                    true
+                };
+                drop(callbacks);
+                if should_close {
+                    self.close();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn request_frame(&self, options: PlatformFrameRequest) {
+        let mut state = self.state.borrow_mut();
+        state.pending_frame_request = state.pending_frame_request.merge(options);
+        if !state.frame_in_progress
+            && state.frame_callback_pending.is_none()
+            && state.pending_frame_request.requires_frame()
+        {
+            arm_frame_callback(&mut state);
+            state.surface.commit();
+        }
+    }
+
+    pub fn clear_timed_out_frame_request(&self, _options: PlatformFrameRequest) {
+        let mut state = self.state.borrow_mut();
+        state.pending_frame_request = PlatformFrameRequest::default();
+        state.frame_callback_pending = None;
+    }
+
+    pub fn frame(&self, generation: u64, callback_data: u32) {
+        let callback_registered = self.callbacks.borrow().request_frame.is_some();
+        let mut state = self.state.borrow_mut();
+        if state.frame_callback_pending != Some(generation) {
+            return;
+        }
+        state.frame_callback_pending = None;
+        if !state.pending_frame_request.requires_frame() || !callback_registered {
+            state.frame_in_progress = false;
+            return;
+        }
+
+        // wl_callback timestamps are compositor milliseconds with an arbitrary
+        // origin. Preserve their relative phase (including u32 wrap) rather than
+        // accumulating delivery latency on the GPUI thread.
+        let now = Instant::now();
+        let tick = state.callback_timestamp
+            .and_then(|(previous, instant)| {
+                let elapsed = callback_data.wrapping_sub(previous);
+                (elapsed > 0 && elapsed <= 60_000)
+                    .then(|| instant + Duration::from_millis(u64::from(elapsed)))
+            })
+            .unwrap_or(now);
+        // A compositor clock can jump on resume, output migration or
+        // server-side throttling. Preserve relative phase only while it remains
+        // near the local delivery clock; never carry a stale/future anchor.
+        let tick = if now.saturating_duration_since(tick) > Duration::from_millis(50)
+            || tick.saturating_duration_since(now) > Duration::from_millis(10)
+        {
+            now
+        } else {
+            tick
+        };
+        state.callback_timestamp = Some((callback_data, tick));
+        if !state.ui_frame_cadence.claim(now, gpui::platform::FrameSignal {
+            source: gpui::platform::FrameSource::Wayland,
+            at: tick,
+        }, false) {
+            arm_frame_callback(&mut state);
+            state.surface.commit();
+            return;
+        }
+        let request = std::mem::take(&mut state.pending_frame_request);
+        state.frame_in_progress = true;
+        drop(state);
+
+        if request.is_presentation_only() {
+            match self.present_active_frame(Instant::now(), None) {
+                Ok(Some(frame)) => {
+                    if frame.continues {
+                        self.request_frame(PlatformFrameRequest::presentation());
+                    }
+                    for completion in frame.completed_animations {
+                        self.invoke_presentation_animation_completed(completion);
+                    }
+                    self.finish_frame();
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => log::error!("failed to present active Wayland scene: {error:#}"),
+            }
+        }
+
+        let sender = self.callbacks.borrow().request_frame.clone();
+        if let Some(sender) = sender
+            && !sender.request(request)
+        {
+            log::trace!("discarding Wayland frame request after its UI receiver closed");
+        }
+        // Normally Window::complete_frame reaches PlatformWindow::completed_frame synchronously.
+        // If the window vanished or the callback exited before that boundary, recover the scheduler
+        // here so a later request cannot remain permanently latched behind frame_in_progress.
+        let mut state = self.state.borrow_mut();
+        if state.frame_in_progress {
+            state.frame_in_progress = false;
+            if state.pending_frame_request.requires_frame() {
+                arm_frame_callback(&mut state);
+                state.surface.commit();
+            }
+        }
+    }
+
+    pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            // The configure serial must precede *every* commit made in response
+            // to this event, including commits from CSD or viewport updates.
+            // Acknowledging after set_size_and_scale() is too late: that helper
+            // commits the surface while the old configure is still active.
+            self.state.borrow().xdg_surface.ack_configure(serial);
+            {
+                let mut state = self.state.borrow_mut();
+                if let Some(window_controls) = state.in_progress_window_controls.take() {
+                    state.window_controls = window_controls;
+                    state.refresh_client_frame();
+                    state.surface.commit();
+
+                    drop(state);
+                    let mut callbacks = self.callbacks.borrow_mut();
+                    if let Some(appearance_changed) = callbacks.appearance_changed.as_mut() {
+                        appearance_changed();
+                    }
+                }
+            }
+            {
+                let mut state = self.state.borrow_mut();
+
+                if let Some(mut configure) = state.in_progress_configure.take() {
+                    let got_unmaximized = state.maximized && !configure.maximized;
+                    state.fullscreen = configure.fullscreen;
+                    state.maximized = configure.maximized;
+                    state.tiling = configure.tiling;
+                    let visibility_changed = state.visibility != configure.visibility;
+                    state.visibility = configure.visibility;
+                    state.refresh_client_frame();
+                    // Every xdg_surface.configure must be acknowledged. Dropping a
+                    // throttled configure here can strand the compositor on a stale size.
+                    let suggested_size = configure.size;
+                    if !configure.fullscreen && !configure.maximized {
+                        configure.size = if got_unmaximized {
+                            Some(state.window_bounds.size)
+                        } else {
+                            // An external native decoration frame already accounts for
+                            // its borders in subtract_client_frame_borders(). Do not
+                            // apply GPUI's invisible CSD inset on top of that frame.
+                            let inset = if state.client_frame_visible() {
+                                px(0.0)
+                            } else {
+                                state.inset()
+                            };
+                            compute_outer_size(inset, configure.size, state.tiling)
+                        };
+                        if let Some(size) = configure.size {
+                            state.window_bounds = Bounds {
+                                origin: Point::default(),
+                                size,
+                            };
+                        }
+                    }
+                    log::trace!(
+                        target: "gpui_wayland_resize",
+                        "configure serial={} suggested={:?} content={:?} previous={:?} inset={:?} decorations={:?} scale={}",
+                        serial,
+                        suggested_size,
+                        configure.size,
+                        state.bounds.size,
+                        state.inset(),
+                        state.decorations,
+                        state.scale,
+                    );
+                    drop(state);
+                    if visibility_changed {
+                        self.report_visibility(configure.visibility);
+                    }
+                    if let Some(size) = configure.size {
+                        self.resize(size);
+                    }
+                }
+            }
+            let mut state = self.state.borrow_mut();
+            state.refresh_client_frame();
+            state.sync_window_geometry();
+
+            let request_frame_callback = !state.acknowledged_first_configure;
+            if request_frame_callback {
+                state.acknowledged_first_configure = true;
+                drop(state);
+                self.request_frame(PlatformFrameRequest::ui_commit());
+            }
+        }
+    }
+
+    pub fn handle_toplevel_decoration_event(&self, event: zxdg_toplevel_decoration_v1::Event) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            let decorations = match mode {
+                WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
+                    Some(WindowDecorations::Server)
+                }
+                WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ClientSide) => {
+                    Some(WindowDecorations::Client)
+                }
+                WEnum::Value(_) => {
+                    log::warn!("Unknown decoration mode");
+                    None
+                }
+                WEnum::Unknown(v) => {
+                    log::warn!("Unknown decoration mode: {}", v);
+                    None
+                }
+            };
+            if let Some(decorations) = decorations {
+                let mut state = self.state.borrow_mut();
+                state.decorations = decorations;
+                state.decoration_mode_configured = true;
+                state.refresh_client_frame();
+                state.surface.commit();
+                drop(state);
+                if let Some(appearance_changed) =
+                    self.callbacks.borrow_mut().appearance_changed.as_mut()
+                {
+                    appearance_changed();
+                }
+            }
+        }
+    }
+
+    pub fn handle_fractional_scale_event(&self, event: wp_fractional_scale_v1::Event) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            self.rescale(scale as f32 / 120.0);
+        }
+    }
+
+    pub fn handle_toplevel_event(&self, event: xdg_toplevel::Event) -> bool {
+        match event {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                let mut size = if width == 0 || height == 0 {
+                    None
+                } else {
+                    Some(size(px(width as f32), px(height as f32)))
+                };
+
+                let states = extract_states::<xdg_toplevel::State>(&states);
+
+                let mut tiling = Tiling::default();
+                let mut fullscreen = false;
+                let mut maximized = false;
+                let mut visibility = WindowVisibility::Visible;
+
+                for state in states {
+                    match state {
+                        xdg_toplevel::State::Maximized => {
+                            maximized = true;
+                        }
+                        xdg_toplevel::State::Fullscreen => {
+                            fullscreen = true;
+                        }
+                        xdg_toplevel::State::Suspended => visibility = WindowVisibility::Hidden,
+                        xdg_toplevel::State::TiledTop => {
+                            tiling.top = true;
+                        }
+                        xdg_toplevel::State::TiledLeft => {
+                            tiling.left = true;
+                        }
+                        xdg_toplevel::State::TiledRight => {
+                            tiling.right = true;
+                        }
+                        xdg_toplevel::State::TiledBottom => {
+                            tiling.bottom = true;
+                        }
+                        _ => {
+                            // noop
+                        }
+                    }
+                }
+
+                if fullscreen || maximized {
+                    tiling = Tiling::tiled();
+                }
+
+                let mut state = self.state.borrow_mut();
+                if !fullscreen {
+                    size = size.map(|size| state.subtract_client_frame_borders(size));
+                }
+                state.in_progress_configure = Some(InProgressConfigure {
+                    size,
+                    fullscreen,
+                    maximized,
+                    visibility,
+                    tiling,
+                });
+
+                false
+            }
+            xdg_toplevel::Event::Close => {
+                let mut cb = self.callbacks.borrow_mut();
+                if let Some(mut should_close) = cb.should_close.take() {
+                    let result = (should_close)();
+                    cb.should_close = Some(should_close);
+                    if result {
+                        drop(cb);
+                        self.close();
+                    }
+                    result
+                } else {
+                    true
+                }
+            }
+            xdg_toplevel::Event::WmCapabilities { capabilities } => {
+                let mut window_controls = WindowControls::default();
+
+                let states = extract_states::<xdg_toplevel::WmCapabilities>(&capabilities);
+
+                for state in states {
+                    match state {
+                        xdg_toplevel::WmCapabilities::Maximize => {
+                            window_controls.maximize = true;
+                        }
+                        xdg_toplevel::WmCapabilities::Minimize => {
+                            window_controls.minimize = true;
+                        }
+                        xdg_toplevel::WmCapabilities::Fullscreen => {
+                            window_controls.fullscreen = true;
+                        }
+                        xdg_toplevel::WmCapabilities::WindowMenu => {
+                            window_controls.window_menu = true;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let mut state = self.state.borrow_mut();
+                state.in_progress_window_controls = Some(window_controls);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    pub fn handle_surface_event(
+        &self,
+        event: wl_surface::Event,
+        outputs: HashMap<ObjectId, Output>,
+    ) {
+        let mut state = self.state.borrow_mut();
+
+        match event {
+            wl_surface::Event::Enter { output } => {
+                let id = output.id();
+
+                let Some(output) = outputs.get(&id) else {
+                    return;
+                };
+
+                state.outputs.insert(id, output.clone());
+
+                let scale = state.primary_output_scale();
+
+                // We use `PreferredBufferScale` instead to set the scale if it's available
+                let legacy_scale =
+                    state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+                if legacy_scale {
+                    state.surface.set_buffer_scale(scale);
+                }
+                drop(state);
+                if legacy_scale {
+                    self.rescale(scale as f32);
+                }
+                self.notify_output_move();
+            }
+            wl_surface::Event::Leave { output } => {
+                state.outputs.remove(&output.id());
+
+                let scale = state.primary_output_scale();
+
+                // We use `PreferredBufferScale` instead to set the scale if it's available
+                let legacy_scale =
+                    state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+                if legacy_scale {
+                    state.surface.set_buffer_scale(scale);
+                }
+                drop(state);
+                if legacy_scale {
+                    self.rescale(scale as f32);
+                }
+                self.notify_output_move();
+            }
+            wl_surface::Event::PreferredBufferScale { factor } => {
+                // We use `WpFractionalScale` instead to set the scale if it's available
+                if state.globals.fractional_scale_manager.is_none() {
+                    state.surface.set_buffer_scale(factor);
+                    drop(state);
+                    self.rescale(factor as f32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_ime(&self, ime: ImeInput) {
+        let mut state = self.state.borrow_mut();
+        if let Some(mut input_handler) = state.input_handler.take() {
+            drop(state);
+            match ime {
+                ImeInput::InsertText(text) => {
+                    input_handler.replace_text_in_range(None, &text);
+                }
+                ImeInput::SetMarkedText(text) => {
+                    input_handler.replace_and_mark_text_in_range(None, &text, None);
+                }
+                ImeInput::UnmarkText => {
+                    input_handler.unmark_text();
+                }
+                ImeInput::DeleteText => {
+                    if let Some(marked) = input_handler.marked_text_range() {
+                        input_handler.replace_text_in_range(Some(marked), "");
+                    }
+                }
+            }
+            self.state.borrow_mut().input_handler = Some(input_handler);
+        }
+    }
+
+    pub fn ime_area(&self) -> Option<Bounds<Pixels>> {
+        let mut state = self.state.borrow_mut();
+        let mut bounds: Option<Bounds<Pixels>> = None;
+        if let Some(mut input_handler) = state.input_handler.take() {
+            drop(state);
+            if let Some(selection) = input_handler.marked_text_range() {
+                bounds = input_handler.bounds_for_range(selection.start..selection.start);
+            }
+            self.state.borrow_mut().input_handler = Some(input_handler);
+        }
+        bounds
+    }
+
+    pub fn set_size_and_scale(&self, size: Option<Size<Pixels>>, scale: Option<f32>) {
+        let (size, scale) = {
+            let mut state = self.state.borrow_mut();
+            if size.is_none_or(|size| size == state.bounds.size)
+                && scale.is_none_or(|scale| scale == state.scale)
+            {
+                return;
+            }
+            if let Some(size) = size {
+                state.bounds.size = size;
+            }
+            if let Some(scale) = scale {
+                state.scale = scale;
+                state.refresh_client_frame_title();
+            }
+            let device_bounds = state.bounds.to_device_pixels(state.scale);
+            state.renderer.update_drawable_size(device_bounds.size);
+            state.refresh_client_frame();
+            state.sync_window_geometry();
+            // wp_viewport.set_destination() actively rescales the *currently
+            // attached* wl_buffer. At 1:1 native scale this is unnecessary and
+            // stretches an old Vulkan image during interactive Configure storms.
+            // Only fractional-scale rendering (or a fractional-scale manager
+            // using a physical scale other than 1) needs a destination override.
+            let needs_destination = requires_wayland_viewport_destination(
+                state.scale,
+                state.globals.fractional_scale_manager.is_some(),
+            );
+            if let Some(viewport) = &state.viewport {
+                if needs_destination {
+                    viewport.set_destination(
+                        f32::from(state.bounds.size.width).ceil().max(1.0) as i32,
+                        f32::from(state.bounds.size.height).ceil().max(1.0) as i32,
+                    );
+                } else if state.viewport_destination_active {
+                    viewport.set_destination(-1, -1);
+                }
+            }
+            state.viewport_destination_active = needs_destination;
+            log::trace!(
+                target: "gpui_wayland_resize",
+                "resize logical={:?} physical={:?} scale={} viewport_override={}",
+                state.bounds.size,
+                device_bounds.size,
+                state.scale,
+                needs_destination,
+            );
+            state.surface.commit();
+            (state.bounds.size, state.scale)
+        };
+
+        if let Some(ref mut fun) = self.callbacks.borrow_mut().resize {
+            fun(size, scale);
+        }
+    }
+
+    pub fn resize(&self, size: Size<Pixels>) {
+        self.set_size_and_scale(Some(size), None);
+    }
+
+    pub fn rescale(&self, scale: f32) {
+        self.set_size_and_scale(None, Some(scale));
+    }
+
+    pub fn close(&self) {
+        let mut callbacks = self.callbacks.borrow_mut();
+        if let Some(fun) = callbacks.close.take() {
+            fun()
+        }
+    }
+
+    pub fn dispatch_input(&self, input: PlatformInput) {
+        if let Some(ref mut fun) = self.callbacks.borrow_mut().input
+            && !fun(input.clone()).propagate
+        {
+            return;
+        }
+        if let PlatformInput::KeyDown(event) = input
+            && event.keystroke.modifiers.is_subset_of(&Modifiers::shift())
+            && let Some(key_char) = &event.keystroke.key_char
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(mut input_handler) = state.input_handler.take() {
+                drop(state);
+                input_handler.replace_text_in_range(None, key_char);
+                self.state.borrow_mut().input_handler = Some(input_handler);
+            }
+        }
+    }
+
+    pub fn set_focused(&self, is_focused: bool) {
+        let mut state = self.state.borrow_mut();
+        state.active = is_focused;
+        state.refresh_client_frame();
+        state.surface.commit();
+        drop(state);
+        if let Some(ref mut fun) = self.callbacks.borrow_mut().active_status_change {
+            fun(is_focused);
+        }
+    }
+
+    pub fn set_hovered(&self, is_hovered: bool) {
+        if let Some(ref mut fun) = self.callbacks.borrow_mut().hover_status_change {
+            fun(is_hovered);
+        }
+    }
+
+    fn report_visibility(&self, visibility: WindowVisibility) {
+        self.state.borrow().sync_presentation_visibility();
+        let callback = self.callbacks.borrow_mut().visibility_change.take();
+        if let Some(mut callback) = callback {
+            callback(visibility);
+            self.callbacks.borrow_mut().visibility_change = Some(callback);
+        }
+    }
+
+    pub fn set_appearance(&mut self, appearance: WindowAppearance) {
+        let mut state = self.state.borrow_mut();
+        state.appearance = appearance;
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.set_config(match appearance {
+                WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                    FrameConfig::dark().use_system_button_layout(false)
+                }
+                _ => FrameConfig::light().use_system_button_layout(false),
+            });
+        }
+        state.refresh_client_frame();
+        state.surface.commit();
+        drop(state);
+
+        let mut callbacks = self.callbacks.borrow_mut();
+        if let Some(ref mut fun) = callbacks.appearance_changed {
+            (fun)()
+        }
+    }
+
+    fn notify_output_move(&self) {
+        let callback = self.callbacks.borrow_mut().moved.take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.callbacks.borrow_mut().moved.get_or_insert(callback);
+        }
+    }
+
+    pub(super) fn refresh_outputs(&self, outputs: &HashMap<ObjectId, Output>) {
+        let mut state = self.state.borrow_mut();
+        state.outputs.retain(|id, output| {
+            if let Some(current) = outputs.get(id) {
+                *output = current.clone();
+                true
+            } else {
+                false
+            }
+        });
+        let scale = state.primary_output_scale();
+        let legacy_scale = state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE;
+        if legacy_scale {
+            state.surface.set_buffer_scale(scale);
+        }
+        drop(state);
+        if legacy_scale {
+            self.rescale(scale as f32);
+        }
+        self.notify_output_move();
+    }
+
+    pub fn primary_output_scale(&self) -> i32 {
+        self.state.borrow_mut().primary_output_scale()
+    }
+}
+
+fn client_frame_resize_edge(edge: CsdResizeEdge) -> xdg_toplevel::ResizeEdge {
+    match edge {
+        CsdResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+        CsdResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+        CsdResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+        CsdResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+        CsdResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+        CsdResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+        CsdResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+        CsdResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+        _ => xdg_toplevel::ResizeEdge::None,
+    }
+}
+
+fn client_frame_cursor_style(cursor: CursorIcon) -> CursorStyle {
+    match cursor {
+        CursorIcon::EResize => CursorStyle::ResizeRight,
+        CursorIcon::WResize => CursorStyle::ResizeLeft,
+        CursorIcon::EwResize => CursorStyle::ResizeLeftRight,
+        CursorIcon::NResize => CursorStyle::ResizeUp,
+        CursorIcon::SResize => CursorStyle::ResizeDown,
+        CursorIcon::NsResize => CursorStyle::ResizeUpDown,
+        CursorIcon::NeResize | CursorIcon::SwResize | CursorIcon::NeswResize => {
+            CursorStyle::ResizeUpRightDownLeft
+        }
+        CursorIcon::NwResize | CursorIcon::SeResize | CursorIcon::NwseResize => {
+            CursorStyle::ResizeUpLeftDownRight
+        }
+        _ => CursorStyle::Arrow,
+    }
+}
+
+fn extract_states<'a, S: TryFrom<u32> + 'a>(states: &'a [u8]) -> impl Iterator<Item = S> + 'a
+where
+    <S as TryFrom<u32>>::Error: 'a,
+{
+    states
+        .chunks_exact(4)
+        .flat_map(TryInto::<[u8; 4]>::try_into)
+        .map(u32::from_ne_bytes)
+        .flat_map(S::try_from)
+}
+
+impl raw_window_handle::HasWindowHandle for WaylandWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let surface = self.0.surface().id().as_ptr() as *mut libc::c_void;
+        let c_ptr = NonNull::new(surface).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = raw_window_handle::WaylandWindowHandle::new(c_ptr);
+        let raw_handle = raw_window_handle::RawWindowHandle::Wayland(handle);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw_handle) })
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for WaylandWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let display = self
+            .0
+            .surface()
+            .backend()
+            .upgrade()
+            .ok_or(raw_window_handle::HandleError::Unavailable)?
+            .display_ptr() as *mut libc::c_void;
+
+        let c_ptr = NonNull::new(display).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = raw_window_handle::WaylandDisplayHandle::new(c_ptr);
+        let raw_handle = raw_window_handle::RawDisplayHandle::Wayland(handle);
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw_handle) })
+    }
+}
+
+impl PlatformWindow for WaylandWindow {
+    fn bounds(&self) -> Bounds<Pixels> {
+        self.borrow().bounds
+    }
+
+    fn is_maximized(&self) -> bool {
+        self.borrow().maximized
+    }
+
+    fn window_bounds(&self) -> WindowBounds {
+        let state = self.borrow();
+        if state.fullscreen {
+            WindowBounds::Fullscreen(state.window_bounds)
+        } else if state.maximized {
+            WindowBounds::Maximized(state.window_bounds)
+        } else {
+            drop(state);
+            WindowBounds::Windowed(self.bounds())
+        }
+    }
+
+    fn inner_window_bounds(&self) -> WindowBounds {
+        let state = self.borrow();
+        if state.fullscreen {
+            WindowBounds::Fullscreen(state.window_bounds)
+        } else if state.maximized {
+            WindowBounds::Maximized(state.window_bounds)
+        } else {
+            let inset = state.inset();
+            drop(state);
+            WindowBounds::Windowed(self.bounds().inset(inset))
+        }
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        self.borrow().bounds.size
+    }
+
+    fn resize(&mut self, size: Size<Pixels>) {
+        let state = self.borrow();
+        let state_ptr = self.0.clone();
+        // Let the native resize handler publish the drawable, viewport,
+        // window geometry and UI layout as one ordered transaction.
+        state
+            .globals
+            .executor
+            .spawn(async move { state_ptr.resize(size) })
+            .detach();
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.borrow().scale
+    }
+
+    fn appearance(&self) -> WindowAppearance {
+        self.borrow().appearance
+    }
+
+    fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+        let state = self.borrow();
+        state.display.as_ref().map(|(id, display)| {
+            Rc::new(WaylandDisplay {
+                id: id.clone(),
+                name: display.name.clone(),
+                bounds: display.bounds.to_pixels(state.scale),
+                refresh_interval: display
+                    .refresh_millihertz
+                    .and_then(|rate| gpui::refresh_interval_from_hz(f64::from(rate) / 1000.0)),
+            }) as Rc<dyn PlatformDisplay>
+        })
+    }
+
+    fn mouse_position(&self) -> Point<Pixels> {
+        self.borrow()
+            .client
+            .client()
+            .borrow()
+            .mouse_location
+            .unwrap_or_default()
+    }
+
+    fn modifiers(&self) -> Modifiers {
+        self.borrow().client.client().borrow().modifiers
+    }
+
+    fn capslock(&self) -> Capslock {
+        self.borrow().client.client().borrow().capslock
+    }
+
+    fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
+        self.borrow_mut().input_handler = Some(input_handler);
+    }
+
+    fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
+        self.borrow_mut().input_handler.take()
+    }
+
+    fn prompt(
+        &self,
+        _level: PromptLevel,
+        _msg: &str,
+        _detail: Option<&str>,
+        _answers: &[PromptButton],
+    ) -> Option<Receiver<usize>> {
+        None
+    }
+
+    fn activate(&self) {
+        // Try to request an activation token. Even though the activation is likely going to be rejected,
+        // KWin and Mutter can use the app_id to visually indicate we're requesting attention.
+        let state = self.borrow();
+        if let (Some(activation), Some(app_id)) = (&state.globals.activation, state.app_id.clone())
+        {
+            state.client.set_pending_activation(state.surface.id());
+            let token = activation.get_activation_token(&state.globals.qh, ());
+            // The serial isn't exactly important here, since the activation is probably going to be rejected anyway.
+            let serial = state.client.serial(SerialKind::MousePress);
+            token.set_app_id(app_id);
+            token.set_serial(serial, &state.globals.seat);
+            token.set_surface(&state.surface);
+            token.commit();
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.borrow().active
+    }
+
+    fn visibility(&self) -> WindowVisibility {
+        self.borrow().visibility
+    }
+
+    fn is_hovered(&self) -> bool {
+        self.borrow().hovered
+    }
+
+    fn set_title(&mut self, title: &str) {
+        let mut state = self.borrow_mut();
+        state.toplevel.set_title(title.to_string());
+        state.title.clear();
+        state.title.push_str(title);
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.set_title(title.to_string());
+        }
+        state.refresh_client_frame_title();
+        state.refresh_client_frame();
+        state.surface.commit();
+    }
+
+    fn set_app_id(&mut self, app_id: &str) {
+        let mut state = self.borrow_mut();
+        state.toplevel.set_app_id(app_id.to_owned());
+        state.app_id = Some(app_id.to_owned());
+    }
+
+    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+        let mut state = self.borrow_mut();
+        if state.background_appearance == background_appearance {
+            return;
+        }
+        state.background_appearance = background_appearance;
+        update_window(state);
+        self.0.surface().commit();
+        self.0.request_frame(PlatformFrameRequest::ui_commit());
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.borrow().background_appearance
+    }
+
+    fn background_capabilities(&self) -> gpui::WindowBackgroundCapabilities {
+        self.borrow()
+            .globals
+            .background_effects
+            .borrow()
+            .capabilities()
+    }
+
+    fn minimize(&self) {
+        self.borrow().toplevel.set_minimized();
+    }
+
+    fn zoom(&self) {
+        let state = self.borrow();
+        if !state.maximized {
+            state.toplevel.set_maximized();
+        } else {
+            state.toplevel.unset_maximized();
+        }
+    }
+
+    fn toggle_fullscreen(&self) {
+        let mut state = self.borrow_mut();
+        if !state.fullscreen {
+            state.toplevel.set_fullscreen(None);
+        } else {
+            state.toplevel.unset_fullscreen();
+        }
+    }
+
+    fn is_fullscreen(&self) -> bool {
+        self.borrow().fullscreen
+    }
+
+    fn request_frame(&self, options: PlatformFrameRequest) {
+        self.0.request_frame(options);
+    }
+
+    fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        let mut state = self.0.state.borrow_mut();
+        state.ui_frame_cadence.set_interval(interval);
+        state.renderer.set_frame_interval(interval);
+    }
+
+    fn native_frame_clock_interval(&self) -> Option<Duration> {
+        self.0.state.borrow().ui_frame_cadence.interval()
+    }
+
+    fn frame_request_timed_out(&self, options: PlatformFrameRequest) {
+        self.0.clear_timed_out_frame_request(options);
+    }
+
+    fn set_frame_request_sender(&self, sender: gpui::platform::frame::PlatformFrameRequestSender) {
+        self.0.callbacks.borrow_mut().request_frame = Some(sender.clone());
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_frame_request_sender(sender);
+        let should_request_frame = {
+            let state = self.0.state.borrow();
+            state.pending_frame_request.requires_frame() && state.frame_callback_pending.is_none()
+        };
+        if should_request_frame {
+            self.0.request_frame(PlatformFrameRequest::default());
+        }
+    }
+
+    fn set_animation_completion_sender(
+        &self,
+        sender: gpui::platform::frame::SceneAnimationCompletionSender,
+    ) {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_animation_completion_sender(sender.clone());
+        self.0
+            .callbacks
+            .borrow_mut()
+            .presentation_animation_completed = Some(sender);
+    }
+
+    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
+        self.0.callbacks.borrow_mut().input = Some(callback);
+    }
+
+    fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        self.0.callbacks.borrow_mut().active_status_change = Some(callback);
+    }
+
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        self.0.callbacks.borrow_mut().visibility_change = Some(callback);
+    }
+
+    fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        self.0.callbacks.borrow_mut().hover_status_change = Some(callback);
+    }
+
+    fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
+        self.0.callbacks.borrow_mut().resize = Some(callback);
+    }
+
+    fn on_moved(&self, callback: Box<dyn FnMut()>) {
+        self.0.callbacks.borrow_mut().moved = Some(callback);
+    }
+
+    fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.callbacks.borrow_mut().should_close = Some(callback);
+    }
+
+    fn on_close(&self, callback: Box<dyn FnOnce()>) {
+        self.0.callbacks.borrow_mut().close = Some(callback);
+    }
+
+    fn on_hit_test_window_control(&self, _callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+    }
+
+    fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
+        self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
+    }
+
+    fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
+        let result = self.borrow_mut().renderer.draw(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
+        }
+        result
+    }
+
+    fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
+        let result = self.borrow_mut().renderer.present_framebuffer_only(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
+        }
+        result
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<gpui::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<gpui::platform::frame::ActivePresentationFrame>> {
+        self.0.present_active_frame(now, None)
+    }
+
+    fn supports_deferred_scroll(&self) -> bool { true }
+
+    fn owns_scene_animations(&self) -> bool {
+        true
+    }
+
+    fn has_active_presentation_animations(&self) -> bool {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .has_active_presentation_animations()
+    }
+
+    fn completed_frame(&self) {
+        self.0.finish_frame();
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        let state = self.borrow();
+        state.renderer.platform_atlas()
+    }
+
+    fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
+        self.borrow_mut().renderer.trim_gpui_memory(level);
+    }
+
+    fn show_window_menu(&self, position: Point<Pixels>) {
+        let state = self.borrow();
+        let serial = state.client.serial(SerialKind::MousePress);
+        state.toplevel.show_window_menu(
+            &state.globals.seat,
+            serial,
+            f32::from(position.x) as i32,
+            f32::from(position.y) as i32,
+        );
+    }
+
+    fn start_window_move(&self) {
+        let state = self.borrow();
+        let serial = state.client.serial(SerialKind::MousePress);
+        state.toplevel._move(&state.globals.seat, serial);
+    }
+
+    fn start_window_resize(&self, edge: gpui::ResizeEdge) {
+        let state = self.borrow();
+        state.toplevel.resize(
+            &state.globals.seat,
+            state.client.serial(SerialKind::MousePress),
+            edge.to_xdg(),
+        )
+    }
+
+    fn window_decorations(&self) -> Decorations {
+        let state = self.borrow();
+        match state.decorations {
+            WindowDecorations::Server => Decorations::Server,
+            WindowDecorations::Client => Decorations::Client {
+                tiling: state.tiling,
+            },
+        }
+    }
+
+    fn request_decorations(&self, decorations: WindowDecorations) {
+        let mut state = self.borrow_mut();
+        state.requested_decorations = decorations;
+        if let Some(decoration) = state.decoration.as_ref() {
+            decoration.set_mode(decorations.to_xdg());
+        } else {
+            state.decorations = WindowDecorations::Client;
+            state.decoration_mode_configured = true;
+            if decorations == WindowDecorations::Server {
+                log::info!(
+                    "wayland: server-side decorations unavailable; using independent client decorations"
+                );
+            }
+        }
+        state.refresh_client_frame();
+        state.surface.commit();
+        if decorations == WindowDecorations::Server && state.client_frame.is_none() {
+            log::info!(
+                "wayland: independent client decorations unavailable; window remains undecorated"
+            );
+        }
+    }
+
+    fn window_controls(&self) -> WindowControls {
+        self.borrow().window_controls
+    }
+
+    fn set_client_inset(&self, inset: Pixels) {
+        let mut state = self.borrow_mut();
+        if Some(inset) != state.client_inset {
+            state.client_inset = Some(inset);
+            update_window(state);
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
+        }
+    }
+
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        let state = self.borrow();
+        state.client.update_ime_position(bounds);
+    }
+
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        self.borrow().renderer.gpu_specs().log_err()
+    }
+}
+
+fn update_window(mut state: RefMut<WaylandWindowState>) {
+    let opaque = !state.is_transparent();
+
+    state.renderer.update_transparency(!opaque);
+    let mut opaque_area = state.window_bounds.map(|value| f32::from(value) as i32);
+    opaque_area.inset(f32::from(state.inset()) as i32);
+
+    let region = state
+        .globals
+        .compositor
+        .create_region(&state.globals.qh, ());
+    region.add(
+        opaque_area.origin.x,
+        opaque_area.origin.y,
+        opaque_area.size.width,
+        opaque_area.size.height,
+    );
+
+    // Note that rounded corners make this rectangle API hard to work with.
+    // As this is common when using CSD, let's just disable this API.
+    if state.background_appearance == WindowBackgroundAppearance::Opaque
+        && state.decorations == WindowDecorations::Server
+    {
+        // Promise the compositor that this region of the window surface
+        // contains no transparent pixels. This allows the compositor to skip
+        // updating whatever is behind the surface for better performance.
+        state.surface.set_opaque_region(Some(&region));
+    } else {
+        state.surface.set_opaque_region(None);
+    }
+
+    let effects = state.globals.background_effects.clone();
+    let effects = effects.borrow();
+    let effective = effects.capabilities().resolve(state.background_appearance);
+    let blur = effective == WindowBackgroundAppearance::Blurred;
+    let ext_blur = blur && effects.blur_supported && effects.manager.is_some();
+    if ext_blur {
+        if state.background_effect.is_none() {
+            if let Some(manager) = effects.manager.as_ref() {
+                state.background_effect =
+                    Some(manager.get_background_effect(&state.surface, &state.globals.qh, ()));
+            }
+        }
+        if let Some(effect) = state.background_effect.as_ref() {
+            // A non-null region is required: null removes the effect. These bounds are in
+            // surface-local logical coordinates, independent of buffer scale/fractional DPI.
+            let blur_region = state
+                .globals
+                .compositor
+                .create_region(&state.globals.qh, ());
+            blur_region.add(
+                0,
+                0,
+                f32::from(state.window_bounds.size.width).ceil().max(1.0) as i32,
+                f32::from(state.window_bounds.size.height).ceil().max(1.0) as i32,
+            );
+            effect.set_blur_region(Some(&blur_region));
+            blur_region.destroy();
+        }
+    } else if let Some(effect) = state.background_effect.take() {
+        effect.set_blur_region(None);
+        effect.destroy();
+    }
+    if blur && !ext_blur {
+        if let Some(manager) = effects.kde_manager.as_ref() {
+            if state.blur.is_none() {
+                state.blur = Some(manager.create(&state.surface, &state.globals.qh, ()));
+            }
+            if let Some(blur) = state.blur.as_ref() {
+                blur.commit();
+            }
+        }
+    } else if let Some(blur) = state.blur.take() {
+        if let Some(manager) = effects.kde_manager.as_ref() {
+            manager.unset(&state.surface);
+        }
+        blur.release();
+    }
+    region.destroy();
+}
+
+impl WindowDecorations {
+    fn to_xdg(self) -> zxdg_toplevel_decoration_v1::Mode {
+        match self {
+            WindowDecorations::Client => zxdg_toplevel_decoration_v1::Mode::ClientSide,
+            WindowDecorations::Server => zxdg_toplevel_decoration_v1::Mode::ServerSide,
+        }
+    }
+}
+
+impl ResizeEdge {
+    fn to_xdg(self) -> xdg_toplevel::ResizeEdge {
+        match self {
+            ResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+            ResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+            ResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+            ResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+            ResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+            ResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+            ResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+            ResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+        }
+    }
+}
+
+/// The configuration event is in terms of the window geometry, which we are constantly
+/// updating to account for the client decorations. But that's not the area we want to render
+/// to, due to our intrusize CSD. So, here we calculate the 'actual' size, by adding back in the insets
+fn requires_wayland_viewport_destination(scale: f32, fractional_scale_manager: bool) -> bool {
+    // Without fractional scaling, wl_surface.buffer_scale already establishes
+    // the pixel-to-surface mapping. With it, only the identity scale can be
+    // represented without a viewport destination (buffer_scale stays at one).
+    fractional_scale_manager && scale != 1.0
+}
+
+fn compute_outer_size(
+    inset: Pixels,
+    new_size: Option<Size<Pixels>>,
+    tiling: Tiling,
+) -> Option<Size<Pixels>> {
+    new_size.map(|mut new_size| {
+        if !tiling.top {
+            new_size.height += inset;
+        }
+        if !tiling.bottom {
+            new_size.height += inset;
+        }
+        if !tiling.left {
+            new_size.width += inset;
+        }
+        if !tiling.right {
+            new_size.width += inset;
+        }
+
+        new_size
+    })
+}
+
+fn inset_by_tiling(mut bounds: Bounds<Pixels>, inset: Pixels, tiling: Tiling) -> Bounds<Pixels> {
+    if !tiling.top {
+        bounds.origin.y += inset;
+        bounds.size.height -= inset;
+    }
+    if !tiling.bottom {
+        bounds.size.height -= inset;
+    }
+    if !tiling.left {
+        bounds.origin.x += inset;
+        bounds.size.width -= inset;
+    }
+    if !tiling.right {
+        bounds.size.width -= inset;
+    }
+
+    bounds
+}
+
+#[cfg(test)]
+mod client_frame_tests {
+    use super::*;
+
+    #[test]
+    fn maps_client_frame_resize_cursors() {
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::NResize),
+            CursorStyle::ResizeUp
+        );
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::SeResize),
+            CursorStyle::ResizeUpLeftDownRight
+        );
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::SwResize),
+            CursorStyle::ResizeUpRightDownLeft
+        );
+    }
+
+    #[test]
+    fn identity_scale_resize_must_not_stretch_existing_wayland_buffer() {
+        assert!(!requires_wayland_viewport_destination(1.0, false));
+        assert!(!requires_wayland_viewport_destination(1.0, true));
+        assert!(!requires_wayland_viewport_destination(2.0, false));
+        assert!(requires_wayland_viewport_destination(1.25, true));
+        assert!(requires_wayland_viewport_destination(2.0, true));
+    }
+
+    #[test]
+    fn client_inset_window_geometry_round_trip_does_not_accumulate_height() {
+        let inset = px(8.0);
+        let requested = size(px(760.0), px(560.0));
+        let tiling = Tiling::default();
+        for _ in 0..64 {
+            let outer = compute_outer_size(inset, Some(requested), tiling).unwrap();
+            let geometry = inset_by_tiling(
+                Bounds {
+                    origin: point(px(0.0), px(0.0)),
+                    size: outer,
+                },
+                inset,
+                tiling,
+            );
+            assert_eq!(geometry.size, requested);
+        }
+    }
+}

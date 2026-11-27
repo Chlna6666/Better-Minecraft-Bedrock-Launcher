@@ -5,11 +5,61 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
+[features]
+nova-gfx-metal = ["gpui/nova-gfx-metal"]
+macos-blade = ["gpui/macos-blade"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 anyhow = "1"
-core-graphics = "0.25.0"
-foreign-types = "0.5"
+async-task = "4"
+collections = { version = "0.2.2", package = "gpui_collections" }
+ctor = "0.4"
+futures = "0.3"
+gpui = { path = "../gpui", default-features = false }
+itertools = "0.14"
+libc = "0.2"
+log = "0.4"
+parking_lot = "0.12"
+smallvec = "1.15"
+strum = { version = "0.27", features = ["derive"] }
+unicode-segmentation = "1"
 util = { version = "0.2.2", package = "gpui_util" }
+uuid = { version = "1", features = ["v4"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.block]
+version = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies.cocoa]
+version = "=0.26.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.cocoa-foundation]
+version = "=0.2.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-foundation]
+version = "=0.10.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-foundation-sys]
+version = "0.8.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-graphics]
+version = "0.25.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-text]
+version = "22.0.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-video]
+version = "0.6.1"
+features = ["metal"]
+
+[target.'cfg(target_os = "macos")'.dependencies.foreign-types]
+version = "0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies.metal]
+version = "0.33.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc]
+version = "0.2"
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 bindgen = "0.73.2"

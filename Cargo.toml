@@ -46,6 +46,7 @@ toml = "0.8.23"
 zstd = "0.14.0"
 
 [dependencies]
+gpui_platform = { path = "crates/gpui/gpui_platform" }
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 gpui = { path = "crates/gpui/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx"] }
@@ -171,6 +172,7 @@ members = [
     "crates/gpui/gpui_linux",
     "crates/gpui/gpui_macos",
     "crates/gpui/gpui_macros",
+    "crates/gpui/gpui_platform",
     "crates/gpui/gpui_tokio",
     "crates/gpui/gpui_windows",
     "crates/gpui/lucide_gpui",

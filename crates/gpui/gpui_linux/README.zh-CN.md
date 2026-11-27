@@ -1,3 +1,7 @@
-# gpui_linux
+# GPUI linux
 
-供 GPUI 使用的 Linux 和 FreeBSD 桌面服务。此 crate 选择 Wayland 或 X11 会话，并在启用桌面后端时将 XDG 桌面设置变更发送给窗口事件循环。
+拥有 Wayland、X11 和无窗口事件循环，以及窗口、输入、剪贴板和 XDG 桌面设置。
+
+`gpui_platform` 在对应桌面目标上选用此实现。它通过 GPUI 平台接口接入共享呈现链路。
+
+[English](README.md)
