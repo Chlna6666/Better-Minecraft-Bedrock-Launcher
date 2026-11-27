@@ -56,6 +56,10 @@ impl<'a> OperationRun<'a> {
 
     fn is_empty(self) -> bool { self.start == self.end }
 
+    pub(super) fn is_scroll_only(self) -> bool {
+        !self.is_empty() && self.owner.is_some_and(OperationPage::is_scroll_only)
+    }
+
     pub(crate) fn get(self, index: usize) -> Option<PaintOperationRef<'a>> {
         if index >= self.len() { return None; }
         Some(self.owner?.view(self.start + index))

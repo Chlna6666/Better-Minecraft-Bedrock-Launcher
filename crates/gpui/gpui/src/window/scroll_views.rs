@@ -361,7 +361,9 @@ impl Window {
             && self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
             && source.source.native_placement(source.viewport, scale, delta)
-                .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
+                .is_some_and(|placement| self.next_frame.painter.push_scroll_placement_against(
+                    self.rendered_frame.scene(), old_range.clone(), placement,
+                ));
         if !deferred {
             if unchanged && !was_deferred {
                 self.replay_validated_scene(old_range);

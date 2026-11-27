@@ -126,6 +126,39 @@ impl Painter {
         self.retain_deferred_scroll(placement)
     }
 
+    /// Replace one committed native marker, preserving the original page
+    /// when the position has not changed. A moved marker owns only its new
+    /// placement; ordinary primitive pages and their indices are untouched.
+    pub(crate) fn push_scroll_placement_against(
+        &mut self, previous: &Scene, range: Range<usize>,
+        placement: crate::window::scroll_paint::ScrollPlacement,
+    ) -> bool {
+        if !self.layer_stack.is_empty() && !placement.has_scoped_order() {
+            return false;
+        }
+        if range.len() == 1
+            && let Some(PaintOperationRef::DeferredScroll(old)) = previous.paint_operations.view(range.start)
+            && placement.same_paint(old)
+            && self.share_scroll_markers(previous, range)
+        {
+            return true;
+        }
+        self.retain_deferred_scroll(placement)
+    }
+
+    /// Native markers have no ordinary draw-order leaves. Share a complete
+    /// marker-only run without cloning each placement's Arc or rebuilding
+    /// its operation slots. The caller proves the run's operation kind.
+    fn share_scroll_markers(&mut self, previous: &Scene, range: Range<usize>) -> bool {
+        if self.scroll_capture.is_some() || !self.blur_captures.is_empty() {
+            return false;
+        }
+        self.scene.revision = 0;
+        self.flush_draw_payloads();
+        self.scene.paint_operations.share(&previous.paint_operations, range);
+        true
+    }
+
     /// A retained view may be replayed in an ordinary scope after a
     /// structural edit. Keep its logical indices intact; the root proof
     /// certifies disjoint scopes or the owner rebuilds their DrawOrder.

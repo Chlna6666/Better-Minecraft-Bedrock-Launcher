@@ -537,6 +537,41 @@ mod tests {
     }
 
     #[test]
+    fn native_marker_run_replay_shares_slots_and_replaces_only_changed_marker() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds: Bounds::new(point(px(0.), px(16.)), size(px(40.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let placement = source.native_placement(viewport, 1., Point::default()).unwrap();
+        let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let mut old = Painter::for_frame();
+        for _ in 0..64 { assert!(old.push_deferred_scroll(placement.clone())); }
+        old.finish();
+        let mut current = Painter::for_frame();
+        assert!(current.replay_with_ordering(0..32, &old.scene, [], Some(&old)));
+        assert!(current.push_scroll_placement_against(&old.scene, 32..33, moved));
+        assert!(current.replay_with_ordering(33..64, &old.scene, [], Some(&old)));
+        current.finish_against(&old.scene);
+        assert_eq!(current.len(), 64);
+        for index in (0..32).chain(33..64) {
+            assert_eq!(current.paint_operations.storage_identity(index), old.paint_operations.storage_identity(index));
+        }
+        assert_ne!(current.paint_operations.storage_identity(32), old.paint_operations.storage_identity(32));
+        assert_eq!(current.paint_operations.placement_storage_matches(&old.paint_operations), Some(false));
+        let mut unchanged = Painter::for_frame();
+        assert!(unchanged.push_scroll_placement_against(&old.scene, 0..1, placement.clone()));
+        assert_eq!(unchanged.paint_operations.storage_identity(0), old.paint_operations.storage_identity(0));
+        // Eager owner reconstruction must not use the marker-page shortcut.
+        let mut eager = Painter::default();
+        eager.replay(0..64, &old.scene, []);
+        assert!(!eager.paint_operations.has_deferred_scroll());
+    }
+
+    #[test]
     fn changed_native_marker_keeps_both_ordinary_replay_ranges_and_batches() {
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
         let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));

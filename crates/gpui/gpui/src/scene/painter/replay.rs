@@ -145,6 +145,15 @@ impl Painter {
                 run = runs.next().expect("validated replay range");
                 run_end += run.len();
             }
+            // Page-level marker replay is independent of ordinary bounds
+            // and preserves every logical slot, even after a dirty prefix.
+            // Owner-side eager fallback must still expand the geometry.
+            if previous_painter.is_some() && run.is_scroll_only()
+                && self.share_scroll_markers(prev_scene, index..run_end)
+            {
+                index = run_end;
+                continue;
+            }
             let operation = run.get(index - (run_end - run.len())).expect("validated replay operation");
             if index >= shadow_scan_end
                 && retain_order
