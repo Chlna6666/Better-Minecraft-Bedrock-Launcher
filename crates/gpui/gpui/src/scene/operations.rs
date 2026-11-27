@@ -375,7 +375,6 @@ impl Operations {
         });
     }
     /// Release unrelated old page payload when the combined live views are sparse.
-    #[cfg(test)]
     pub(crate) fn compact(&mut self) {
         self.compact_pages(false);
     }
@@ -401,6 +400,7 @@ impl Operations {
     where
         OperationPage: super::operation_page::DrawPayload<T>,
     {
+        use super::operation_page::DrawPayload;
         use collections::{FxHashMap, FxHashSet};
 
         // A fresh dense scene has no sparse typed coverage at all.
