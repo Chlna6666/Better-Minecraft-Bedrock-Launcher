@@ -475,6 +475,25 @@ impl<'a> OperationRange<'a> {
         left.is_empty() && right.is_empty()
     }
 
+    /// Count equal leading operations without visiting identical immutable
+    /// slices. The caller must prove shared storage is sufficient for its
+    /// equality semantics (e.g. no externally sampled animation state).
+    pub(crate) fn common_prefix_by(
+        self, other: OperationRange<'_>,
+        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    ) -> usize {
+        common_shared_edge(self.slices(), other.slices(), false, compare)
+    }
+
+    /// Same proof in reverse logical order. Exclude an already matched
+    /// prefix by restricting the input ranges before calling this method.
+    pub(crate) fn common_suffix_by(
+        self, other: OperationRange<'_>,
+        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    ) -> usize {
+        common_shared_edge(self.slices().rev(), other.slices().rev(), true, compare)
+    }
+
     /// Contiguous portions in logical order, including an unfinished tail.
     /// Resolve the segment boundaries once for the whole range.
     pub(crate) fn slices(self) -> impl DoubleEndedIterator<Item = &'a [PaintOperation]> + Clone {
@@ -508,6 +527,51 @@ impl<'a> OperationRange<'a> {
         self.slices().flat_map(|slice| slice.iter())
     }
 }
+// Walk physical ranges in lockstep. A shared page is compared in O(1),
+// including unequal segment lengths and different logical offsets.
+fn common_shared_edge<'a, 'b>(
+    mut left_runs: impl Iterator<Item = &'a [PaintOperation]>,
+    mut right_runs: impl Iterator<Item = &'b [PaintOperation]>,
+    reverse: bool,
+    mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+) -> usize {
+    let mut left = left_runs.next().unwrap_or(&[]);
+    let mut right = right_runs.next().unwrap_or(&[]);
+    let mut matched = 0;
+    while !left.is_empty() && !right.is_empty() {
+        let count = left.len().min(right.len());
+        let split = |slice: &[PaintOperation]| if reverse {
+            slice.len() - count
+        } else { count };
+        let (a, left_tail) = if reverse {
+            let (tail, head) = left.split_at(split(left));
+            (head, tail)
+        } else { left.split_at(split(left)) };
+        let (b, right_tail) = if reverse {
+            let (tail, head) = right.split_at(split(right));
+            (head, tail)
+        } else { right.split_at(split(right)) };
+        if !std::ptr::eq(a, b) {
+            if reverse {
+                for (a, b) in a.iter().rev().zip(b.iter().rev()) {
+                    if !compare(a, b) { return matched; }
+                    matched += 1;
+                }
+            } else {
+                for (a, b) in a.iter().zip(b.iter()) {
+                    if !compare(a, b) { return matched; }
+                    matched += 1;
+                }
+            }
+        } else {
+            matched += count;
+        }
+        left = if left_tail.is_empty() { left_runs.next().unwrap_or(&[]) } else { left_tail };
+        right = if right_tail.is_empty() { right_runs.next().unwrap_or(&[]) } else { right_tail };
+    }
+    matched
+}
+
 impl Index<usize> for Operations {
     type Output = PaintOperation;
     fn index(&self, index: usize) -> &Self::Output {

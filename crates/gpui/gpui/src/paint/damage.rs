@@ -26,26 +26,29 @@ fn visit_changed_bounds(
         return false;
     };
 
-    let prefix_len = current
-        .iter()
-        .zip(previous_operations.iter())
-        .take_while(|(current, previous_operation)| {
-            paint_operations_match(scene, current, previous, previous_operation)
-        })
-        .count();
-    let max_suffix_len = current
-        .len()
-        .min(previous_operations.len())
-        .saturating_sub(prefix_len);
-    let suffix_len = current
-        .iter()
-        .rev()
-        .zip(previous_operations.iter().rev())
-        .take(max_suffix_len)
-        .take_while(|(current, previous_operation)| {
-            paint_operations_match(scene, current, previous, previous_operation)
-        })
-        .count();
+    // Static immutable pages already prove the same visual operation.
+    // Dynamic surfaces, extension payloads, filters and scene animation
+    // samples retain the original per-operation comparison contract.
+    let static_scene = |scene: &Scene| scene.animation_values.is_empty()
+        && scene.surfaces.is_empty() && scene.renderer_extensions.is_empty()
+        && scene.blurs.is_empty() && !scene.has_backdrop_blurs();
+    let skip_shared = static_scene(scene) && static_scene(previous);
+    let compare = |a: &PaintOperation, b: &PaintOperation|
+        paint_operations_match(scene, a, previous, b);
+    let prefix_len = if skip_shared {
+        current.common_prefix_by(previous_operations, compare)
+    } else {
+        current.iter().zip(previous_operations.iter())
+            .take_while(|(a, b)| compare(a, b)).count()
+    };
+    let max_suffix_len = current.len().min(previous_operations.len()).saturating_sub(prefix_len);
+    let suffix_len = if skip_shared {
+        current.range(prefix_len..current.len())
+            .common_suffix_by(previous_operations.range(prefix_len..previous_operations.len()), compare)
+    } else {
+        current.iter().rev().zip(previous_operations.iter().rev())
+            .take(max_suffix_len).take_while(|(a, b)| compare(a, b)).count()
+    };
 
     let previous_changed =
         previous_operations.range(prefix_len..previous_operations.len().saturating_sub(suffix_len));

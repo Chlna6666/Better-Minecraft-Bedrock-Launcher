@@ -277,3 +277,29 @@ fn range_slices_match_logical_indices_across_shared_and_pending_runs() {
         }
     }
 }
+
+#[test]
+fn damage_edges_skip_shared_pages_and_stop_at_first_real_mismatch() {
+    let source = operations(1024);
+    let mut current = Operations::default();
+    current.share(&source, 0..400);
+    current.push(PaintOperation::EndLayer);
+    current.share(&source, 400..1024);
+    current.finish();
+    let mut comparisons = 0;
+    let mut compare = |a: &PaintOperation, b: &PaintOperation| {
+        comparisons += 1;
+        a.visually_eq(b)
+    };
+    assert_eq!(current.all().common_prefix_by(source.all(), &mut compare), 400);
+    assert_eq!(current.all().common_suffix_by(source.all(), &mut compare), 624);
+    assert_eq!(comparisons, 2);
+    let mut calls = 0;
+    assert_eq!(source.range(5..1000).common_prefix_by(current.range(5..400), |_, _| {
+        calls += 1; false
+    }), 395);
+    assert_eq!(calls, 0);
+    assert_eq!(source.range(400..1024).common_suffix_by(current.range(401..1025), |_, _| {
+        panic!("shared suffix must not compare primitives")
+    }), 624);
+}
