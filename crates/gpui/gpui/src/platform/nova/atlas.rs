@@ -307,6 +307,13 @@ impl NovaAtlas {
     /// Snapshot only requested logical glyph placements. A miss never
     /// samples an evicted allocation or a page whose upload is still queued.
     /// The ordinary atlas upload path can make the next presentation eligible.
+    pub(super) fn scroll_content_generation(&self) -> u64 {
+        // Same-ID refreshes can change glyph pixels without relocation.
+        // Match the normal renderer's atlas-content generation, not the
+        // placement generation. A lock is required for this exact snapshot.
+        self.state.lock().expect("nova atlas lock poisoned").content_generation
+    }
+
     pub(super) fn ready_scroll_glyphs(&self, ids: &[(AtlasTextureId, u32)]) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
         let state = self.state.lock().expect("nova atlas lock poisoned");
         if !state.pending_uploads.is_empty() { return None; }

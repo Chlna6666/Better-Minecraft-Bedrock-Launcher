@@ -3,7 +3,7 @@ use super::*;
 /// Packs the static GlobalParams WGSL ABI. The viewport is the physical
 /// raster extent and target_origin is its top-left in stable content space.
 /// Shared text shader ABI for normal frames and offscreen scroll writers.
-pub(super) fn pack_text_raster_params(parameters: RenderingParameters) -> [u8; TEXT_RASTER_UPLOAD_BYTES] {
+pub(super) fn pack_text_raster_params(parameters: &RenderingParameters) -> [u8; TEXT_RASTER_UPLOAD_BYTES] {
     let mut bytes = [0; TEXT_RASTER_UPLOAD_BYTES];
     for (slot, value) in bytes[..16].chunks_exact_mut(4).zip(parameters.gamma_ratios) {
         slot.copy_from_slice(&value.to_ne_bytes());

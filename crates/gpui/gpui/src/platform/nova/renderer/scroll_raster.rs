@@ -267,6 +267,14 @@ impl NovaRenderer {
             return Ok(None);
         };
         let Some(requests) = requests(layer, self.active_size) else { return Ok(None); };
+        // Keep the normal atlas retirement path reachable even during a long
+        // run of direct presentations. Only scan dependencies when removals exist.
+        if self.atlas.has_pending_removals() {
+            let mut live = FxHashSet::default();
+            packet.paint.scene.collect_atlas_tile_ids_into(&mut live);
+            packet.paint.layers.collect_atlas_tile_ids_into(&mut live);
+            if self.atlas.has_retirable_pending_removals(&live) { return Ok(None); }
+        }
         let backend = Arc::clone(&self.backend);
         // All five native backends implement explicit ordered offscreen
         // fences. No independent graphics queue is used for scroll tiles.
@@ -298,8 +306,8 @@ impl NovaRenderer {
         if packet.dirty_region.is_full() && self.rendering_parameters.refresh_monitor_parameters() {
             self.retained_upload.invalidate_encode_key();
         }
-        let text = pack_text_raster_params(self.rendering_parameters);
-        let context = (self.atlas.placement_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)),
+        let text = pack_text_raster_params(&self.rendering_parameters);
+        let context = (self.atlas.scroll_content_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)),
             packet.paint.geometry.scale_factor.to_bits());
         if self.raster_tile_context != Some(context) {
             self.raster_tiles.invalidate_all();
@@ -445,7 +453,7 @@ impl NovaRenderer {
                     source_buffers.mono_sprite_buffer = resources.buffer(device, &mono, BufferUsage::STORAGE)?;
                     source_buffers.mono_sprite_capacity = mono.len() / PACKED_MONO_SPRITE_BYTES;
                     source_buffers.text_raster_buffer = resources.buffer(device,
-                        &pack_text_raster_params(self.rendering_parameters), BufferUsage::UNIFORM)?;
+                        &pack_text_raster_params(&self.rendering_parameters), BufferUsage::UNIFORM)?;
                 }
                 resources.depth = Some(create_depth_target(device, "scroll raster", request.raster.extent)?);
                 for (request, read) in requests.iter().zip(&reads) {
