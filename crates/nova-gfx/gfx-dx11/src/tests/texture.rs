@@ -184,3 +184,39 @@ fn sampled_texture_array_uses_distinct_native_subresources() {
     device.destroy_texture_view(view).unwrap();
     device.destroy_texture(texture).unwrap();
 }
+
+#[test]
+#[ignore = "requires Windows D3D11 hardware"]
+fn ordered_offscreen_batch_returns_native_completion() {
+    let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("D3D11 device");
+    use gfx_core::{OffscreenQueuePreference, SubmissionStatus};
+    let (target, view) = texture(&mut device, Format::Rgba8Unorm,
+        TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC, 1);
+    let pass = pass(&mut device, false);
+    let clear = |color| RenderPassCommands {
+        color_attachments: std::slice::from_ref(&view), render_pass: pass,
+        commands: &[], color_load_op: LoadOp::Clear(color), clear_region: None,
+        depth_attachment: None, viewport: None, resolve_target: None,
+    };
+    let preference = OffscreenQueuePreference::OrderedGraphics;
+    assert!(device.render_to_textures_on_queue(&[], &[], preference).unwrap().is_none());
+    let first = clear(CLEAR);
+    assert!(device.render_to_textures_on_queue(std::slice::from_ref(&first), &[], preference).is_err());
+    let second = clear(ClearColor { red: 0., green: 1., blue: 0., alpha: 1. });
+    let writer = device.render_to_textures_on_queue(&[first, second], &[None, None], preference)
+        .expect("ordered raster batch").expect("nonempty batch must publish a writer");
+    // Submit the next ordered writer without waiting for the previous one.
+    let reader = device.render_to_textures_on_queue(&[clear(ClearColor {
+        red: 0., green: 0., blue: 1., alpha: 1.,
+    })], &[None], preference).unwrap().expect("next native submission");
+    assert_ne!(writer, reader);
+    assert_eq!(writer.generation(), reader.generation());
+    assert!(writer.index() < reader.index());
+    device.wait_submission(reader).expect("test-only completion wait");
+    assert_eq!(device.poll_submission(writer).unwrap(), SubmissionStatus::Complete);
+    assert_eq!(device.poll_submission(reader).unwrap(), SubmissionStatus::Complete);
+    let pixels = device.read_texture(target).expect("native ordered pixel readback");
+    assert!(pixels.bytes.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
+    device.destroy_texture_view(view).unwrap();
+    device.destroy_texture(target).unwrap();
+}
