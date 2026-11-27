@@ -50,6 +50,12 @@ impl PreparedSceneBatches {
         self.retained_capacity = self.capacity();
     }
 
+    pub(super) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        accounting.add(&self.batches, Kind::Descriptor);
+        accounting.add(&self.scratch, Kind::Descriptor);
+    }
+
     pub(super) fn capacity(&self) -> usize {
         self.batches.capacity() + self.scratch.capacity()
     }

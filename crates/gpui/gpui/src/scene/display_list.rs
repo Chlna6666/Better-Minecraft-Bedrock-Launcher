@@ -77,6 +77,24 @@ mod time_dependent_extension_tests {
 }
 
 impl Scene {
+    pub(crate) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        self.paint_operations.account_storage(accounting);
+        self.shadows.account_storage(accounting);
+        self.quads.account_storage(accounting);
+        self.monochrome_sprites.account_storage(accounting);
+        self.polychrome_sprites.account_storage(accounting);
+        self.prepared_batches.account_storage(accounting);
+        accounting.add(&self.paths, Kind::Primitive);
+        accounting.add(&self.underlines, Kind::Primitive);
+        accounting.add(&self.surfaces, Kind::Primitive);
+        accounting.add(&self.backdrop_blurs, Kind::Primitive);
+        accounting.add(&self.blurs, Kind::Primitive);
+        accounting.add(&self.renderer_extensions, Kind::Primitive);
+        accounting.add(&self.animation_values, Kind::Primitive);
+        accounting.add(&self.capture_groups, Kind::Operation);
+    }
+
     /// Build a new immutable publication from one changed native marker.
     /// The first direct-commit path deliberately excludes draw formats
     /// whose physical storage is not yet independently shareable.

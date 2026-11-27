@@ -232,6 +232,32 @@ impl OperationPage {
         }
     }
 
+    pub(super) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        accounting.add(&self.indices, Kind::Operation);
+        accounting.add(&self.layers, Kind::Operation);
+        accounting.add(&self.captures, Kind::Operation);
+        accounting.add(&self.scrolls, Kind::Operation);
+        if let Some(owner) = &self.shadows.0 {
+            accounting.add(owner, Kind::Primitive);
+        }
+        if let Some(owner) = &self.quads.0 {
+            accounting.add(owner, Kind::Primitive);
+        }
+        if let Some(owner) = &self.mono.0 {
+            accounting.add(owner, Kind::Primitive);
+        }
+        if let Some(owner) = &self.poly.0 {
+            accounting.add(owner, Kind::Primitive);
+        }
+        accounting.add(&self.paths, Kind::Primitive);
+        accounting.add(&self.underlines, Kind::Primitive);
+        accounting.add(&self.surfaces, Kind::Primitive);
+        accounting.add(&self.backdrop, Kind::Primitive);
+        accounting.add(&self.blurs, Kind::Primitive);
+        accounting.add(&self.extensions, Kind::Primitive);
+    }
+
     pub(super) fn capacity_bytes(&self) -> usize {
         self.indices.capacity().saturating_mul(size_of::<OperationIndex>())
             .saturating_add(self.shadows.capacity().saturating_mul(size_of::<Shadow>()))

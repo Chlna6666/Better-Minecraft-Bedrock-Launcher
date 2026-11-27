@@ -1,6 +1,8 @@
 #[cfg(feature = "profiler")]
 /// Foreground work timing and hang diagnostics.
 pub mod foreground_profiler;
+/// Physical backing storage of UI frame roots.
+pub mod frame_storage;
 /// GPU-owner job and extension-phase diagnostics.
 pub mod gpu_owner;
 /// Inspector identifiers and reflection support.

@@ -153,6 +153,7 @@ struct LabReport {
     gpu_owner: gpui::diagnostics::gpu_owner::GpuOwnerMetricsSnapshot,
     gpu_owner_samples: Vec<gpui::diagnostics::gpu_owner::GpuOwnerJobSample>,
     memory: gpui::GpuiMemorySnapshot,
+    frame_storage: gpui::diagnostics::frame_storage::FrameStorageSnapshot,
     process_memory: Option<gpui::diagnostics::process_memory::ProcessMemorySnapshot>,
     process_memory_error: Option<String>,
     schema_version: u32,
@@ -275,7 +276,7 @@ impl Render for PerfLab {
                     .push(FrameSample::from(&performance_metrics::snapshot()));
             }
             if self.samples.len() == self.config.frames && !self.finished {
-                self.finish(cx);
+                self.finish(window, cx);
             }
         }
         self.rendered_frames = self.rendered_frames.saturating_add(1);
@@ -351,13 +352,14 @@ impl PerfLab {
         }
     }
 
-    fn finish(&mut self, cx: &mut Context<Self>) {
+    fn finish(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.finished = true;
         print_report(
             &self.config,
             std::mem::take(&mut self.samples),
             None,
             cx.gpui_memory_snapshot(),
+            window.frame_storage_snapshot(),
         );
         cx.spawn(async move |_view, cx| {
             let _ = cx.update(|cx| cx.quit());
@@ -487,6 +489,7 @@ fn schedule_traversal_frame(
                 samples,
                 Some(render_counts),
                 cx.gpui_memory_snapshot(),
+                window.frame_storage_snapshot(),
             );
             cx.quit();
             return;
@@ -823,6 +826,7 @@ fn print_report(
     samples: Vec<FrameSample>,
     traversal_render_counts: Option<TraversalRenderCounts>,
     memory: gpui::GpuiMemorySnapshot,
+    frame_storage: gpui::diagnostics::frame_storage::FrameStorageSnapshot,
 ) {
     let snapshot = performance_metrics::snapshot();
     let window_metrics = performance_metrics::window::snapshot();
@@ -853,6 +857,7 @@ fn print_report(
         gpu_owner,
         gpu_owner_samples,
         memory,
+        frame_storage,
         process_memory,
         process_memory_error,
         backend: backend_label(snapshot.renderer_backend),

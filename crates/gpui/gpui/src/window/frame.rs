@@ -244,6 +244,23 @@ fn rebase_index(value: usize, source: usize, target: usize) -> Option<usize> {
     target.checked_add(value.checked_sub(source)?)
 }
 
+impl Window {
+    /// Samples known root Scene and Hitbox backing allocations in the committed
+    /// and build frames, deduplicating physical storage across both.
+    /// Intended for diagnostics, not the per-frame hot path.
+    pub fn frame_storage_snapshot(&self) -> crate::diagnostics::frame_storage::FrameStorageSnapshot {
+        let mut accounting = crate::diagnostics::frame_storage::Accounting::default();
+        for frame in [&self.rendered_frame, &self.next_frame] {
+            if let Some(paint) = frame.published_paint_ref() {
+                paint.scene.account_storage(&mut accounting);
+            }
+            frame.painter.scene.account_storage(&mut accounting);
+            frame.hitboxes.account_storage(&mut accounting);
+        }
+        accounting.finish()
+    }
+}
+
 impl Frame {
     /// Borrows the sole Paint payload for this frame's current lifecycle phase.
     pub(crate) fn scene(&self) -> &Scene {

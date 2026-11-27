@@ -120,6 +120,15 @@ pub(crate) struct HitboxStore {
 impl HitboxStore {
     pub(crate) fn len(&self) -> usize { self.len }
     pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
+    pub(in crate::window) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        accounting.add(&self.spans, Kind::Hitbox);
+        accounting.add(&self.pending, Kind::Hitbox);
+        for span in &self.spans {
+            accounting.add(&span.owner.records, Kind::Hitbox);
+        }
+    }
+
     pub(in crate::window) fn capacity(&self) -> usize {
         self.spans.capacity() + self.pending.capacity()
     }

@@ -276,6 +276,18 @@ impl Operations {
             .saturating_add(self.pending.capacity_bytes() as u64)
             .saturating_add((self.boundaries.capacity() as u64).saturating_mul(std::mem::size_of::<ReplayBoundary>() as u64))
     }
+    pub(super) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        accounting.add(&self.segments, Kind::Descriptor);
+        if let Some(boundaries) = &self.boundaries.0 {
+            accounting.add(boundaries, Kind::Descriptor);
+        }
+        for segment in &self.segments {
+            segment.owner.account_storage(accounting);
+        }
+        self.pending.account_storage(accounting);
+    }
+
     pub(crate) fn shrink_to(&mut self, floor: usize) {
         self.pending.shrink_to(floor);
         self.segments.shrink_to(self.segments.len());

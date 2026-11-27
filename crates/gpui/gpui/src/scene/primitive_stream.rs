@@ -234,6 +234,17 @@ impl<T: Ordered> PrimitiveStream<T> {
         self.pending.push(quad);
         self.len += 1;
     }
+    pub(super) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
+        use crate::diagnostics::frame_storage::Kind;
+        if let Some(segments) = &self.segments.0 {
+            accounting.add(segments, Kind::Descriptor);
+        }
+        for segment in self.segments.iter() {
+            accounting.add(&segment.owner, Kind::Primitive);
+        }
+        accounting.add(&self.pending, Kind::Primitive);
+    }
+
     pub(crate) fn capacity(&self) -> usize {
         self.len - self.pending.len() + self.pending.capacity()
     }
