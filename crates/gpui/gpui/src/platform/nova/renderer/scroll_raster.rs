@@ -141,6 +141,46 @@ impl OutsideQuads {
     }
 }
 
+/// Small physical GPU streams owned by an existing presentation frame slot.
+/// A free slot proves that all prior readers (and its writer) have retired.
+/// Do not overwrite the normal renderer's cross-slot shared static streams.
+#[derive(Default)]
+pub(super) struct CompositeSlot {
+    global: Option<BufferId>,
+    sprites: Option<BufferId>,
+    outside: Option<BufferId>,
+}
+
+const RETAINED_OUTSIDE_QUADS: usize = 256;
+
+impl CompositeSlot {
+    fn write<D: ResourceDevice>(device: &mut D, buffer: &mut Option<BufferId>,
+        bytes: &[u8], capacity: usize, usage: BufferUsage) -> Result<BufferId> {
+        debug_assert!(bytes.len() <= capacity);
+        let id = if let Some(id) = *buffer {
+            id
+        } else {
+            let id = device.create_buffer(&BufferDescriptor {
+                label: Some("scroll composite frame slot".into()),
+                size: capacity as u64, usage: usage | BufferUsage::COPY_DST,
+                memory_location: MemoryLocation::CpuToGpu,
+            })?;
+            *buffer = Some(id);
+            id
+        };
+        device.write_buffer(id, 0, bytes)?;
+        Ok(id)
+    }
+
+    fn destroy<D: ResourceDevice>(self, device: &mut D) {
+        for buffer in [self.global, self.sprites, self.outside].into_iter().flatten() {
+            if let Err(error) = device.destroy_buffer(buffer) {
+                log::debug!("scroll composite slot retirement failed: {error}");
+            }
+        }
+    }
+}
+
 struct RasterPass {
     write: RasterTileWrite,
     raster: RasterTile,
@@ -148,6 +188,32 @@ struct RasterPass {
 }
 
 impl NovaRenderer {
+    pub(super) fn destroy_scroll_composite_slots(&mut self) {
+        // An unknown reader or failed fence is not safe to reclaim. The
+        // device registry retains the allocations until device teardown.
+        if self.scroll_raster_failed || !self.pending_submissions.is_empty()
+            || !self.scroll_raster_resources.is_empty()
+        {
+            return;
+        }
+        let slots = std::mem::take(&mut self.scroll_composite_slots);
+        if slots.is_empty() { return; }
+        match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => for slot in slots { slot.destroy(device); },
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            NovaBackend::OpenGl(device) => for slot in slots { slot.destroy(device); },
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => for slot in slots { slot.destroy(device); },
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => for slot in slots { slot.destroy(device); },
+            #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+            NovaBackend::Vulkan(device) => for slot in slots { slot.destroy(device); },
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
     pub(super) fn retire_scroll_raster_resources(&mut self, submission: SubmissionId) {
         let mut i = 0;
         while i < self.scroll_raster_resources.len() {
@@ -374,6 +440,10 @@ impl NovaRenderer {
         }
         let reads: Vec<_> = reads.into_iter().collect::<Option<Vec<_>>>().context("incomplete scroll tile set")?;
         let (viewport, _) = layer.root_quad_raster().context("missing scroll viewport")?;
+        if self.scroll_composite_slots.len() <= slot {
+            self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
+        }
+        let composite_slot = &mut self.scroll_composite_slots[slot];
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Vec<RenderCommand>> {
             let mut bytes = Vec::with_capacity(requests.len() * PACKED_POLY_SPRITE_BYTES);
@@ -389,14 +459,23 @@ impl NovaRenderer {
             }
             let premultiplied = self.surface_alpha.outputs_premultiplied_alpha();
             let globals = pack_global_params(self.active_size, premultiplied, [0., 0.]);
-            let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
-            let poly_sprite_buffer = resources.buffer(device, &bytes, BufferUsage::STORAGE)?;
-            let buffers = FrameResourceBuffers { global_buffer, poly_sprite_buffer, poly_sprite_capacity: requests.len(), ..original };
+            let global_buffer = CompositeSlot::write(device, &mut composite_slot.global,
+                &globals, GLOBAL_UPLOAD_BYTES, BufferUsage::UNIFORM)?;
+            let poly_sprite_buffer = CompositeSlot::write(device, &mut composite_slot.sprites,
+                &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
+            let buffers = FrameResourceBuffers { global_buffer, poly_sprite_buffer, poly_sprite_capacity: MAX_TILES, ..original };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
             let mut commands = Vec::with_capacity(reads.len() + 2);
             let outside_draw = if outside.bytes.is_empty() { None } else {
-                let quad_buffer = resources.buffer(device, &outside.bytes, BufferUsage::STORAGE)?;
-                let quad_capacity = (outside.prefix + outside.suffix) as usize;
+                let quad_count = (outside.prefix + outside.suffix) as usize;
+                let (quad_buffer, quad_capacity) = if quad_count <= RETAINED_OUTSIDE_QUADS {
+                    (CompositeSlot::write(device, &mut composite_slot.outside, &outside.bytes,
+                        RETAINED_OUTSIDE_QUADS * PACKED_QUAD_BYTES, BufferUsage::STORAGE)?, RETAINED_OUTSIDE_QUADS)
+                } else {
+                    // Bound long-lived slot storage. Large outside streams
+                    // retain the existing transient allocation/fence path.
+                    (resources.buffer(device, &outside.bytes, BufferUsage::STORAGE)?, quad_count)
+                };
                 let root_buffers = FrameResourceBuffers { quad_buffer, quad_capacity, ..buffers };
                 let group = create_quad_bind_group(device, "scroll root outside", self.quad_bind_group_layout, &root_buffers)?;
                 resources.bindings.push(group);

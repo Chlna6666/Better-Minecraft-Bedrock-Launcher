@@ -213,6 +213,7 @@ pub(crate) struct NovaRenderer {
     raster_tiles: gfx_core::RasterTileCache,
     raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
     scroll_raster_resources: Vec<(SubmissionId, scroll_raster::Resources)>,
+    scroll_composite_slots: Vec<scroll_raster::CompositeSlot>,
     scroll_raster_failed: bool,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
@@ -1598,6 +1599,7 @@ impl NovaRenderer {
                 log::debug!("failed to retire native scroll tiles: {error}");
             }
         }
+        self.destroy_scroll_composite_slots();
         self.destroy_window_resources();
         self.memory_profile.remove();
         let total = destroy_started_at.elapsed();
