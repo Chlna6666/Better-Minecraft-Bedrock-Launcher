@@ -1,5 +1,5 @@
-//! Native direct scroll rasterization. The initial admission covers a whole
-//! ordered static quad roots, with ordinary quads before/after a promoted layer.
+//! Native direct scroll rasterization for certified ordered static roots.
+//! Ordinary root spans and tile misses share the same ordered stream encoder.
 //! Only a cache miss reads the immutable operation pages. All texture writes
 //! and sampling are ordered on the backend's primary graphics queue.
 use super::*;
@@ -18,7 +18,7 @@ struct Request {
 }
 
 fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec<Request>> {
-    let (viewport, translation) = layer.root_quad_raster()?;
+    let (viewport, translation) = layer.root_static_raster()?;
     let integer = |value: ScaledPixels| {
         (value.0.is_finite() && value.0.fract() == 0. && value.0.abs() <= 1_048_576.)
             .then_some(value.0 as i32)
@@ -113,31 +113,192 @@ impl Resources {
 // Only the original root prefix/suffix are read here. No projected layer
 // primitive is touched on a hit. The proof lives on the published LayerFrame;
 // this temporary upload is not a retained CPU scene or coordination cache.
-struct OutsideQuads {
-    bytes: Vec<u8>,
-    prefix: u32,
-    suffix: u32,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+enum SourceKind {
+    Quad,
+    Shadow,
+    Underline,
+    Mono(AtlasTextureId),
+    Poly(AtlasTextureId),
 }
 
-impl OutsideQuads {
-    fn pack(layer: &crate::window::LayerFrame, scene: &crate::Scene) -> Option<Self> {
-        let ranges = layer.root_quad_outside()?;
-        let mut bytes = Vec::new();
-        let mut counts = [0_u32; 2];
-        for (range, count) in ranges.iter().zip(&mut counts) {
+#[derive(Clone, Copy)]
+struct SourceRun {
+    kind: SourceKind,
+    first: u32,
+    count: u32,
+}
+
+/// One ephemeral ordered encoder for both a raster miss and the root spans.
+/// Separate packed streams use the renderer's existing shader ABI.
+#[derive(Default)]
+struct StaticStreams {
+    quads: Vec<u8>,
+    shadows: Vec<u8>,
+    underlines: Vec<u8>,
+    mono: Vec<u8>,
+    poly: Vec<u8>,
+    runs: Vec<SourceRun>,
+}
+
+impl StaticStreams {
+    fn push(&mut self, primitive: &Primitive, split: bool) -> Option<()> {
+        macro_rules! append {
+            ($stream:ident, $bytes:ident, $limit:ident, $write:ident, $value:expr, $kind:expr) => {{
+                let first = self.$stream.len() / $bytes;
+                if first >= $limit { return None; }
+                $write(&mut self.$stream, $value);
+                ($kind, first as u32)
+            }};
+        }
+        let (kind, first) = match primitive {
+            Primitive::Quad(q) => append!(quads, PACKED_QUAD_BYTES, MAX_QUADS, write_quad, q, SourceKind::Quad),
+            Primitive::Shadow(s) => append!(shadows, PACKED_SHADOW_BYTES, MAX_SHADOWS, write_shadow, s, SourceKind::Shadow),
+            Primitive::Underline(u) => append!(underlines, PACKED_UNDERLINE_BYTES, MAX_UNDERLINES, write_underline, u, SourceKind::Underline),
+            Primitive::MonochromeSprite(s) if s.tile.texture_id.kind == AtlasTextureKind::Monochrome =>
+                append!(mono, PACKED_MONO_SPRITE_BYTES, MAX_MONO_SPRITES, write_monochrome_sprite, s, SourceKind::Mono(s.tile.texture_id)),
+            Primitive::PolychromeSprite(s) if s.sampling != 2 &&
+                matches!(s.tile.texture_id.kind, AtlasTextureKind::Bgra | AtlasTextureKind::Rgba) =>
+                append!(poly, PACKED_POLY_SPRITE_BYTES, MAX_POLY_SPRITES, write_polychrome_sprite, s, SourceKind::Poly(s.tile.texture_id)),
+            _ => return None,
+        };
+        if !split && let Some(last) = self.runs.last_mut()
+            && last.kind == kind && last.first + last.count == first
+        {
+            last.count += 1;
+        } else {
+            self.runs.push(SourceRun { kind, first, count: 1 });
+        }
+        Some(())
+    }
+
+    fn upload<D: ResourceDevice>(&self, device: &mut D, resources: &mut Resources,
+        mut buffers: FrameResourceBuffers, text: &[u8], quad_slot: Option<&mut Option<BufferId>>) -> Result<FrameResourceBuffers> {
+        if !self.quads.is_empty() {
+            let count = self.quads.len() / PACKED_QUAD_BYTES;
+            if let Some(slot) = quad_slot.filter(|_| count <= RETAINED_OUTSIDE_QUADS) {
+                buffers.quad_buffer = CompositeSlot::write(device, slot, &self.quads,
+                    RETAINED_OUTSIDE_QUADS * PACKED_QUAD_BYTES, BufferUsage::STORAGE)?;
+                buffers.quad_capacity = RETAINED_OUTSIDE_QUADS;
+            } else {
+                buffers.quad_buffer = resources.buffer(device, &self.quads, BufferUsage::STORAGE)?;
+                buffers.quad_capacity = count;
+            }
+        }
+        if !self.shadows.is_empty() {
+            buffers.shadow_buffer = resources.buffer(device, &self.shadows, BufferUsage::STORAGE)?;
+            buffers.shadow_capacity = self.shadows.len() / PACKED_SHADOW_BYTES;
+        }
+        if !self.underlines.is_empty() {
+            buffers.underline_buffer = resources.buffer(device, &self.underlines, BufferUsage::STORAGE)?;
+        }
+        if !self.mono.is_empty() {
+            buffers.mono_sprite_buffer = resources.buffer(device, &self.mono, BufferUsage::STORAGE)?;
+            buffers.mono_sprite_capacity = self.mono.len() / PACKED_MONO_SPRITE_BYTES;
+            buffers.text_raster_buffer = resources.buffer(device, text, BufferUsage::UNIFORM)?;
+        }
+        if !self.poly.is_empty() {
+            buffers.poly_sprite_buffer = resources.buffer(device, &self.poly, BufferUsage::STORAGE)?;
+            buffers.poly_sprite_capacity = self.poly.len() / PACKED_POLY_SPRITE_BYTES;
+        }
+        Ok(buffers)
+    }
+
+    fn commands<D: ResourceDevice>(&self, renderer: &NovaRenderer, device: &mut D,
+        resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines) -> Result<Vec<RenderCommand>> {
+        let mut bindings = FxHashMap::default();
+        let mut commands = Vec::with_capacity(self.runs.len());
+        for run in &self.runs {
+            let pipeline = match run.kind {
+                SourceKind::Quad => blend.quads,
+                SourceKind::Shadow => blend.shadows,
+                SourceKind::Underline => blend.underlines,
+                SourceKind::Mono(_) => blend.mono_sprites,
+                SourceKind::Poly(_) => blend.poly_sprites,
+            };
+            let group = if let Some(&group) = bindings.get(&run.kind) { group } else {
+                let (layout, entries) = match run.kind {
+                    SourceKind::Quad => (renderer.quad_bind_group_layout, quad_resource_bindings(&buffers)),
+                    SourceKind::Shadow => (renderer.shadow_bind_group_layout, shadow_resource_bindings(&buffers)),
+                    SourceKind::Underline => {
+                        let mut entries = underline_resource_bindings(&buffers);
+                        // The regular renderer uses a fixed maximum capacity;
+                        // this transient stream binds only its actual bytes.
+                        for entry in &mut entries {
+                            if entry.binding == 7 && let BindingResource::Buffer(binding) = &mut entry.resource {
+                                binding.size = self.underlines.len() as u64;
+                            }
+                        }
+                        (renderer.underline_bind_group_layout, entries)
+                    }
+                    SourceKind::Mono(id) => (renderer.mono_sprite_bind_group_layout,
+                        mono_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
+                    SourceKind::Poly(id) => (renderer.poly_sprite_bind_group_layout,
+                        poly_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
+                };
+                let group = resources.binding(device, layout, entries)?;
+                bindings.insert(run.kind, group);
+                group
+            };
+            commands.push(RenderCommand::Draw(DrawCommand {
+                pipeline, bind_groups: bind_group_list([group]), vertex_count: 4,
+                first_vertex: 0, instance_count: run.count, first_instance: run.first, scissor: None,
+            }));
+        }
+        Ok(commands)
+    }
+}
+
+struct OutsideRoot {
+    streams: StaticStreams,
+    prefix_runs: usize,
+}
+
+fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId, AtlasTile>,
+    gpu: &FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>) -> Option<Primitive> {
+    let mut primitive = primitive.clone();
+    let tile = match &mut primitive {
+        Primitive::MonochromeSprite(sprite) => &mut sprite.tile,
+        Primitive::PolychromeSprite(sprite) => &mut sprite.tile,
+        _ => return Some(primitive),
+    };
+    *tile = *placements.get(&tile.tile_id)?;
+    gpu.contains_key(&tile.texture_id).then_some(primitive)
+}
+
+impl OutsideRoot {
+    fn pack(renderer: &NovaRenderer, layer: &crate::window::LayerFrame, scene: &crate::Scene) -> Option<Self> {
+        let ranges = layer.root_static_outside()?;
+        let mut ids = Vec::new();
+        for range in ranges {
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
                 match operation {
-                    PaintOperation::Primitive(Primitive::Quad(quad)) => {
-                        if bytes.len() / PACKED_QUAD_BYTES >= MAX_QUADS { return None; }
-                        write_quad(&mut bytes, quad);
-                        *count += 1;
+                    PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
+                    PaintOperation::Primitive(Primitive::PolychromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
+                    _ => {}
+                }
+            }
+        }
+        let placements = if ids.is_empty() { FxHashMap::default() }
+            else { renderer.atlas.ready_scroll_glyphs(&ids)? };
+        let mut streams = StaticStreams::default();
+        let mut prefix_runs = 0;
+        for (index, range) in ranges.iter().enumerate() {
+            let mut split = true;
+            for operation in scene.paint_operations.get_range(range.clone())?.iter() {
+                match operation {
+                    PaintOperation::Primitive(primitive) => {
+                        let primitive = resolve_primitive(primitive, &placements, &renderer.gpu_atlas_textures)?;
+                        streams.push(&primitive, split)?;
+                        split = false;
                     }
                     PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
                     _ => return None,
                 }
             }
+            if index == 0 { prefix_runs = streams.runs.len(); }
         }
-        Some(Self { bytes, prefix: counts[0], suffix: counts[1] })
+        Some(Self { streams, prefix_runs })
     }
 }
 
@@ -184,12 +345,6 @@ impl CompositeSlot {
             }
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum SourceRun {
-    Quad(u32, u32),
-    Mono(AtlasTextureId, u32, u32),
 }
 
 struct RasterPass {
@@ -263,7 +418,7 @@ impl NovaRenderer {
         {
             return Ok(None);
         }
-        let Some(layer) = packet.paint.layers.frames.iter().find(|layer| layer.root_quad_raster().is_some()) else {
+        let Some(layer) = packet.paint.layers.frames.iter().find(|layer| layer.root_static_raster().is_some()) else {
             return Ok(None);
         };
         let Some(requests) = requests(layer, self.active_size) else { return Ok(None); };
@@ -369,7 +524,7 @@ impl NovaRenderer {
     fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice>(
         &mut self, device: &mut D, layer: &crate::window::LayerFrame, scene: &crate::Scene, requests: &[Request], slot: usize,
     ) -> Result<Option<bool>> {
-        let Some(outside) = OutsideQuads::pack(layer, scene) else { return Ok(None); };
+        let Some(outside) = OutsideRoot::pack(self, layer, scene) else { return Ok(None); };
         let format = self.surface_format;
         let original = self.frame_resources[slot].buffers;
         if self.submitted_frames % 120 == 0 {
@@ -408,13 +563,9 @@ impl NovaRenderer {
                 let mut painter = crate::scene::Painter::default();
                 for operation in operations.iter() {
                     match operation {
-                        PaintOperation::Primitive(Primitive::Quad(quad)) => painter.insert_primitive(*quad),
-                        PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
-                            let Some(tile) = placements.get(&sprite.tile.tile_id) else { return Ok(false); };
-                            let mut sprite = *sprite;
-                            sprite.tile = *tile;
-                            if !self.gpu_atlas_textures.contains_key(&tile.texture_id) { return Ok(false); }
-                            painter.insert_primitive(sprite);
+                        PaintOperation::Primitive(primitive) => {
+                            let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
+                            painter.insert_primitive(primitive);
                         }
                         PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
                         PaintOperation::EndLayer => painter.pop_layer(),
@@ -423,38 +574,28 @@ impl NovaRenderer {
                 }
                 painter.finish();
                 let source = painter.into_scene();
-                let mut quads = Vec::new();
-                let mut mono = Vec::new();
-                let mut runs = Vec::new();
+                let mut streams = StaticStreams::default();
+                // The same native batch iterator as the normal renderer.
                 for batch in source.batches() {
+                    macro_rules! pack {
+                        ($slice:expr, $kind:ident) => {
+                            for value in $slice {
+                                if streams.push(&Primitive::$kind(*value), false).is_none() { return Ok(false); }
+                            }
+                        };
+                    }
                     match batch {
-                        crate::scene::PrimitiveBatch::Quads { quads: batch, .. } => {
-                            let first = quads.len() / PACKED_QUAD_BYTES;
-                            if first.saturating_add(batch.len()) > MAX_QUADS { return Ok(false); }
-                            for quad in batch { write_quad(&mut quads, quad); }
-                            runs.push(SourceRun::Quad(first as u32, batch.len() as u32));
-                        }
-                        crate::scene::PrimitiveBatch::MonochromeSprites { texture_id, sprites, .. } => {
-                            let first = mono.len() / PACKED_MONO_SPRITE_BYTES;
-                            if first.saturating_add(sprites.len()) > MAX_QUADS { return Ok(false); }
-                            for sprite in sprites { write_monochrome_sprite(&mut mono, sprite); }
-                            runs.push(SourceRun::Mono(texture_id, first as u32, sprites.len() as u32));
-                        }
+                        crate::scene::PrimitiveBatch::Quads { quads, .. } => { pack!(quads, Quad); }
+                        crate::scene::PrimitiveBatch::Shadows { shadows, .. } => { pack!(shadows, Shadow); }
+                        crate::scene::PrimitiveBatch::Underlines(underlines) => { pack!(underlines, Underline); }
+                        crate::scene::PrimitiveBatch::MonochromeSprites { sprites, .. } => { pack!(sprites, MonochromeSprite); }
+                        crate::scene::PrimitiveBatch::PolychromeSprites { sprites, .. } => { pack!(sprites, PolychromeSprite); }
                         _ => return Ok(false),
                     }
                 }
-                if runs.is_empty() { return Ok(false); }
-                let mut source_buffers = original;
-                if !quads.is_empty() {
-                    source_buffers.quad_buffer = resources.buffer(device, &quads, BufferUsage::STORAGE)?;
-                    source_buffers.quad_capacity = quads.len() / PACKED_QUAD_BYTES;
-                }
-                if !mono.is_empty() {
-                    source_buffers.mono_sprite_buffer = resources.buffer(device, &mono, BufferUsage::STORAGE)?;
-                    source_buffers.mono_sprite_capacity = mono.len() / PACKED_MONO_SPRITE_BYTES;
-                    source_buffers.text_raster_buffer = resources.buffer(device,
-                        &pack_text_raster_params(&self.rendering_parameters), BufferUsage::UNIFORM)?;
-                }
+                if streams.runs.is_empty() { return Ok(false); }
+                let source_buffers = streams.upload(device, &mut resources, original,
+                    &pack_text_raster_params(&self.rendering_parameters), None)?;
                 resources.depth = Some(create_depth_target(device, "scroll raster", request.raster.extent)?);
                 for (request, read) in requests.iter().zip(&reads) {
                     if read.is_some() { continue; }
@@ -466,36 +607,7 @@ impl NovaRenderer {
                         true, [raster.origin.x as f32, raster.origin.y as f32]);
                     let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
                     let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                    let mut quad_binding = None;
-                    let mut mono_bindings = FxHashMap::default();
-                    let mut commands = Vec::with_capacity(runs.len());
-                    for run in &runs {
-                        let (pipeline, group, first_instance, instance_count) = match *run {
-                            SourceRun::Quad(first, count) => {
-                                let group = if let Some(group) = quad_binding { group } else {
-                                    let group = create_quad_bind_group(device, "scroll raster", self.quad_bind_group_layout, &buffers)?;
-                                    resources.bindings.push(group);
-                                    quad_binding = Some(group);
-                                    group
-                                };
-                                (self.pipelines.premultiplied.quads, group, first, count)
-                            }
-                            SourceRun::Mono(texture, first, count) => {
-                                let group = if let Some(&group) = mono_bindings.get(&texture) { group } else {
-                                    let view = self.gpu_atlas_textures[&texture].texture_view;
-                                    let group = resources.binding(device, self.mono_sprite_bind_group_layout,
-                                        mono_atlas_resource_bindings(buffers, view, self.atlas_sampler))?;
-                                    mono_bindings.insert(texture, group);
-                                    group
-                                };
-                                (self.pipelines.premultiplied.mono_sprites, group, first, count)
-                            }
-                        };
-                        commands.push(RenderCommand::Draw(DrawCommand {
-                            pipeline, bind_groups: bind_group_list([group]), vertex_count: 4,
-                            first_vertex: 0, instance_count, first_instance, scissor: None,
-                        }));
-                    }
+                    let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied)?;
                     let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
                         return Ok(false);
                     };
@@ -540,7 +652,7 @@ impl NovaRenderer {
             }
         }
         let reads: Vec<_> = reads.into_iter().collect::<Option<Vec<_>>>().context("incomplete scroll tile set")?;
-        let (viewport, _) = layer.root_quad_raster().context("missing scroll viewport")?;
+        let (viewport, _) = layer.root_static_raster().context("missing scroll viewport")?;
         if self.scroll_composite_slots.len() <= slot {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
@@ -566,38 +678,19 @@ impl NovaRenderer {
                 &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
             let buffers = FrameResourceBuffers { global_buffer, poly_sprite_buffer, poly_sprite_capacity: MAX_TILES, ..original };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
-            let mut commands = Vec::with_capacity(reads.len() + 2);
-            let outside_draw = if outside.bytes.is_empty() { None } else {
-                let quad_count = (outside.prefix + outside.suffix) as usize;
-                let (quad_buffer, quad_capacity) = if quad_count <= RETAINED_OUTSIDE_QUADS {
-                    (CompositeSlot::write(device, &mut composite_slot.outside, &outside.bytes,
-                        RETAINED_OUTSIDE_QUADS * PACKED_QUAD_BYTES, BufferUsage::STORAGE)?, RETAINED_OUTSIDE_QUADS)
-                } else {
-                    // Bound long-lived slot storage. Large outside streams
-                    // retain the existing transient allocation/fence path.
-                    (resources.buffer(device, &outside.bytes, BufferUsage::STORAGE)?, quad_count)
-                };
-                let root_buffers = FrameResourceBuffers { quad_buffer, quad_capacity, ..buffers };
-                let group = create_quad_bind_group(device, "scroll root outside", self.quad_bind_group_layout, &root_buffers)?;
-                resources.bindings.push(group);
-                let pipeline = if premultiplied { self.pipelines.premultiplied.quads } else { self.pipelines.alpha.quads };
-                Some((pipeline, group))
-            };
-            let outside_command = |first_instance, instance_count| {
-                let (pipeline, group) = outside_draw?;
-                (instance_count != 0).then(|| RenderCommand::Draw(DrawCommand {
-                    pipeline, bind_groups: bind_group_list([group]), vertex_count: 4, first_vertex: 0,
-                    instance_count, first_instance, scissor: None,
-                }))
-            };
-            commands.extend(outside_command(0, outside.prefix));
+            let root_buffers = outside.streams.upload(device, &mut resources, buffers,
+                &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
+            let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
+            let mut commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend)?;
+            let suffix = commands.split_off(outside.prefix_runs);
+            commands.reserve(reads.len() + suffix.len());
             for (index, read) in reads.iter().enumerate() {
                 let group = resources.binding(device, self.poly_sprite_bind_group_layout,
                     poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler))?;
                 commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
                     vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: index as u32, scissor: None }));
             }
-            commands.extend(outside_command(outside.prefix, outside.suffix));
+            commands.extend(suffix);
             Ok(commands)
         })();
         let commands = match prepare {
@@ -646,8 +739,8 @@ impl NovaRenderer {
             for read in reads { self.raster_tiles.quarantine_reader(read); }
             anyhow::bail!("scroll present returned no native reader fence");
         }
-        log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={} outside_quads={}",
-            requests.len(), misses, requests.len() - misses, outside.prefix + outside.suffix);
+        log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={} outside_runs={}",
+            requests.len(), misses, requests.len() - misses, outside.streams.runs.len());
         Ok(Some(outcome.was_presented()))
     }
 }

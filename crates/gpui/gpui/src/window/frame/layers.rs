@@ -293,7 +293,8 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
     }
     match primitive {
         Primitive::Quad(_) | Primitive::Shadow(_) | Primitive::Underline(_) => {}
-        Primitive::PolychromeSprite(sprite) if sprite.sampling != 2 => {}
+        Primitive::PolychromeSprite(sprite) if sprite.sampling != 2
+            && matches!(sprite.tile.texture_id.kind, crate::AtlasTextureKind::Bgra | crate::AtlasTextureKind::Rgba) => {}
         Primitive::MonochromeSprite(sprite)
             if sprite.transformation == TransformationMatrix::unit()
                 && sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome => {}
@@ -321,7 +322,6 @@ pub(in crate::window) fn static_scroll_raster_operation(
         PaintOperation::Primitive(primitive) => {
             primitive.content_mask().bounds == coverage
                 && primitive.content_mask().corner_radii == Default::default()
-                && matches!(primitive, Primitive::Quad(_) | Primitive::MonochromeSprite(_))
                 && static_raster_bounds(primitive).is_some()
         }
         _ => false,
@@ -336,7 +336,7 @@ pub(crate) struct LayerFrame {
     /// Original root operation ranges before and after the promoted fragment.
     /// A verified static painter-order root can be split without reading the
     /// promoted operations on the GPU owner.
-    quad_root_outside: Option<[Range<usize>; 2]>,
+    static_root_outside: Option<[Range<usize>; 2]>,
     damage: LayerDamage,
     /// Certified coverage shared with the immediately previous generation,
     /// in stable content-space device pixels.
@@ -388,9 +388,9 @@ impl LayerFrame {
 
     /// A static quad root may contain ordinary drawing around this layer.
     /// The certified outside ranges retain their original paint order.
-    pub(crate) fn root_quad_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
+    pub(crate) fn root_static_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
         self.content.raster?;
-        self.quad_root_outside.as_ref()?;
+        self.static_root_outside.as_ref()?;
         Some((self.source_viewport.bounds, self.translation?))
     }
 
@@ -398,8 +398,8 @@ impl LayerFrame {
         &self.content.raster_atlas_tiles
     }
 
-    pub(crate) fn root_quad_outside(&self) -> Option<&[Range<usize>; 2]> {
-        self.quad_root_outside.as_ref()
+    pub(crate) fn root_static_outside(&self) -> Option<&[Range<usize>; 2]> {
+        self.static_root_outside.as_ref()
     }
 
     /// Borrow the original capture, along with the signed projection origin
@@ -461,7 +461,7 @@ impl LayerFrame {
 // that same order. Scope markers themselves draw nothing, but inherited
 // DrawOrder can reorder nested layers. Reject inversions rather than
 // guessing which overlapping primitives can safely commute.
-fn ordered_static_quad_root(scene: &Scene) -> bool {
+fn ordered_static_root(scene: &Scene) -> bool {
     if !scene.animation_values.is_empty() || !scene.renderer_extensions.is_empty()
         || !scene.blurs.is_empty() || !scene.backdrop_blurs.is_empty()
     {
@@ -472,10 +472,14 @@ fn ordered_static_quad_root(scene: &Scene) -> bool {
         match operation {
             PaintOperation::Primitive(primitive) => {
                 let order = match primitive {
-                    Primitive::Quad(_) => (primitive.order(), 0, 0, 0),
+                    Primitive::Shadow(_) => (primitive.order(), 0, 0, 0, 0),
+                    Primitive::Quad(_) => (primitive.order(), 1, 0, 0, 0),
+                    Primitive::Underline(_) => (primitive.order(), 3, 0, 0, 0),
                     Primitive::MonochromeSprite(sprite)
                         if sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome =>
-                        (primitive.order(), 1, sprite.tile.texture_id.index, sprite.sampling() as u32),
+                        (primitive.order(), 4, sprite.tile.texture_id.kind as u32, sprite.tile.texture_id.index, sprite.sampling() as u32),
+                    Primitive::PolychromeSprite(sprite) =>
+                        (primitive.order(), 5, sprite.tile.texture_id.kind as u32, sprite.tile.texture_id.index, 0),
                     _ => return false,
                 };
                 if previous.is_some_and(|last| last > order) || static_raster_bounds(primitive).is_none() {
@@ -490,17 +494,12 @@ fn ordered_static_quad_root(scene: &Scene) -> bool {
     true
 }
 
-fn quad_outside_ranges(scene: &Scene, range: Range<usize>) -> Option<[Range<usize>; 2]> {
+fn static_outside_ranges(scene: &Scene, range: Range<usize>) -> Option<[Range<usize>; 2]> {
     if range.is_empty() || range.end > scene.len() { return None; }
     let mut outside = [0..range.start, range.end..scene.len()];
     // Empty scopes do not need a native draw or an owner-side scan.
     for span in &mut outside {
         let operations = scene.paint_operations.range(span.clone());
-        if !operations.iter().all(|operation| matches!(operation,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::Primitive(Primitive::Quad(_))))
-        {
-            return None;
-        }
         if operations.iter().all(|operation|
             matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer))
         {
@@ -540,6 +539,7 @@ impl SceneLayers {
         assert!(operations.iter().all(|op| static_scroll_raster_operation(op, coverage)));
         let atlas_tiles: Arc<[_]> = operations.iter().filter_map(|op| match op {
             PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
+            PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
             _ => None,
         }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
@@ -549,7 +549,7 @@ impl SceneLayers {
         assert!(Arc::ptr_eq(&operations, &content.operations));
         self.frames.push(LayerFrame {
             layout_key: 1, id: 1, generation: 1,
-            quad_root_outside: Some([0..0, 0..0]),
+            static_root_outside: Some([0..0, 0..0]),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
             viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
@@ -559,8 +559,8 @@ impl SceneLayers {
 
     #[cfg(test)]
     pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
-        self.frames[0].quad_root_outside = ordered_static_quad_root(scene)
-            .then(|| quad_outside_ranges(scene, range)).flatten();
+        self.frames[0].static_root_outside = ordered_static_root(scene)
+            .then(|| static_outside_ranges(scene, range)).flatten();
     }
 
     pub(super) fn capture(
@@ -588,7 +588,7 @@ impl SceneLayers {
             .collect();
         let mut frames = Vec::new();
         // Evaluate at most once per published root, regardless of candidate count.
-        let mut ordered_quad_root = None;
+        let mut ordered_root = None;
         for record in records {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
@@ -601,11 +601,11 @@ impl SceneLayers {
                         operations, coverage, delta, record.translation, record.source_viewport, quad_only, atlas_tiles,
                     ))
             } else { None };
-            let quad_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some())
+            let static_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
-                && *ordered_quad_root.get_or_insert_with(|| ordered_static_quad_root(scene))
+                && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
             {
-                quad_outside_ranges(scene, range.clone())
+                static_outside_ranges(scene, range.clone())
             } else { None };
             let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
@@ -640,7 +640,7 @@ impl SceneLayers {
                 (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, quad_root_outside, damage, previous_coverage,
+                layout_key: key, id, generation, static_root_outside, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
             });
@@ -655,7 +655,7 @@ mod tests {
     use crate::{Bounds, Quad, ScaledPixels, point, size, scene::Painter};
 
     #[test]
-    fn ordered_quad_root_retains_both_outside_spans() {
+    fn ordered_root_retains_both_outside_spans() {
         let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
             size(ScaledPixels(64.), ScaledPixels(64.)));
         let mut painter = Painter::default();
@@ -667,10 +667,10 @@ mod tests {
         }
         painter.finish();
         let scene = painter.into_scene();
-        assert!(ordered_static_quad_root(&scene));
-        assert_eq!(quad_outside_ranges(&scene, 1..2), Some([0..1, 2..3]));
-        assert_eq!(quad_outside_ranges(&scene, 0..3), Some([0..0, 0..0]));
-        assert!(quad_outside_ranges(&scene, 3..4).is_none());
+        assert!(ordered_static_root(&scene));
+        assert_eq!(static_outside_ranges(&scene, 1..2), Some([0..1, 2..3]));
+        assert_eq!(static_outside_ranges(&scene, 0..3), Some([0..0, 0..0]));
+        assert!(static_outside_ranges(&scene, 3..4).is_none());
     }
 
     #[test]
@@ -684,7 +684,7 @@ mod tests {
             })));
         }
         scene.paint_operations.finish();
-        assert!(!ordered_static_quad_root(&scene));
+        assert!(!ordered_static_root(&scene));
     }
 
     #[test]
@@ -733,7 +733,7 @@ mod tests {
         ));
         let frame = LayerFrame {
             layout_key: 1, id: 1, generation: 4,
-            quad_root_outside: None,
+            static_root_outside: None,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),
                 size(ScaledPixels(10.), ScaledPixels(10.)),

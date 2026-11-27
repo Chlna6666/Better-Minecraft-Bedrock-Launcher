@@ -323,7 +323,8 @@ impl NovaAtlas {
         ids.iter().map(|(_, id)| {
             let id = crate::TileId(*id);
             let tile = state.placements.get(&id)?.0;
-            (tile.texture_id.kind == AtlasTextureKind::Monochrome).then_some((id, tile))
+            matches!(tile.texture_id.kind, AtlasTextureKind::Monochrome | AtlasTextureKind::Bgra | AtlasTextureKind::Rgba)
+                .then_some((id, tile))
         }).collect()
     }
 

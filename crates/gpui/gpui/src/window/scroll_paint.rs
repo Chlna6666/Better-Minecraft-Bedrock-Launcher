@@ -104,8 +104,14 @@ impl ScrollPaint {
             && operations.range_is_replayable(0..operations.len())
             && operations.iter().all(|operation| {
                 raster_quad_only &= !matches!(operation, PaintOperation::Primitive(primitive) if !matches!(primitive, Primitive::Quad(_)));
-                if let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = operation {
-                    raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                match operation {
+                    PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
+                        raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                    }
+                    PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
+                        raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                    }
+                    _ => {}
                 }
                 super::frame::static_scroll_raster_operation(operation, coverage)
             });
