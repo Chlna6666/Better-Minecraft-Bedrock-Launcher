@@ -138,6 +138,8 @@ pub(crate) use frame::{
     DeferredDraw, Frame, LayerFrame, LayerScrollPosition, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
     RetainedPaintContext, RetainedSceneSegment,
 };
+#[cfg(test)]
+pub(crate) use frame::SceneLayers;
 pub(crate) use view_splice::ViewSplice;
 pub(crate) use view_retention::{
     RetainedViewRecord, StateAccessBlocks, ViewRebuild, ViewRetentionSlot,
