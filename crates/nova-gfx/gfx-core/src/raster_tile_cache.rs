@@ -140,6 +140,9 @@ impl Page {
 pub struct RasterTileCache {
     entries: HashMap<RasterTileKey, Entry>,
     pages: HashMap<TextureId, Page>,
+    // Exact accepted native users, indexed by fence rather than cache size.
+    // Reservation serials guard against a stale retirement touching a reused key.
+    submission_tiles: HashMap<SubmissionId, SmallVec<[(RasterTileKey, u64); 8]>>,
     frame: u64,
     serial: u64,
     bytes: u64,
@@ -148,7 +151,8 @@ pub struct RasterTileCache {
 impl RasterTileCache {
     /// Hard logical texture byte budget (excludes driver padding).
     pub fn new(budget: u64) -> Self {
-        Self { entries: HashMap::new(), pages: HashMap::new(), frame: 0, serial: 0, bytes: 0, budget }
+        Self { entries: HashMap::new(), pages: HashMap::new(), submission_tiles: HashMap::new(),
+            frame: 0, serial: 0, bytes: 0, budget }
     }
 
     /// Begin a frame; used tiles are protected from LRU eviction in this frame.
@@ -195,7 +199,7 @@ impl RasterTileCache {
 
     /// True while a native submission still owns a cached texture.
     pub fn has_pending_users(&self) -> bool {
-        self.entries.values().any(|e| !e.readers.is_empty() || matches!(e.state, State::Submitted(_)))
+        !self.submission_tiles.is_empty()
     }
 
     /// Reconcile committed layer generations in one cache walk.
@@ -331,7 +335,10 @@ impl RasterTileCache {
                     _ => false,
                 })
             .ok_or_else(|| Error::InvalidInput("reader references an unordered or superseded tile".into()))?;
-        if !e.readers.contains(&submission) { e.readers.push(submission); }
+        if !e.readers.contains(&submission) {
+            e.readers.push(submission);
+            self.submission_tiles.entry(submission).or_default().push((read.key, e.serial));
+        }
         Ok(())
     }
 
@@ -496,6 +503,9 @@ impl RasterTileCache {
             None if e.stale => State::Invalid,
             None => State::Ready,
         };
+        if let Some(id) = submission {
+            self.submission_tiles.entry(id).or_default().push((write.key, write.serial));
+        }
         Ok(())
     }
 
@@ -512,7 +522,10 @@ impl RasterTileCache {
         let e = self.entries.get_mut(&key)
             .filter(|e| e.page_slot.is_none() && e.state == State::Ready && e.handles() == Some(texture))
             .ok_or_else(|| Error::InvalidInput("reader references nonresident tile".into()))?;
-        if !e.readers.contains(&submission) { e.readers.push(submission); }
+        if !e.readers.contains(&submission) {
+            e.readers.push(submission);
+            self.submission_tiles.entry(submission).or_default().push((key, e.serial));
+        }
         Ok(())
     }
 
@@ -531,7 +544,9 @@ impl RasterTileCache {
 
     /// Observe a real completed native fence. A queue wait is not completion.
     pub fn complete(&mut self, submission: SubmissionId) {
-        for e in self.entries.values_mut() {
+        let Some(tiles) = self.submission_tiles.remove(&submission) else { return; };
+        for (key, serial) in tiles {
+            let Some(e) = self.entries.get_mut(&key).filter(|e| e.serial == serial) else { continue; };
             e.readers.retain(|id| *id != submission);
             if e.state == State::Submitted(submission) {
                 e.state = if e.stale { State::Invalid } else { State::Ready };
@@ -555,6 +570,8 @@ impl RasterTileCache {
         }
         let keys: Vec<_> = self.entries.keys().copied().collect();
         for key in keys { self.release(device, key)?; }
+        debug_assert!(self.submission_tiles.is_empty());
+        self.submission_tiles.shrink_to_fit();
         Ok(())
     }
 
@@ -618,6 +635,40 @@ mod tests {
             last_used: 0, readers: SmallVec::new(), sampling_bindings: SmallVec::new(),
         }
     }
+    fn insert_submitted(cache: &mut RasterTileCache, key: RasterTileKey, mut entry: Entry, writer: SubmissionId) {
+        entry.state = State::Reserved;
+        let write = RasterTileWrite { key, serial: entry.serial, texture: entry.handles().unwrap(),
+            region: entry.region(None), target_extent: entry.raster.extent };
+        cache.entries.insert(key, entry);
+        cache.finish_write(write, Some(writer)).unwrap();
+    }
+
+    #[test]
+    fn completion_only_retires_registered_tiles_and_is_idempotent() {
+        let mut cache = RasterTileCache::new(4096);
+        let writer = SubmissionId::from_parts(4, 1);
+        let other = SubmissionId::from_parts(5, 1);
+        let reader = SubmissionId::from_parts(6, 1);
+        insert_submitted(&mut cache, key(0), entry(3, State::Reserved), writer);
+        insert_submitted(&mut cache, key(1), entry(3, State::Reserved), other);
+        cache.entries.insert(key(2), entry(3, State::Ready));
+        let read = cache.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |id| id == writer).unwrap();
+        cache.record_ordered_reader(read, reader).unwrap();
+        cache.record_ordered_reader(read, reader).unwrap();
+        assert_eq!(cache.submission_tiles[&reader].len(), 1);
+        cache.complete(writer);
+        cache.complete(writer);
+        assert_eq!(cache.entries[&key(0)].state, State::Ready);
+        assert!(!cache.entries[&key(0)].idle());
+        assert_eq!(cache.entries[&key(1)].state, State::Submitted(other));
+        assert!(cache.entries[&key(2)].idle());
+        cache.complete(reader);
+        assert!(cache.entries[&key(0)].idle());
+        assert!(cache.has_pending_users());
+        cache.complete(other);
+        assert!(!cache.has_pending_users());
+    }
+
     #[test]
     fn page_size_classes_bound_waste_and_find_independent_cells() {
         let cell = page_cell(Extent2d::new(300, 17).unwrap()).unwrap();
@@ -676,7 +727,7 @@ mod tests {
         let binding = BindGroupId::from_parts(8, 1);
         let mut a = entry(3, State::Submitted(writer));
         a.sampling_bindings.push((1, binding));
-        cache.entries.insert(key(0), a);
+        insert_submitted(&mut cache, key(0), a, writer);
         assert!(cache.lookup_ordered_with_binding(key(0), 3, raster(), Format::Bgra8Unorm, 1, |_| false).is_none());
         let (read, resident) = cache.lookup_ordered_with_binding(
             key(0), 3, raster(), Format::Bgra8Unorm, 1, |id| id == writer).unwrap();
@@ -728,7 +779,7 @@ mod tests {
     fn invalidated_writer_cannot_resurrect_pixels() {
         let mut c = RasterTileCache::new(4096);
         let fence = SubmissionId::from_parts(4, 1);
-        c.entries.insert(key(0), entry(3, State::Submitted(fence)));
+        insert_submitted(&mut c, key(0), entry(3, State::Reserved), fence);
         assert!(!c.entries[&key(0)].idle());
         assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
         c.advance_layer(7, 4, |_| true);
@@ -740,7 +791,7 @@ mod tests {
     fn clean_pending_generation_waits_for_its_real_writer() {
         let mut c = RasterTileCache::new(4096);
         let fence = SubmissionId::from_parts(4, 1);
-        c.entries.insert(key(0), entry(3, State::Submitted(fence)));
+        insert_submitted(&mut c, key(0), entry(3, State::Reserved), fence);
         c.advance_layer(7, 4, |_| false);
         assert!(c.has_pending_users());
         assert!(c.lookup(key(0), 4, raster(), Format::Bgra8Unorm).is_none());
@@ -756,7 +807,7 @@ mod tests {
         let mut c = RasterTileCache::new(4096);
         let writer = SubmissionId::from_parts(4, 1);
         let reader = SubmissionId::from_parts(5, 1);
-        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        insert_submitted(&mut c, key(0), entry(3, State::Reserved), writer);
         assert!(c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| false).is_none());
         let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |id| id == writer).unwrap();
         assert_eq!(read.writer(), Some(writer));
@@ -777,7 +828,7 @@ mod tests {
         let mut c = RasterTileCache::new(4096);
         let writer = SubmissionId::from_parts(4, 1);
         let reader = SubmissionId::from_parts(5, 1);
-        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        insert_submitted(&mut c, key(0), entry(3, State::Reserved), writer);
         let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |id| id == writer).unwrap();
         c.record_ordered_reader(read, reader).unwrap();
         c.complete(reader);
@@ -793,7 +844,7 @@ mod tests {
     fn unknown_reader_fence_never_allows_reclamation() {
         let mut c = RasterTileCache::new(4096);
         let writer = SubmissionId::from_parts(4, 1);
-        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        insert_submitted(&mut c, key(0), entry(3, State::Reserved), writer);
         let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| true).unwrap();
         c.quarantine_reader(read);
         c.complete(writer);
