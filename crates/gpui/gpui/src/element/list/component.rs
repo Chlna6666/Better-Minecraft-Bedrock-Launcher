@@ -1,7 +1,7 @@
 use crate::{
     AnyElement, App, Bounds, ContentMask, DispatchPhase, Element,
     GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels,
-    ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
+    ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
 use std::rc::Rc;
@@ -139,7 +139,7 @@ impl Element for List {
         window: &mut Window,
         cx: &mut App,
     ) -> ListPrepaintLayout {
-        let state = &mut *self.state.0.borrow_mut();
+        let mut state = self.state.0.borrow_mut();
         state.reset = false;
 
         let mut style = Style::default();
@@ -160,7 +160,7 @@ impl Element for List {
         let input_start = window.next_frame.hitboxes.len();
         let viewport = ContentMask::new(window.visual_bounds(bounds))
             .intersect(&window.visual_content_mask());
-        let layout =
+        let mut layout =
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, self.row_revision.clone(), window, cx) {
                 Ok(layout) => layout,
                 Err(autoscroll_request) => {
@@ -177,6 +177,18 @@ impl Element for List {
         state.version.bump_if(state.last_layout_bounds != Some(bounds) || state.last_padding != Some(padding));
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
+        drop(state);
+
+        // Capture the exact measurement geometry before Paint can execute
+        // user code. Publish the binding only with the completed frame.
+        let scroll_top = layout.scroll_top;
+        let visible = scroll_top.item_ix..scroll_top.item_ix + layout.item_layouts.len();
+        if let Some(plan) = layout.row_plan.as_mut()
+            && layout.item_layouts.iter().map(|item| item.index).eq(visible.clone())
+            && let Some(proof) = self.state.placement_proof(scroll_top, visible.clone())
+        {
+            plan.bind_variable_placement(proof, visible);
+        }
         ListPrepaintLayout { hitbox, layout }
     }
 
@@ -209,20 +221,19 @@ impl Element for List {
         );
 
         let height = bounds.size.height;
-        let scroll_top = prepaint.layout.scroll_top;
+        if let Some(plan) = prepaint.layout.row_plan.as_ref() {
+            window.remember_row_placement(plan);
+        }
         let hitbox_id = prepaint.hitbox.id;
         let item_layouts = std::mem::take(&mut prepaint.layout.item_layouts);
         self.state.0.borrow_mut().recycle_item_layouts(item_layouts);
 
         let list_state = self.state.clone();
         window.watch_mounted_scroll(current_view, &list_state.0.borrow().version);
-        let mut accumulated_scroll_delta = ScrollDelta::default();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
-                accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
-                let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
+                let pixel_delta = event.delta.pixel_delta(px(20.));
                 list_state.0.borrow_mut().scroll(
-                    &scroll_top,
                     height,
                     pixel_delta,
                     current_view,

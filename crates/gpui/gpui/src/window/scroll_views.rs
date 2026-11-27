@@ -158,13 +158,13 @@ struct PlacementTransaction {
     owners: smallvec::SmallVec<[EntityId; 4]>,
     source_revision: u64,
     members: smallvec::SmallVec<[PlacementMember; 1]>,
-    uniform: Option<super::scroll_rows::UniformPlacementCandidate>,
+    uniform: Option<super::scroll_rows::RowPlacementCandidate>,
     paint: Arc<super::Paint>,
 }
 
 impl Window {
     /// Direct commit for independent native vertical scrollers with one
-    /// complete retained child each, or a stable uniform-list row set.
+    /// complete retained child each, or a stable measured row set.
     /// Nested captures, external effects and partial captures are rejected.
     fn prepare_scroll_placement(&self, cx: &App) -> Result<PlacementTransaction, Outcome> {
         let (epoch, owners) = self.invalidator.pending_placement().ok_or(Outcome::Invalidation)?;
@@ -221,12 +221,12 @@ impl Window {
         if changed.len() != owners.len() {
             return Err(Outcome::MountedSources);
         }
-        // A uniform-list transaction initially owns a single scroll
+        // A row-list transaction initially owns a single scroll
         // source. Mixed list/view transactions keep the regular fallback.
         if owners.len() == 1 {
             match self.prepare_placement_member(cx, epoch, owners[0], old_paint, &changed) {
                 Err(Outcome::MissingCapture) => {
-                    let uniform = self.prepare_uniform_row_placement(cx, epoch, owners[0], &changed, old_paint)?;
+                    let uniform = self.prepare_row_placement(cx, epoch, owners[0], &changed, old_paint)?;
                     let paint = old_paint.with_scroll_placements(&uniform.placements,
                         self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
                         .ok_or(Outcome::ScenePublication)?;
@@ -396,7 +396,7 @@ impl Window {
         };
         if self.rendered_frame.scene().revision != transaction.source_revision
             || transaction.members.iter().any(|member| *member.offset.borrow() != member.sampled)
-            || transaction.uniform.as_ref().is_some_and(|list| *list.offset.borrow() != list.sampled)
+            || transaction.uniform.as_ref().is_some_and(|list| list.sample_read.status() != crate::StateReadStatus::Unchanged)
             || !self.invalidator.commit_placement(transaction.epoch, &transaction.owners)
         {
             scroll_placement::record(Outcome::CommitRace);

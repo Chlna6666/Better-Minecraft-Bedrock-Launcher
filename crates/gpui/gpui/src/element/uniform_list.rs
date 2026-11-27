@@ -507,7 +507,7 @@ impl Element for UniformList {
                     );
                 }
                 if let Some(plan) = request_layout.row_plan.as_ref() {
-                    window.remember_uniform_placement(plan);
+                    window.remember_row_placement(plan);
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);

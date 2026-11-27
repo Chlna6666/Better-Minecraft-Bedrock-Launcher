@@ -4,7 +4,7 @@ mod layout;
 use crate::{App, Bounds, Edges, EntityId, FocusHandle, Pixels, Point, Size, Window, point, px};
 use collections::VecDeque;
 use crate::window::scroll_dependencies::StateVersion;
-use std::{cell::RefCell, ops::Range, rc::Rc};
+use std::{cell::RefCell, ops::Range, rc::{Rc, Weak}};
 use sum_tree::{Bias, Dimensions, SumTree};
 
 pub(super) use item::{ListItem, ListItemSummary};
@@ -19,6 +19,40 @@ use super::{
 #[derive(Clone)]
 pub struct ListState(pub(super) Rc<RefCell<StateInner>>);
 
+/// Weak binding to the existing measured tree. No second geometry index.
+#[derive(Clone)]
+pub(crate) struct ListPlacementProof {
+    state: Weak<RefCell<StateInner>>,
+    geometry_revision: u64,
+    items: crate::StateRead,
+    structure: crate::StateRead,
+    bounds: Bounds<Pixels>,
+    padding: Edges<Pixels>,
+    visible: Range<usize>,
+}
+
+impl ListPlacementProof {
+    pub(crate) fn sample(&self) -> Option<(Point<Pixels>, StateVersion)> {
+        let state = self.state.upgrade()?;
+        let state = state.try_borrow().ok()?;
+        if state.reset || state.geometry_revision != self.geometry_revision
+            || self.items.status() != crate::StateReadStatus::Unchanged
+            || self.structure.status() != crate::StateReadStatus::Unchanged
+            || state.last_layout_bounds != Some(self.bounds)
+            || state.last_padding != Some(self.padding)
+            || state.alignment != ListAlignment::Top
+            || state.scrollbar_drag_start_height.is_some()
+        {
+            return None;
+        }
+        let top = state.logical_scroll_top();
+        if state.placement_visible_range(top, self.bounds, self.padding)? != self.visible {
+            return None;
+        }
+        Some((point(px(0.), -top.offset_in_item), state.version.clone()))
+    }
+}
+
 impl std::fmt::Debug for ListState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ListState")
@@ -29,6 +63,7 @@ pub(super) struct StateInner {
     pub(super) version: StateVersion,
     items_version: StateVersion,
     structure_version: StateVersion,
+    geometry_revision: u64,
     pub(super) last_layout_bounds: Option<Bounds<Pixels>>,
     pub(super) last_padding: Option<Edges<Pixels>>,
     pub(super) items: SumTree<ListItem>,
@@ -72,6 +107,26 @@ fn replace_item_runs(
 }
 
 impl ListState {
+    pub(crate) fn placement_proof(
+        &self, top: ListOffset, visible: Range<usize>,
+    ) -> Option<ListPlacementProof> {
+        let state = self.0.borrow();
+        let bounds = state.last_layout_bounds?;
+        let padding = state.last_padding?;
+        if state.alignment != ListAlignment::Top || state.logical_scroll_top() != top
+            || state.placement_visible_range(top, bounds, padding)? != visible
+        {
+            return None;
+        }
+        Some(ListPlacementProof {
+            state: Rc::downgrade(&self.0),
+            geometry_revision: state.geometry_revision,
+            items: crate::StateRead::new(&state.items_version),
+            structure: crate::StateRead::new(&state.structure_version),
+            bounds, padding, visible,
+        })
+    }
+
     /// Construct a new list state, for storage on a view.
     ///
     /// The overdraw parameter controls how much extra space is rendered
@@ -87,6 +142,7 @@ impl ListState {
             version: StateVersion::placement(),
             items_version: StateVersion::default(),
             structure_version: StateVersion::default(),
+            geometry_revision: 0,
             last_layout_bounds: None,
             last_padding: None,
             items: SumTree::default(),
@@ -120,6 +176,7 @@ impl ListState {
             let state = &mut *self.0.borrow_mut();
             state.version.bump();
             state.reset = true;
+            state.geometry_revision = state.geometry_revision.wrapping_add(1);
             state.structure_version.bump();
             state.measuring_behavior.reset();
             state.logical_scroll_top = None;
@@ -203,6 +260,7 @@ impl ListState {
         }
         if !replacements.is_empty() {
             state.items = replace_item_runs(&state.items, &mut replacements);
+            state.geometry_revision = state.geometry_revision.wrapping_add(1);
         }
         // A one-off bulk content mutation must not permanently retain
         // scratch proportional to the full data set.
@@ -245,6 +303,7 @@ impl ListState {
         state.items_version.bump_if(!old_range.is_empty() || spliced_count != 0);
         state.structure_version.bump_if(!old_range.is_empty() || spliced_count != 0);
         state.items = new_items;
+        state.geometry_revision = state.geometry_revision.wrapping_add(1);
 
         if let Some(ListOffset {
             item_ix,
@@ -495,6 +554,7 @@ impl StateInner {
                 self.measured_items_scratch = replacements;
             }
         }
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
         // Preserve the previous width-change invalidation behavior even if
         // the entire list was already unmeasured.
         self.version.bump();
@@ -503,6 +563,70 @@ impl StateInner {
     pub(super) fn recycle_item_layouts(&mut self, mut item_layouts: VecDeque<ItemLayout>) {
         item_layouts.clear();
         self.item_layouts_scratch = item_layouts;
+    }
+
+    /// Mirror layout_items' forward and leading overscan traversal.
+    /// Only the local required range must be measured; unknown remote
+    /// subtrees do not affect this proof. Unknown required heights,
+    /// focus rows and tail anchoring use the ordinary layout path.
+    fn placement_visible_range(
+        &self, top: ListOffset, bounds: Bounds<Pixels>, padding: Edges<Pixels>,
+    ) -> Option<Range<usize>> {
+        let summary = self.items.summary();
+        if summary.has_focus_handles || top.item_ix >= summary.count
+            || matches!(self.measuring_behavior, ListMeasuringBehavior::Measure(false))
+            || !self.overdraw.0.is_finite() || self.overdraw < px(0.)
+            || self.overdraw.0 > 1_048_576.
+            || !padding.top.0.is_finite() || padding.top.0.abs() > 1_048_576.
+            || !padding.bottom.0.is_finite() || padding.bottom.0.abs() > 1_048_576.
+            || !top.offset_in_item.0.is_finite() || top.offset_in_item < px(0.)
+            // Repeated logical delta accumulation is exact on this
+            // initial integral geometry path. Fractional layouts replay.
+            || top.offset_in_item.0.fract() != 0.
+            || bounds.origin.y.0.fract() != 0. || padding.top.0.fract() != 0.
+            || bounds.origin.y.0.abs() > 1_048_576.
+            || bounds.size.height.0.abs() > 1_048_576.
+            || bounds.size.height <= padding.top + padding.bottom
+        {
+            return None;
+        }
+        let mut cursor = self.items.cursor::<Count>(());
+        cursor.seek(&Count(top.item_ix), Bias::Right);
+        let mut rendered = padding.top;
+        let mut end = top.item_ix;
+        for (index, item) in cursor.by_ref().enumerate() {
+            let visible_height = rendered - top.offset_in_item;
+            if visible_height >= bounds.size.height + self.overdraw { break; }
+            let height = item.size()?.height;
+            if !height.0.is_finite() || height <= px(0.)
+                || height.0.fract() != 0. || height.0 > 1_048_576.
+                || (index == 0 && top.offset_in_item >= height)
+            {
+                return None;
+            }
+            if visible_height < bounds.size.height {
+                end += 1;
+            }
+            rendered += height;
+        }
+        // Tail fill can move every row. Never admit that branch.
+        if rendered + padding.bottom - top.offset_in_item < bounds.size.height || end == top.item_ix {
+            return None;
+        }
+        // The ordinary pass may measure new leading overscan rows. Prove
+        // they are already measured rather than skip that work silently.
+        let mut leading = top.offset_in_item;
+        if leading < self.overdraw {
+            cursor.seek(&Count(top.item_ix), Bias::Right);
+            while leading < self.overdraw {
+                cursor.prev();
+                let Some(item) = cursor.item() else { break; };
+                let height = item.size()?.height;
+                if !height.0.is_finite() || height <= px(0.) { return None; }
+                leading += height;
+            }
+        }
+        Some(top.item_ix..end)
     }
 
     fn visible_range(&self, height: Pixels, scroll_top: &ListOffset) -> Range<usize> {
@@ -515,14 +639,15 @@ impl StateInner {
 
     pub(super) fn scroll(
         &mut self,
-        scroll_top: &ListOffset,
         height: Pixels,
         delta: Point<Pixels>,
         current_view: EntityId,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let Some(event) = self.apply_scroll(scroll_top, height, delta) else {
+        // Every event uses the live measured-tree anchor, not a closure
+        // capture of the last rendered frame or a cumulative wheel delta.
+        let Some(event) = self.apply_live_scroll(height, delta) else {
             return;
         };
 
@@ -551,6 +676,17 @@ impl StateInner {
         }
     }
 
+    pub(super) fn apply_live_scroll(&mut self, height: Pixels, delta: Point<Pixels>) -> Option<ListScrollEvent> {
+        let live_top = if self.logical_scroll_top.is_none() && self.alignment == ListAlignment::Bottom {
+            let max = self.scroll_max(height);
+            let (start, ..) = self.items.find::<ListItemSummary, _>((), &Height(max), Bias::Right);
+            ListOffset { item_ix: start.count, offset_in_item: max - start.height }
+        } else {
+            self.logical_scroll_top()
+        };
+        self.apply_scroll(&live_top, height, delta)
+    }
+
     fn apply_scroll(
         &mut self,
         scroll_top: &ListOffset,
@@ -567,9 +703,7 @@ impl StateInner {
             return None;
         }
 
-        let padding = self.last_padding.unwrap_or_default();
-        let scroll_max =
-            (self.items.summary().height + padding.top + padding.bottom - height).max(px(0.));
+        let scroll_max = self.scroll_max(height);
         let old_scroll_top = self.scroll_top(scroll_top);
         let new_scroll_top = (old_scroll_top - delta.y).max(px(0.)).min(scroll_max);
         if new_scroll_top == old_scroll_top {
@@ -607,6 +741,11 @@ impl StateInner {
                     offset_in_item: px(0.),
                 },
             })
+    }
+
+    fn scroll_max(&self, height: Pixels) -> Pixels {
+        let padding = self.last_padding.unwrap_or_default();
+        (self.items.summary().height + padding.top + padding.bottom - height).max(px(0.))
     }
 
     fn scroll_top(&self, logical_scroll_top: &ListOffset) -> Pixels {

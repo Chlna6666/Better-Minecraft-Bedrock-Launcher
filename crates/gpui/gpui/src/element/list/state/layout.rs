@@ -68,6 +68,7 @@ impl StateInner {
                 ListItem::Measured { size, focus_handle: item.focus_handle() }
             }), ());
             self.items = next;
+            self.geometry_revision = self.geometry_revision.wrapping_add(1);
             self.version.bump_if(measured_count != 0);
             window.record_list_measured_items(measured_count);
             return;
@@ -96,6 +97,7 @@ impl StateInner {
         window.record_list_measured_items(measured_item_count);
         if measured_item_count != 0 {
             self.items = replace_item_runs(&self.items, &mut measured_items);
+            self.geometry_revision = self.geometry_revision.wrapping_add(1);
             self.version.bump();
         }
         self.measured_items_scratch = measured_items;
@@ -316,6 +318,7 @@ impl StateInner {
         let geometry_changed = !measured_items.is_empty();
         if geometry_changed {
             self.items = replace_item_runs(&old_items, &mut measured_items);
+            self.geometry_revision = self.geometry_revision.wrapping_add(1);
         }
         self.version.bump_if(geometry_changed || previous_top != self.logical_scroll_top);
         self.measured_items_scratch = measured_items;

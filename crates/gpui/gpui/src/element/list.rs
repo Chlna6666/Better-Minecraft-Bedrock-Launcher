@@ -22,3 +22,4 @@ pub use configuration::{
 };
 pub use component::{List, list};
 pub use state::ListState;
+pub(crate) use state::ListPlacementProof;

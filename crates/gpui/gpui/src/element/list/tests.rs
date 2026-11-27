@@ -376,3 +376,76 @@ fn broad_sparse_item_invalidation_preserves_unselected_measured_and_unmeasured_n
     new.seek(&Count(4000), Bias::Right);
     assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()));
 }
+
+
+#[test]
+fn variable_placement_membership_requires_stable_measured_geometry() {
+    use crate::{ListState, px};
+    let list = ListState::new(5, crate::ListAlignment::Top, px(0.));
+    {
+        let mut state = list.0.borrow_mut();
+        state.items = sum_tree::SumTree::from_iter([10., 20., 30., 40., 50.].into_iter().map(|height| {
+            super::state::ListItem::Measured {
+                size: crate::size(px(100.), px(height)), focus_handle: None
+            }
+        }), ());
+        state.last_layout_bounds = Some(crate::Bounds::new(crate::point(px(0.), px(0.)), crate::size(px(100.), px(45.))));
+        state.last_padding = Some(Default::default());
+    }
+    list.scroll_to(crate::ListOffset { item_ix: 0, offset_in_item: px(1.) });
+    let proof = list.placement_proof(list.logical_scroll_top(), 0..3).unwrap();
+    list.scroll_by(px(2.));
+    assert_eq!(proof.sample().unwrap().0.y, px(-3.));
+    list.scroll_by(px(8.));
+    assert!(proof.sample().is_none());
+    list.scroll_to(crate::ListOffset { item_ix: 0, offset_in_item: px(1.) });
+    assert!(proof.sample().is_some());
+    list.invalidate_items(&[4..5]);
+    assert!(proof.sample().is_none());
+    // A fresh capture can certify the same viewport even with an unknown
+    // remote row, but must not cross an unknown required row.
+    let proof = list.placement_proof(list.logical_scroll_top(), 0..3).unwrap();
+    assert!(proof.sample().is_some());
+    list.invalidate_items(&[2..3]);
+    assert!(proof.sample().is_none());
+    assert!(list.placement_proof(list.logical_scroll_top(), 0..3).is_none());
+}
+
+
+#[test]
+fn list_wheel_events_use_live_anchor_and_reverse_at_clamp() {
+    use crate::{ListState, ListAlignment, point, px, size};
+    let list = ListState::new(10, ListAlignment::Top, px(0.));
+    let mut state = list.0.borrow_mut();
+    state.items = sum_tree::SumTree::from_iter((0..10).map(|_| super::state::ListItem::Measured {
+        size: size(px(100.), px(10.)), focus_handle: None,
+    }), ());
+    let delta = |y| point(px(0.), px(y));
+    state.apply_live_scroll(px(20.), delta(-3.)).unwrap();
+    state.apply_live_scroll(px(20.), delta(-4.)).unwrap();
+    assert_eq!(state.logical_scroll_top().offset_in_item, px(7.));
+    state.apply_live_scroll(px(20.), delta(20.)).unwrap();
+    assert_eq!(state.logical_scroll_top().offset_in_item, px(0.));
+    state.apply_live_scroll(px(20.), delta(-1.)).unwrap();
+    assert_eq!(state.logical_scroll_top().offset_in_item, px(1.));
+}
+
+
+#[test]
+fn bottom_pinned_live_wheel_uses_current_measured_extent() {
+    use crate::{ListState, ListAlignment, point, px, size};
+    let list = ListState::new(10, ListAlignment::Bottom, px(0.));
+    let mut state = list.0.borrow_mut();
+    state.items = sum_tree::SumTree::from_iter((0..10).map(|_| super::state::ListItem::Measured {
+        size: size(px(100.), px(10.)), focus_handle: None,
+    }), ());
+    let delta = |y| point(px(0.), px(y));
+    state.apply_live_scroll(px(20.), delta(3.)).unwrap();
+    assert_eq!(state.logical_scroll_top().item_ix, 7);
+    assert_eq!(state.logical_scroll_top().offset_in_item, px(7.));
+    state.apply_live_scroll(px(20.), delta(-5.)).unwrap();
+    assert!(state.logical_scroll_top.is_none());
+    state.apply_live_scroll(px(20.), delta(1.)).unwrap();
+    assert_eq!(state.logical_scroll_top().item_ix, 7);
+    assert_eq!(state.logical_scroll_top().offset_in_item, px(9.));
+}
