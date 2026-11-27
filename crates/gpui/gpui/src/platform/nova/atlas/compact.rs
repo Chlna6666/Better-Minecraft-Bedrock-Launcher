@@ -279,7 +279,7 @@ mod tests {
     fn pending_upload_keeps_original_page_until_queued() {
         let (atlas, old_tile) = sparse_atlas();
         let mut state = atlas.state.lock().expect("atlas");
-        state.enqueue_tile_upload_kind(
+        state.enqueue_tile_upload(
             old_tile.texture_id,
             AtlasTextureKind::Monochrome,
             old_tile.bounds.origin,
