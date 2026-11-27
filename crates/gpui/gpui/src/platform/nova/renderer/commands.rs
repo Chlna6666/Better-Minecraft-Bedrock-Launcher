@@ -143,7 +143,9 @@ impl NovaRenderer {
                 active_types.push(type_id);
             }
         }
-        if self.renderer_registry.has_inactive(&active_types) {
+        if self.pending_submissions.is_empty() && self.auxiliary_submissions.is_empty()
+            && self.renderer_registry.has_inactive(&active_types)
+        {
             self.renderer_registry.retain(&active_types, device);
         }
         for (extension, steps) in inputs.iter().zip(steps) {

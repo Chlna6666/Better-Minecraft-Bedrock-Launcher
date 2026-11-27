@@ -237,12 +237,13 @@ impl StaticStreams {
 
     fn commands<D: ResourceDevice>(&self, renderer: &NovaRenderer, device: &mut D,
         resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines,
-        extension_steps: &[RenderCommand]) -> Result<Vec<RenderCommand>> {
+        extension_steps: &[Vec<RenderCommand>]) -> Result<Vec<RenderCommand>> {
         let mut bindings = FxHashMap::default();
         let mut commands = Vec::with_capacity(self.runs.len());
         for run in &self.runs {
             if run.kind == SourceKind::Extension {
-                commands.extend_from_slice(extension_steps);
+                commands.extend_from_slice(extension_steps.get(run.first as usize)
+                    .context("missing prepared root extension commands")?);
                 continue;
             }
             let pipeline = match run.kind {
@@ -338,15 +339,26 @@ fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::
 struct OutsideRoot {
     streams: StaticStreams,
     boundaries: Vec<usize>,
-    extension: Option<crate::PaintRendererExtension>,
+    extensions: Vec<crate::PaintRendererExtension>,
 }
 
-fn expanded_boundary(boundary: usize, extension_run: Option<usize>, extension_steps: usize) -> usize {
-    if extension_run.is_some_and(|index| index < boundary) {
-        boundary - 1 + extension_steps
-    } else {
-        boundary
+/// Translate run boundaries to command boundaries once. An extension may
+/// emit any number of commands, including zero; do not scan all extension
+/// runs again for each promoted layer.
+fn expanded_boundaries(runs: &[SourceRun], boundaries: &[usize], steps: &[Vec<RenderCommand>]) -> Option<Vec<usize>> {
+    let mut result = Vec::with_capacity(boundaries.len());
+    let mut cursor = 0;
+    let mut commands = 0usize;
+    for &end in boundaries {
+        for run in runs.get(cursor..end)? {
+            commands = commands.checked_add(if run.kind == SourceKind::Extension {
+                steps.get(run.first as usize)?.len()
+            } else { 1 })?;
+        }
+        result.push(commands);
+        cursor = end;
     }
+    Some(result)
 }
 
 fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId, AtlasTile>,
@@ -378,14 +390,15 @@ impl OutsideRoot {
             else { renderer.atlas.ready_root_glyphs(&ids)? };
         let mut streams = StaticStreams { root_lcd: cfg!(target_os = "windows"), ..Default::default() };
         let mut boundaries = Vec::with_capacity(plans.len());
-        let mut extension = None;
+        let mut extensions = Vec::new();
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
                 match operation {
                     PaintOperation::Primitive(Primitive::RendererExtension(input)) => {
-                        if extension.replace(input.clone()).is_some() { return None; }
-                        streams.runs.push(SourceRun { kind: SourceKind::Extension, first: 0, count: 1 });
+                        let first = u32::try_from(extensions.len()).ok()?;
+                        extensions.push(input.clone());
+                        streams.runs.push(SourceRun { kind: SourceKind::Extension, first, count: 1 });
                         split = true;
                     }
                     PaintOperation::Primitive(primitive) => {
@@ -399,7 +412,7 @@ impl OutsideRoot {
             }
             if index < plans.len() { boundaries.push(streams.runs.len()); }
         }
-        Some(Self { streams, boundaries, extension })
+        Some(Self { streams, boundaries, extensions })
     }
 }
 
@@ -790,9 +803,9 @@ impl NovaRenderer {
         // From here a custom producer may accept native work; errors retain
         // the exact registered fences, rather than preparing it a second time.
         let mut extension_steps = Vec::new();
-        self.prepare_renderer_extensions_on(outside.extension.as_slice(), &mut extension_steps, frame_time, device)?;
-        let extension_steps = extension_steps.first().map_or(&[][..], Vec::as_slice);
-        let extension_run = outside.streams.runs.iter().position(|run| run.kind == SourceKind::Extension);
+        self.prepare_renderer_extensions_on(&outside.extensions, &mut extension_steps, frame_time, device)?;
+        let boundaries = expanded_boundaries(&outside.streams.runs, &outside.boundaries, &extension_steps)
+            .context("invalid mixed root command boundaries")?;
         if self.scroll_composite_slots.len() <= slot {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
@@ -831,13 +844,12 @@ impl NovaRenderer {
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
                 &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
-            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, extension_steps)?;
+            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, &extension_steps)?;
             let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
             let mut root = root_commands.into_iter();
             let mut root_offset = 0;
             let mut tile_offset = 0;
-            for (plan, &boundary) in plans.iter().zip(&outside.boundaries) {
-                let boundary = expanded_boundary(boundary, extension_run, extension_steps.len());
+            for (plan, &boundary) in plans.iter().zip(&boundaries) {
                 commands.extend(root.by_ref().take(boundary - root_offset));
                 root_offset = boundary;
                 let end = tile_offset + plan.requests.len();
@@ -866,7 +878,7 @@ impl NovaRenderer {
         }
         // Submit custom native producers using exactly the ordinary
         // renderer's Graphics/Compute contract, before the root consumer.
-        let extension_submission = if outside.extension.is_some() {
+        let extension_submission = if !outside.extensions.is_empty() {
             match self.submit_prepared_extensions(device, slot) {
                 Ok(submission) => submission,
                 Err(error) => { resources.destroy(device); return Err(error); }
@@ -1033,10 +1045,16 @@ mod tests {
 
     #[test]
     fn extension_command_expansion_preserves_tile_insertion_boundaries() {
-        assert_eq!(expanded_boundary(1, Some(1), 3), 1);
-        assert_eq!(expanded_boundary(2, Some(1), 3), 4);
-        assert_eq!(expanded_boundary(3, Some(1), 0), 2);
-        assert_eq!(expanded_boundary(3, None, 0), 3);
+        let runs = [
+            SourceRun { kind: SourceKind::Quad, first: 0, count: 1 },
+            SourceRun { kind: SourceKind::Extension, first: 0, count: 1 },
+            SourceRun { kind: SourceKind::Extension, first: 1, count: 1 },
+            SourceRun { kind: SourceKind::Quad, first: 1, count: 1 },
+        ];
+        // Zero-draw extensions are valid, including consecutive boundaries.
+        assert_eq!(expanded_boundaries(&runs, &[0, 1, 2, 3, 4], &[vec![], vec![]]),
+            Some(vec![0, 1, 1, 1, 2]));
+        assert!(expanded_boundaries(&runs, &[2, 4], &[vec![]]).is_none());
     }
 
     #[test]
