@@ -10,7 +10,13 @@ impl Painter {
             .recent_peak_primitives
             .max(primitive_count_before_clear);
 
+        if self.frame_builder {
+            self.scene.shadows.release_draw_aliases();
+            self.scene.quads.release_draw_aliases();
+            self.scene.monochrome_sprites.release_draw_aliases();
+        }
         self.scene.paint_operations.clear();
+        self.draw_payload_pending = false;
         self.primitive_bounds.clear();
         self.layer_stack.clear();
         self.scene.paths.clear();
@@ -54,11 +60,17 @@ impl Painter {
     }
 
     fn finish_with_previous(&mut self, previous: Option<&Scene>) -> bool {
-        self.scene.paint_operations.publish_fresh_draw_payloads(
-            &mut self.scene.shadows,
-            &mut self.scene.quads,
-            &mut self.scene.monochrome_sprites,
-        );
+        if self.frame_builder {
+            self.flush_draw_payloads();
+        } else {
+            self.scene.paint_operations.publish_draw_payloads(
+                &mut self.scene.shadows,
+                &mut self.scene.quads,
+                &mut self.scene.monochrome_sprites,
+                &mut self.draw_permutation,
+                false,
+            );
+        }
         self.scene.paint_operations.finish();
         debug_assert!(
             self.blur_captures.is_empty(),
@@ -174,6 +186,7 @@ impl Painter {
         // actually visible now, not from a page that may have disappeared during this transition.
         self.recent_peak_paint_operations = paint.paint_operations.len();
         self.recent_peak_primitives = paint.primitive_count();
+        self.draw_permutation.trim(self.recent_peak_primitives.max(SCENE_MIN_RETAINED_CAPACITY));
     }
 
     fn trim_retained_capacity(&mut self) {
@@ -249,6 +262,7 @@ impl Painter {
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         self.scene.prepared_batches.trim_scratch(primitive_floor);
+        self.draw_permutation.trim(primitive_floor);
         self.recent_peak_paint_operations = self.scene.paint_operations.len();
         self.recent_peak_primitives = self.primitive_count();
     }

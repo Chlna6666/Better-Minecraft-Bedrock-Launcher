@@ -310,7 +310,7 @@ impl Frame {
             mounted_scroll_sources: Vec::new(),
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
-            painter: crate::scene::Painter::default(),
+            painter: crate::scene::Painter::for_frame(),
             paint: None,
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),

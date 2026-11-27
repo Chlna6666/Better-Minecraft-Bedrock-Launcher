@@ -2,7 +2,7 @@
 //! Indices are local to their immutable owner, not to the Scene or frame.
 use super::*;
 use crate::{Bounds, ScaledPixels};
-use super::primitive_stream::Ordered;
+use super::primitive_stream::{DrawPermutation, Ordered};
 use std::{mem::size_of, ops::{Index, Range}, sync::Arc};
 
 /// Empty typed pages need only one nullable pointer. A nonempty page can
@@ -100,46 +100,37 @@ impl<T: Ordered + PartialEq> TypedPayload<T> {
         true
     }
 
-    /// Only a fresh, exclusively owned page whose insertion sequence agrees
-    /// exactly with the draw builder can be unified. Root blur capture mirrors
-    /// and synthetic draw streams are deliberately not inferred from counts.
+    /// The window painter records draw payload exactly once. The independent
+    /// Scene builder still supports immediate draw reads; it can only adopt
+    /// the operation allocation when its original sequence agrees.
     fn publish_sorted(
         &mut self,
         indices: &mut [OperationIndex],
         kind: u32,
         stream: &mut PrimitiveStream<T>,
+        scratch: &mut DrawPermutation,
+        exclusive: bool,
     ) {
         let Some(owner) = &mut self.0 else { return };
-        let Some(values) = Arc::get_mut(owner) else { return };
-        if values.is_empty() || !stream.matches_fresh_pending(values) {
+        let Some(values) = Arc::get_mut(owner) else {
+            assert!(!exclusive, "unpublished draw page must have unique ownership");
+            return;
+        };
+        if values.is_empty() || (!exclusive && !stream.matches_fresh_pending(values)) {
             return;
         }
-
-        if !values.is_sorted_by_key(T::sort_key) {
-            // Sort narrow slot indices rather than moving large primitives
-            // through the sort. Equal keys keep their insertion order.
-            let mut sorted: Vec<usize> = (0..values.len()).collect();
-            sorted.sort_unstable_by_key(|&slot| (values[slot].sort_key(), slot));
-            let mut target = vec![0usize; values.len()];
-            for (new, old) in sorted.into_iter().enumerate() {
-                target[old] = new;
-            }
+        scratch.apply(values, |target| {
             for index in indices {
                 if index.kind() == kind {
-                    *index = OperationIndex::new(kind, target[index.slot()]);
+                    *index = OperationIndex::new(kind, target[index.slot()] as usize);
                 }
             }
-            // Apply the old-to-new permutation in place. Operation indices
-            // were remapped above, before the scratch permutation is consumed.
-            for old in 0..target.len() {
-                while target[old] != old {
-                    let new = target[old];
-                    values.swap(old, new);
-                    target.swap(old, new);
-                }
-            }
+        });
+        if exclusive {
+            stream.share_sorted_page(owner, 0..owner.len());
+        } else {
+            stream.adopt_fresh_sorted(Arc::clone(owner));
         }
-        stream.adopt_fresh_sorted(Arc::clone(owner));
     }
 }
 
@@ -189,15 +180,27 @@ impl OperationPage {
 
     /// Publication preserves logical operation order while draw streams borrow
     /// the very same typed allocations in physical sorted order.
+    #[cfg(test)]
     pub(super) fn publish_fresh_draw_payloads(
         &mut self,
         shadows: &mut PrimitiveStream<Shadow>,
         quads: &mut PrimitiveStream<Quad>,
         mono: &mut PrimitiveStream<MonochromeSprite>,
     ) {
-        self.shadows.publish_sorted(&mut self.indices, 0, shadows);
-        self.quads.publish_sorted(&mut self.indices, 1, quads);
-        self.mono.publish_sorted(&mut self.indices, 4, mono);
+        self.publish_draw_payloads(shadows, quads, mono, &mut DrawPermutation::default(), false);
+    }
+
+    pub(super) fn publish_draw_payloads(
+        &mut self,
+        shadows: &mut PrimitiveStream<Shadow>,
+        quads: &mut PrimitiveStream<Quad>,
+        mono: &mut PrimitiveStream<MonochromeSprite>,
+        scratch: &mut DrawPermutation,
+        exclusive: bool,
+    ) {
+        self.shadows.publish_sorted(&mut self.indices, 0, shadows, scratch, exclusive);
+        self.quads.publish_sorted(&mut self.indices, 1, quads, scratch, exclusive);
+        self.mono.publish_sorted(&mut self.indices, 4, mono, scratch, exclusive);
     }
 
     pub(super) fn share_quad_run(

@@ -1,12 +1,18 @@
 //! Immutable ordered primitive payload segments. Window retention chooses which ranges may be shared.
 mod sort;
+pub(super) use sort::DrawPermutation;
 #[cfg(test)]
 mod tests;
 use super::{DrawOrder, MonochromeSprite, Quad, Shadow};
 
 pub(crate) trait Ordered: Copy {
     type SortKey: Ord + Copy;
+    const ORDER_ONLY: bool = true;
     fn order(&self) -> DrawOrder;
+
+    fn packed_sort_key(&self, slot: u32) -> u128 {
+        (u128::from(self.order()) << 32) | u128::from(slot)
+    }
     fn sort_key(&self) -> Self::SortKey;
 
     fn sort_pending(items: &mut [Self]) {
@@ -33,6 +39,17 @@ impl Ordered for Shadow {
 }
 impl Ordered for MonochromeSprite {
     type SortKey = (DrawOrder, u32, u32, u32);
+    const ORDER_ONLY: bool = false;
+
+    fn packed_sort_key(&self, slot: u32) -> u128 {
+        let (order, kind, texture, sampling) = self.sort_key();
+        debug_assert!(slot < 1 << 28 && sampling < 16);
+        (u128::from(order) << 96)
+            | (u128::from(kind) << 64)
+            | (u128::from(texture) << 32)
+            | (u128::from(sampling) << 28)
+            | u128::from(slot)
+    }
 
     fn order(&self) -> DrawOrder {
         self.order
@@ -159,6 +176,15 @@ impl<T: Ordered> PrimitiveStream<T> {
         }
         self.len = 0;
     }
+    /// A frame operation builder reclaims its authoritative typed page.
+    /// Drop draw aliases first, rather than stealing the same allocation
+    /// into an otherwise unused independent draw builder.
+    pub(super) fn release_draw_aliases(&mut self) {
+        self.segments.clear();
+        self.pending.clear();
+        self.len = 0;
+    }
+
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.segments
             .iter()

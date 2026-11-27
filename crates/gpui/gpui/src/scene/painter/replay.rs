@@ -98,85 +98,7 @@ impl Painter {
             return;
         };
         self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(1);
-        let primitive_kind = self.push_replayed_primitive(primitive, order);
-        let mut primitive = primitive.to_primitive();
-        primitive.set_order(order);
-        if let (ScenePrimitiveKind::Path, Primitive::Path(path)) = (primitive_kind, &mut primitive)
-        {
-            path.id = PathId(self.scene.paths.len().saturating_sub(1));
-        }
-        self.scene
-            .paint_operations
-            .push(PaintOperation::Primitive(primitive));
-    }
-    fn push_replayed_primitive(
-        &mut self,
-        primitive: PrimitiveRef<'_>,
-        order: DrawOrder,
-    ) -> ScenePrimitiveKind {
-        match primitive {
-            PrimitiveRef::Shadow(shadow) => {
-                let mut shadow = *shadow;
-                shadow.order = order;
-                self.scene.shadows.push(shadow);
-                ScenePrimitiveKind::Shadow
-            }
-            PrimitiveRef::Quad(quad) => {
-                let mut quad = *quad;
-                quad.order = order;
-                self.scene.quads.push(quad);
-                ScenePrimitiveKind::Quad
-            }
-            PrimitiveRef::Path(path) => {
-                let mut path = path.clone();
-                path.order = order;
-                path.id = PathId(self.scene.paths.len());
-                self.scene.paths.push(path);
-                ScenePrimitiveKind::Path
-            }
-            PrimitiveRef::Underline(underline) => {
-                let mut underline = *underline;
-                underline.order = order;
-                self.scene.underlines.push(underline);
-                ScenePrimitiveKind::Underline
-            }
-            PrimitiveRef::MonochromeSprite(sprite) => {
-                let mut sprite = *sprite;
-                sprite.order = order;
-                self.scene.monochrome_sprites.push(sprite);
-                ScenePrimitiveKind::MonochromeSprite
-            }
-            PrimitiveRef::PolychromeSprite(sprite) => {
-                let mut sprite = *sprite;
-                sprite.order = order;
-                self.scene.polychrome_sprites.push(sprite);
-                ScenePrimitiveKind::PolychromeSprite
-            }
-            PrimitiveRef::Surface(surface) => {
-                let mut surface = surface.clone();
-                surface.order = order;
-                self.scene.surfaces.push(surface);
-                ScenePrimitiveKind::Surface
-            }
-            PrimitiveRef::BackdropBlur(blur) => {
-                let mut blur = blur.clone();
-                blur.order = order;
-                self.scene.backdrop_blurs.push(blur);
-                ScenePrimitiveKind::BackdropBlur
-            }
-            PrimitiveRef::Blur(blur) => {
-                let mut blur = blur.clone();
-                blur.order = order;
-                self.scene.blurs.push(blur);
-                ScenePrimitiveKind::Blur
-            }
-            PrimitiveRef::RendererExtension(extension) => {
-                let mut extension = extension.clone();
-                extension.order = order;
-                self.scene.renderer_extensions.push(extension);
-                ScenePrimitiveKind::RendererExtension
-            }
-        }
+        self.push_ordered_primitive(primitive.to_primitive(), order, true);
     }
 
     /// Replays Paint operations and reports whether their draw-order mapping was preserved.
@@ -401,6 +323,7 @@ impl Painter {
         if count == 0 {
             return None;
         }
+        self.flush_draw_payloads();
         let range = start..start + count;
         let primitives = || operations.range(0..count).iter().map(|operation| match operation {
             PaintOperationRef::Primitive(primitive) => primitive,
@@ -429,7 +352,7 @@ impl Painter {
                 if !run.share_quad_run(&mut self.scene.quads) {
                     for op in run.iter() {
                         let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
-                        self.push_replayed_primitive(primitive, primitive.order());
+                        self.push_ordered_primitive(primitive.to_primitive(), primitive.order(), false);
                     }
                 }
                 cursor = end;
@@ -458,14 +381,14 @@ impl Painter {
                 if !run.share_mono_run(&mut self.scene.monochrome_sprites) {
                     for op in run.iter() {
                         let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
-                        self.push_replayed_primitive(primitive, primitive.order());
+                        self.push_ordered_primitive(primitive.to_primitive(), primitive.order(), false);
                     }
                 }
                 cursor = end;
                 continue;
             }
             let PaintOperationRef::Primitive(primitive) = operations.get(cursor).expect("qualified operation") else { unreachable!() };
-            self.push_replayed_primitive(primitive, primitive.order());
+            self.push_ordered_primitive(primitive.to_primitive(), primitive.order(), false);
             cursor += 1;
         }
         self.scene.paint_operations.share(&previous.paint_operations, range.clone());
@@ -525,6 +448,7 @@ impl Painter {
         if new_order != order {
             self.retained_prefix_invalid = true;
         }
+        self.flush_draw_payloads();
         let start = self.scene.len();
         self.push_ordered_primitive(primitive, new_order, false);
         self.scene.paint_operations.share(&previous.paint_operations, group.range.clone());
@@ -586,6 +510,7 @@ impl Painter {
                 if quad.animation_id.is_none()
                     && self.layer_stack.last().is_none_or(|order| *order == quad.order)
         )));
+        self.flush_draw_payloads();
         self.scene
             .paint_operations
             .share(&previous.paint_operations, span.paint_range.clone());
@@ -680,6 +605,7 @@ impl Painter {
                 }),
             );
         }
+        self.flush_draw_payloads();
         self.scene.paint_operations.share(&previous.paint_operations, paint_range.clone());
         self.scene.shadows.share(&previous.shadows, typed);
         self.scene.replayed_primitives += paint_range.len();

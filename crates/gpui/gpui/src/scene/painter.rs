@@ -29,6 +29,12 @@ pub(crate) struct Painter {
     recent_peak_primitives: usize,
     blur_captures: Vec<BlurCaptureState>,
     scroll_capture: Option<Operations>,
+    // Window Frame construction exposes logical operations immediately,
+    // but only exposes sorted draw payload at finish. Standalone painters
+    // preserve the older immediate draw-read contract.
+    frame_builder: bool,
+    draw_payload_pending: bool,
+    draw_permutation: super::primitive_stream::DrawPermutation,
 }
 struct BlurCaptureState {
     config: BlurCapture,
@@ -47,19 +53,6 @@ impl std::ops::DerefMut for Painter {
         &mut self.scene
     }
 }
-#[derive(Clone, Copy)]
-enum ScenePrimitiveKind {
-    Shadow,
-    Quad,
-    Path,
-    Underline,
-    MonochromeSprite,
-    PolychromeSprite,
-    Surface,
-    BackdropBlur,
-    Blur,
-    RendererExtension,
-}
 
 const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
 const SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER: usize = 2;
@@ -67,6 +60,26 @@ const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
 const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 impl Painter {
+    pub(crate) fn for_frame() -> Self {
+        Self { frame_builder: true, ..Self::default() }
+    }
+
+    /// Freeze a new drawable operation page before appending retained
+    /// ranges or entering a record-only capture. Nothing is visited when
+    /// the current frame has no new typed draw payload.
+    fn flush_draw_payloads(&mut self) {
+        if !self.draw_payload_pending { return; }
+        self.scene.paint_operations.publish_draw_payloads(
+            &mut self.scene.shadows,
+            &mut self.scene.quads,
+            &mut self.scene.monochrome_sprites,
+            &mut self.draw_permutation,
+            true,
+        );
+        self.scene.paint_operations.finish();
+        self.draw_payload_pending = false;
+    }
+
     pub(crate) fn begin_scroll_capture(&mut self) {
         debug_assert!(self.scroll_capture.is_none() && self.blur_captures.is_empty());
         self.scroll_capture = Some(Operations::default());
@@ -213,6 +226,7 @@ impl Painter {
         config: BlurCapture,
         previous_content: Option<std::sync::Arc<Scene>>,
     ) {
+        self.flush_draw_payloads();
         self.scene.revision = 0;
         let operation_start = self.scene.paint_operations.len();
         self.scene
@@ -341,6 +355,11 @@ impl Painter {
         }
         self.scene.capture_groups.push(group);
         self.scene.paint_operations.push(PaintOperation::EndBlur);
+        // Root capture mirrors are logical replay data, not root draws.
+        // Close their page before ordinary root primitives can append.
+        if self.frame_builder && self.blur_captures.is_empty() {
+            self.scene.paint_operations.finish();
+        }
     }
 
     pub(crate) fn allocate_animation_id(&mut self) -> SceneAnimationId {
@@ -405,6 +424,14 @@ impl Painter {
         order: DrawOrder,
         record_operation: bool,
     ) {
+        if self.frame_builder && record_operation
+            && matches!(&primitive, Primitive::Shadow(_) | Primitive::Quad(_) | Primitive::MonochromeSprite(_))
+        {
+            primitive.set_order(order);
+            self.scene.paint_operations.push(PaintOperation::Primitive(primitive));
+            self.draw_payload_pending = true;
+            return;
+        }
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
@@ -456,10 +483,12 @@ impl Painter {
     }
     /// Move the completed payload into its immutable publication without cloning it.
     pub(crate) fn take_scene(&mut self) -> Scene {
+        self.flush_draw_payloads();
         std::mem::take(&mut self.scene)
     }
     /// Consume this builder when finishing a nested capture or a synthetic drawing.
-    pub(crate) fn into_scene(self) -> Scene {
+    pub(crate) fn into_scene(mut self) -> Scene {
+        self.flush_draw_payloads();
         self.scene
     }
 }

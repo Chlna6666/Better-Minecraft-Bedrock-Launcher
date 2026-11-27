@@ -110,3 +110,118 @@ fn permute<T: Copy>(items: &mut [T], keys: &mut [(u32, usize)]) {
         }
     }
 }
+
+
+/// One narrow permutation workspace for all operation-owned draw kinds.
+/// Unlike a gathered typed scratch vector, this keeps no second copy of
+/// the large GPU ABI payload across frames.
+#[derive(Default)]
+pub(crate) struct DrawPermutation {
+    order: Vec<u32>,
+    inverse: Vec<u32>,
+    counts: Vec<u32>,
+    keys: Vec<u64>,
+    wide_keys: Vec<u128>,
+}
+
+impl DrawPermutation {
+    /// Stable destination-to-source permutation. Dense DrawOrder domains
+    /// are counted relative to their minimum, even when absolute orders
+    /// are large. Sparse domains sort packed keys instead of random payload
+    /// accesses. The already sorted case does not touch scratch at all.
+    pub(crate) fn apply<T: Ordered>(
+        &mut self, values: &mut [T], remap: impl FnOnce(&[u32]),
+    ) {
+        if values.len() < 2 || values.is_sorted_by_key(T::sort_key) {
+            return;
+        }
+        debug_assert!(values.len() <= 1 << 28);
+        let len = values.len();
+        self.order.clear();
+        if T::ORDER_ONLY {
+            let (min, max) = values.iter().fold((u32::MAX, 0), |(min, max), value| {
+                let order = value.order();
+                (min.min(order), max.max(order))
+            });
+            let span = (max - min) as usize;
+            if span < len.saturating_mul(2) {
+                self.counts.clear();
+                self.counts.resize(span + 1, 0);
+                for value in values.iter() {
+                    self.counts[(value.order() - min) as usize] += 1;
+                }
+                let mut offset = 0;
+                for count in &mut self.counts {
+                    let next = offset + *count;
+                    *count = offset;
+                    offset = next;
+                }
+                self.order.resize(len, 0);
+                for (slot, value) in values.iter().enumerate() {
+                    let next = &mut self.counts[(value.order() - min) as usize];
+                    self.order[*next as usize] = slot as u32;
+                    *next += 1;
+                }
+            } else {
+                self.keys.clear();
+                self.keys.extend(values.iter().enumerate().map(|(slot, value)| {
+                    (u64::from(value.order()) << 32) | slot as u64
+                }));
+                self.keys.sort_unstable();
+                self.order.extend(self.keys.iter().map(|&key| key as u32));
+            }
+        } else {
+            self.wide_keys.clear();
+            self.wide_keys.extend(values.iter().enumerate().map(|(slot, value)| {
+                value.packed_sort_key(slot as u32)
+            }));
+            self.wide_keys.sort_unstable();
+            self.order.extend(self.wide_keys.iter().map(|&key| key as u32 & ((1 << 28) - 1)));
+        }
+
+        self.inverse.resize(len, 0);
+        for (new, &old) in self.order.iter().enumerate() {
+            self.inverse[old as usize] = new as u32;
+        }
+        remap(&self.inverse);
+
+        // Rotate each permutation cycle with one typed assignment per
+        // displaced slot instead of swapping two large primitives per step.
+        for start in 0..len {
+            if self.order[start] as usize == start { continue; }
+            let displaced = values[start];
+            let mut target = start;
+            loop {
+                let source = self.order[target] as usize;
+                self.order[target] = target as u32;
+                if source == start {
+                    values[target] = displaced;
+                    break;
+                }
+                values[target] = values[source];
+                target = source;
+            }
+        }
+        self.order.clear();
+        self.inverse.clear();
+        self.counts.clear();
+        self.keys.clear();
+        self.wide_keys.clear();
+    }
+
+    /// Trim only after the existing idle/high-water policy qualifies it.
+    pub(crate) fn trim(&mut self, floor: usize) {
+        macro_rules! trim {
+            ($field:ident, $target:expr) => {
+                if self.$field.capacity() > ($target).saturating_mul(2) {
+                    self.$field.shrink_to($target);
+                }
+            };
+        }
+        trim!(order, floor);
+        trim!(inverse, floor);
+        trim!(counts, floor.saturating_mul(2));
+        trim!(keys, floor);
+        trim!(wide_keys, floor);
+    }
+}
