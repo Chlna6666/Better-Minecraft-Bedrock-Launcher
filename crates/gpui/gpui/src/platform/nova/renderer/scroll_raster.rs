@@ -659,14 +659,36 @@ impl<K> Default for StableSlots<K> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash> StableSlots<K> {
-    fn reconcile(&mut self, keys: impl IntoIterator<Item = K>) -> Result<Vec<u32>> {
+    fn reconcile(&mut self, keys: impl IntoIterator<Item = K>) -> Result<SmallVec<[u32; 64]>> {
         let keys: SmallVec<[K; 64]> = keys.into_iter().collect();
+        anyhow::ensure!(keys.len() <= MAX_TILES, "invalid scroll composite identities");
+
+        // A pure translation or reorder keeps the same physical identities.
+        // Resolve directly into inline storage; the physical slot mask also
+        // proves uniqueness, without rebuilding a hash set on every frame.
+        let mut ordered = SmallVec::<[u32; 64]>::new();
+        let mut occupied = 0u64;
+        for key in &keys {
+            let Some(&slot) = self.slots.get(key) else { break; };
+            let bit = 1u64 << slot;
+            anyhow::ensure!(occupied & bit == 0, "invalid scroll composite identities");
+            occupied |= bit;
+            ordered.push(slot);
+        }
+        if ordered.len() == keys.len() {
+            if self.slots.len() != keys.len() {
+                self.slots.retain(|_, slot| occupied & (1u64 << *slot) != 0);
+            }
+            return Ok(ordered);
+        }
+
+        // New identities need a complete membership proof before mutating
+        // the stable map. An invalid request must leave all slots untouched.
         let live: FxHashSet<_> = keys.iter().copied().collect();
-        anyhow::ensure!(live.len() == keys.len() && live.len() <= MAX_TILES,
-            "invalid scroll composite identities");
+        anyhow::ensure!(live.len() == keys.len(), "invalid scroll composite identities");
         self.slots.retain(|key, _| live.contains(key));
-        let mut occupied = self.slots.values().fold(0u64, |mask, &slot| mask | (1u64 << slot));
-        let mut ordered = Vec::with_capacity(keys.len());
+        occupied = self.slots.values().fold(0u64, |mask, &slot| mask | (1u64 << slot));
+        ordered.clear();
         for key in keys {
             let slot = *self.slots.entry(key).or_insert_with(|| {
                 let slot = (!occupied).trailing_zeros();
@@ -1711,12 +1733,20 @@ mod tests {
     #[test]
     fn stable_slots_preserve_survivors_on_insertion_reorder_and_removal() {
         let mut slots = StableSlots::<u64>::default();
-        assert_eq!(slots.reconcile([10, 20, 30]).unwrap(), [0, 1, 2]);
-        assert_eq!(slots.reconcile([40, 30, 10, 20]).unwrap(), [3, 2, 0, 1]);
-        assert_eq!(slots.reconcile([40, 20, 50, 10]).unwrap(), [3, 1, 2, 0]);
+        assert_eq!(slots.reconcile([10, 20, 30]).unwrap().as_slice(), &[0, 1, 2]);
+        assert_eq!(slots.reconcile([40, 30, 10, 20]).unwrap().as_slice(), &[3, 2, 0, 1]);
+        assert_eq!(slots.reconcile([40, 20, 50, 10]).unwrap().as_slice(), &[3, 1, 2, 0]);
         assert!(slots.reconcile([10, 10]).is_err());
+        assert!(slots.reconcile([60, 60]).is_err());
+        let reordered = slots.reconcile([10, 50, 20, 40]).unwrap();
+        assert_eq!(reordered.as_slice(), &[0, 2, 1, 3]);
+        assert!(!reordered.spilled(), "stable hit must stay in inline storage");
+        assert_eq!(slots.reconcile([40, 10]).unwrap().as_slice(), &[3, 0]);
+        assert_eq!(slots.reconcile([40, 70, 10]).unwrap().as_slice(), &[3, 1, 0]);
+        assert!(slots.reconcile([]).unwrap().is_empty());
+        assert_eq!(slots.reconcile([80]).unwrap().as_slice(), &[0]);
         let mut full = StableSlots::<u64>::default();
-        assert_eq!(full.reconcile(0..64).unwrap(), (0..64u32).collect::<Vec<_>>());
+        assert_eq!(full.reconcile(0..64).unwrap().as_slice(), (0..64u32).collect::<Vec<_>>().as_slice());
         assert_eq!(full.reconcile((1..64).chain([64])).unwrap()[63], 0);
         assert!(full.reconcile(0..65).is_err());
     }
