@@ -93,6 +93,25 @@ fn compaction_counts_all_views_and_releases_sparse_old_pages() {
 }
 
 #[test]
+fn repeated_sparse_views_compact_the_unique_payload_only_once() {
+    let source = operations(1024);
+    let mut target = Operations::default();
+    for _ in 0..128 {
+        target.share(&source, 20..24);
+        target.share(&source, 22..26);
+        target.share(&source, 800..802);
+    }
+    target.compact();
+    assert_eq!(target.len(), 128 * 10);
+    assert_eq!(target.segments[0].owner.len(), 8);
+    assert!(target.segments.iter().all(|segment| Arc::ptr_eq(&segment.owner, &target.segments[0].owner)));
+    assert!(std::ptr::eq(&target[2], &target[4]));
+    assert!(std::ptr::eq(&target[0], &target[10]));
+    drop(source);
+    assert!(target.iter().all(|op| matches!(op, PaintOperation::Primitive(_))));
+}
+
+#[test]
 fn edits_and_ranges_follow_logical_order_across_shared_and_pending_runs() {
     let source = operations(10);
     let mut current = Operations::default();

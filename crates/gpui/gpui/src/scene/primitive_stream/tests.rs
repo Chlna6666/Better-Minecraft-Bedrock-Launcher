@@ -166,6 +166,27 @@ fn new_paint_stays_owned_and_sparse_ranges_release_unrelated_page() {
     );
 }
 
+#[test]
+fn repeated_typed_views_do_not_pin_their_original_page() {
+    let mut source = PrimitiveStream::default();
+    for order in 1..=1024 {
+        source.push(quad(order));
+    }
+    source.finish();
+    let mut target = PrimitiveStream::default();
+    for _ in 0..768 {
+        target.share(&source, 399..400);
+    }
+    target.finish();
+    target.compact();
+    assert_eq!(target.len(), 768);
+    assert_eq!(target.segments[0].owner.len(), 1);
+    assert!(target.segments.iter().all(|segment| Arc::ptr_eq(&segment.owner, &target.segments[0].owner)));
+    assert!(std::ptr::eq(&target[0], &target[767]));
+    drop(source);
+    assert!(target.iter().all(|quad| quad.order == 400));
+}
+
 fn retained() -> PaintFixture {
     let mut paint = PaintFixture::default();
     for _ in 0..32 {

@@ -273,20 +273,17 @@ impl<T: Ordered> PrimitiveStream<T> {
         // Merging interleaved orders can split one allocation into many views.
         // Judge sparsity across all live views, otherwise every small view would
         // copy a fully retained payload again on every UI commit.
-        let mut referenced = collections::FxHashMap::<_, usize>::default();
-        for segment in &self.segments {
-            *referenced.entry(Arc::as_ptr(&segment.owner)).or_default() += segment.range.len();
+        let compacted = super::page_compaction::compact_sparse_pages(
+            self.segments.iter().map(|segment| (&segment.owner, &segment.range)),
+        );
+        if compacted.is_empty() {
+            return;
         }
-        let segments = std::mem::take(&mut self.segments);
-        self.len = 0;
-        for segment in segments {
-            let sparse = referenced[&Arc::as_ptr(&segment.owner)] < segment.owner.len() / 2;
-            if sparse {
-                let payload = segment.slice().to_vec();
-                let count = payload.len();
-                self.append(Arc::new(payload), 0..count);
-            } else {
-                self.append(segment.owner, segment.range);
+        // Logical offsets and existing descriptor capacity stay intact.
+        for segment in &mut self.segments {
+            if let Some(page) = compacted.get(&Arc::as_ptr(&segment.owner)) {
+                segment.range = page.remap(segment.range.clone());
+                segment.owner = Arc::clone(&page.owner);
             }
         }
     }
