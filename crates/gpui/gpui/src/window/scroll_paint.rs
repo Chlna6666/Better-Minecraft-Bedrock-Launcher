@@ -722,6 +722,40 @@ mod tests {
     }
 
     #[test]
+    fn native_publication_reuses_content_by_identity_after_row_reorder() {
+        let viewport = ContentMask::new(Bounds::new(Point::default(), size(px(40.), px(64.))));
+        let mask = viewport.scale(1.);
+        let make_source = || {
+            let mut operations = Operations::default();
+            operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                bounds: mask.bounds, content_mask: mask, ..Default::default()
+            })));
+            Arc::new(ScrollPaint::new(Point::default(), mask.bounds, operations))
+                .native_placement(viewport, 1., Point::default()).unwrap()
+        };
+        let a = make_source();
+        let b = make_source();
+        let publish = |placements: &[ScrollPlacement]| {
+            let mut painter = Painter::default();
+            for placement in placements {
+                assert!(painter.push_deferred_scroll(placement.clone()));
+            }
+            painter.finish();
+            painter.into_scene()
+        };
+        let old = crate::window::SceneLayers::capture(&publish(&[a.clone(), b.clone()]), None, true);
+        let stable = crate::window::SceneLayers::capture(&publish(&[a.clone(), b.clone()]), Some(&old), true);
+        let reordered = crate::window::SceneLayers::capture(&publish(&[b.clone(), a]), Some(&old), true);
+        let removed = crate::window::SceneLayers::capture(&publish(&[b]), Some(&old), true);
+        assert_eq!(old.frames.len(), 2);
+        assert!(Arc::ptr_eq(&stable.frames[0].content, &old.frames[0].content));
+        assert!(Arc::ptr_eq(&stable.frames[1].content, &old.frames[1].content));
+        assert!(Arc::ptr_eq(&reordered.frames[0].content, &old.frames[1].content));
+        assert!(Arc::ptr_eq(&reordered.frames[1].content, &old.frames[0].content));
+        assert!(Arc::ptr_eq(&removed.frames[0].content, &old.frames[1].content));
+    }
+
+    #[test]
     fn native_deferred_scroll_is_one_operation_and_rebuilds_ordinary_paint() {
         let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);

@@ -584,9 +584,12 @@ impl SceneLayers {
         // dynamic root can still own immutable, reusable scroll textures.
         let ordered = ordered_static_root(scene);
         let mut seen = FxHashSet::default();
-        let old: FxHashMap<_, _> = previous.into_iter().flat_map(|layers| &layers.frames)
-            .map(|layer| (layer.source_id, layer)).collect();
-        let mut frames = Vec::new();
+        let old = previous.map_or(&[][..], |layers| layers.frames.as_slice());
+        // The common scroll publication preserves row order. Match that
+        // prefix directly; build an identity index only at the first
+        // insertion, removal or reorder that actually needs one.
+        let mut old_by_id: Option<FxHashMap<u64, &LayerFrame>> = None;
+        let mut frames = Vec::with_capacity(old.len());
         for index in scene.paint_operations.deferred_scroll_indices() {
             let Some(PaintOperation::DeferredScroll(placement)) = scene.paint_operations.get(index) else {
                 return Self::default();
@@ -607,7 +610,16 @@ impl SceneLayers {
                 geometry.source_origin[1] + delta.y.0 as i32];
             // Native source origins are relative to the first capture of
             // this identity; tile keys remain in stable content space.
-            let previous = old.get(&geometry.id).copied();
+            let previous = if let Some(layer) = old.get(frames.len())
+                && layer.source_id == geometry.id
+            {
+                Some(layer)
+            } else if old.is_empty() {
+                None
+            } else {
+                old_by_id.get_or_insert_with(|| old.iter().map(|layer| (layer.source_id, layer)).collect())
+                    .get(&geometry.id).copied()
+            };
             let same_background = previous.filter(|layer| layer.background == background);
             let id = if needs_background {
                 same_background.map_or_else(next_layer_id, |layer| layer.id)
