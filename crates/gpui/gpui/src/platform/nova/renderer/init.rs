@@ -136,11 +136,15 @@ impl NovaRenderer {
             ))]
             RendererBackend::NovaOpenGl => {
                 let device_started_at = Instant::now();
-                let backend = shared_opengl_device(
-                    renderer_options,
-                    window.display_handle()?.as_raw(),
-                    window.window_handle()?.as_raw(),
-                )?;
+                // HandleError may come from a raw-window-handle build
+                // without std. Translate at the native renderer boundary.
+                let display = window.display_handle()
+                    .map_err(|error| anyhow::anyhow!("getting OpenGL display handle: {error:?}"))?
+                    .as_raw();
+                let window_handle = window.window_handle()
+                    .map_err(|error| anyhow::anyhow!("getting OpenGL window handle: {error:?}"))?
+                    .as_raw();
+                let backend = shared_opengl_device(renderer_options, display, window_handle)?;
                 let mut backend_guard = lock_backend(&backend);
                 let device = match &mut *backend_guard {
                     NovaBackend::OpenGl(device) => device,
@@ -165,7 +169,7 @@ impl NovaRenderer {
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                        native_display: Some(window.display_handle()?.as_raw()),
+                        native_display: Some(display),
                     },
                     surface_config.format,
                     || {
