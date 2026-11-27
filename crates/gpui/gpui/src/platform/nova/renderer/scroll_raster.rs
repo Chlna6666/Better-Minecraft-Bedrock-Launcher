@@ -642,9 +642,25 @@ impl CompositeSlot {
     }
 }
 
+// Consecutive instances on the same page share the native binding. Never
+// merge across ordinary root or extension commands, and never reorder.
+fn append_composite_tile(commands: &mut Vec<RenderCommand>, previous_tile: bool,
+    pipeline: RenderPipelineId, group: BindGroupId, instance: u32) {
+    if previous_tile && let Some(RenderCommand::Draw(previous)) = commands.last_mut()
+        && previous.pipeline == pipeline && previous.bind_groups.as_slice() == [group]
+        && previous.first_instance + previous.instance_count == instance
+    {
+        previous.instance_count += 1;
+        return;
+    }
+    commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
+        vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: instance, scissor: None }));
+}
+
 struct RasterPass {
     write: RasterTileWrite,
-    raster: RasterTile,
+    target_extent: Extent2d,
+    clear_region: Option<gfx_core::ScissorRect>,
     depth: TextureViewId,
     commands: Vec<RenderCommand>,
 }
@@ -963,21 +979,44 @@ impl NovaRenderer {
                             origin: SignedOrigin2d { x: request.source_origin[0], y: request.source_origin[1] },
                             extent: request.raster.extent,
                         };
-                        let globals = pack_global_params(DrawableSize { width: raster.extent.width(), height: raster.extent.height() },
-                            true, [raster.origin.x as f32, raster.origin.y as f32]);
-                        let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
-                        let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[], None)?;
-                        let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
-                            let target = create_depth_target(device, "scroll raster", raster.extent)?;
-                            resources.depths.push(target);
-                            depth_views.push((raster.extent, target.1));
-                            target.1
+                        let write = if device.exact_offscreen_region_clear_supported() {
+                            self.raster_tiles.prepare_paged(device, request.key, layer.generation, request.raster, format)?
+                        } else {
+                            self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)?
                         };
-                        let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
-                            return Ok(false);
-                        };
-                        passes.push(RasterPass { write, raster, depth, commands });
+                        let Some(write) = write else { return Ok(false); };
+                        let target_extent = write.target_extent();
+                        let region = write.region();
+                        let clear_region = (target_extent != raster.extent).then_some(region);
+                        // Map original capture coordinates into the page's
+                        // physical pixels. Full-page viewport keeps vertex
+                        // and fragment origin arithmetic in the same space.
+                        let prepared = (|| -> Result<_> {
+                            let globals = pack_global_params(DrawableSize { width: target_extent.width(), height: target_extent.height() },
+                                true, [raster.origin.x as f32 - region.x as f32, raster.origin.y as f32 - region.y as f32]);
+                            let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
+                            let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
+                            let mut commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[], None)?;
+                            if let Some(region) = clear_region {
+                                for command in &mut commands {
+                                    let RenderCommand::Draw(draw) = command else {
+                                        anyhow::bail!("non-raster command in a shared scroll page");
+                                    };
+                                    draw.scissor = Some(region);
+                                }
+                            }
+                            let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == target_extent) { *view } else {
+                                let target = create_depth_target(device, "scroll raster", target_extent)?;
+                                resources.depths.push(target);
+                                depth_views.push((target_extent, target.1));
+                                target.1
+                            };
+                            Ok((depth, commands))
+                        })();
+                        match prepared {
+                            Ok((depth, commands)) => passes.push(RasterPass { write, target_extent, clear_region, depth, commands }),
+                            Err(error) => { self.raster_tiles.cancel_write(write)?; return Err(error); }
+                        }
                     }
                 }
                 Ok(true)
@@ -990,10 +1029,10 @@ impl NovaRenderer {
             let views: Vec<_> = passes.iter().map(|pass| pass.write.texture().view).collect();
             let descriptors: Vec<_> = passes.iter().zip(&views).map(|(pass, view)| RenderPassCommands {
                 color_attachments: std::slice::from_ref(view), render_pass: self.render_pass,
-                commands: &pass.commands, color_load_op: LoadOp::Clear(clear_color()), clear_region: None,
+                commands: &pass.commands, color_load_op: LoadOp::Clear(clear_color()), clear_region: pass.clear_region,
                 depth_attachment: Some(DepthAttachment { target: pass.depth,
                     depth_load_op: LoadOp::Clear(1.), stencil_load_op: None }),
-                viewport: Some(pass.raster.viewport()), resolve_target: None,
+                viewport: Some(RasterTile { origin: SignedOrigin2d::ZERO, extent: pass.target_extent }.viewport()), resolve_target: None,
             }).collect();
             let tags = vec![None; descriptors.len()];
             let submitted = device.render_to_textures_on_queue(&descriptors, &tags, OffscreenQueuePreference::OrderedGraphics);
@@ -1033,15 +1072,16 @@ impl NovaRenderer {
         let prepare = (|| -> Result<Vec<RenderCommand>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
             let mut bytes = Vec::with_capacity(requests.len() * PACKED_POLY_SPRITE_BYTES);
-            for (layer, request) in &requests {
+            for ((layer, request), read) in requests.iter().zip(&reads) {
                 let (viewport, _) = layer.root_static_raster().context("missing scroll viewport")?;
+                let region = read.region();
                 write_polychrome_sprite(&mut bytes, &PolychromeSprite {
                     order: 0, bounds: request.bounds, content_mask: ContentMask::new(viewport),
                     corner_radii: Default::default(), grayscale: false, opacity: 1., sampling: 2, animation_id: None,
                     tile: AtlasTile { texture_id: AtlasTextureId { index: u32::MAX, kind: AtlasTextureKind::Bgra },
                         tile_id: crate::TileId(u32::MAX), padding: 0,
-                        bounds: crate::bounds(crate::point(DevicePixels(0), DevicePixels(0)),
-                            crate::size(DevicePixels(request.raster.extent.width() as i32), DevicePixels(request.raster.extent.height() as i32))) },
+                        bounds: crate::bounds(crate::point(DevicePixels(region.x as i32), DevicePixels(region.y as i32)),
+                            crate::size(DevicePixels(region.width as i32), DevicePixels(region.height as i32))) },
                 });
             }
             let premultiplied = self.surface_alpha.outputs_premultiplied_alpha();
@@ -1080,7 +1120,9 @@ impl NovaRenderer {
             let mut root = root_commands.into_iter();
             let mut root_offset = 0;
             let mut tile_offset = 0;
+            let mut previous_tile = false;
             for (plan, &boundary) in plans.iter().zip(&boundaries) {
+                if boundary != root_offset { previous_tile = false; }
                 commands.extend(root.by_ref().take(boundary - root_offset));
                 root_offset = boundary;
                 let end = tile_offset + plan.requests.len();
@@ -1090,8 +1132,8 @@ impl NovaRenderer {
                         layout: self.poly_sprite_bind_group_layout,
                         entries: poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler),
                     })?;
-                    commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
-                        vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: (tile_offset + index) as u32, scissor: None }));
+                    append_composite_tile(&mut commands, previous_tile, pipeline, group, (tile_offset + index) as u32);
+                    previous_tile = true;
                 }
                 tile_offset = end;
             }
@@ -1300,6 +1342,23 @@ mod tests {
         assert_eq!(row.bounds.bottom(), ScaledPixels(26.));
         assert_eq!(layer.root_static_raster().unwrap().0, viewport.scale(1.).bounds);
         assert_eq!(layer.adopt_tile(1, [6, 22, 110, 58], 1.), Some(1));
+    }
+
+    #[test]
+    fn composite_batches_only_adjacent_instances_with_the_same_page_binding() {
+        let pipeline = RenderPipelineId::from_parts(1, 1);
+        let a = BindGroupId::from_parts(1, 1);
+        let b = BindGroupId::from_parts(2, 1);
+        let mut commands = Vec::new();
+        append_composite_tile(&mut commands, false, pipeline, a, 0);
+        append_composite_tile(&mut commands, true, pipeline, a, 1);
+        append_composite_tile(&mut commands, true, pipeline, b, 2);
+        append_composite_tile(&mut commands, false, pipeline, b, 3);
+        append_composite_tile(&mut commands, true, pipeline, b, 5);
+        assert_eq!(commands.iter().map(|command| match command {
+            RenderCommand::Draw(draw) => (draw.first_instance, draw.instance_count),
+            _ => unreachable!(),
+        }).collect::<Vec<_>>(), vec![(0, 2), (2, 1), (3, 1), (5, 1)]);
     }
 
     #[test]

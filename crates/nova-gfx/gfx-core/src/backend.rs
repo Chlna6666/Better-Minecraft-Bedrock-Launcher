@@ -1183,6 +1183,11 @@ pub enum PresentationFeedback {
 /// These are the normalized frame APIs. Backend-specific acquire/present
 /// synchronization stays inside each backend crate.
 pub trait PresentationDevice {
+    /// True when a nonempty attachment clear rectangle and every draw's
+    /// contained scissor guarantee preservation of all pixels outside it.
+    /// Shared physical raster pages require this stronger contract.
+    fn exact_offscreen_region_clear_supported(&self) -> bool { false }
+
     /// Returns the latest native presentation statistics, if supported and available.
     /// Must not wait for presentation completion; unavailable/disjoint samples return None.
     fn presentation_feedback(&self, _swapchain: SwapchainId) -> Option<PresentationFeedback> {

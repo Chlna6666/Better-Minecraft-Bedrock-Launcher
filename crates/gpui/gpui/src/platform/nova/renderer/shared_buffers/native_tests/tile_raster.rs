@@ -564,23 +564,41 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, binding, "resident hit reuses the native bind group");
         }
         composite_binding = Some(binding);
-        let texture = renderer.raster_tiles.lookup(key, 1, tile, Format::Bgra8Unorm)
-            .expect("published native scroll texture");
-        let second = renderer.raster_tiles.lookup(second_key, 1, tile, Format::Bgra8Unorm)
+        let texture = read.texture();
+        let second_read = renderer.raster_tiles.lookup_ordered(second_key, 1, tile, Format::Bgra8Unorm, |_| false)
             .expect("second native scroll texture");
-        assert_ne!(texture, second);
+        let second = second_read.texture();
+        let paged = device!(renderer, device, { device.exact_offscreen_region_clear_supported() });
+        if paged {
+            assert_eq!(texture, second, "equal size classes share a physical page");
+            assert_ne!(read.region(), second_read.region());
+            let other_binding = device!(renderer, device, {
+                renderer.raster_tiles.sampling_binding(device, second_read, 0, || panic!("shared page descriptor")).unwrap()
+            });
+            assert_eq!(binding, other_binding);
+        } else {
+            assert_ne!(texture, second);
+        }
         if let Some(previous) = second_physical {
             assert_eq!(previous, second, "second layer must retain its physical texture");
         }
         second_physical = Some(second);
-        super::pixels(&renderer, second.texture, [255, 0, 0, 255]);
-        assert_eq!(renderer.raster_tiles.bytes(), 2 * 64 * 64 * 4);
+        let assert_cell = |lease: gfx_core::RasterTileRead, expected: [u8; 4]| {
+            let region = lease.region();
+            device!(renderer, device, {
+                let pixels = device.read_texture(lease.texture().texture).expect("physical page pixels");
+                let offset = (region.y + region.height / 2) as usize * pixels.bytes_per_row as usize
+                    + (region.x + region.width / 2) as usize * 4;
+                assert_eq!(&pixels.bytes[offset..offset + 4], &expected);
+            });
+        };
+        assert_cell(second_read, [255, 0, 0, 255]);
+        assert_eq!(renderer.raster_tiles.bytes(), (if paged { 4 } else { 2 }) * 64 * 64 * 4);
         if let Some(previous) = physical {
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
         physical = Some(texture);
-        super::pixels(&renderer, texture.texture,
-            if with_glyph { [255, 255, 255, 255] } else { [0, 255, 0, 255] });
+        assert_cell(read, if with_glyph { [255, 255, 255, 255] } else { [0, 255, 0, 255] });
     }
     if with_extension {
         use std::sync::atomic::Ordering;

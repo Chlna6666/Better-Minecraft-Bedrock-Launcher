@@ -6538,6 +6538,8 @@ mod platform {
     }
 
     impl PresentationDevice for Dx12Device {
+        fn exact_offscreen_region_clear_supported(&self) -> bool { true }
+
         fn presentation_feedback(&self, swapchain: SwapchainId) -> Option<gfx_core::PresentationFeedback> {
             let chain = self.swapchains.get(swapchain).ok()?;
             let mut stats = windows::Win32::Graphics::Dxgi::DXGI_FRAME_STATISTICS::default();

@@ -6087,6 +6087,10 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
+    // scoped_offscreen_clear_area proves the clear rectangle against every
+    // draw scissor and uses that exact dynamic rendering area.
+    fn exact_offscreen_region_clear_supported(&self) -> bool { true }
+
     fn presentation_feedback(&self, id: gfx_core::SwapchainId) -> Option<gfx_core::PresentationFeedback> {
         let chain = self.swapchains.get(id).ok()?;
         let loader = self.display_timing.as_ref()?;
