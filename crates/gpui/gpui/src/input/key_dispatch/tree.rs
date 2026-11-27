@@ -31,6 +31,11 @@ pub(crate) struct DispatchTree {
     route_nodes: Vec<u32>,
     pub(super) focusable_node_ids: FxHashMap<FocusId, DispatchNodeId>,
     pub(super) view_node_ids: FxHashMap<EntityId, DispatchNodeId>,
+    // The normal unique-route case can undo a suffix without rebuilding
+    // either map. Collisions (including deferred registrations) retain the
+    // original logical-order restoration semantics.
+    focus_routes_may_shadow: bool,
+    view_routes_may_shadow: bool,
     pub(super) keymap: Rc<RefCell<Keymap>>,
     pub(super) action_registry: Rc<ActionRegistry>,
 }
@@ -271,6 +276,8 @@ impl DispatchTree {
             route_nodes: Vec::new(),
             focusable_node_ids: FxHashMap::default(),
             view_node_ids: FxHashMap::default(),
+            focus_routes_may_shadow: false,
+            view_routes_may_shadow: false,
             keymap,
             action_registry,
         }
@@ -285,6 +292,8 @@ impl DispatchTree {
         self.route_nodes.clear();
         self.focusable_node_ids.clear();
         self.view_node_ids.clear();
+        self.focus_routes_may_shadow = false;
+        self.view_routes_may_shadow = false;
     }
 
     pub(crate) fn retained_capacity(&self) -> usize {
@@ -417,9 +426,11 @@ impl DispatchTree {
         let node_id = *self.node_stack.last().unwrap();
         let node = self.nodes.get_mut(node_id.0);
         let new_route = node.focus_id.is_none() && node.view_id.is_none();
+        self.focus_routes_may_shadow |= node.focus_id.is_some_and(|old| old != focus_id);
         node.focus_id = Some(focus_id);
         if new_route { self.record_route_node(node_id); }
-        self.focusable_node_ids.insert(focus_id, node_id);
+        self.focus_routes_may_shadow |= self.focusable_node_ids
+            .insert(focus_id, node_id).is_some_and(|old| old != node_id);
     }
 
     pub fn set_view_id(&mut self, view_id: EntityId) {
@@ -427,9 +438,11 @@ impl DispatchTree {
             let node_id = *self.node_stack.last().unwrap();
             let node = self.nodes.get_mut(node_id.0);
             let new_route = node.focus_id.is_none() && node.view_id.is_none();
+            self.view_routes_may_shadow |= node.view_id.is_some_and(|old| old != view_id);
             node.view_id = Some(view_id);
             if new_route { self.record_route_node(node_id); }
-            self.view_node_ids.insert(view_id, node_id);
+            self.view_routes_may_shadow |= self.view_node_ids
+                .insert(view_id, node_id).is_some_and(|old| old != node_id);
             self.view_stack.push(view_id);
         }
     }
@@ -513,11 +526,13 @@ impl DispatchTree {
             let node = source.node(DispatchNodeId(old_id as usize));
             self.route_nodes.push(id.0 as u32);
             if let Some(focus_id) = node.focus_id {
-                self.focusable_node_ids.insert(focus_id, id);
+                self.focus_routes_may_shadow |= self.focusable_node_ids
+                    .insert(focus_id, id).is_some_and(|old| old != id);
                 contains_focus |= Some(focus_id) == focus;
             }
             if let Some(view_id) = node.view_id {
-                self.view_node_ids.insert(view_id, id);
+                self.view_routes_may_shadow |= self.view_node_ids
+                    .insert(view_id, id).is_some_and(|old| old != id);
             }
         }
         self.nodes.share(&source.nodes, old_range.clone());
@@ -544,23 +559,44 @@ impl DispatchTree {
         let mut restore_views = false;
         for &id in &self.route_nodes[first_removed..] {
             let node = &self.nodes[id as usize];
-            restore_focus |= node.focus_id.is_some();
-            restore_views |= node.view_id.is_some();
+            if let Some(focus) = node.focus_id {
+                if self.focus_routes_may_shadow {
+                    restore_focus = true;
+                } else {
+                    self.focusable_node_ids.remove(&focus);
+                }
+            }
+            if let Some(view) = node.view_id {
+                if self.view_routes_may_shadow {
+                    restore_views = true;
+                } else {
+                    self.view_node_ids.remove(&view);
+                }
+            }
         }
         self.route_nodes.truncate(first_removed);
         self.nodes.truncate(index);
         self.parents.truncate(index);
-        // Removed nodes may shadow earlier occurrences of the same ID.
-        if restore_focus { self.focusable_node_ids.clear(); }
-        if restore_views { self.view_node_ids.clear(); }
+
+        // Only a route kind with possible shadowed IDs needs the original
+        // logical-order rebuild. Unique routes never touch the clean prefix.
+        if restore_focus {
+            self.focusable_node_ids.clear();
+            self.focus_routes_may_shadow = false;
+        }
+        if restore_views {
+            self.view_node_ids.clear();
+            self.view_routes_may_shadow = false;
+        }
         if restore_focus || restore_views {
             for &index in &self.route_nodes {
                 let node = &self.nodes[index as usize];
+                let node_id = DispatchNodeId(index as usize);
                 if restore_focus && let Some(id) = node.focus_id {
-                    self.focusable_node_ids.insert(id, DispatchNodeId(index as usize));
+                    self.focus_routes_may_shadow |= self.focusable_node_ids.insert(id, node_id).is_some();
                 }
                 if restore_views && let Some(id) = node.view_id {
-                    self.view_node_ids.insert(id, DispatchNodeId(index as usize));
+                    self.view_routes_may_shadow |= self.view_node_ids.insert(id, node_id).is_some();
                 }
             }
         }
@@ -835,6 +871,47 @@ mod sparse_route_tests {
         target.truncate(last.0 + 1);
         assert_eq!(target.view_node_ids.get(&owner), Some(&DispatchNodeId(1)));
         assert_eq!(target.route_nodes, vec![1]);
+    }
+
+    #[test]
+    fn unique_route_suffix_removal_keeps_clean_prefix() {
+        let mut tree = DispatchTree::new(
+            Rc::new(RefCell::new(Keymap::default())), Rc::new(ActionRegistry::default()));
+        for id in 1..=1024_u64 {
+            tree.push_node();
+            tree.set_view_id(EntityId::from(id));
+            tree.pop_node();
+        }
+        assert!(!tree.view_routes_may_shadow);
+        tree.truncate(1022);
+        assert!(!tree.view_routes_may_shadow);
+        assert_eq!(tree.view_node_ids.len(), 1022);
+        assert_eq!(tree.route_nodes.len(), 1022);
+        for id in 1..=1022_u64 {
+            assert_eq!(tree.view_node_ids.get(&EntityId::from(id)), Some(&DispatchNodeId(id as usize - 1)));
+        }
+        assert!(!tree.view_node_ids.contains_key(&EntityId::from(1023_u64)));
+        tree.clear();
+        assert!(!tree.view_routes_may_shadow);
+    }
+
+    #[test]
+    fn shadowed_route_rebuild_can_return_to_unique_fast_path() {
+        let mut tree = DispatchTree::new(
+            Rc::new(RefCell::new(Keymap::default())), Rc::new(ActionRegistry::default()));
+        let owner = EntityId::from(1_u64);
+        for id in [owner, EntityId::from(2_u64), owner] {
+            tree.push_node();
+            tree.set_view_id(id);
+            tree.pop_node();
+        }
+        assert!(tree.view_routes_may_shadow);
+        tree.truncate(2);
+        assert!(!tree.view_routes_may_shadow);
+        assert_eq!(tree.view_node_ids.get(&owner), Some(&DispatchNodeId(0)));
+        tree.truncate(1);
+        assert_eq!(tree.view_node_ids.len(), 1);
+        assert_eq!(tree.view_node_ids.get(&owner), Some(&DispatchNodeId(0)));
     }
 
     #[test]

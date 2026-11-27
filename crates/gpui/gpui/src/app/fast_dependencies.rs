@@ -58,6 +58,23 @@ pub(crate) fn sort_unique<T: Ord>(items: &mut Vec<T>) {
     items.dedup();
 }
 
+// A single contiguous range frequently contains zero or one read, or is
+// already ordered. Intern it directly rather than copying into scratch
+// and sorting an unchanged sequence.
+fn intern_range<T: Ord + Copy + std::hash::Hash>(
+    interner: &mut Interned<T>,
+    scratch: &mut Vec<T>,
+    items: &[T],
+) -> Rc<[T]> {
+    if items.windows(2).all(|pair| pair[0] < pair[1]) {
+        return interner.get(items);
+    }
+    scratch.clear();
+    scratch.extend_from_slice(items);
+    sort_unique(scratch);
+    interner.get(scratch)
+}
+
 /// The union of two sorted lists without repeats, itself sorted and without
 /// repeats. When one holds all of the other, which is the usual case — a
 /// view's paint reads what its prepaint read — it is shared, not copied.
@@ -225,6 +242,27 @@ impl AppDependencies {
         let states_log = self.state_read_log.borrow();
         let no_states = self.no_states.get_or_insert_with(|| Rc::from([])).clone();
         for group in self.ranges.chunk_by(|a, b| a.owner == b.owner) {
+            if let [range] = group {
+                let states = &states_log[range.states.clone()];
+                publish(range.owner, RenderDependencies {
+                    entities: intern_range(
+                        &mut self.interned_entities,
+                        &mut self.scratch_entities,
+                        &self.entity_log[range.entities.clone()],
+                    ),
+                    globals: intern_range(
+                        &mut self.interned_globals,
+                        &mut self.scratch_globals,
+                        &self.global_log[range.globals.clone()],
+                    ),
+                    states: if states.is_empty() {
+                        no_states.clone()
+                    } else {
+                        unique_states(states)
+                    },
+                });
+                continue;
+            }
             self.scratch_entities.clear();
             self.scratch_globals.clear();
             self.scratch_states.clear();
@@ -440,6 +478,39 @@ impl Drop for StateReadRecording {
 #[cfg(test)]
 mod state_dedup_tests {
     use super::*;
+
+    #[test]
+    fn contiguous_dependency_ranges_intern_without_scratch_copy() {
+        let mut interner = Interned::default();
+        let mut scratch = vec![99_u32];
+        let ordered = intern_range(&mut interner, &mut scratch, &[1, 2, 3]);
+        assert_eq!(scratch, [99]);
+        let repeated = intern_range(&mut interner, &mut scratch, &[3, 1, 3, 2]);
+        assert_eq!(&*repeated, &[1, 2, 3]);
+        assert!(Rc::ptr_eq(&ordered, &repeated));
+        let empty = intern_range(&mut interner, &mut scratch, &[]);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn single_owner_range_publishes_first_state_version() {
+        let mut dependencies = AppDependencies::default();
+        let state = StateVersion::default();
+        let scope = dependencies.begin_state_reads();
+        let owner = EntityId::from(1_u64);
+        dependencies.entity(Some(owner), EntityId::from(3_u64));
+        dependencies.entity(Some(owner), EntityId::from(2_u64));
+        dependencies.entity(Some(owner), EntityId::from(3_u64));
+        state.read();
+        state.bump();
+        state.read();
+        drop(scope);
+        let sets = dependencies.into_sets();
+        let result = &sets[&Some(owner)];
+        assert_eq!(&*result.entities, &[EntityId::from(2_u64), EntityId::from(3_u64)]);
+        assert_eq!(result.states.len(), 1);
+        assert_eq!(result.states[0].status(), StateReadStatus::Changed);
+    }
 
     #[test]
     fn merge_keeps_first_snapshot_and_shares_duplicate_only_reads() {

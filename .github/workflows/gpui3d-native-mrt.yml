@@ -2,7 +2,8 @@ name: GPUI 3D Native MRT Verification
 
 on:
   workflow_dispatch:
-  push:
+  # Native GPU verification is opt-in on master; retain targeted PR checks.
+  pull_request:
     branches: [master]
     paths:
       - '.github/workflows/gpui3d-native-mrt.yml'

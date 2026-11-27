@@ -1,9 +1,9 @@
 name: Compile Check
 
+# Full cross-platform compilation is an explicit validation checkpoint.
+# Nightly separately builds changed master sources; do not start three
+# expensive runners for every intermediate direct-to-master commit.
 on:
-  push:
-    branches:
-      - master
   pull_request:
     branches:
       - master
@@ -342,6 +342,11 @@ jobs:
           cargo test -p gpui --lib --features x11 sidecar_target_retains_ui_projection_and_clip -- --nocapture
           cargo test -p gpui --lib --features x11 submission_acknowledgements_are_scoped_to_current_producers -- --nocapture
           cargo test -p gpui_3d --lib --features gpui/x11 initial_and_incompatible_scene_publications -- --nocapture
+
+      - name: Test GPUI retained topology and dependency regressions
+        run: |
+          cargo test -p gpui --lib --features x11 input::key_dispatch
+          cargo test -p gpui --lib --features x11 fast_dependencies
 
       - name: Test editor four-Section fusion and removal recovery
         run: cargo test -p bmcbl --lib scene_registry::tests -- --nocapture
