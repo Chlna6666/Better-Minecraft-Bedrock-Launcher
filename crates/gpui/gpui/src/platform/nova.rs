@@ -62,7 +62,9 @@ use prelude::*;
 use renderer::DrawableSize;
 #[cfg(test)]
 use renderer::backend_present_mode;
-pub(crate) use renderer::{NovaRenderer, NovaRendererAtlas, PresentReadiness};
+#[doc(hidden)]
+pub use renderer::{NovaRenderer, NovaRendererAtlas};
+pub(crate) use renderer::PresentReadiness;
 use rendering_parameters::*;
 use resource_bindings::*;
 use resource_layouts::*;

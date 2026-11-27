@@ -31,11 +31,13 @@ pub use scene::*;
 pub use snapshot::*;
 pub use upload::*;
 pub(crate) use window::{
-    FrameDisposition, record_present_attempt, record_present_preflight_deferred,
-    record_active_presentation_retry, record_backend_ready_wake,
+    FrameDisposition, record_present_preflight_deferred,
     record_dirty_to_present, record_extension_present,
     record_frame_disposition,
-    record_layout_recompute, record_native_vsync_wake,
-    record_path_mask, record_redraw_request, record_runtime_state,
+    record_layout_recompute,
+    record_path_mask, record_runtime_state,
     record_visibility,
 };
+
+#[doc(hidden)]
+pub use window::{record_present_attempt, record_active_presentation_retry, record_backend_ready_wake, record_native_vsync_wake, record_redraw_request};

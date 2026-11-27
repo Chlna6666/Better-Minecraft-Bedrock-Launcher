@@ -2,7 +2,8 @@ use std::ops::Range;
 
 use crate::{App, AsyncWindowContext, Bounds, Pixels, Point, Window};
 
-pub(crate) struct PlatformInputHandler {
+#[doc(hidden)]
+pub struct PlatformInputHandler {
     cx: AsyncWindowContext,
     handler: Box<dyn InputHandler>,
 }
@@ -23,7 +24,8 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    pub(crate) fn selected_text_range(
+    #[doc(hidden)]
+    pub fn selected_text_range(
         &mut self,
         ignore_disabled_input: bool,
     ) -> Option<Utf16Selection> {
@@ -37,7 +39,8 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    pub(crate) fn marked_text_range(&mut self) -> Option<Range<usize>> {
+    #[doc(hidden)]
+    pub fn marked_text_range(&mut self) -> Option<Range<usize>> {
         self.cx
             .update(|window, cx| self.handler.marked_text_range(window, cx))
             .ok()
@@ -48,7 +51,8 @@ impl PlatformInputHandler {
         any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
         allow(dead_code)
     )]
-    pub(crate) fn text_for_range(
+    #[doc(hidden)]
+    pub fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
         adjusted: &mut Option<Range<usize>>,
@@ -66,7 +70,8 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    pub(crate) fn replace_text_in_range(
+    #[doc(hidden)]
+    pub fn replace_text_in_range(
         &mut self,
         replacement_range: Option<Range<usize>>,
         text: &str,
@@ -103,7 +108,8 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    pub(crate) fn unmark_text(&mut self) {
+    #[doc(hidden)]
+    pub fn unmark_text(&mut self) {
         self.cx
             .update(|window, cx| self.handler.unmark_text(window, cx))
             .ok();
@@ -113,7 +119,8 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    pub(crate) fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+    #[doc(hidden)]
+    pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
         self.cx
             .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
             .ok()
@@ -124,7 +131,8 @@ impl PlatformInputHandler {
     ///
     /// `None` means the entire document may be considered editable.
     #[allow(dead_code)]
-    pub(crate) fn text_input_editable_range(&mut self) -> Option<Range<usize>> {
+    #[doc(hidden)]
+    pub fn text_input_editable_range(&mut self) -> Option<Range<usize>> {
         self.cx
             .update(|window, cx| self.handler.text_input_editable_range(window, cx))
             .ok()
@@ -147,7 +155,8 @@ impl PlatformInputHandler {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn apple_press_and_hold_enabled(&mut self) -> bool {
+    #[doc(hidden)]
+    pub fn apple_press_and_hold_enabled(&mut self) -> bool {
         self.handler.apple_press_and_hold_enabled()
     }
 

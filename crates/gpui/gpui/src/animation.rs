@@ -23,7 +23,9 @@ mod tween;
 pub use animatable::Animatable;
 pub use easing::{Easing, StepPosition, TransitionEasing};
 pub use engine::{AnimationEngine, AnimationGroupId, AnimationGroupSample, AnimationTick};
-pub(crate) use engine::{SceneAnimationCompletion, SceneAnimationTimeline};
+#[doc(hidden)]
+pub use engine::SceneAnimationCompletion;
+pub(crate) use engine::SceneAnimationTimeline;
 pub use keyframe::{Keyframe, KeyframeTrack};
 pub use physics::{SpringMotion, SpringPhysics};
 pub use scheduler::AnimationDriver;

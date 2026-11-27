@@ -42,7 +42,8 @@ use windows::Win32::{
     },
 };
 
-pub(crate) struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
+#[doc(hidden)]
+pub struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
 
 #[cfg(target_os = "linux")]
 struct PreparedLinuxSystemFonts {
@@ -191,7 +192,8 @@ impl CosmicTextSystem {
         result
     }
 
-    pub(crate) fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new() -> Self {
         let (mut font_system, system_fonts_loaded) = minimal_startup_font_system();
         let platform_font_family: SharedString = startup_platform_font_name(&font_system).into();
         font_system

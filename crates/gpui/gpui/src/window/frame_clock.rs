@@ -45,7 +45,8 @@ impl FrameClock {
         }
     }
 
-    pub(crate) fn interval(self) -> Option<Duration> {
+    #[doc(hidden)]
+    pub fn interval(self) -> Option<Duration> {
         match self {
             Self::System => None,
             Self::FixedFps(fps) => {

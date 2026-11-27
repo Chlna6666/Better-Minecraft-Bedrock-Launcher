@@ -224,7 +224,8 @@ pub struct WindowOptions {
     ),
     allow(dead_code)
 )]
-pub(crate) struct WindowParams {
+#[doc(hidden)]
+pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
 
     /// The titlebar configuration of the window

@@ -32,6 +32,11 @@ pub enum ClipboardEntry {
 }
 
 impl ClipboardItem {
+    /// Wraps the entries supplied by a native clipboard.
+    pub fn from_entries(entries: Vec<ClipboardEntry>) -> Self {
+        Self { entries }
+    }
+
     /// Create a new ClipboardItem::String with no associated metadata
     pub fn new_string(text: String) -> Self {
         Self {
@@ -346,6 +351,16 @@ pub struct ClipboardString {
 }
 
 impl ClipboardString {
+    /// Creates a clipboard string with the optional platform MIME metadata.
+    pub fn with_metadata(text: String, metadata: Option<String>) -> Self {
+        Self { text, metadata }
+    }
+
+    /// Gets the serialized metadata used by the native clipboard.
+    pub fn metadata(&self) -> Option<&str> {
+        self.metadata.as_deref()
+    }
+
     /// Create a new clipboard string with the given text
     pub fn new(text: String) -> Self {
         Self {
@@ -382,7 +397,8 @@ impl ClipboardString {
     }
 
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
-    pub(crate) fn text_hash(text: &str) -> u64 {
+    #[doc(hidden)]
+    pub fn text_hash(text: &str) -> u64 {
         let mut hasher = SeaHasher::new();
         text.hash(&mut hasher);
         hasher.finish()

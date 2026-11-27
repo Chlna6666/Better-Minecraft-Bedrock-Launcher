@@ -2,7 +2,8 @@ use super::*;
 
 impl NovaRenderer {
     #[cfg(not(target_os = "windows"))]
-    pub(crate) fn new<W>(
+    #[doc(hidden)]
+    pub fn new<W>(
         window: &W,
         backend: RendererBackend,
         renderer_options: &RendererOptions,
@@ -11,8 +12,8 @@ impl NovaRenderer {
         transparent: bool,
     ) -> Result<Self>
     where
-        W: ::winit::raw_window_handle::HasDisplayHandle
-            + ::winit::raw_window_handle::HasWindowHandle
+        W: ::raw_window_handle::HasDisplayHandle
+            + ::raw_window_handle::HasWindowHandle
             + 'static,
     {
         let mut failures = Vec::new();
@@ -39,7 +40,8 @@ impl NovaRenderer {
         anyhow::bail!("no usable renderer: {}", failures.join("; "))
     }
 
-    pub(crate) fn with_atlas<W>(
+    #[doc(hidden)]
+    pub fn with_atlas<W>(
         window: &W,
         backend: RendererBackend,
         renderer_options: &RendererOptions,
@@ -49,8 +51,8 @@ impl NovaRenderer {
         atlas: NovaRendererAtlas,
     ) -> Result<Self>
     where
-        W: ::winit::raw_window_handle::HasDisplayHandle
-            + ::winit::raw_window_handle::HasWindowHandle
+        W: ::raw_window_handle::HasDisplayHandle
+            + ::raw_window_handle::HasWindowHandle
             + 'static,
     {
         let initialization = Self::initialize(
@@ -89,8 +91,8 @@ impl NovaRenderer {
         atlas: NovaRendererAtlas,
     ) -> Result<Self>
     where
-        W: ::winit::raw_window_handle::HasDisplayHandle
-            + ::winit::raw_window_handle::HasWindowHandle
+        W: ::raw_window_handle::HasDisplayHandle
+            + ::raw_window_handle::HasWindowHandle
             + 'static,
     {
         let metrics_started_at = Instant::now();

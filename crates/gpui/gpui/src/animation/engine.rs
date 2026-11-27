@@ -63,7 +63,8 @@ struct AnimationTimeline {
 
 /// UI invalidation to process after a renderer-owned scene animation reaches its endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SceneAnimationCompletion {
+#[doc(hidden)]
+pub struct SceneAnimationCompletion {
     /// Scene animation whose endpoint needs a retained reraster or equivalent UI update.
     pub(crate) animation_id: SceneAnimationId,
     /// Property identifies one track when several compositor tracks share a scene binding.

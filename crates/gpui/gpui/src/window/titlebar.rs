@@ -8,10 +8,11 @@ const PLATFORM_TITLE_FONT_SIZE: Pixels = px(14.0);
 const PLATFORM_TITLE_MASK_PADDING: i32 = 1;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) struct PlatformTitleMask {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) alpha: Vec<u8>,
+#[doc(hidden)]
+pub struct PlatformTitleMask {
+    pub width: u32,
+    pub height: u32,
+    pub alpha: Vec<u8>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -22,7 +23,8 @@ struct RasterizedTitleGlyph {
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) fn rasterize_platform_title(
+#[doc(hidden)]
+pub fn rasterize_platform_title(
     text_system: &dyn PlatformTextSystem,
     title: &str,
     scale_factor: f32,

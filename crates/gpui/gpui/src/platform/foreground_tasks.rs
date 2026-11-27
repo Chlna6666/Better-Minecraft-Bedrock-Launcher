@@ -38,7 +38,8 @@ impl ForegroundTaskBudget {
     }
 }
 
-pub(crate) fn drain_foreground_tasks(
+#[doc(hidden)]
+pub fn drain_foreground_tasks(
     mut next_runnable: impl FnMut() -> Option<Runnable>,
     mut has_pending_runnables: impl FnMut() -> bool,
 ) -> bool {
@@ -65,26 +66,30 @@ pub(crate) fn drain_foreground_tasks(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))]
-pub(crate) struct ForegroundTaskQueue {
+#[doc(hidden)]
+pub struct ForegroundTaskQueue {
     queue: Mutex<VecDeque<Runnable>>,
     wakeup_pending: AtomicBool,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))]
 impl ForegroundTaskQueue {
-    pub(crate) fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new() -> Self {
         Self {
             queue: Mutex::new(VecDeque::new()),
             wakeup_pending: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn push(&self, runnable: Runnable) -> bool {
+    #[doc(hidden)]
+    pub fn push(&self, runnable: Runnable) -> bool {
         self.queue.lock().unwrap().push_back(runnable);
         !self.wakeup_pending.swap(true, Ordering::AcqRel)
     }
 
-    pub(crate) fn drain(&self) -> bool {
+    #[doc(hidden)]
+    pub fn drain(&self) -> bool {
         self.wakeup_pending.store(false, Ordering::Release);
         let needs_wakeup = drain_foreground_tasks(|| self.pop_front(), || self.has_pending());
         needs_wakeup && !self.wakeup_pending.swap(true, Ordering::AcqRel)
@@ -98,7 +103,8 @@ impl ForegroundTaskQueue {
         !self.queue.lock().unwrap().is_empty()
     }
 
-    pub(crate) fn forget_pending(&self) {
+    #[doc(hidden)]
+    pub fn forget_pending(&self) {
         let pending = {
             let mut queue = self.queue.lock().unwrap();
             mem::take(&mut *queue)

@@ -38,18 +38,19 @@ use queue::{Command, DrawableResize, Queue};
 use worker::{Entry, Worker};
 
 #[derive(Debug)]
-pub(crate) struct RenderOwnerFrame {
-    pub(crate) submitted: bool,
-    pub(crate) pending: bool,
+#[doc(hidden)]
+pub struct RenderOwnerFrame {
+    pub submitted: bool,
+    pub pending: bool,
     /// Readiness is owned by a callback or a pending-submission retry deadline;
     /// speculative DWM ticks would duplicate that per-window continuation.
     #[cfg(target_os = "windows")]
-    pub(crate) waiting_for_frame_ready: bool,
+    pub waiting_for_frame_ready: bool,
     #[cfg(not(target_os = "windows"))]
-    pub(crate) autonomous: bool,
-    pub(crate) failed: bool,
-    pub(crate) ready_enqueued_at: Option<Instant>,
-    pub(crate) completed_animations: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    pub autonomous: bool,
+    pub failed: bool,
+    pub ready_enqueued_at: Option<Instant>,
+    pub completed_animations: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>,
 }
 
 #[derive(Default)]
@@ -120,7 +121,8 @@ fn sender() -> Result<&'static Sender<Job>> {
 ///
 /// Returns an error if the GPU owner cannot start or accept the preparation job.
 #[cfg(target_os = "windows")]
-pub(crate) fn prepare_renderer(options: crate::RendererOptions) -> Result<()> {
+#[doc(hidden)]
+pub fn prepare_renderer(options: crate::RendererOptions) -> Result<()> {
     let enqueued_at = Instant::now();
     sender()?
         .send(Box::new(move |_| {
@@ -144,7 +146,7 @@ pub(crate) fn prepare_renderer(options: crate::RendererOptions) -> Result<()> {
 }
 
 /// Drains window resources and joins the GPU owner after the native/UI event loops exit.
-pub(crate) fn shutdown() {
+pub(crate) fn shutdown(_service_driver_messages: impl Fn()) {
     let Some(Ok(executor)) = EXECUTOR.get() else {
         return;
     };
@@ -156,7 +158,7 @@ pub(crate) fn shutdown() {
     }
     #[cfg(target_os = "windows")]
     while !worker.is_finished() {
-        gpui_windows::service_driver_messages();
+        _service_driver_messages();
         thread::sleep(Duration::from_millis(1));
     }
     if worker.join().is_err() {
@@ -165,7 +167,8 @@ pub(crate) fn shutdown() {
 }
 
 /// A window-side producer. It contains no renderer or backend handle.
-pub(crate) struct RenderOwner {
+#[doc(hidden)]
+pub struct RenderOwner {
     id: u64,
     queue: Arc<Queue>,
     sender: Sender<Job>,
@@ -203,7 +206,8 @@ impl RenderOwner {
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn initialize(
+    #[doc(hidden)]
+    pub fn initialize(
         create: impl FnOnce() -> Result<NovaRenderer> + Send + 'static,
         keep_alive: Box<dyn std::any::Any + Send>,
         report: Arc<dyn Fn(RenderOwnerFrame) + Send + Sync>,
@@ -312,22 +316,26 @@ impl RenderOwner {
     /// last presented frame. Coalesced latest-wins on the GPU owner; backends whose
     /// compositor retains the published content ignore it.
     #[cfg(target_os = "windows")]
-    pub(super) fn cover_native_resize(&self, size: Size<DevicePixels>) {
+    #[doc(hidden)]
+    pub fn cover_native_resize(&self, size: Size<DevicePixels>) {
         if let Err(error) = self.enqueue(Command::Cover { size }) {
             log::trace!("discarding native resize cover after shutdown: {error:#}");
         }
     }
 
-    pub(super) fn draw(&self, packet: PresentationPacket) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn draw(&self, packet: PresentationPacket) -> Result<bool> {
         let resize = self.pending_drawable_size.lock().take();
         self.submit(packet, false, resize)
     }
 
-    pub(super) fn present_framebuffer_only(&self, packet: PresentationPacket) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn present_framebuffer_only(&self, packet: PresentationPacket) -> Result<bool> {
         self.submit(packet, true, None)
     }
 
-    pub(super) fn present_active_frame(
+    #[doc(hidden)]
+    pub fn present_active_frame(
         &self,
         now: Instant,
         timing: Option<ActivePresentationTiming>,
@@ -344,7 +352,8 @@ impl RenderOwner {
         }))
     }
 
-    pub(super) fn has_active_presentation_animations(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_active_presentation_animations(&self) -> bool {
         #[cfg(target_os = "windows")]
         if self.status.waiting_for_frame_ready.load(Ordering::Acquire) {
             return false;
@@ -356,7 +365,8 @@ impl RenderOwner {
     /// the owner is waiting on a native present credit or a resource retry.
     /// The first-frame and native resize paths retain their separate liveness rules.
     #[cfg(target_os = "windows")]
-    pub(super) fn ui_frame_backpressured(&self) -> bool {
+    #[doc(hidden)]
+    pub fn ui_frame_backpressured(&self) -> bool {
         self.status.submitted.load(Ordering::Acquire)
             && self.status.waiting_for_frame_ready.load(Ordering::Acquire)
     }
@@ -364,12 +374,14 @@ impl RenderOwner {
     /// True when an immutable GPU frame was queued but no submission report has arrived.
     /// In particular, a Windows first frame is queued rather than synchronously presented.
     #[cfg(target_os = "windows")]
-    pub(super) fn has_pending_gpu_work(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_pending_gpu_work(&self) -> bool {
         self.status.pending.load(Ordering::Acquire)
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn set_live_resize_active(&self, active: bool) {
+    #[doc(hidden)]
+    pub fn set_live_resize_active(&self, active: bool) {
         if let Err(error) = self.control(move |renderer| renderer.set_live_resize_active(active)) {
             log::warn!("failed to update Windows live-resize state: {error:#}");
         }
@@ -377,7 +389,8 @@ impl RenderOwner {
 
     /// Accepts a resize in command order; target recreation runs on the next GPU frame
     /// whose Scene belongs to the same native geometry generation.
-    pub(super) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: u64) {
+    #[doc(hidden)]
+    pub fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: u64) {
         *self.pending_drawable_size.lock() = Some(DrawableResize {
             size,
             epoch: Some(epoch),
@@ -396,7 +409,8 @@ impl RenderOwner {
         self.viewport_size = size;
     }
 
-    pub(super) fn set_frame_interval(&self, interval: Option<Duration>) {
+    #[doc(hidden)]
+    pub fn set_frame_interval(&self, interval: Option<Duration>) {
         if let Err(error) = self.control(move |renderer| renderer.set_frame_interval(interval)) {
             log::error!("failed to queue GPU frame interval: {error:#}");
         }
@@ -448,25 +462,29 @@ impl RenderOwner {
         }
     }
 
-    pub(super) fn set_presentation_visibility(&self, visible: bool) {
+    #[doc(hidden)]
+    pub fn set_presentation_visibility(&self, visible: bool) {
         if let Err(error) = self.enqueue(Command::PresentationVisibility(visible)) {
             log::error!("failed to queue native presentation visibility: {error:#}");
         }
     }
 
-    pub(super) fn update_transparency(&self, transparent: bool) {
+    #[doc(hidden)]
+    pub fn update_transparency(&self, transparent: bool) {
         if let Err(error) = self.enqueue(Command::Transparency(transparent)) {
             log::error!("failed to queue GPU transparency: {error:#}");
         }
     }
 
-    pub(super) fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
+    #[doc(hidden)]
+    pub fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
         if let Err(error) = self.control(move |renderer| renderer.trim_gpui_memory(level)) {
             log::error!("failed to queue GPU memory trim: {error:#}");
         }
     }
 
-    pub(super) fn gpu_specs(&self) -> GpuSpecs {
+    #[doc(hidden)]
+    pub fn gpu_specs(&self) -> GpuSpecs {
         self.gpu_specs.clone()
     }
 
@@ -481,7 +499,8 @@ impl RenderOwner {
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn has_submitted_frame(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_submitted_frame(&self) -> bool {
         self.status.submitted.load(Ordering::Acquire)
     }
 }

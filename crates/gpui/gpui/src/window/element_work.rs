@@ -134,7 +134,8 @@ pub(crate) fn take() -> ElementWorkSummary {
 
 /// Which lifecycle phase a sample belongs to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ElementWorkPhase {
+#[doc(hidden)]
+pub enum ElementWorkPhase {
     Prepaint,
     Paint,
     Render,
@@ -142,7 +143,8 @@ pub(crate) enum ElementWorkPhase {
     Replay,
 }
 
-pub(crate) struct ElementWorkScope {
+#[doc(hidden)]
+pub struct ElementWorkScope {
     type_name: &'static str,
     phase: ElementWorkPhase,
     started_at: Instant,
@@ -159,7 +161,8 @@ impl Drop for ElementWorkScope {
 
 /// Shares the lifecycle probe's nesting stack, so render/layout/replay time is
 /// removed from the enclosing wrapper's self-time rather than counted twice.
-pub(crate) fn begin_named(
+#[doc(hidden)]
+pub fn begin_named(
     type_name: &'static str,
     phase: ElementWorkPhase,
 ) -> Option<ElementWorkScope> {

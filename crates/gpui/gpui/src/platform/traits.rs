@@ -30,7 +30,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 /// Whether the platform is currently presenting a window's frames.
 ///
@@ -88,7 +88,10 @@ impl WindowActivity {
     }
 }
 
-pub(crate) trait Platform: 'static {
+#[allow(missing_docs)]
+pub trait Platform: 'static {
+    /// Allows platform-specific native driver callbacks to run while the GPU owner shuts down.
+    fn service_driver_messages(&self) {}
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;
     fn text_system(&self) -> Arc<dyn PlatformTextSystem>;
@@ -206,7 +209,8 @@ pub(crate) trait Platform: 'static {
     }
 }
 
-pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+#[allow(missing_docs)]
+pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
     fn is_maximized(&self) -> bool;
     fn is_minimized(&self) -> bool {
@@ -439,11 +443,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 pub struct TimerResolutionGuard(Option<Box<dyn FnOnce() + Send>>);
 
 impl TimerResolutionGuard {
-    pub(crate) fn new(release: impl FnOnce() + Send + 'static) -> Self {
+    #[doc(hidden)]
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
         Self(Some(Box::new(release)))
     }
 
-    pub(crate) fn noop() -> Self {
+    #[doc(hidden)]
+    pub fn noop() -> Self {
         Self(None)
     }
 }
@@ -493,7 +499,8 @@ pub enum TextRenderingMode {
     Grayscale,
 }
 
-pub(crate) trait PlatformTextSystem: Send + Sync {
+#[allow(missing_docs)]
+pub trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()>;
     /// Installs a nonblocking sink for grapheme clusters that exhaust platform font fallback.
@@ -525,7 +532,8 @@ pub(crate) trait PlatformTextSystem: Send + Sync {
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
 }
 
-pub(crate) struct NoopTextSystem;
+#[doc(hidden)]
+pub struct NoopTextSystem;
 
 impl NoopTextSystem {
     #[allow(dead_code)]

@@ -20,7 +20,8 @@ use std::{
 #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
 type NativePresentationWake = Arc<dyn Fn() + Send + Sync>;
 
-pub(crate) struct OwnedNovaRenderer {
+#[doc(hidden)]
+pub struct OwnedNovaRenderer {
     owner: Option<RenderOwner>,
     frame_requests: Arc<Mutex<Option<PlatformFrameRequestSender>>>,
     animation_completions: Arc<Mutex<Option<SceneAnimationCompletionSender>>>,
@@ -31,7 +32,8 @@ pub(crate) struct OwnedNovaRenderer {
 }
 
 impl OwnedNovaRenderer {
-    pub(crate) fn new(
+    #[doc(hidden)]
+    pub fn new(
         create: impl FnOnce() -> Result<NovaRenderer> + Send + 'static,
     ) -> Result<Self> {
         let frame_requests = Arc::new(Mutex::new(None::<PlatformFrameRequestSender>));
@@ -90,11 +92,13 @@ impl OwnedNovaRenderer {
             .expect("native window does not render after destroying its GPU owner")
     }
 
-    pub(crate) fn draw(&mut self, packet: PresentationPacket) -> PlatformFrameResult {
+    #[doc(hidden)]
+    pub fn draw(&mut self, packet: PresentationPacket) -> PlatformFrameResult {
         self.submitted(self.owner().draw(packet))
     }
 
-    pub(crate) fn present_framebuffer_only(
+    #[doc(hidden)]
+    pub fn present_framebuffer_only(
         &mut self,
         packet: PresentationPacket,
     ) -> PlatformFrameResult {
@@ -114,81 +118,97 @@ impl OwnedNovaRenderer {
         }
     }
 
-    pub(crate) fn present_active_frame(
+    #[doc(hidden)]
+    pub fn present_active_frame(
         &self,
         now: Instant,
     ) -> Result<Option<ActivePresentationFrame>> {
         self.owner().present_active_frame(now, None)
     }
 
-    pub(crate) fn has_active_presentation_animations(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_active_presentation_animations(&self) -> bool {
         self.owner().has_active_presentation_animations()
     }
 
     #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
-    pub(crate) fn set_native_presentation_wake(&self, wake: NativePresentationWake) {
+    #[doc(hidden)]
+    pub fn set_native_presentation_wake(&self, wake: NativePresentationWake) {
         *self.native_presentation_wake.lock() = Some(wake);
     }
 
-    pub(crate) fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender) {
+    #[doc(hidden)]
+    pub fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender) {
         *self.frame_requests.lock() = Some(sender);
     }
 
-    pub(crate) fn set_animation_completion_sender(&self, sender: SceneAnimationCompletionSender) {
+    #[doc(hidden)]
+    pub fn set_animation_completion_sender(&self, sender: SceneAnimationCompletionSender) {
         *self.animation_completions.lock() = Some(sender);
     }
 
-    pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+    #[doc(hidden)]
+    pub fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
         self.owner().set_frame_interval(interval);
     }
 
     /// Updates the native display cadence. `None` suspends deadline-driven continuation.
-    pub(crate) fn set_presentation_interval(&self, interval: Option<Duration>) {
+    #[doc(hidden)]
+    pub fn set_presentation_interval(&self, interval: Option<Duration>) {
         if self.presentation_interval.replace(interval) != interval {
             self.owner().set_presentation_interval(interval);
         }
     }
 
     #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
-    pub(crate) fn presentation_metrics_id(&self) -> u64 {
+    #[doc(hidden)]
+    pub fn presentation_metrics_id(&self) -> u64 {
         self.owner().presentation_metrics_id()
     }
 
     #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
-    pub(crate) fn presentation_feedback_mailbox(&self) -> Result<Arc<Mutex<Option<gfx_core::PresentationFeedback>>>> {
+    #[doc(hidden)]
+    pub fn presentation_feedback_mailbox(&self) -> Result<Arc<Mutex<Option<gfx_core::PresentationFeedback>>>> {
         self.owner().presentation_feedback_mailbox()
     }
 
-    pub(crate) fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
+    #[doc(hidden)]
+    pub fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.owner().presentation_tick_sender()
     }
 
-    pub(crate) fn set_presentation_clock(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+    #[doc(hidden)]
+    pub fn set_presentation_clock(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         self.owner().set_presentation_clock(callback);
     }
 
-    pub(crate) fn set_presentation_visibility(&self, visible: bool) {
+    #[doc(hidden)]
+    pub fn set_presentation_visibility(&self, visible: bool) {
         if self.presentation_visible.replace(visible) != visible {
             self.owner().set_presentation_visibility(visible);
         }
     }
 
-    pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
+    #[doc(hidden)]
+    pub fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.owner().platform_atlas()
     }
 
-    pub(crate) fn viewport_size(&self) -> Size<DevicePixels> {
+    #[doc(hidden)]
+    pub fn viewport_size(&self) -> Size<DevicePixels> {
         self.owner().viewport_size()
     }
 
-    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+    #[doc(hidden)]
+    pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         if let Err(error) = self.resize(size) {
             log::error!("failed to queue GPU resize: {error:#}");
         }
     }
 
     /// Queues the new drawable extent; GPU target recreation is deferred to presentation.
-    pub(crate) fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
+    #[doc(hidden)]
+    pub fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
         self.owner
             .as_mut()
             .expect("live GPU owner")
@@ -196,19 +216,23 @@ impl OwnedNovaRenderer {
         Ok(())
     }
 
-    pub(crate) fn update_transparency(&self, transparent: bool) {
+    #[doc(hidden)]
+    pub fn update_transparency(&self, transparent: bool) {
         self.owner().update_transparency(transparent);
     }
 
-    pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
+    #[doc(hidden)]
+    pub fn gpu_specs(&self) -> Result<GpuSpecs> {
         Ok(self.owner().gpu_specs())
     }
 
-    pub(crate) fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
+    #[doc(hidden)]
+    pub fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {
         self.owner().trim_gpui_memory(level);
     }
 
-    pub(crate) fn destroy(&mut self) {
+    #[doc(hidden)]
+    pub fn destroy(&mut self) {
         // RenderOwner waits for its destruction barrier before the native surface is released.
         self.owner.take();
     }

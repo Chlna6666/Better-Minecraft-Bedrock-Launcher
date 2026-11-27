@@ -11,13 +11,14 @@ mod native_vsync;
 pub(super) mod path_mask;
 
 pub use backend_ready::BackendReadyMetricsSnapshot;
-pub(crate) use backend_ready::record_backend_ready_wake;
+#[doc(hidden)]
+pub use backend_ready::record_backend_ready_wake;
 pub use native_vsync::VSyncMetricsSnapshot;
 #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
-pub(crate) use native_vsync::record_wayland_presentation_feedback;
+#[doc(hidden)]
+pub use native_vsync::record_wayland_presentation_feedback;
 pub(crate) use native_vsync::{
-    record_present_attempt, record_present_preflight_deferred,
-    record_active_presentation_retry, record_native_vsync_wake,
+    record_present_preflight_deferred,
 };
 pub use path_mask::PathMaskMetricsSnapshot;
 pub(crate) use path_mask::record_path_mask;
@@ -656,3 +657,6 @@ pub fn record_upload_bytes(window_id: u64, bytes: usize) {
         metrics.upload_bytes = bytes as u64;
     }
 }
+
+#[doc(hidden)]
+pub use native_vsync::{record_present_attempt, record_active_presentation_retry, record_native_vsync_wake};

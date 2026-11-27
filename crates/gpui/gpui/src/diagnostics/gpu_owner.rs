@@ -18,7 +18,8 @@ const HISTORY_CAPACITY: usize = 1_024;
 /// Enables three-stage Win32 ClientSize/GPUI Viewport/GPU Swapchain resize tracing.
 /// Uses the application's existing diagnostic Trace switch.
 #[cfg(target_os = "windows")]
-pub(crate) fn resize_trace_enabled() -> bool {
+#[doc(hidden)]
+pub fn resize_trace_enabled() -> bool {
     log::log_enabled!(target: "gpui::diagnostics", log::Level::Trace)
 }
 thread_local! {

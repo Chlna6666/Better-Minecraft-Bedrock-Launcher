@@ -8,7 +8,8 @@ use crate::{
 };
 
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub(crate) enum AtlasKey {
+#[doc(hidden)]
+pub enum AtlasKey {
     Glyph(RenderGlyphParams),
     Svg(RenderSvgParams),
     Image(RenderImageParams),
@@ -60,7 +61,8 @@ impl From<RenderImageParams> for AtlasKey {
     }
 }
 
-pub(crate) trait PlatformAtlas: Send + Sync {
+#[doc(hidden)]
+pub trait PlatformAtlas: Send + Sync {
     /// Ensures a tile exists for an owned key.
     ///
     /// Taking ownership lets hot miss paths insert the same key into backend maps without
@@ -110,18 +112,21 @@ pub(crate) trait PlatformAtlas: Send + Sync {
     fn remove_image(&self, _image_id: ImageId) {}
 }
 
-pub(crate) struct GlyphBitmap {
-    pub(crate) size: Size<DevicePixels>,
-    pub(crate) bytes: Vec<u8>,
+#[doc(hidden)]
+pub struct GlyphBitmap {
+    pub size: Size<DevicePixels>,
+    pub bytes: Vec<u8>,
 }
 
-pub(crate) struct ColorGlyphLayer {
-    pub(crate) bounds: Bounds<DevicePixels>,
-    pub(crate) color: Rgba,
-    pub(crate) alpha: Vec<u8>,
+#[doc(hidden)]
+pub struct ColorGlyphLayer {
+    pub bounds: Bounds<DevicePixels>,
+    pub color: Rgba,
+    pub alpha: Vec<u8>,
 }
 
-pub(crate) enum GlyphRasterization {
+#[doc(hidden)]
+pub enum GlyphRasterization {
     Bitmap {
         size: Size<DevicePixels>,
         bytes: Vec<u8>,
@@ -199,7 +204,8 @@ impl<T> AtlasTextureList<T> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
-pub(crate) struct AtlasTile {
+#[doc(hidden)]
+pub struct AtlasTile {
     pub(crate) texture_id: AtlasTextureId,
     pub(crate) tile_id: TileId,
     pub(crate) padding: u32,
@@ -208,7 +214,8 @@ pub(crate) struct AtlasTile {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
-pub(crate) struct AtlasTextureId {
+#[doc(hidden)]
+pub struct AtlasTextureId {
     // We use u32 instead of usize for Metal Shader Language compatibility
     pub(crate) index: u32,
     pub(crate) kind: AtlasTextureKind,
@@ -223,7 +230,8 @@ pub(crate) struct AtlasTextureId {
     ),
     allow(dead_code)
 )]
-pub(crate) enum AtlasTextureKind {
+#[doc(hidden)]
+pub enum AtlasTextureKind {
     Monochrome = 0,
     Bgra = 1,
     Rgba = 2,
@@ -255,7 +263,8 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(C)]
-pub(crate) struct TileId(pub(crate) u32);
+#[doc(hidden)]
+pub struct TileId(pub(crate) u32);
 
 impl From<etagere::AllocId> for TileId {
     fn from(id: etagere::AllocId) -> Self {

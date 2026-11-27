@@ -75,7 +75,8 @@ pub enum GpuSubmissionMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GpuiMemoryTrimLevel {
+#[doc(hidden)]
+pub enum GpuiMemoryTrimLevel {
     Light,
     Moderate,
     Aggressive,
@@ -181,7 +182,8 @@ impl RendererOptions {
     }
 
     /// Ordered initialization candidates. Explicit adapter selection forbids fallback.
-    pub(crate) fn candidates(&self, resolved: RendererBackend) -> Vec<RendererBackend> {
+    #[doc(hidden)]
+    pub fn candidates(&self, resolved: RendererBackend) -> Vec<RendererBackend> {
         let resolved = if resolved == RendererBackend::Auto {
             RendererBackend::platform_default()
         } else {
@@ -272,7 +274,7 @@ impl RendererBackend {
     }
 
     /// Compiled native backends, in platform fallback order.
-    pub(crate) fn available_backends() -> &'static [Self] {
+    pub fn available_backends() -> &'static [Self] {
         &[
             #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
             Self::NovaDx12,

@@ -37,7 +37,8 @@ pub(crate) enum PresentationRequest {
 /// two rendering-policy booleans. The platform may transport them together today, but neither
 /// domain is defined in terms of the other.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub(crate) struct PlatformFrameRequest {
+#[doc(hidden)]
+pub struct PlatformFrameRequest {
     ui_commit: UiCommitRequest,
     presentation: PresentationRequest,
 }
@@ -52,21 +53,24 @@ impl PlatformFrameRequest {
         }
     }
 
-    pub(crate) const fn ui_commit() -> Self {
+    #[doc(hidden)]
+    pub const fn ui_commit() -> Self {
         Self {
             ui_commit: UiCommitRequest::Required,
             presentation: PresentationRequest::None,
         }
     }
 
-    pub(crate) const fn presentation() -> Self {
+    #[doc(hidden)]
+    pub const fn presentation() -> Self {
         Self {
             ui_commit: UiCommitRequest::None,
             presentation: PresentationRequest::Required,
         }
     }
 
-    pub(crate) const fn ui_commit_and_presentation() -> Self {
+    #[doc(hidden)]
+    pub const fn ui_commit_and_presentation() -> Self {
         Self {
             ui_commit: UiCommitRequest::Required,
             presentation: PresentationRequest::Required,
@@ -75,7 +79,8 @@ impl PlatformFrameRequest {
 
     /// Whether the UI owner must process this wake before native presentation continues.
     /// Only `ui_rebuild_required()` forces rebuilding an otherwise clean scene.
-    pub(crate) const fn ui_commit_required(self) -> bool {
+    #[doc(hidden)]
+    pub const fn ui_commit_required(self) -> bool {
         !matches!(self.ui_commit, UiCommitRequest::None)
     }
 
@@ -84,7 +89,8 @@ impl PlatformFrameRequest {
         matches!(self.ui_commit, UiCommitRequest::Required)
     }
 
-    pub(crate) const fn presentation_required(self) -> bool {
+    #[doc(hidden)]
+    pub const fn presentation_required(self) -> bool {
         !matches!(self.presentation, PresentationRequest::None)
     }
 
@@ -101,15 +107,18 @@ impl PlatformFrameRequest {
         }
     }
 
-    pub(crate) const fn is_presentation_only(self) -> bool {
+    #[doc(hidden)]
+    pub const fn is_presentation_only(self) -> bool {
         self.presentation_required() && !self.ui_commit_required()
     }
 
-    pub(crate) const fn requires_frame(self) -> bool {
+    #[doc(hidden)]
+    pub const fn requires_frame(self) -> bool {
         self.ui_commit_required() || self.presentation_required()
     }
 
-    pub(crate) const fn merge(self, request: Self) -> Self {
+    #[doc(hidden)]
+    pub const fn merge(self, request: Self) -> Self {
         Self {
             ui_commit: if self.ui_rebuild_required() || request.ui_rebuild_required() {
                 UiCommitRequest::Required
@@ -131,7 +140,8 @@ impl PlatformFrameRequest {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PlatformFrameResult {
+#[doc(hidden)]
+pub enum PlatformFrameResult {
     /// The platform submitted this packet to its renderer before returning.
     Submitted,
     /// The compositor accepted the packet for later presentation.
@@ -142,7 +152,8 @@ pub(crate) enum PlatformFrameResult {
 /// A frame clock selects eligible rendering opportunities. GPU readiness is
 /// intentionally separate: a swapchain credit alone is not a display tick.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FrameSource {
+#[doc(hidden)]
+pub enum FrameSource {
     #[cfg(any(target_os = "windows", test))]
     Compositor,
     #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
@@ -155,27 +166,36 @@ pub(crate) enum FrameSource {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FrameSignal {
-    pub(crate) source: FrameSource,
-    pub(crate) at: Instant,
+#[doc(hidden)]
+pub struct FrameSignal {
+    pub source: FrameSource,
+    pub at: Instant,
 }
 
 /// Tracks a fixed-rate deadline while preserving phase on native display ticks.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct FrameCadence {
+#[doc(hidden)]
+pub struct FrameCadence {
     pub(crate) interval: Option<Duration>,
     anchor: Option<Instant>,
 }
 
 impl FrameCadence {
-    pub(crate) fn set_interval(&mut self, interval: Option<Duration>) {
+    #[doc(hidden)]
+    pub fn interval(self) -> Option<Duration> {
+        self.interval
+    }
+
+    #[doc(hidden)]
+    pub fn set_interval(&mut self, interval: Option<Duration>) {
         if self.interval != interval {
             self.interval = interval;
             self.anchor = None;
         }
     }
 
-    pub(crate) fn deadline(self) -> Option<Instant> {
+    #[doc(hidden)]
+    pub fn deadline(self) -> Option<Instant> {
         self.interval
             .zip(self.anchor)
             .map(|(interval, anchor)| anchor + interval)
@@ -183,7 +203,8 @@ impl FrameCadence {
 
     /// Select and advance a UI frame before layout. Geometry transactions may
     /// bypass pacing, and deliberately reset rather than accumulate phase.
-    pub(crate) fn claim(&mut self, now: Instant, signal: FrameSignal, bypass: bool) -> bool {
+    #[doc(hidden)]
+    pub fn claim(&mut self, now: Instant, signal: FrameSignal, bypass: bool) -> bool {
         let tick = signal.at;
         let tolerance = match signal.source {
             #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
@@ -201,7 +222,8 @@ impl FrameCadence {
         true
     }
 
-    pub(crate) fn is_due(self, now: Instant, display_tick: Option<Instant>) -> bool {
+    #[doc(hidden)]
+    pub fn is_due(self, now: Instant, display_tick: Option<Instant>) -> bool {
         self.deadline().is_none_or(|deadline| match display_tick {
             // Native callbacks are timestamped on wake, not at scanout. Permit
             // small dispatch jitter while retaining the deadline phase. Bound
@@ -215,7 +237,8 @@ impl FrameCadence {
         })
     }
 
-    pub(crate) fn record(self, now: Instant, display_tick: Option<Instant>) -> Self {
+    #[doc(hidden)]
+    pub fn record(self, now: Instant, display_tick: Option<Instant>) -> Self {
         let anchor = match display_tick {
             Some(tick) => self
                 .deadline()
@@ -234,7 +257,8 @@ impl FrameCadence {
 }
 
 impl PlatformFrameResult {
-    pub(crate) const fn is_accepted(self) -> bool {
+    #[doc(hidden)]
+    pub const fn is_accepted(self) -> bool {
         matches!(self, Self::Submitted | Self::Queued)
     }
 }
@@ -1540,7 +1564,8 @@ pub(crate) enum RetainedResourceTrimPolicy {
 /// The platform/renderer boundary therefore owns everything it needs to enqueue this packet
 /// without borrowing Window state.
 #[derive(Clone)]
-pub(crate) struct PresentationPacket {
+#[doc(hidden)]
+pub struct PresentationPacket {
     pub(crate) window_id: u64,
     pub(crate) paint: Arc<crate::window::Paint>,
     pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
@@ -1571,11 +1596,27 @@ struct PackedVisualSample {
 }
 
 impl PresentationPacket {
+    #[doc(hidden)]
+    pub fn layout_extent(&self) -> Option<(u32, u32)> {
+        self.paint.geometry.layout_extent
+    }
+
+    #[doc(hidden)]
+    pub fn layout_epoch(&self) -> u64 {
+        self.paint.geometry.layout_epoch
+    }
+
+    #[doc(hidden)]
+    pub fn set_frame_time(&mut self, frame_time: Instant) {
+        self.frame_time = frame_time;
+    }
+
     pub(crate) fn has_time_dependent_extensions(&self) -> bool {
         self.paint.scene.has_time_dependent_extensions()
     }
     /// Keep the final animation sample scheduled until its damage reaches the surface.
-    pub(crate) fn has_pending_presentation(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_pending_presentation(&self) -> bool {
         self.has_time_dependent_extensions()
             || !self.presentation_animation_timelines.is_empty()
             || !self.dirty_region.is_empty()
@@ -1599,7 +1640,8 @@ impl PresentationPacket {
     /// extent/DPI transition: capture/source indices and pixel positions may
     /// no longer name the same GPU content. Promote exactly this transition
     /// to a full NEW-extent refresh, not every layout_epoch increment.
-    pub(crate) fn merge_pending_damage_from(&mut self, previous: &Self) {
+    #[doc(hidden)]
+    pub fn merge_pending_damage_from(&mut self, previous: &Self) {
         let current_geometry = self.paint.geometry;
         let previous_geometry = previous.paint.geometry;
         let geometry_changed = current_geometry.layout_extent.is_some()
@@ -1919,7 +1961,8 @@ fn visual_property_bit(property: TransitionProperty) -> u8 {
 
 /// Coalesces native frame wakeups before they cross into the UI owner.
 #[derive(Clone)]
-pub(crate) struct PlatformFrameRequestSender {
+#[doc(hidden)]
+pub struct PlatformFrameRequestSender {
     pending: Arc<Mutex<Option<PlatformFrameRequest>>>,
     wakeups: mpsc::UnboundedSender<()>,
 }
@@ -1946,7 +1989,8 @@ impl PlatformFrameRequestSender {
     }
 
     /// Merge requests while the UI owner is busy and wake it only once per pending batch.
-    pub(crate) fn request(&self, request: PlatformFrameRequest) -> bool {
+    #[doc(hidden)]
+    pub fn request(&self, request: PlatformFrameRequest) -> bool {
         let should_wake = {
             let mut pending = self.pending.lock();
             match *pending {
@@ -1975,14 +2019,16 @@ impl PlatformFrameRequestReceiver {
     }
 }
 
-pub(crate) struct ActivePresentationFrame {
-    pub(crate) continues: bool,
-    pub(crate) completed_animations: SmallVec<[SceneAnimationCompletion; 4]>,
+#[doc(hidden)]
+pub struct ActivePresentationFrame {
+    pub continues: bool,
+    pub completed_animations: SmallVec<[SceneAnimationCompletion; 4]>,
 }
 
 /// Scheduling context for an active presentation initiated by a paced platform event.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ActivePresentationTiming {
+#[doc(hidden)]
+pub struct ActivePresentationTiming {
     /// Display event timestamp, absent on timer, readiness and unpaced wakes.
     pub(crate) display_tick_at: Option<Instant>,
     pub(crate) frame_pacing_wait: Duration,
@@ -2003,7 +2049,23 @@ pub(crate) struct ActivePresentationTiming {
 }
 
 impl ActivePresentationTiming {
-    pub(crate) fn from_frame_start(frame_started_at: Instant) -> Self {
+    #[doc(hidden)]
+    pub fn with_native_timing(
+        mut self,
+        display_tick_at: Option<Instant>,
+        frame_pacing_wait: Duration,
+        vsync_event_queue_delay: Duration,
+        window_dispatch_delay: Duration,
+    ) -> Self {
+        self.display_tick_at = display_tick_at;
+        self.frame_pacing_wait = frame_pacing_wait;
+        self.vsync_event_queue_delay = vsync_event_queue_delay;
+        self.window_dispatch_delay = window_dispatch_delay;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn from_frame_start(frame_started_at: Instant) -> Self {
         Self {
             display_tick_at: None,
             frame_pacing_wait: Duration::ZERO,
@@ -2025,7 +2087,8 @@ impl ActivePresentationTiming {
     }
 }
 
-pub(crate) type SceneAnimationCompletionSender =
+#[doc(hidden)]
+pub type SceneAnimationCompletionSender =
     futures::channel::mpsc::UnboundedSender<SceneAnimationCompletion>;
 
 // On Windows/Linux/FreeBSD the entire presentation payload must be movable to a renderer thread.

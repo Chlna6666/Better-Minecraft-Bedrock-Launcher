@@ -117,7 +117,8 @@ fn store() -> &'static Mutex<Store> {
     STORE.get_or_init(Mutex::default)
 }
 
-pub(crate) fn record(
+#[doc(hidden)]
+pub fn record(
     backend: TextBackend,
     operation: TextOperation,
     wait: Duration,

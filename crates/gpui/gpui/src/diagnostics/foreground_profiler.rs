@@ -678,7 +678,8 @@ fn with_state<R>(f: impl FnOnce(&mut ProfilerState) -> R) -> R {
 }
 
 /// Records the first platform frame request for a dirty generation.
-pub(crate) fn record_frame_request(window_id: u64, dirty_at: Option<Instant>) {
+#[doc(hidden)]
+pub fn record_frame_request(window_id: u64, dirty_at: Option<Instant>) {
     let Some(dirty_at) = dirty_at else {
         return;
     };

@@ -137,7 +137,8 @@ impl DrawableSizeRequest {
 }
 
 #[derive(Clone)]
-pub(crate) struct NovaRendererAtlas(Arc<NovaAtlas>);
+#[doc(hidden)]
+pub struct NovaRendererAtlas(Arc<NovaAtlas>);
 
 /// The owner must distinguish native pacing notifications from resource-retirement retries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,16 +149,19 @@ pub(crate) enum PresentReadiness {
 }
 
 impl NovaRendererAtlas {
-    pub(crate) fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new() -> Self {
         Self(Arc::new(NovaAtlas::new()))
     }
 
-    pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
+    #[doc(hidden)]
+    pub fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.0.clone()
     }
 }
 
-pub(crate) struct NovaRenderer {
+#[doc(hidden)]
+pub struct NovaRenderer {
     memory_profile: crate::diagnostics::MemoryProfileRegistration,
     backend: SharedBackend,
     backend_info: NovaBackendInfo,
@@ -211,6 +215,7 @@ pub(crate) struct NovaRenderer {
     retired_offscreen_targets: Vec<pending_offscreen::RetiredOffscreenTargets>,
     // Scroll texture residency belongs to the same native GPU owner as Root/Filter.
     raster_tiles: gfx_core::RasterTileCache,
+    scroll_tile_budget_sampled_at: Option<Instant>,
     raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
     scroll_raster_resources: Vec<(SubmissionId, scroll_raster::Resources)>,
     scroll_composite_slots: Vec<scroll_raster::CompositeSlot>,
@@ -455,7 +460,8 @@ fn retire_replaced_path_rasterization_resources<D>(
 
 impl NovaRenderer {
     #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-    pub(crate) fn metal_presentation_layer(&self) -> Result<*mut std::ffi::c_void> {
+    #[doc(hidden)]
+    pub fn metal_presentation_layer(&self) -> Result<*mut std::ffi::c_void> {
         let backend = lock_backend(&self.backend);
         let NovaBackend::Metal(device) = &*backend else {
             anyhow::bail!("Nova renderer does not own a Metal swapchain");
@@ -465,7 +471,8 @@ impl NovaRenderer {
     }
 
     #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-    pub(crate) fn set_metal_display_link_attached(&mut self, attached: bool) -> Result<()> {
+    #[doc(hidden)]
+    pub fn set_metal_display_link_attached(&mut self, attached: bool) -> Result<()> {
         let mut backend = lock_backend(&self.backend);
         let NovaBackend::Metal(device) = &mut *backend else {
             anyhow::bail!("Nova renderer does not own a Metal swapchain");
@@ -475,7 +482,8 @@ impl NovaRenderer {
 
     #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
     #[expect(unsafe_code, reason = "AppKit supplies a live drawable for this synchronous callback")]
-    pub(crate) unsafe fn set_metal_display_link_drawable(
+    #[doc(hidden)]
+    pub unsafe fn set_metal_display_link_drawable(
         &mut self, drawable: Option<std::ptr::NonNull<std::ffi::c_void>>,
     ) -> Result<()> {
         let mut backend = lock_backend(&self.backend);
@@ -1281,7 +1289,8 @@ impl NovaRenderer {
     }
 
     /// Present the active immutable scene using a compositor-owned frame timestamp.
-    pub(crate) fn present_active_frame(
+    #[doc(hidden)]
+    pub fn present_active_frame(
         &mut self,
         now: Instant,
         presentation_timing: Option<crate::platform::frame::ActivePresentationTiming>,
@@ -1421,13 +1430,15 @@ impl NovaRenderer {
             .and_then(PresentationPacket::presentation_deadline)
     }
 
-    pub(crate) fn take_animation_completions(
+    #[doc(hidden)]
+    pub fn take_animation_completions(
         &mut self,
     ) -> SmallVec<[crate::SceneAnimationCompletion; 4]> {
         std::mem::take(&mut self.pending_animation_completions)
     }
 
-    pub(crate) fn gpu_specs(&self) -> GpuSpecs {
+    #[doc(hidden)]
+    pub fn gpu_specs(&self) -> GpuSpecs {
         GpuSpecs {
             is_software_emulated: false,
             device_name: self.backend_info.adapter_name().to_string(),
@@ -1436,7 +1447,8 @@ impl NovaRenderer {
         }
     }
 
-    pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
+    #[doc(hidden)]
+    pub fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
         // CPU encoding ownership is independent of submitted native buffers.
         if !matches!(level, GpuiMemoryTrimLevel::Light) {
             self.scroll_outside_root = None;
@@ -1562,7 +1574,8 @@ impl NovaRenderer {
         self.sample_memory(true, None);
     }
 
-    pub(crate) fn destroy(&mut self) {
+    #[doc(hidden)]
+    pub fn destroy(&mut self) {
         if self.destroyed {
             return;
         }

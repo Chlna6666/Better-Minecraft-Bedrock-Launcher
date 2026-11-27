@@ -2,7 +2,8 @@ use super::{Bounds, DevicePixels, Pixels, Point, ScaledPixels, Size, point, px, 
 
 impl Size<DevicePixels> {
     /// Converts the size from physical to logical pixels.
-    pub(crate) fn to_pixels(self, scale_factor: f32) -> Size<Pixels> {
+    #[doc(hidden)]
+    pub fn to_pixels(self, scale_factor: f32) -> Size<Pixels> {
         size(
             px(self.width.0 as f32 / scale_factor),
             px(self.height.0 as f32 / scale_factor),
@@ -12,7 +13,8 @@ impl Size<DevicePixels> {
 
 impl Size<Pixels> {
     /// Converts the size from logical to physical pixels.
-    pub(crate) fn to_device_pixels(self, scale_factor: f32) -> Size<DevicePixels> {
+    #[doc(hidden)]
+    pub fn to_device_pixels(self, scale_factor: f32) -> Size<DevicePixels> {
         size(
             DevicePixels((self.width.0 * scale_factor).round() as i32),
             DevicePixels((self.height.0 * scale_factor).round() as i32),

@@ -103,7 +103,8 @@ pub(super) fn snapshot(metrics: &WindowMetrics) -> VSyncMetricsSnapshot {
     }
 }
 
-pub(crate) fn record_native_vsync_wake(
+#[doc(hidden)]
+pub fn record_native_vsync_wake(
     window_id: u64,
     reported_refresh_period: Option<Duration>,
     reported_composition_period: Option<Duration>,
@@ -131,7 +132,8 @@ pub(crate) fn record_native_vsync_wake(
 }
 
 #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
-pub(crate) fn record_wayland_presentation_feedback(
+#[doc(hidden)]
+pub fn record_wayland_presentation_feedback(
     window_id: u64,
     clock_id: Option<u32>,
     presented: bool,
@@ -153,7 +155,8 @@ pub(crate) fn record_wayland_presentation_feedback(
     }
 }
 
-pub(crate) fn record_present_attempt(window_id: u64) {
+#[doc(hidden)]
+pub fn record_present_attempt(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.active_presentation_attempt_count =
@@ -171,7 +174,8 @@ pub(crate) fn record_present_preflight_deferred(window_id: u64) {
     }
 }
 
-pub(crate) fn record_active_presentation_retry(window_id: u64) {
+#[doc(hidden)]
+pub fn record_active_presentation_retry(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.active_presentation_retry_count =

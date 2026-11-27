@@ -67,7 +67,7 @@ use std::{
 use util::post_inc;
 use util::{ResultExt, measure};
 use uuid::Uuid;
-use winit::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 mod action_bindings;
 mod composite_layer;
@@ -81,7 +81,9 @@ mod draw;
 mod draw_reuse;
 mod element_context;
 mod element_id;
-pub(crate) mod element_work;
+#[doc(hidden)]
+pub mod element_work;
+mod element_states;
 mod elements;
 mod focus;
 mod frame;
@@ -169,14 +171,12 @@ use state::{
     AnimatedImageSlotKey, DirtyFrameDiagnostics, FrameGenerationStats,
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
-pub(crate) use state::{
-    DrawPhase, ElementStateBox, ViewBoundsFrame,
-    ViewDirtyScope,
-};
+pub(crate) use state::{DrawPhase, ViewBoundsFrame, ViewDirtyScope};
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGesture;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) use titlebar::rasterize_platform_title;
+#[doc(hidden)]
+pub use titlebar::rasterize_platform_title;
 use titlebar::{
     glyph_device_origin, resize_edge_cursor_style, resize_edge_hit_test, svg_paint_bounds,
     svg_raster_size,

@@ -17,9 +17,11 @@ pub struct FontId(pub usize);
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub struct FontFamilyId(pub usize);
 
-pub(crate) const SUBPIXEL_VARIANTS_X: u8 = 4;
+#[doc(hidden)]
+pub const SUBPIXEL_VARIANTS_X: u8 = 4;
 
-pub(crate) const SUBPIXEL_VARIANTS_Y: u8 =
+#[doc(hidden)]
+pub const SUBPIXEL_VARIANTS_Y: u8 =
     if cfg!(target_os = "windows") || cfg!(target_os = "linux") {
         1
     } else {
@@ -176,21 +178,34 @@ pub struct TextBackgroundPadding {
 #[repr(C)]
 pub struct GlyphId(pub(crate) u32);
 
+impl GlyphId {
+    /// Creates the identifier returned by the platform font engine.
+    pub const fn from_native(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Returns the native glyph identifier.
+    pub const fn native_id(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug)]
-pub(crate) struct RenderGlyphParams {
-    pub(crate) font_id: FontId,
-    pub(crate) glyph_id: GlyphId,
-    pub(crate) font_size: Pixels,
-    pub(crate) subpixel_variant: Point<u8>,
-    pub(crate) scale_factor: f32,
+#[doc(hidden)]
+pub struct RenderGlyphParams {
+    pub font_id: FontId,
+    pub glyph_id: GlyphId,
+    pub font_size: Pixels,
+    pub subpixel_variant: Point<u8>,
+    pub scale_factor: f32,
     /// Force single-channel coverage when the glyph is composed into a transparent surface.
-    pub(crate) grayscale_antialiasing: bool,
-    pub(crate) is_emoji: bool,
+    pub grayscale_antialiasing: bool,
+    pub is_emoji: bool,
     /// Compatibility storage for the stable vertical raster-frame policy.
     ///
     /// Cache identity must use `raster_policy()` rather than treating this bit as Unicode script
     /// identity. The field remains temporarily while platform producers migrate.
-    pub(crate) is_cjk: bool,
+    pub is_cjk: bool,
 }
 
 impl PartialEq for RenderGlyphParams {
@@ -279,32 +294,32 @@ impl Font {
 pub struct FontMetrics {
     /// The number of font units that make up the "em square",
     /// a scalable grid for determining the size of a typeface.
-    pub(crate) units_per_em: u32,
+    pub units_per_em: u32,
 
     /// The vertical distance from the baseline of the font to the top of the glyph covers.
-    pub(crate) ascent: f32,
+    pub ascent: f32,
 
     /// The vertical distance from the baseline of the font to the bottom of the glyph covers.
-    pub(crate) descent: f32,
+    pub descent: f32,
 
     /// The recommended additional space to add between lines of type.
-    pub(crate) line_gap: f32,
+    pub line_gap: f32,
 
     /// The suggested position of the underline.
-    pub(crate) underline_position: f32,
+    pub underline_position: f32,
 
     /// The suggested thickness of the underline.
-    pub(crate) underline_thickness: f32,
+    pub underline_thickness: f32,
 
     /// The height of a capital letter measured from the baseline of the font.
-    pub(crate) cap_height: f32,
+    pub cap_height: f32,
 
     /// The height of a lowercase x.
-    pub(crate) x_height: f32,
+    pub x_height: f32,
 
     /// The outer limits of the area that the font covers.
     /// Corresponds to the xMin / xMax / yMin / yMax values in the OpenType `head` table
-    pub(crate) bounding_box: Bounds<f32>,
+    pub bounding_box: Bounds<f32>,
 }
 
 impl FontMetrics {
@@ -350,7 +365,8 @@ impl FontMetrics {
 }
 
 #[allow(unused)]
-pub(crate) fn fallback_font_name<'a>(name: &'a str, system: &'a str) -> &'a str {
+#[doc(hidden)]
+pub fn fallback_font_name<'a>(name: &'a str, system: &'a str) -> &'a str {
     // Note: the "Zed Plex" fonts were deprecated as we are not allowed to use "Plex"
     // in a derived font name. They are essentially indistinguishable from IBM Plex/Lilex,
     // and so retained here for backward compatibility.

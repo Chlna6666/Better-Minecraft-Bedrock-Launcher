@@ -29,7 +29,8 @@ pub(super) fn snapshot(metrics: &WindowMetrics) -> BackendReadyMetricsSnapshot {
     }
 }
 
-pub(crate) fn record_backend_ready_wake(
+#[doc(hidden)]
+pub fn record_backend_ready_wake(
     window_id: u64,
     enqueued_at: Instant,
     event_received_at: Instant,
