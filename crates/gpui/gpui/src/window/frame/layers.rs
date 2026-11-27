@@ -469,6 +469,36 @@ impl LayerFrame {
         Some((&self.content.operations, origin))
     }
 
+    /// Test changed logical atlas IDs against the exact tile footprint in
+    /// capture coordinates. Called only for affected layer sources on an
+    /// atlas damage epoch, never on the usual resident-hit path.
+    pub(crate) fn raster_tile_uses_atlas_damage(&self, rect: [i64; 4], dirty: &FxHashSet<u32>) -> bool {
+        let Some((operations, origin)) = self.raster_source_for_tile(rect) else { return true; };
+        let Some(width) = rect[2].checked_sub(rect[0]) else { return true; };
+        let Some(height) = rect[3].checked_sub(rect[1]) else { return true; };
+        // The direct raster admission uses bounded integral f32 coordinates.
+        // Do not certify an unrelated tile with lossy coordinate arithmetic.
+        if width <= 0 || height <= 0 || width > 2_097_152 || height > 2_097_152
+            || origin.iter().any(|&v| i64::from(v).abs() > 1_048_576)
+        {
+            return true;
+        }
+        let region = Bounds::new(point(ScaledPixels(origin[0] as f32), ScaledPixels(origin[1] as f32)),
+            crate::size(ScaledPixels(width as f32), ScaledPixels(height as f32)));
+        operations.iter().any(|operation| {
+            let PaintOperation::Primitive(primitive) = operation else {
+                return !matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer);
+            };
+            let id = match primitive {
+                Primitive::MonochromeSprite(sprite) => sprite.tile.tile_id.0,
+                Primitive::PolychromeSprite(sprite) => sprite.tile.tile_id.0,
+                _ => return false,
+            };
+            dirty.contains(&id) && static_raster_bounds(primitive)
+                .is_none_or(|bounds| bounds.intersects(&region))
+        })
+    }
+
     /// Only adjacent generations can inherit a visible-source tile. Direct
     /// overscan sources remain in the same generation until content changes.
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {

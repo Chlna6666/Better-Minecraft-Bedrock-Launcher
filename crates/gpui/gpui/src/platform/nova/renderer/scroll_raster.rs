@@ -701,18 +701,22 @@ impl NovaRenderer {
                 _ => None,
             };
             if let Some(dirty) = dirty {
-                // Filter once per source, not once per tile. Unrelated layers
-                // still adopt exact geometric generation transitions.
+                // Filter once per source. Only dirty sources need a
+                // geometric dependency query, and only on a damage epoch.
                 let layers: FxHashMap<_, _> = paint.layers.frames.iter()
-                    .filter(|layer| dirty.is_empty() || !layer.raster_atlas_tiles().iter()
-                        .any(|(_, id)| dirty.contains(id)))
-                    .map(|layer| (layer.id, layer)).collect();
+                    .map(|layer| (layer.id, (layer, !dirty.is_empty() && layer.raster_atlas_tiles().iter()
+                        .any(|(_, id)| dirty.contains(id))))).collect();
                 self.raster_tiles.reconcile_tiles(|key, generation, raster| {
-                    let layer = layers.get(&key.layer)?;
+                    let (layer, affected) = layers.get(&key.layer)?;
                     let x = i64::from(raster.origin.x);
                     let y = i64::from(raster.origin.y);
-                    layer.adopt_tile(generation, [x, y, x + i64::from(raster.extent.width()),
-                        y + i64::from(raster.extent.height())], scale)
+                    let rect = [x, y, x + i64::from(raster.extent.width()),
+                        y + i64::from(raster.extent.height())];
+                    let adopted = layer.adopt_tile(generation, rect, scale)?;
+                    if *affected && layer.raster_tile_uses_atlas_damage(rect, &dirty) {
+                        return None;
+                    }
+                    Some(adopted)
                 });
             } else {
                 self.raster_tiles.invalidate_all();
