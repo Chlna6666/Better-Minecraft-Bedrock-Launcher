@@ -15,6 +15,7 @@ pub(super) struct ScrollPaint {
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
     raster_eligible: bool,
+    raster_quad_only: bool,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
@@ -96,9 +97,13 @@ impl ScrollPaint {
     fn new(origin: Point<Pixels>, coverage: Bounds<ScaledPixels>, mut operations: Operations) -> Self {
         operations.finish();
         // Qualify once, not on each scrolled frame or GPU owner request.
+        let mut raster_quad_only = true;
         let raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len())
-            && operations.iter().all(|operation| super::frame::static_scroll_raster_operation(operation, coverage));
+            && operations.iter().all(|operation| {
+                raster_quad_only &= !matches!(operation, PaintOperation::Primitive(primitive) if !matches!(primitive, Primitive::Quad(_)));
+                super::frame::static_scroll_raster_operation(operation, coverage)
+            });
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
             Self::blocks(&operations).map(Self::block_bounds).collect()
         } else {
@@ -109,13 +114,14 @@ impl ScrollPaint {
             coverage,
             operations: Arc::new(operations),
             raster_eligible,
+            raster_quad_only,
             block_bounds,
         }
     }
 
     /// The GPU owner may share the frozen pages without retaining UI state.
-    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>)> {
-        self.raster_eligible.then_some((&self.operations, self.coverage))
+    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>, bool)> {
+        self.raster_eligible.then_some((&self.operations, self.coverage, self.raster_quad_only))
     }
 
     fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {

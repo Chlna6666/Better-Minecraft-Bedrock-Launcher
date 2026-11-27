@@ -67,6 +67,7 @@ impl LayerContent {
         delta: Point<ScaledPixels>,
         translation: Option<[i32; 2]>,
         source_viewport: ContentMask<ScaledPixels>,
+        quad_only: bool,
     ) -> Option<Self> {
         let [x, y] = translation?;
         // Capture coordinates = stable content coordinates + source origin.
@@ -87,7 +88,7 @@ impl LayerContent {
         Some(Self {
             operations: Arc::clone(operations),
             parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
-            raster: Some(ContentRaster { source_origin, coverage }),
+            raster: Some(ContentRaster { source_origin, coverage, quad_only }),
         })
     }
 
@@ -187,6 +188,7 @@ impl LayerContent {
 struct ContentRaster {
     source_origin: [i32; 2],
     coverage: Bounds<ScaledPixels>,
+    quad_only: bool,
 }
 
 impl ContentRaster {
@@ -327,6 +329,8 @@ pub(crate) struct LayerFrame {
     /// Stable within one mounted lifetime; not a transient HitboxId.
     pub(crate) id: u64,
     pub(crate) generation: u64,
+    /// True only when all root drawing outside this fragment is scope bookkeeping.
+    whole_root: bool,
     damage: LayerDamage,
     /// Certified coverage shared with the immediately previous generation,
     /// in stable content-space device pixels.
@@ -374,6 +378,13 @@ impl LayerFrame {
             LayerDamage::Full
         };
         (damage, Some(common))
+    }
+
+    /// Initial direct compositor admission. No root primitive can be omitted
+    /// and no glyph/atlas dependency is hidden from the normal renderer.
+    pub(crate) fn root_quad_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
+        (self.whole_root && self.content.raster?.quad_only)
+            .then_some((self.source_viewport.bounds, self.translation?))
     }
 
     /// Borrow the original capture, along with the signed projection origin
@@ -453,11 +464,12 @@ impl SceneLayers {
         assert!(operations.iter().all(|op| static_scroll_raster_operation(op, coverage)));
         let operations = Arc::new(operations);
         let content = LayerContent::from_scroll(
-            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.),
+            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), true,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         self.frames.push(LayerFrame {
             layout_key: 1, id: 1, generation: 1,
+            whole_root: true,
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
             viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
@@ -497,10 +509,16 @@ impl SceneLayers {
             // current native drawable (which can already have resized).
             let direct = if record.rows.is_empty() && !range.is_empty() {
                 scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
-                    .and_then(|(operations, coverage, delta)| LayerContent::from_scroll(
-                        operations, coverage, delta, record.translation, record.source_viewport,
+                     .and_then(|(operations, coverage, delta, quad_only)| LayerContent::from_scroll(
+                        operations, coverage, delta, record.translation, record.source_viewport, quad_only,
                     ))
             } else { None };
+            let whole_root = direct.as_ref().is_some_and(|content| content.raster.is_some_and(|raster| raster.quad_only))
+                && scene.animation_values.is_empty()
+                && [0..range.start, range.end..scene.len()].into_iter().all(|outside| {
+                    scene.paint_operations.get_range(outside).is_some_and(|operations| operations.iter().all(|operation|
+                        matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer)))
+                });
             let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
             let (id, generation, content, damage, previous_coverage) = if let Some(previous) = previous {
@@ -534,7 +552,7 @@ impl SceneLayers {
                 (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, damage, previous_coverage,
+                layout_key: key, id, generation, whole_root, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
             });
@@ -552,6 +570,7 @@ mod tests {
     fn overscan_source_maps_signed_content_tiles_without_viewport_projection() {
         let source = ContentRaster {
             source_origin: [0, -128],
+            quad_only: true,
             coverage: Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
                 size(ScaledPixels(512.), ScaledPixels(1024.))),
         };
@@ -577,9 +596,9 @@ mod tests {
         operations.finish();
         let operations = Arc::new(operations);
         let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
-            Some([0, -128]), viewport).unwrap();
+            Some([0, -128]), viewport, true).unwrap();
         let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
-            Some([0, -192]), viewport).unwrap();
+            Some([0, -192]), viewport, true).unwrap();
         assert!(Arc::ptr_eq(&before.operations, &after.operations));
         assert!(before.raster == after.raster);
         assert_eq!(after.raster.unwrap().source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
@@ -593,6 +612,7 @@ mod tests {
         ));
         let frame = LayerFrame {
             layout_key: 1, id: 1, generation: 4,
+            whole_root: false,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),
                 size(ScaledPixels(10.), ScaledPixels(10.)),

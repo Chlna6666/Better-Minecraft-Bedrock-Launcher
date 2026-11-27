@@ -41,7 +41,7 @@ impl ScrollViews {
         range: &Range<usize>,
         viewport: ContentMask<Pixels>,
         source_viewport: ContentMask<crate::ScaledPixels>,
-    ) -> Option<(&Arc<crate::scene::Operations>, Bounds<crate::ScaledPixels>, Point<crate::ScaledPixels>)> {
+    ) -> Option<(&Arc<crate::scene::Operations>, Bounds<crate::ScaledPixels>, Point<crate::ScaledPixels>, bool)> {
         if self.views.is_empty() {
             return None;
         }
@@ -61,8 +61,8 @@ impl ScrollViews {
                 return None;
             }
             let delta = view.source.translation(record.context.element_offset, scale)?;
-            let (operations, coverage) = view.source.raster_operations()?;
-            Some((operations, coverage, delta))
+            let (operations, coverage, quad_only) = view.source.raster_operations()?;
+            Some((operations, coverage, delta, quad_only))
         });
         let source = candidates.next()?;
         candidates.next().is_none().then_some(source)
