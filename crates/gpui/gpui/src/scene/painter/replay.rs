@@ -21,7 +21,7 @@ impl ReplayAnimationReferences {
         }
     }
 
-    fn record(&mut self, primitive: &Primitive, previous: &Scene) {
+    fn record(&mut self, primitive: PrimitiveRef<'_>, previous: &Scene) {
         if matches!(self, Self::None) {
             return;
         }
@@ -72,7 +72,7 @@ impl ReplayAnimationReferences {
 }
 
 impl Painter {
-    fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
+    fn replay_primitive(&mut self, primitive: PrimitiveRef<'_>, retain_order: bool) {
         // A retained-order proof belongs to the exact ordering prefix that produced it.
         // If an enclosing layer was rebuilt with a different DrawOrder, keeping the
         // primitive's old order would mix two frame-local ordering domains. Rebind to
@@ -99,7 +99,7 @@ impl Painter {
         };
         self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(1);
         let primitive_kind = self.push_replayed_primitive(primitive, order);
-        let mut primitive = primitive.clone();
+        let mut primitive = primitive.to_primitive();
         primitive.set_order(order);
         if let (ScenePrimitiveKind::Path, Primitive::Path(path)) = (primitive_kind, &mut primitive)
         {
@@ -111,66 +111,66 @@ impl Painter {
     }
     fn push_replayed_primitive(
         &mut self,
-        primitive: &Primitive,
+        primitive: PrimitiveRef<'_>,
         order: DrawOrder,
     ) -> ScenePrimitiveKind {
         match primitive {
-            Primitive::Shadow(shadow) => {
+            PrimitiveRef::Shadow(shadow) => {
                 let mut shadow = *shadow;
                 shadow.order = order;
                 self.scene.shadows.push(shadow);
                 ScenePrimitiveKind::Shadow
             }
-            Primitive::Quad(quad) => {
+            PrimitiveRef::Quad(quad) => {
                 let mut quad = *quad;
                 quad.order = order;
                 self.scene.quads.push(quad);
                 ScenePrimitiveKind::Quad
             }
-            Primitive::Path(path) => {
+            PrimitiveRef::Path(path) => {
                 let mut path = path.clone();
                 path.order = order;
                 path.id = PathId(self.scene.paths.len());
                 self.scene.paths.push(path);
                 ScenePrimitiveKind::Path
             }
-            Primitive::Underline(underline) => {
+            PrimitiveRef::Underline(underline) => {
                 let mut underline = *underline;
                 underline.order = order;
                 self.scene.underlines.push(underline);
                 ScenePrimitiveKind::Underline
             }
-            Primitive::MonochromeSprite(sprite) => {
+            PrimitiveRef::MonochromeSprite(sprite) => {
                 let mut sprite = *sprite;
                 sprite.order = order;
                 self.scene.monochrome_sprites.push(sprite);
                 ScenePrimitiveKind::MonochromeSprite
             }
-            Primitive::PolychromeSprite(sprite) => {
+            PrimitiveRef::PolychromeSprite(sprite) => {
                 let mut sprite = *sprite;
                 sprite.order = order;
                 self.scene.polychrome_sprites.push(sprite);
                 ScenePrimitiveKind::PolychromeSprite
             }
-            Primitive::Surface(surface) => {
+            PrimitiveRef::Surface(surface) => {
                 let mut surface = surface.clone();
                 surface.order = order;
                 self.scene.surfaces.push(surface);
                 ScenePrimitiveKind::Surface
             }
-            Primitive::BackdropBlur(blur) => {
+            PrimitiveRef::BackdropBlur(blur) => {
                 let mut blur = blur.clone();
                 blur.order = order;
                 self.scene.backdrop_blurs.push(blur);
                 ScenePrimitiveKind::BackdropBlur
             }
-            Primitive::Blur(blur) => {
+            PrimitiveRef::Blur(blur) => {
                 let mut blur = blur.clone();
                 blur.order = order;
                 self.scene.blurs.push(blur);
                 ScenePrimitiveKind::Blur
             }
-            Primitive::RendererExtension(extension) => {
+            PrimitiveRef::RendererExtension(extension) => {
                 let mut extension = extension.clone();
                 extension.order = order;
                 self.scene.renderer_extensions.push(extension);
@@ -213,8 +213,8 @@ impl Painter {
         let mut index = range.start;
         let mut shadow_scan_end = index;
         let mut spans = quad_spans.into_iter().peekable();
-        let mut runs = prev_scene.paint_operations.range(range.clone()).slices();
-        let mut run: &[PaintOperation] = &[];
+        let mut runs = prev_scene.paint_operations.range(range.clone()).runs();
+        let mut run = super::super::operations::OperationRun::default();
         let mut run_end = range.start;
         while index < range.end {
             // Shared Quad/Shadow spans can jump across several backing runs.
@@ -223,11 +223,11 @@ impl Painter {
                 run = runs.next().expect("validated replay range");
                 run_end += run.len();
             }
-            let operation = &run[index - (run_end - run.len())];
+            let operation = run.get(index - (run_end - run.len())).expect("validated replay operation");
             if index >= shadow_scan_end
                 && retain_order
                 && !self.retained_prefix_invalid
-                && matches!(operation, PaintOperation::Primitive(Primitive::Shadow(_)))
+                && matches!(operation, PaintOperationRef::Primitive(PrimitiveRef::Shadow(_)))
             {
                 match self.replay_shadows(prev_scene, index..range.end, previous_tree) {
                     ShadowReplay::Shared(end) => {
@@ -265,13 +265,13 @@ impl Painter {
                 let end = spans.peek().map_or(run_end, |span| run_end.min(span.paint_range.start));
                 let start = index - (run_end - run.len());
                 if let Some(end) = self.replay_static_primitive_run(
-                    prev_scene, index, &run[start..start + end - index], previous_tree,
+                    prev_scene, index, run.range(start..start + end - index), previous_tree,
                 ) {
                     index = end;
                     continue;
                 }
             }
-            if let PaintOperation::StartBlur(config) = operation
+            if let PaintOperationRef::StartBlur(config) = operation
                 && let Some(end) = self.replay_static_capture(
                     prev_scene, index..range.end, config,
                 )
@@ -281,7 +281,7 @@ impl Painter {
             }
             index += 1;
             match operation {
-                PaintOperation::Primitive(primitive) => {
+                PaintOperationRef::Primitive(primitive) => {
                     // Shared Quad and Shadow runs are qualified as static.
                     // All remaining operations are visited here exactly once,
                     // including primitives that are subsequently clipped out.
@@ -294,14 +294,14 @@ impl Painter {
                             let captured_primitive = capture
                                 .scene
                                 .paint_operations
-                                .get(operation_start)
+                                .view(operation_start)
                                 .and_then(|operation| match operation {
-                                    PaintOperation::Primitive(primitive) => Some(primitive.clone()),
-                                    PaintOperation::StartLayer(_)
-                                    | PaintOperation::EndLayer
-                                    | PaintOperation::StartBlur(_)
-                                    | PaintOperation::EndBlur
-                                    | PaintOperation::DeferredScroll(_) => None,
+                                    PaintOperationRef::Primitive(primitive) => Some(primitive.to_primitive()),
+                                    PaintOperationRef::StartLayer(_)
+                                    | PaintOperationRef::EndLayer
+                                    | PaintOperationRef::StartBlur(_)
+                                    | PaintOperationRef::EndBlur
+                                    | PaintOperationRef::DeferredScroll(_) => None,
                                 });
                             (captured_primitive, capture.scene.retained_prefix_invalid)
                         };
@@ -317,7 +317,7 @@ impl Painter {
                         self.replay_primitive(primitive, retain_order);
                     }
                 }
-                PaintOperation::DeferredScroll(placement) => {
+                PaintOperationRef::DeferredScroll(placement) => {
                     // UI retention carries the one-operation placement.
                     // The ordinary owner reconstruction deliberately has
                     // no previous UI Painter and expands it instead.
@@ -326,7 +326,7 @@ impl Painter {
                         placement.replay(self);
                     }
                 }
-                PaintOperation::StartLayer(bounds) => {
+                PaintOperationRef::StartLayer(bounds) => {
                     if let Some(capture) = self.blur_captures.last_mut() {
                         capture.scene.push_replayed_layer(*bounds);
                         self.scene
@@ -336,7 +336,7 @@ impl Painter {
                         self.push_replayed_layer(*bounds);
                     }
                 }
-                PaintOperation::EndLayer => {
+                PaintOperationRef::EndLayer => {
                     if let Some(capture) = self.blur_captures.last_mut() {
                         capture.scene.pop_replayed_layer();
                         self.scene.paint_operations.push(PaintOperation::EndLayer);
@@ -344,7 +344,7 @@ impl Painter {
                         self.pop_replayed_layer();
                     }
                 }
-                PaintOperation::StartBlur(config) => {
+                PaintOperationRef::StartBlur(config) => {
                     // Replay must preserve the same published content owner as
                     // a normal isolated-layer paint. The closing capture still
                     // proves equality before it adopts this candidate.
@@ -356,7 +356,7 @@ impl Painter {
                         self.begin_blur(config.clone());
                     }
                 }
-                PaintOperation::EndBlur => self.end_blur(),
+                PaintOperationRef::EndBlur => self.end_blur(),
             }
         }
         animation_references.append(prev_scene, &mut self.scene.animation_values);
@@ -382,28 +382,28 @@ impl Painter {
         &mut self,
         previous: &Scene,
         start: usize,
-        operations: &[PaintOperation],
+        operations: super::super::operations::OperationRun<'_>,
         previous_tree: Option<&BoundsTree<ScaledPixels>>,
     ) -> Option<usize> {
         if !self.blur_captures.is_empty() {
             return None;
         }
         let layer_order = self.layer_stack.last().copied();
-        let static_primitive = |operation: &PaintOperation| {
-            let PaintOperation::Primitive(primitive) = operation else { return false; };
-            matches!(primitive, Primitive::Quad(_) | Primitive::Underline(_)
-                | Primitive::MonochromeSprite(_) | Primitive::PolychromeSprite(_))
+        let static_primitive = |operation: PaintOperationRef<'_>| {
+            let PaintOperationRef::Primitive(primitive) = operation else { return false; };
+            matches!(primitive, PrimitiveRef::Quad(_) | PrimitiveRef::Underline(_)
+                | PrimitiveRef::MonochromeSprite(_) | PrimitiveRef::PolychromeSprite(_))
                 && primitive.animation_id().is_none()
                 && layer_order.is_none_or(|order| order == primitive.order())
                 && !Self::ordering_bounds(primitive).is_empty()
         };
-        let count = operations.iter().take_while(|op| static_primitive(op)).count();
+        let count = operations.iter().take_while(|op| static_primitive(*op)).count();
         if count == 0 {
             return None;
         }
         let range = start..start + count;
-        let primitives = || operations[..count].iter().map(|operation| match operation {
-            PaintOperation::Primitive(primitive) => primitive,
+        let primitives = || operations.range(0..count).iter().map(|operation| match operation {
+            PaintOperationRef::Primitive(primitive) => primitive,
             _ => unreachable!("qualified static primitive"),
         });
         if layer_order.is_none() {
@@ -419,14 +419,14 @@ impl Painter {
         // payload. Partial equal-order groups must keep the copy fallback.
         let mut cursor = 0;
         while cursor < count {
-            if matches!(&operations[cursor], PaintOperation::Primitive(Primitive::MonochromeSprite(_))) {
-                let end = cursor + operations[cursor..count].iter().take_while(|op| {
-                    matches!(op, PaintOperation::Primitive(Primitive::MonochromeSprite(_)))
+            if matches!(operations.get(cursor).expect("qualified operation"), PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_))) {
+                let end = cursor + operations.range(cursor..count).iter().take_while(|op| {
+                    matches!(op, PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_)))
                 }).count();
                 let mut first = DrawOrder::MAX;
                 let mut last = DrawOrder::MIN;
-                for op in &operations[cursor..end] {
-                    let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = op else { unreachable!() };
+                for op in operations.range(cursor..end).iter() {
+                    let PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) = op else { unreachable!() };
                     first = first.min(sprite.order);
                     last = last.max(sprite.order);
                 }
@@ -438,14 +438,14 @@ impl Painter {
                     cursor = end;
                     continue;
                 }
-                for op in &operations[cursor..end] {
-                    let PaintOperation::Primitive(primitive) = op else { unreachable!() };
+                for op in operations.range(cursor..end).iter() {
+                    let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
                     self.push_replayed_primitive(primitive, primitive.order());
                 }
                 cursor = end;
                 continue;
             }
-            let PaintOperation::Primitive(primitive) = &operations[cursor] else { unreachable!() };
+            let PaintOperationRef::Primitive(primitive) = operations.get(cursor).expect("qualified operation") else { unreachable!() };
             self.push_replayed_primitive(primitive, primitive.order());
             cursor += 1;
         }
@@ -502,7 +502,7 @@ impl Painter {
         }
 
         let primitive = Primitive::from(blur.clone());
-        let new_order = self.order_for_primitive(&primitive)?;
+        let new_order = self.order_for_primitive(primitive.as_ref())?;
         if new_order != order {
             self.retained_prefix_invalid = true;
         }
@@ -562,8 +562,8 @@ impl Painter {
             );
         }
         #[cfg(test)]
-        assert!(operations.iter().all(|operation| matches!(operation,
-            PaintOperation::Primitive(Primitive::Quad(quad))
+        assert!(operations.views().all(|operation| matches!(operation,
+            PaintOperationRef::Primitive(PrimitiveRef::Quad(quad))
                 if quad.animation_id.is_none()
                     && self.layer_stack.last().is_none_or(|order| *order == quad.order)
         )));
@@ -602,8 +602,8 @@ impl Painter {
         let mut count = 0;
         let mut first = DrawOrder::MAX;
         let mut last = DrawOrder::MIN;
-        for operation in previous.paint_operations.range(range.clone()).iter() {
-            let PaintOperation::Primitive(Primitive::Shadow(shadow)) = operation else {
+        for operation in previous.paint_operations.range(range.clone()).views() {
+            let PaintOperationRef::Primitive(PrimitiveRef::Shadow(shadow)) = operation else {
                 break;
             };
             if shadow.animation_id.is_some()
@@ -648,8 +648,8 @@ impl Painter {
         previous_tree: Option<&BoundsTree<ScaledPixels>>,
     ) -> ShadowReplay {
         #[cfg(test)]
-        assert!(previous.paint_operations.range(paint_range.clone()).iter().all(|op| {
-            matches!(op, PaintOperation::Primitive(Primitive::Shadow(shadow))
+        assert!(previous.paint_operations.range(paint_range.clone()).views().all(|op| {
+            matches!(op, PaintOperationRef::Primitive(PrimitiveRef::Shadow(shadow))
                 if shadow.animation_id.is_none())
         }));
         if self.layer_stack.is_empty() {
@@ -683,21 +683,21 @@ impl Painter {
             return false;
         };
 
-        current_prefix.matches_by(previous_prefix, ordering_operations_match)
+        current_prefix.matches_views(previous_prefix, ordering_operations_match)
     }
 }
-fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
+fn ordering_operations_match(current: PaintOperationRef<'_>, previous: PaintOperationRef<'_>) -> bool {
     match (current, previous) {
-        (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
+        (PaintOperationRef::Primitive(current), PaintOperationRef::Primitive(previous)) => {
             current.order() == previous.order()
                 && Painter::ordering_bounds(current) == Painter::ordering_bounds(previous)
         }
-        (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
+        (PaintOperationRef::StartLayer(current), PaintOperationRef::StartLayer(previous)) => {
             current == previous
         }
-        (PaintOperation::EndLayer, PaintOperation::EndLayer)
-        | (PaintOperation::EndBlur, PaintOperation::EndBlur) => true,
-        (PaintOperation::StartBlur(current), PaintOperation::StartBlur(previous)) => {
+        (PaintOperationRef::EndLayer, PaintOperationRef::EndLayer)
+        | (PaintOperationRef::EndBlur, PaintOperationRef::EndBlur) => true,
+        (PaintOperationRef::StartBlur(current), PaintOperationRef::StartBlur(previous)) => {
             current == previous
         }
         _ => false,

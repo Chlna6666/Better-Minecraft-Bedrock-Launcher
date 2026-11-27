@@ -1,6 +1,7 @@
 //! Content validation for retained filter sources, independent of window damage.
 use crate::scene::geometry::is_solid_quad;
-use crate::{DrawOrder, PaintOperation, Primitive, Scene, SceneAnimationValue};
+use crate::{DrawOrder, Scene, SceneAnimationValue};
+use crate::scene::{PaintOperationRef, PrimitiveRef};
 use std::ops::Range;
 
 const MIN_RETAINED_QUADS: usize = 32;
@@ -53,14 +54,14 @@ impl<'a> RetainedChunkPlanner<'a> {
     /// Rejects animated, mixed-state, captured, incomplete or nonexclusive ranges.
     pub(crate) fn prove(&mut self, range: Range<usize>) -> Option<RetainedChunkProof> {
         let operations = self.scene.paint_operations.get_range(range.clone())?;
-        let first_operation = operations.iter().next()?;
+        let first_operation = operations.views().next()?;
         let is_quad = matches!(
             first_operation,
-            PaintOperation::Primitive(Primitive::Quad(_))
+            PaintOperationRef::Primitive(PrimitiveRef::Quad(_))
         );
         let is_monochrome_sprite = matches!(
             first_operation,
-            PaintOperation::Primitive(Primitive::MonochromeSprite(_))
+            PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_))
         );
         if !is_quad && !is_monochrome_sprite {
             return None;
@@ -135,9 +136,9 @@ impl<'a> RetainedChunkPlanner<'a> {
                 let mut orders: Vec<_> = self
                     .scene
                     .paint_operations
-                    .iter()
+                    .views()
                     .filter_map(|operation| match operation {
-                        PaintOperation::Primitive(primitive) => Some(primitive.order()),
+                        PaintOperationRef::Primitive(primitive) => Some(primitive.order()),
                         _ => None,
                     })
                     .collect();
@@ -148,12 +149,12 @@ impl<'a> RetainedChunkPlanner<'a> {
         }
         self.scene
             .paint_operations
-            .iter()
+            .views()
             .enumerate()
             .all(|(index, operation)| {
                 range.contains(&index)
                     || match operation {
-                        PaintOperation::Primitive(primitive) => {
+                        PaintOperationRef::Primitive(primitive) => {
                             primitive.order() < first || primitive.order() > last
                         }
                         _ => true,
@@ -168,8 +169,8 @@ fn static_quad_orders(
     let mut first = DrawOrder::MAX;
     let mut last = DrawOrder::MIN;
     let mut is_solid = None;
-    for operation in operations.iter() {
-        let PaintOperation::Primitive(Primitive::Quad(quad)) = operation else {
+    for operation in operations.views() {
+        let PaintOperationRef::Primitive(PrimitiveRef::Quad(quad)) = operation else {
             return None;
         };
         let solid = is_solid_quad(quad);
@@ -195,8 +196,8 @@ fn static_monochrome_sprite_orders(
     let mut last = DrawOrder::MIN;
     let mut texture_id = None;
     let mut sampling = None;
-    for operation in operations.iter() {
-        let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = operation else {
+    for operation in operations.views() {
+        let PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) = operation else {
             return None;
         };
         if sprite.animation_id.is_some()
@@ -261,7 +262,7 @@ pub(crate) fn filter_source_matches(
     if animation_values == previous_animation_values {
         return scene
             .paint_operations
-            .matches_by(&previous.paint_operations, |current, old| {
+            .matches_views(&previous.paint_operations, |current, old| {
                 current.visually_eq(old)
             });
     }
@@ -271,8 +272,8 @@ pub(crate) fn filter_source_matches(
 
     for (current, old) in scene
         .paint_operations
-        .iter()
-        .zip(previous.paint_operations.iter())
+        .views()
+        .zip(previous.paint_operations.views())
     {
         if !current.visually_eq(old) {
             return false;
@@ -282,8 +283,8 @@ pub(crate) fn filter_source_matches(
         // retain identical static bytes. Traverse it before deciding to
         // reuse the parent filter result.
         if let (
-            PaintOperation::Primitive(Primitive::Blur(current_blur)),
-            PaintOperation::Primitive(Primitive::Blur(previous_blur)),
+            PaintOperationRef::Primitive(PrimitiveRef::Blur(current_blur)),
+            PaintOperationRef::Primitive(PrimitiveRef::Blur(previous_blur)),
         ) = (current, old)
             && !crate::paint::retention::filter_source_matches(
                 &current_blur.content,
@@ -295,9 +296,9 @@ pub(crate) fn filter_source_matches(
             return false;
         }
         let animation_id = match current {
-            PaintOperation::Primitive(primitive) => primitive.animation_id(),
-            PaintOperation::StartBlur(blur) => blur.animation_id,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => {
+            PaintOperationRef::Primitive(primitive) => primitive.animation_id(),
+            PaintOperationRef::StartBlur(blur) => blur.animation_id,
+            PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer | PaintOperationRef::EndBlur | PaintOperationRef::DeferredScroll(_) => {
                 None
             }
         };

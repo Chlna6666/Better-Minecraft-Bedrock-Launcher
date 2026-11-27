@@ -1,5 +1,5 @@
 //! Ordered Paint storage; shared payloads do not retain earlier Scenes.
-use super::PaintOperation;
+use super::{PaintOperation, PaintOperationRef};
 use std::{
     ops::{Index, Range},
     sync::Arc,
@@ -38,6 +38,28 @@ pub(crate) struct OperationRange<'a> {
     operations: &'a Operations,
     start: usize,
     end: usize,
+}
+
+/// A logical range within a backing owner, independent of its storage representation.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OperationRun<'a> {
+    operations: &'a [PaintOperation],
+}
+
+impl<'a> OperationRun<'a> {
+    pub(crate) fn len(self) -> usize { self.operations.len() }
+
+    pub(crate) fn get(self, index: usize) -> Option<PaintOperationRef<'a>> {
+        self.operations.get(index).map(PaintOperation::as_ref)
+    }
+
+    pub(crate) fn range(self, range: Range<usize>) -> Self {
+        Self { operations: &self.operations[range] }
+    }
+
+    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'a>> + Clone {
+        self.operations.iter().map(PaintOperation::as_ref)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -241,6 +263,21 @@ impl Operations {
         self.all().iter()
     }
 
+    pub(crate) fn view(&self, index: usize) -> Option<PaintOperationRef<'_>> {
+        self.get(index).map(PaintOperation::as_ref)
+    }
+
+    pub(crate) fn views(&self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'_>> + Clone {
+        self.all().views()
+    }
+
+    pub(crate) fn matches_views(
+        &self, other: &Self,
+        compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
+    ) -> bool {
+        self.all().matches_views(other.all(), compare)
+    }
+
     /// Compares ordered Paint operations while skipping ranges that both generations share.
     ///
     /// A retained replay can rebuild a Scene from unchanged immutable operation segments plus a
@@ -272,7 +309,7 @@ impl Operations {
 
         let mut paint_matches = true;
         let mut batch_topology_matches = true;
-        let operations_match = self.for_each_unshared_pair(other, |left, right| {
+        let operations_match = self.matches_views(other, |left, right| {
             if paint_matches && left.same_paint(right) {
                 return true;
             }
@@ -465,6 +502,21 @@ impl<'a> OperationRange<'a> {
             end: self.start + range.end,
         }
     }
+    pub(crate) fn runs(self) -> impl DoubleEndedIterator<Item = OperationRun<'a>> + Clone {
+        self.slices().map(|operations| OperationRun { operations })
+    }
+
+    pub(crate) fn views(self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'a>> + Clone {
+        self.runs().flat_map(OperationRun::iter)
+    }
+
+    pub(crate) fn matches_views(
+        self, other: OperationRange<'_>,
+        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
+    ) -> bool {
+        self.matches_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
+    }
+
     /// Compare logical ranges using their immutable backing slices as an
     /// exact proof. Pending tails are compared without freezing the builder.
     pub(crate) fn matches_by(

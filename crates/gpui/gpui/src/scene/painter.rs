@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
     BlurCapture, DrawOrder, PaintBlur, PaintOperation, PathId, PreparedBackdropBlurGroup,
-    PreparedQuadRun, PreparedSceneBatch, Primitive, PrimitiveBatch, SceneAnimationId,
+    PreparedQuadRun, PreparedSceneBatch, Primitive, PrimitiveBatch, PrimitiveRef, PaintOperationRef, SceneAnimationId,
     SceneAnimationValue, blur_influence_radius,
 };
 
@@ -198,7 +198,7 @@ impl Painter {
     }
 
     fn insert_primitive_direct(&mut self, primitive: Primitive) {
-        let Some(order) = self.order_for_primitive(&primitive) else {
+        let Some(order) = self.order_for_primitive(primitive.as_ref()) else {
             return;
         };
         self.push_ordered_primitive(primitive, order, true);
@@ -319,7 +319,7 @@ impl Painter {
         } else {
             let revision = blur.content.revision;
             let primitive = Primitive::from(blur);
-            let Some(order) = self.order_for_primitive(&primitive) else {
+            let Some(order) = self.order_for_primitive(primitive.as_ref()) else {
                 self.close_capture_group(start, &config, group_source_bounds);
                 return;
             };
@@ -380,7 +380,7 @@ impl Painter {
         self.scene.animation_values.extend(values);
     }
 
-    fn order_for_primitive(&mut self, primitive: &Primitive) -> Option<DrawOrder> {
+    fn order_for_primitive(&mut self, primitive: PrimitiveRef<'_>) -> Option<DrawOrder> {
         let clipped_bounds = Self::ordering_bounds(primitive);
 
         if clipped_bounds.is_empty() {
@@ -395,7 +395,7 @@ impl Painter {
         )
     }
 
-    fn ordering_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
+    fn ordering_bounds(primitive: PrimitiveRef<'_>) -> Bounds<ScaledPixels> {
         // A retained animation can move geometry into its fixed clip after paint.
         // Reserve ordering across that clip so replay cannot discard the primitive
         // or reorder static siblings when the presentation sample changes.

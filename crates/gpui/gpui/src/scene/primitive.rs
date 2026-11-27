@@ -56,8 +56,81 @@ pub(crate) enum Primitive {
     RendererExtension(PaintRendererExtension),
 }
 
+/// A short-lived typed payload reference, independent of the underlying
+/// operation storage. Never owns or clones a primitive.
+#[derive(Clone, Copy)]
+pub(crate) enum PrimitiveRef<'a> {
+    Shadow(&'a Shadow),
+    Quad(&'a Quad),
+    Path(&'a Path<ScaledPixels>),
+    Underline(&'a Underline),
+    MonochromeSprite(&'a MonochromeSprite),
+    PolychromeSprite(&'a PolychromeSprite),
+    Surface(&'a PaintSurface),
+    BackdropBlur(&'a PaintBackdropBlur),
+    Blur(&'a PaintBlur),
+    RendererExtension(&'a PaintRendererExtension),
+}
+
+/// Logical operation view. A future indexed page can resolve this directly
+/// from a typed slot without materializing an owned PaintOperation.
+#[derive(Clone, Copy)]
+pub(crate) enum PaintOperationRef<'a> {
+    Primitive(PrimitiveRef<'a>),
+    DeferredScroll(&'a crate::window::scroll_paint::ScrollPlacement),
+    StartLayer(&'a Bounds<ScaledPixels>),
+    EndLayer,
+    StartBlur(&'a BlurCapture),
+    EndBlur,
+}
+
 impl Primitive {
-    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
+    pub(crate) fn as_ref(&self) -> PrimitiveRef<'_> {
+        match self {
+            Self::Shadow(value) => PrimitiveRef::Shadow(value),
+            Self::Quad(value) => PrimitiveRef::Quad(value),
+            Self::Path(value) => PrimitiveRef::Path(value),
+            Self::Underline(value) => PrimitiveRef::Underline(value),
+            Self::MonochromeSprite(value) => PrimitiveRef::MonochromeSprite(value),
+            Self::PolychromeSprite(value) => PrimitiveRef::PolychromeSprite(value),
+            Self::Surface(value) => PrimitiveRef::Surface(value),
+            Self::BackdropBlur(value) => PrimitiveRef::BackdropBlur(value),
+            Self::Blur(value) => PrimitiveRef::Blur(value),
+            Self::RendererExtension(value) => PrimitiveRef::RendererExtension(value),
+        }
+    }
+}
+
+impl PaintOperation {
+    pub(crate) fn as_ref(&self) -> PaintOperationRef<'_> {
+        match self {
+            Self::Primitive(value) => PaintOperationRef::Primitive(value.as_ref()),
+            Self::DeferredScroll(value) => PaintOperationRef::DeferredScroll(value),
+            Self::StartLayer(value) => PaintOperationRef::StartLayer(value),
+            Self::EndLayer => PaintOperationRef::EndLayer,
+            Self::StartBlur(value) => PaintOperationRef::StartBlur(value),
+            Self::EndBlur => PaintOperationRef::EndBlur,
+        }
+    }
+}
+
+impl<'a> PrimitiveRef<'a> {
+    pub(crate) fn to_primitive(self) -> Primitive {
+        match self {
+            Self::Shadow(value) => Primitive::Shadow(*value),
+            Self::Quad(value) => Primitive::Quad(*value),
+            Self::Path(value) => Primitive::Path(value.clone()),
+            Self::Underline(value) => Primitive::Underline(*value),
+            Self::MonochromeSprite(value) => Primitive::MonochromeSprite(*value),
+            Self::PolychromeSprite(value) => Primitive::PolychromeSprite(*value),
+            Self::Surface(value) => Primitive::Surface(value.clone()),
+            Self::BackdropBlur(value) => Primitive::BackdropBlur(value.clone()),
+            Self::Blur(value) => Primitive::Blur(value.clone()),
+            Self::RendererExtension(value) => Primitive::RendererExtension(value.clone()),
+        }
+    }
+
+    pub(crate) fn has_same_batch_topology(self, other: Self) -> bool {
         if self.order() != other.order() {
             return false;
         }
@@ -81,7 +154,7 @@ impl Primitive {
         }
     }
 
-    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+    pub(crate) fn visually_eq(self, other: Self) -> bool {
         match (self, other) {
             (Self::Shadow(left), Self::Shadow(right)) => left == right,
             (Self::Quad(left), Self::Quad(right)) => left == right,
@@ -99,14 +172,12 @@ impl Primitive {
         }
     }
 
-    pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
+    pub(crate) fn visual_bounds(self) -> Bounds<ScaledPixels> {
         self.unclipped_visual_bounds()
             .intersect(&self.content_mask().bounds)
     }
 
-    /// Pixel-producing geometry before the content mask. Translation must
-    /// move this geometry before applying a fixed ancestor clip.
-    pub(crate) fn unclipped_visual_bounds(&self) -> Bounds<ScaledPixels> {
+    pub(crate) fn unclipped_visual_bounds(self) -> Bounds<ScaledPixels> {
         match self {
             Self::Shadow(shadow) => {
                 let radius = shadow.blur_radius.0.abs();
@@ -122,34 +193,153 @@ impl Primitive {
         }
     }
 
-    pub(crate) fn order(&self) -> DrawOrder {
+    pub(crate) fn order(self) -> DrawOrder {
         match self {
-            Primitive::Shadow(shadow) => shadow.order,
-            Primitive::Quad(quad) => quad.order,
-            Primitive::Path(path) => path.order,
-            Primitive::Underline(underline) => underline.order,
-            Primitive::MonochromeSprite(sprite) => sprite.order,
-            Primitive::PolychromeSprite(sprite) => sprite.order,
-            Primitive::Surface(surface) => surface.order,
-            Primitive::BackdropBlur(blur) => blur.order,
-            Primitive::Blur(blur) => blur.order,
-            Primitive::RendererExtension(extension) => extension.order,
+            Self::Shadow(shadow) => shadow.order,
+            Self::Quad(quad) => quad.order,
+            Self::Path(path) => path.order,
+            Self::Underline(underline) => underline.order,
+            Self::MonochromeSprite(sprite) => sprite.order,
+            Self::PolychromeSprite(sprite) => sprite.order,
+            Self::Surface(surface) => surface.order,
+            Self::BackdropBlur(blur) => blur.order,
+            Self::Blur(blur) => blur.order,
+            Self::RendererExtension(extension) => extension.order,
         }
     }
 
-    pub fn bounds(&self) -> &Bounds<ScaledPixels> {
+    pub fn bounds(self) -> &'a Bounds<ScaledPixels> {
         match self {
-            Primitive::Shadow(shadow) => &shadow.bounds,
-            Primitive::Quad(quad) => &quad.bounds,
-            Primitive::Path(path) => &path.bounds,
-            Primitive::Underline(underline) => &underline.bounds,
-            Primitive::MonochromeSprite(sprite) => &sprite.bounds,
-            Primitive::PolychromeSprite(sprite) => &sprite.bounds,
-            Primitive::Surface(surface) => &surface.bounds,
-            Primitive::BackdropBlur(blur) => &blur.bounds,
-            Primitive::Blur(blur) => &blur.bounds,
-            Primitive::RendererExtension(extension) => &extension.bounds,
+            Self::Shadow(shadow) => &shadow.bounds,
+            Self::Quad(quad) => &quad.bounds,
+            Self::Path(path) => &path.bounds,
+            Self::Underline(underline) => &underline.bounds,
+            Self::MonochromeSprite(sprite) => &sprite.bounds,
+            Self::PolychromeSprite(sprite) => &sprite.bounds,
+            Self::Surface(surface) => &surface.bounds,
+            Self::BackdropBlur(blur) => &blur.bounds,
+            Self::Blur(blur) => &blur.bounds,
+            Self::RendererExtension(extension) => &extension.bounds,
         }
+    }
+
+    pub fn content_mask(self) -> &'a ContentMask<ScaledPixels> {
+        match self {
+            Self::Shadow(shadow) => &shadow.content_mask,
+            Self::Quad(quad) => &quad.content_mask,
+            Self::Path(path) => &path.content_mask,
+            Self::Underline(underline) => &underline.content_mask,
+            Self::MonochromeSprite(sprite) => &sprite.content_mask,
+            Self::PolychromeSprite(sprite) => &sprite.content_mask,
+            Self::Surface(surface) => &surface.content_mask,
+            Self::BackdropBlur(blur) => &blur.content_mask,
+            Self::Blur(blur) => &blur.content_mask,
+            Self::RendererExtension(extension) => &extension.content_mask,
+        }
+    }
+
+    pub(crate) fn animation_id(self) -> Option<SceneAnimationId> {
+        match self {
+            Self::Shadow(shadow) => shadow.animation_id,
+            Self::Quad(quad) => quad.animation_id,
+            Self::Path(path) => path.animation_id,
+            Self::Underline(underline) => underline.animation_id,
+            Self::MonochromeSprite(sprite) => sprite.animation_id,
+            Self::PolychromeSprite(sprite) => sprite.animation_id,
+            Self::BackdropBlur(blur) => blur.animation_id,
+            Self::Blur(blur) => blur.animation_id,
+            Self::RendererExtension(extension) => extension.animation_id,
+            Self::Surface(_) => None,
+        }
+    }
+}
+
+impl<'a> PaintOperationRef<'a> {
+
+    pub(crate) fn same_paint(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
+            // Unlike damage comparison, Scene revision equality includes structural layer bounds.
+            (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
+            (Self::EndLayer, Self::EndLayer) | (Self::EndBlur, Self::EndBlur) => true,
+            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn has_same_batch_topology(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.has_same_batch_topology(right),
+            (Self::StartLayer(_), Self::StartLayer(_))
+            | (Self::EndLayer, Self::EndLayer)
+            | (Self::StartBlur(_), Self::StartBlur(_))
+            | (Self::EndBlur, Self::EndBlur) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn visually_eq(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
+            // Paint layers are batching/order metadata and do not produce pixels themselves. Their
+            // spatial bounds may move with a layout animation while every actual pixel-producing
+            // primitive remains outside a backdrop sampling region. Treating that metadata motion
+            // as a visual mismatch prematurely terminates the unchanged prefix and makes all later
+            // primitives look dirty to backdrop/present damage tracking.
+            (Self::StartLayer(_), Self::StartLayer(_)) => true,
+            (Self::EndLayer, Self::EndLayer) => true,
+            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
+            (Self::EndBlur, Self::EndBlur) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn visual_bounds(self) -> Option<Bounds<ScaledPixels>> {
+        match self {
+            Self::Primitive(primitive) => Some(primitive.visual_bounds()),
+            Self::DeferredScroll(placement) => Some(placement.visual_bounds()),
+            // A paint layer is batching metadata, not a pixel-producing operation. Its bounds may
+            // cover the entire window while the actual primitives inside it occupy a small region.
+            // Counting the layer rectangle as visual damage makes unrelated backdrop filters
+            // re-sample whenever a layout/route animation moves a full-window batching container.
+            Self::StartLayer(_) => None,
+            Self::StartBlur(blur) => Some(
+                blur.bounds
+                    .dilate(blur_influence_radius(blur.radius))
+                    .intersect(&blur.content_mask.bounds),
+            ),
+            Self::EndLayer | Self::EndBlur => None,
+        }
+    }
+}
+
+impl Primitive {
+    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
+        self.as_ref().has_same_batch_topology(other.as_ref())
+    }
+
+    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+        self.as_ref().visually_eq(other.as_ref())
+    }
+
+    pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
+        self.as_ref().visual_bounds()
+    }
+
+    /// Pixel-producing geometry before the content mask. Translation must
+    /// move this geometry before applying a fixed ancestor clip.
+    pub(crate) fn unclipped_visual_bounds(&self) -> Bounds<ScaledPixels> {
+        self.as_ref().unclipped_visual_bounds()
+    }
+
+    pub(crate) fn order(&self) -> DrawOrder {
+        self.as_ref().order()
+    }
+
+    pub fn bounds(&self) -> &Bounds<ScaledPixels> {
+        self.as_ref().bounds()
     }
 
     pub(crate) fn set_order(&mut self, order: DrawOrder) {
@@ -168,33 +358,11 @@ impl Primitive {
     }
 
     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
-        match self {
-            Primitive::Shadow(shadow) => &shadow.content_mask,
-            Primitive::Quad(quad) => &quad.content_mask,
-            Primitive::Path(path) => &path.content_mask,
-            Primitive::Underline(underline) => &underline.content_mask,
-            Primitive::MonochromeSprite(sprite) => &sprite.content_mask,
-            Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
-            Primitive::Surface(surface) => &surface.content_mask,
-            Primitive::BackdropBlur(blur) => &blur.content_mask,
-            Primitive::Blur(blur) => &blur.content_mask,
-            Primitive::RendererExtension(extension) => &extension.content_mask,
-        }
+        self.as_ref().content_mask()
     }
 
     pub(crate) fn animation_id(&self) -> Option<SceneAnimationId> {
-        match self {
-            Primitive::Shadow(shadow) => shadow.animation_id,
-            Primitive::Quad(quad) => quad.animation_id,
-            Primitive::Path(path) => path.animation_id,
-            Primitive::Underline(underline) => underline.animation_id,
-            Primitive::MonochromeSprite(sprite) => sprite.animation_id,
-            Primitive::PolychromeSprite(sprite) => sprite.animation_id,
-            Primitive::BackdropBlur(blur) => blur.animation_id,
-            Primitive::Blur(blur) => blur.animation_id,
-            Primitive::RendererExtension(extension) => extension.animation_id,
-            Primitive::Surface(_) => None,
-        }
+        self.as_ref().animation_id()
     }
 
     pub(crate) fn set_animation_id(&mut self, animation_id: SceneAnimationId) {
@@ -215,61 +383,19 @@ impl Primitive {
 
 impl PaintOperation {
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
-            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
-            // Unlike damage comparison, Scene revision equality includes structural layer bounds.
-            (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
-            (Self::EndLayer, Self::EndLayer) | (Self::EndBlur, Self::EndBlur) => true,
-            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
-            _ => false,
-        }
+        self.as_ref().same_paint(other.as_ref())
     }
 
     pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Primitive(left), Self::Primitive(right)) => left.has_same_batch_topology(right),
-            (Self::StartLayer(_), Self::StartLayer(_))
-            | (Self::EndLayer, Self::EndLayer)
-            | (Self::StartBlur(_), Self::StartBlur(_))
-            | (Self::EndBlur, Self::EndBlur) => true,
-            _ => false,
-        }
+        self.as_ref().has_same_batch_topology(other.as_ref())
     }
 
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
-            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
-            // Paint layers are batching/order metadata and do not produce pixels themselves. Their
-            // spatial bounds may move with a layout animation while every actual pixel-producing
-            // primitive remains outside a backdrop sampling region. Treating that metadata motion
-            // as a visual mismatch prematurely terminates the unchanged prefix and makes all later
-            // primitives look dirty to backdrop/present damage tracking.
-            (Self::StartLayer(_), Self::StartLayer(_)) => true,
-            (Self::EndLayer, Self::EndLayer) => true,
-            (Self::StartBlur(left), Self::StartBlur(right)) => left == right,
-            (Self::EndBlur, Self::EndBlur) => true,
-            _ => false,
-        }
+        self.as_ref().visually_eq(other.as_ref())
     }
 
     pub(crate) fn visual_bounds(&self) -> Option<Bounds<ScaledPixels>> {
-        match self {
-            Self::Primitive(primitive) => Some(primitive.visual_bounds()),
-            Self::DeferredScroll(placement) => Some(placement.visual_bounds()),
-            // A paint layer is batching metadata, not a pixel-producing operation. Its bounds may
-            // cover the entire window while the actual primitives inside it occupy a small region.
-            // Counting the layer rectangle as visual damage makes unrelated backdrop filters
-            // re-sample whenever a layout/route animation moves a full-window batching container.
-            Self::StartLayer(_) => None,
-            Self::StartBlur(blur) => Some(
-                blur.bounds
-                    .dilate(blur_influence_radius(blur.radius))
-                    .intersect(&blur.content_mask.bounds),
-            ),
-            Self::EndLayer | Self::EndBlur => None,
-        }
+        self.as_ref().visual_bounds()
     }
 }
 
