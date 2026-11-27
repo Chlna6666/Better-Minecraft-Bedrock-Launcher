@@ -8,11 +8,276 @@ use crate::{
     ScrollCapture, Size, StateRead, StateReadValidation, RenderDependencies, Window,
 };
 use collections::{FxHashMap, FxHashSet};
-use std::{cell::{Cell, RefCell}, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
+use smallvec::SmallVec;
+use std::{any::TypeId, cell::{Cell, RefCell}, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
+use super::lifecycle::{RowNotification, WindowInvalidator};
+
+type RowKey = (u64, usize);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum RowDependencyKey {
+    Entity(crate::EntityId),
+    Global(TypeId, Option<bool>),
+}
+
+// A typical dependency is read by only one or two rows. High fan-out
+// dependencies (notably UniformList batches) need constant expected-time
+// retirement rather than repeated linear scans of a large reader list.
+enum RowReaders {
+    Small(SmallVec<[RowKey; 2]>),
+    Many(FxHashSet<RowKey>),
+}
+
+impl Default for RowReaders {
+    fn default() -> Self { Self::Small(SmallVec::new()) }
+}
+
+impl RowReaders {
+    const PROMOTE_AT: usize = 8;
+    const DEMOTE_AT: usize = 2;
+
+    fn insert(&mut self, row: RowKey) {
+        match self {
+            Self::Small(rows) => {
+                if rows.contains(&row) { return; }
+                if rows.len() == Self::PROMOTE_AT {
+                    let mut many = FxHashSet::default();
+                    many.extend(rows.iter().copied());
+                    many.insert(row);
+                    *self = Self::Many(many);
+                } else {
+                    rows.push(row);
+                }
+            }
+            Self::Many(rows) => { rows.insert(row); }
+        }
+    }
+
+    fn remove(&mut self, row: RowKey) {
+        match self {
+            Self::Small(rows) => {
+                if let Some(index) = rows.iter().position(|&reader| reader == row) {
+                    rows.swap_remove(index);
+                }
+            }
+            Self::Many(rows) => {
+                rows.remove(&row);
+                if rows.len() <= Self::DEMOTE_AT {
+                    *self = Self::Small(rows.iter().copied().collect());
+                } else if rows.capacity() > rows.len().saturating_mul(4) {
+                    rows.shrink_to(rows.len().saturating_mul(2));
+                }
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Small(rows) => rows.is_empty(),
+            Self::Many(rows) => rows.is_empty(),
+        }
+    }
+
+    fn visit(&self, mut visit: impl FnMut(RowKey)) {
+        match self {
+            Self::Small(rows) => rows.iter().copied().for_each(&mut visit),
+            Self::Many(rows) => rows.iter().copied().for_each(&mut visit),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        match self {
+            Self::Small(rows) => rows.len(),
+            Self::Many(rows) => rows.len(),
+        }
+    }
+}
+
+/// Index only the immutable, committed row snapshots. The original
+/// dependency slices remain authoritative and shared with owner recording.
+#[derive(Default)]
+struct RowNotificationRouting {
+    edges: FxHashMap<RowDependencyKey, RowReaders>,
+    dirty: FxHashSet<RowKey>,
+    cursor: Option<u64>,
+    overflow: bool,
+}
+
+impl RowNotificationRouting {
+    const MIN_ROWS: usize = 16;
+
+    fn has_reads(reads: &RenderDependencies) -> bool {
+        !reads.entities.is_empty() || !reads.globals.is_empty()
+    }
+
+    fn insert(&mut self, key: RowDependencyKey, row: RowKey) {
+        self.edges.entry(key).or_default().insert(row);
+    }
+
+    fn remove(&mut self, key: RowDependencyKey, row: RowKey) {
+        if let Some(rows) = self.edges.get_mut(&key) {
+            rows.remove(row);
+            if rows.is_empty() {
+                self.edges.remove(&key);
+            }
+        }
+    }
+
+    // Both entity and global snapshots are sorted and unique. Do not
+    // touch the shared reverse edges when only a subset of reads changes.
+    fn update_keys<T: Copy + Ord>(
+        &mut self, row: RowKey, old: &[T], new: &[T],
+        key: impl Fn(T) -> RowDependencyKey,
+    ) {
+        if std::ptr::eq(old, new) {
+            return;
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < old.len() && j < new.len() {
+            match old[i].cmp(&new[j]) {
+                std::cmp::Ordering::Less => { self.remove(key(old[i]), row); i += 1; }
+                std::cmp::Ordering::Greater => { self.insert(key(new[j]), row); j += 1; }
+                std::cmp::Ordering::Equal => { i += 1; j += 1; }
+            }
+        }
+        for &value in &old[i..] { self.remove(key(value), row); }
+        for &value in &new[j..] { self.insert(key(value), row); }
+    }
+
+    fn update(&mut self, row: RowKey, old: Option<&RenderDependencies>, new: Option<&RenderDependencies>) {
+        if matches!((old, new), (Some(a), Some(b)) if a.same_routes(b)) {
+            return;
+        }
+        self.update_keys(row,
+            old.map_or(&[][..], |reads| reads.entities.as_ref()),
+            new.map_or(&[][..], |reads| reads.entities.as_ref()),
+            RowDependencyKey::Entity);
+        self.update_keys(row,
+            old.map_or(&[][..], |reads| reads.globals.as_ref()),
+            new.map_or(&[][..], |reads| reads.globals.as_ref()),
+            |(global, exists)| RowDependencyKey::Global(global, exists));
+    }
+
+    fn route(
+        &mut self, event: RowNotification, sequence: u64, now: u64,
+        epoch_of: impl Fn(RowKey) -> Option<u64>,
+    ) {
+        let edges = &self.edges;
+        let dirty = &mut self.dirty;
+        let mut mark = |key| {
+            if let Some(rows) = edges.get(&key) {
+                rows.visit(|row| {
+                    // A row captured after this notification already
+                    // observed the new value. Compare relative ages to
+                    // preserve ordering across sequence wraparound.
+                    if epoch_of(row).is_some_and(|epoch|
+                        now.wrapping_sub(epoch) > now.wrapping_sub(sequence))
+                    {
+                        dirty.insert(row);
+                    }
+                });
+            }
+        };
+        match event {
+            RowNotification::Entity(entity) => mark(RowDependencyKey::Entity(entity)),
+            RowNotification::Global(global, exists) => {
+                mark(RowDependencyKey::Global(global, None));
+                mark(RowDependencyKey::Global(global, Some(!exists)));
+            }
+        }
+    }
+
+    fn reset_cursor(&mut self, oldest: u64) {
+        self.cursor = Some(oldest);
+        self.dirty.clear();
+        self.overflow = false;
+    }
+
+    fn oldest_epoch(rows: &FxHashMap<RowKey, RowRecord>, now: u64) -> u64 {
+        rows.values().filter(|row| Self::has_reads(&row.prepaint.reads))
+            .map(|row| row.notification_epoch)
+            .max_by_key(|epoch| now.wrapping_sub(*epoch))
+            .unwrap_or(now)
+    }
+
+    fn build(&mut self, rows: &FxHashMap<RowKey, RowRecord>, now: u64) {
+        self.edges.clear();
+        for (&key, row) in rows {
+            self.update(key, None, Some(&row.prepaint.reads));
+        }
+        self.reset_cursor(Self::oldest_epoch(rows, now));
+    }
+
+    fn unchanged(
+        &mut self, rows: &FxHashMap<RowKey, RowRecord>, key: RowKey,
+        row: &RowRecord, invalidator: &WindowInvalidator,
+    ) -> bool {
+        let now = invalidator.row_notification_epoch();
+        if row.notification_epoch == now || !Self::has_reads(&row.prepaint.reads) {
+            return true;
+        }
+        if rows.len() < Self::MIN_ROWS {
+            return invalidator.row_dependencies_unchanged(row.notification_epoch, &row.prepaint.reads);
+        }
+        if self.cursor.is_none() {
+            self.build(rows, now);
+        }
+        if !self.overflow {
+            let since = self.cursor.expect("committed row notification cursor");
+            if since != now {
+                let next = invalidator.visit_row_notifications(since, |sequence, event| {
+                    self.route(event, sequence, now, |key| rows.get(&key).map(|row| row.notification_epoch));
+                });
+                if let Some(next) = next {
+                    self.cursor = Some(next);
+                } else {
+                    self.overflow = true;
+                }
+            }
+        }
+        if self.overflow {
+            // A lagging frame cannot prove coverage from the shared cursor.
+            // Rows with newer snapshots may still prove their own history.
+            return invalidator.row_dependencies_unchanged(row.notification_epoch, &row.prepaint.reads);
+        }
+        !self.dirty.contains(&key)
+    }
+
+    fn reconcile(
+        &mut self, old: &FxHashMap<RowKey, RowRecord>,
+        new: &FxHashMap<RowKey, RowRecord>, now: u64,
+    ) {
+        for (&key, row) in old {
+            self.update(key, Some(&row.prepaint.reads),
+                new.get(&key).map(|next| &next.prepaint.reads));
+        }
+        let mut oldest = now;
+        for (&key, row) in new {
+            if !old.contains_key(&key) {
+                self.update(key, None, Some(&row.prepaint.reads));
+            }
+            if Self::has_reads(&row.prepaint.reads)
+                && now.wrapping_sub(row.notification_epoch) > now.wrapping_sub(oldest)
+            {
+                oldest = row.notification_epoch;
+            }
+        }
+        self.reset_cursor(oldest);
+        let target = self.edges.len().max(Self::MIN_ROWS);
+        if self.edges.capacity() > target.saturating_mul(4) {
+            self.edges.shrink_to(target);
+        }
+        if self.dirty.capacity() > new.len().max(Self::MIN_ROWS).saturating_mul(4) {
+            self.dirty.shrink_to(new.len().max(Self::MIN_ROWS));
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
-    rows: FxHashMap<(u64, usize), RowRecord>,
+    rows: FxHashMap<RowKey, RowRecord>,
+    notification_routing: RefCell<RowNotificationRouting>,
     measurements: FxHashMap<GlobalElementId, (u64, Rc<RowMeasurement>)>,
     pub(super) enabled: bool,
     blocked: bool,
@@ -27,9 +292,23 @@ impl ScrollRows {
 
     pub(super) fn clear(&mut self) {
         self.rows.clear();
+        *self.notification_routing.get_mut() = Default::default();
         self.measurements.clear();
         self.enabled = false;
         self.blocked = false;
+    }
+
+    /// Transfer an already-built index only after successful publication.
+    /// Candidate frames cannot mutate the previous frame's reverse edges.
+    pub(super) fn inherit_notification_routing(&mut self, previous: &mut Self, now: u64) {
+        if self.rows.len() < RowNotificationRouting::MIN_ROWS {
+            return;
+        }
+        let mut routing = std::mem::take(previous.notification_routing.get_mut());
+        if routing.cursor.is_some() {
+            routing.reconcile(&previous.rows, &self.rows, now);
+            *self.notification_routing.get_mut() = routing;
+        }
     }
 
     pub(super) fn trim_for_reuse(&mut self, current: &Self) {
@@ -329,12 +608,15 @@ impl Window {
         row: usize,
         origin: Point<Pixels>,
     ) -> bool {
-        let Some(record) = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row)) else {
+        let key = (plan.key, row);
+        let rows = &self.rendered_frame.scroll_rows;
+        let Some(record) = rows.rows.get(&key) else {
             return false;
         };
         if (plan.placement_only && record.revision != plan.revision)
             || !plan.matches_context(&record.context)
             || record.prepaint.row_revision != plan.row_revision(row)
+            || !rows.notification_routing.borrow_mut().unchanged(&rows.rows, key, record, &self.invalidator)
         {
             return false;
         }
@@ -354,7 +636,6 @@ impl Window {
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = hitbox_range(&record.prepaint);
         record.content.covers(viewport, delta)
-            && self.invalidator.row_dependencies_unchanged(record.notification_epoch, &record.prepaint.reads)
             && record.prepaint.validation.unchanged(&record.prepaint.reads.states)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
@@ -534,6 +815,68 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn shared_row_readers_promote_and_retire_without_duplicates() {
+        let mut readers = RowReaders::default();
+        for index in 0..64 {
+            readers.insert((1, index));
+            readers.insert((1, index));
+        }
+        assert!(matches!(&readers, RowReaders::Many(_)));
+        assert_eq!(readers.len(), 64);
+        for index in 0..62 {
+            readers.remove((1, index));
+        }
+        assert!(matches!(&readers, RowReaders::Small(_)));
+        let mut remaining = Vec::new();
+        readers.visit(|row| remaining.push(row));
+        remaining.sort_unstable();
+        assert_eq!(remaining, [(1, 62), (1, 63)]);
+        readers.remove((1, 62));
+        readers.remove((1, 63));
+        assert!(readers.is_empty());
+    }
+
+    #[test]
+    fn row_routes_preserve_common_edges_and_observation_order() {
+        let model = EntityId::from(1);
+        let other = EntityId::from(2);
+        let global = TypeId::of::<u32>();
+        let a = (10, 0);
+        let b = (10, 1);
+        let c = (10, 2);
+        let reads = |entities, globals| RenderDependencies {
+            entities, globals, ..Default::default()
+        };
+        let first = reads(Rc::from([model]), Rc::from([(global, Some(true))]));
+        let second = reads(Rc::from([model]), Rc::from([(global, None)]));
+        let third = reads(Rc::from([other]), Rc::from([(global, Some(false))]));
+        let mut routing = RowNotificationRouting::default();
+        routing.update(a, None, Some(&first));
+        routing.update(b, None, Some(&second));
+        routing.update(c, None, Some(&third));
+        let epoch = |row| Some(if row == b { 12 } else { 10 });
+        routing.route(RowNotification::Entity(model), 11, 12, epoch);
+        assert_eq!(routing.dirty, FxHashSet::from_iter([a]));
+        routing.route(RowNotification::Global(global, false), 12, 12, epoch);
+        assert_eq!(routing.dirty, FxHashSet::from_iter([a]));
+        routing.route(RowNotification::Global(global, true), 13, 13, epoch);
+        assert_eq!(routing.dirty, FxHashSet::from_iter([a, b, c]));
+        routing.update(a, Some(&first), Some(&second));
+        assert!(!routing.edges.contains_key(&RowDependencyKey::Global(global, Some(true))));
+        assert_eq!(routing.edges[&RowDependencyKey::Entity(model)].len(), 2);
+        routing.update(b, Some(&second), None);
+        let mut remaining = Vec::new();
+        routing.edges[&RowDependencyKey::Entity(model)].visit(|row| remaining.push(row));
+        assert_eq!(remaining, [a]);
+        routing.reset_cursor(13);
+        routing.route(RowNotification::Entity(model), 14, 14, |_| Some(13));
+        assert_eq!(routing.dirty, FxHashSet::from_iter([a]));
+        routing.reset_cursor(u64::MAX);
+        routing.route(RowNotification::Entity(model), 0, 0, |_| Some(u64::MAX));
+        assert_eq!(routing.dirty, FxHashSet::from_iter([a]));
+    }
 
     #[test]
     fn unrelated_sibling_can_reuse_but_dirty_owner_or_ancestor_cannot() {

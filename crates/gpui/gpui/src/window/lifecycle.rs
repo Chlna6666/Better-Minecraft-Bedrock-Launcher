@@ -181,10 +181,10 @@ fn report_state_owner(route: Option<EntityId>, changed: &mut SmallVec<[EntityId;
     }
 }
 
-// Bounded history of actual application notifications. This is not a
-// per-row registry: row snapshots use their existing sorted read slices.
+// Bounded history of actual application notifications. Row routing borrows
+// this history instead of recording another stream or subscribing per row.
 #[derive(Clone, Copy)]
-enum RowNotification {
+pub(super) enum RowNotification {
     Entity(EntityId),
     Global(TypeId, bool),
 }
@@ -229,6 +229,18 @@ impl RowNotifications {
         }
         self.events.push_back(event);
         self.sequence = self.sequence.wrapping_add(1);
+    }
+
+    fn visit_since(&self, since: u64, mut visit: impl FnMut(u64, RowNotification)) -> Option<u64> {
+        let count = self.sequence.wrapping_sub(since);
+        if count > self.events.len() as u64 {
+            return None;
+        }
+        let start = self.events.len() - count as usize;
+        for (offset, &event) in self.events.iter().skip(start).enumerate() {
+            visit(since.wrapping_add(offset as u64 + 1), event);
+        }
+        Some(self.sequence)
     }
 
     fn unchanged(&self, since: u64, reads: &crate::RenderDependencies) -> bool {
@@ -860,6 +872,14 @@ impl WindowInvalidator {
         self.inner.borrow().row_notifications.unchanged(since, reads)
     }
 
+    pub(super) fn visit_row_notifications(
+        &self,
+        since: u64,
+        visit: impl FnMut(u64, RowNotification),
+    ) -> Option<u64> {
+        self.inner.borrow().row_notifications.visit_since(since, visit)
+    }
+
     /// A scoped content draw can retain rows from a provably clean owner.
     /// The epoch also revokes admission if new work arrives during preparation.
     /// The boolean distinguishes the existing placement-only proof from the
@@ -1325,6 +1345,29 @@ mod view_invalidation_tests {
         assert!(invalidator.row_only_dirty(owner));
         invalidator.set_dirty(true);
         assert!(!invalidator.row_only_dirty(owner));
+    }
+
+    #[test]
+    fn notification_cursor_visits_only_new_events_and_rejects_overflow() {
+        let model = EntityId::from(1);
+        let global = TypeId::of::<u32>();
+        let mut notifications = RowNotifications::default();
+        notifications.sequence = u64::MAX - 1;
+        let start = notifications.sequence;
+        notifications.push(RowNotification::Entity(model));
+        notifications.push(RowNotification::Global(global, true));
+        let mut visited = Vec::new();
+        let cursor = notifications.visit_since(start, |seq, _| visited.push(seq)).unwrap();
+        assert_eq!(visited, [u64::MAX, 0]);
+        assert_eq!(cursor, 0);
+        notifications.push(RowNotification::Entity(model));
+        visited.clear();
+        assert_eq!(notifications.visit_since(cursor, |seq, _| visited.push(seq)), Some(1));
+        assert_eq!(visited, [1]);
+        for _ in 0..RowNotifications::CAPACITY {
+            notifications.push(RowNotification::Entity(model));
+        }
+        assert!(notifications.visit_since(cursor, |_, _| unreachable!()).is_none());
     }
 
     #[test]

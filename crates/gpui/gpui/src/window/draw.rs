@@ -343,6 +343,10 @@ impl Window {
             self.scale_factor,
         );
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        self.rendered_frame.scroll_rows.inherit_notification_routing(
+            &mut self.next_frame.scroll_rows,
+            self.invalidator.row_notification_epoch(),
+        );
         #[cfg(target_os = "windows")]
         if force_full_redraw && crate::diagnostics::gpu_owner::resize_trace_enabled() {
             // Resizing a swapchain is not proof that the new Scene covers that extent.
