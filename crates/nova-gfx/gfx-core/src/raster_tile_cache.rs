@@ -102,8 +102,12 @@ impl Entry {
 }
 
 // Fixed size classes avoid a second atlas allocator and fragmentation
-// metadata. Each page has four independently fenced vertical cells.
-const PAGE_CELLS: u8 = 4;
+// metadata. Pages contain two to four independently fenced vertical cells.
+const MAX_PAGE_CELLS: u8 = 4;
+
+fn page_cells(demand: usize) -> u8 {
+    demand.min(usize::from(MAX_PAGE_CELLS)) as u8
+}
 
 fn page_cell(extent: Extent2d) -> Option<Extent2d> {
     if extent.width() > 2048 || extent.height() > 128 { return None; }
@@ -117,13 +121,14 @@ struct Page {
     format: Format,
     view: Option<TextureViewId>,
     bytes: u64,
+    cells: u8,
     occupied: u8,
     sampling_bindings: SmallVec<[(usize, BindGroupId); 2]>,
 }
 
 impl Page {
     fn free_slot(&self) -> Option<u8> {
-        (0..PAGE_CELLS).find(|&slot| self.occupied & (1 << slot) == 0)
+        (0..self.cells).find(|&slot| self.occupied & (1 << slot) == 0)
     }
 }
 
@@ -306,7 +311,7 @@ impl RasterTileCache {
     pub fn prepare<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
         key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
     ) -> Result<Option<RasterTileWrite>> {
-        self.prepare_internal(device, key, generation, raster, format, false)
+        self.prepare_internal(device, key, generation, raster, format, None)
     }
 
     /// Reserve a page subrectangle when a suitable size class is available.
@@ -317,26 +322,40 @@ impl RasterTileCache {
     pub fn prepare_paged<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
         key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
     ) -> Result<Option<RasterTileWrite>> {
-        self.prepare_internal(device, key, generation, raster, format, true)
+        self.prepare_paged_with_demand(device, key, generation, raster, format, usize::from(MAX_PAGE_CELLS))
+    }
+
+    /// Size class for batching demand; no physical allocation or lookup.
+    pub fn page_size_class(extent: Extent2d) -> Option<(u32, u32)> {
+        page_cell(extent).map(|cell| (cell.width(), cell.height()))
+    }
+
+    /// Allocate a new shared page only for multiple compatible pending
+    /// writes; a single miss can still use an existing free cell. Demand
+    /// includes this write. Existing live pages never resize or migrate.
+    pub fn prepare_paged_with_demand<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, demand: usize,
+    ) -> Result<Option<RasterTileWrite>> {
+        self.prepare_internal(device, key, generation, raster, format, Some(page_cells(demand)))
     }
 
     fn prepare_internal<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
-        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, paged: bool,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, page_cells: Option<u8>,
     ) -> Result<Option<RasterTileWrite>> {
         if let Some(e) = self.entries.get(&key) {
             if !e.idle() || (e.state == State::Ready && e.last_used == self.frame) {
                 return Ok(None);
             }
             if e.raster.extent != raster.extent || e.format != format || e.view.is_none()
-                || (!paged && e.page_slot.is_some()) {
+                || (page_cells.is_none() && e.page_slot.is_some()) {
                 self.release(device, key)?;
             }
         }
         let serial = self.serial.checked_add(1)
             .ok_or_else(|| Error::InvalidInput("tile reservation overflow".into()))?;
-        if !self.entries.contains_key(&key) && paged {
+        if !self.entries.contains_key(&key) && let Some(cells) = page_cells {
             if let Some(cell) = page_cell(raster.extent) {
-                self.allocate_page_slot(device, key, generation, raster, format, serial, cell)?;
+                self.allocate_page_slot(device, key, generation, raster, format, serial, cell, cells)?;
             }
         }
         if !self.entries.contains_key(&key) {
@@ -387,7 +406,7 @@ impl RasterTileCache {
     }
 
     fn allocate_page_slot<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
-        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, serial: u64, cell: Extent2d,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, serial: u64, cell: Extent2d, cells: u8,
     ) -> Result<()> {
         // Fill the densest compatible page first, limiting the number
         // of live views and increasing contiguous composite batch hits.
@@ -396,7 +415,8 @@ impl RasterTileCache {
             Some((texture, page.free_slot()?, page.occupied.count_ones()))
         }).max_by_key(|&(_, _, occupancy)| occupancy).map(|(texture, slot, _)| (texture, slot));
         let (texture, slot) = if let Some(candidate) = candidate { candidate } else {
-            let extent = Extent2d::new(cell.width(), cell.height() * u32::from(PAGE_CELLS))?;
+            if cells < 2 { return Ok(()); }
+            let extent = Extent2d::new(cell.width(), cell.height() * u32::from(cells))?;
             let bytes = u64::from(extent.width()) * u64::from(extent.height()) * u64::from(format.bytes_per_pixel());
             // Do not evict useful pixels just to speculate on an empty page.
             // The standalone allocator retains its existing exact-budget LRU.
@@ -409,7 +429,7 @@ impl RasterTileCache {
                 sample_count: 1,
             })?;
             self.pages.insert(texture, Page { cell, extent, format, view: None, bytes,
-                occupied: 1, sampling_bindings: SmallVec::new() });
+                cells, occupied: 1, sampling_bindings: SmallVec::new() });
             self.bytes += bytes;
             self.entries.insert(key, Entry { raster, format, texture, view: None, bytes: 0,
                 page_slot: Some(0), generation, serial, state: State::Invalid, stale: true,
@@ -576,13 +596,20 @@ mod tests {
         assert!(page_cell(Extent2d::new(2049, 32).unwrap()).is_none());
         let mut page = Page { cell, extent: Extent2d::new(512, 128).unwrap(),
             format: Format::Bgra8Unorm, view: None, bytes: 512 * 128 * 4,
-            occupied: 0b0101, sampling_bindings: SmallVec::new() };
+            cells: 4, occupied: 0b0101, sampling_bindings: SmallVec::new() };
         assert_eq!(page.free_slot(), Some(1));
         let mut tile = entry(1, State::Ready);
         tile.page_slot = Some(2);
         assert_eq!(tile.region(Some(&page)), ScissorRect { x: 0, y: 64, width: 16, height: 16 });
         page.occupied = 0b1111;
         assert_eq!(page.free_slot(), None);
+        page.cells = 2;
+        page.occupied = 0b0011;
+        assert_eq!(page.free_slot(), None);
+        assert_eq!(page_cells(1), 1);
+        assert_eq!(page_cells(2), 2);
+        assert_eq!(page_cells(3), 3);
+        assert_eq!(page_cells(64), 4);
     }
 
     #[test]

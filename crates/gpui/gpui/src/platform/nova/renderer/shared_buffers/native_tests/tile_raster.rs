@@ -598,7 +598,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             });
         };
         assert_cell(second_read, [255, 0, 0, 255]);
-        assert_eq!(renderer.raster_tiles.bytes(), (if paged { 4 } else { 2 }) * 64 * 64 * 4);
+        assert_eq!(renderer.raster_tiles.bytes(), 2 * 64 * 64 * 4, "two misses allocate exactly two cells");
         assert_eq!(renderer.raster_tiles.logical_tiles(), 2);
         assert_eq!(renderer.raster_tiles.physical_textures(), if paged { 1 } else { 2 });
         if let Some(previous) = physical {

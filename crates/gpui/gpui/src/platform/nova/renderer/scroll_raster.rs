@@ -614,6 +614,7 @@ impl CompositeSlot {
             return Ok(id);
         }
         let id = buffer.expect("resident composite buffer");
+        if previous.as_slice() == bytes { return Ok(id); }
         let ranges = changed_record_ranges(previous, bytes, stride);
         for range in ranges {
             if let Err(error) = device.write_buffer(id, range.start as u64, &bytes[range]) {
@@ -947,6 +948,16 @@ impl NovaRenderer {
             let mut passes = Vec::<RasterPass>::with_capacity(misses);
             let prepare = (|| -> Result<bool> {
                 let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
+                let mut clear_bindings = FxHashMap::<(u32, u32), BindGroupId>::default();
+                let paged = shared_raster_pages(device, self.backend_info.kind().ok());
+                let mut demand = FxHashMap::<(u32, u32), usize>::default();
+                if paged {
+                    for ((_, request), read) in requests.iter().zip(&reads) {
+                        if read.is_none() && let Some(class) = gfx_core::RasterTileCache::page_size_class(request.raster.extent) {
+                            *demand.entry(class).or_default() += 1;
+                        }
+                    }
+                }
                 let mut offset = 0;
                 for plan in plans {
                     let layer = plan.layer;
@@ -1013,8 +1024,14 @@ impl NovaRenderer {
                             origin: SignedOrigin2d { x: request.source_origin[0], y: request.source_origin[1] },
                             extent: request.raster.extent,
                         };
-                        let write = if shared_raster_pages(device, self.backend_info.kind().ok()) {
-                            self.raster_tiles.prepare_paged(device, request.key, layer.generation, request.raster, format)?
+                        let write = if paged {
+                            let remaining = gfx_core::RasterTileCache::page_size_class(request.raster.extent)
+                                .and_then(|class| demand.get_mut(&class)).map_or(1, |count| {
+                                    let remaining = *count;
+                                    *count = count.saturating_sub(1);
+                                    remaining
+                                });
+                            self.raster_tiles.prepare_paged_with_demand(device, request.key, layer.generation, request.raster, format, remaining)?
                         } else {
                             self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)?
                         };
@@ -1038,20 +1055,24 @@ impl NovaRenderer {
                                     };
                                     draw.scissor = Some(region);
                                 }
-                                // Pixel-exact clear quad in capture coordinates.
-                                // It overwrites transparent black (including alpha),
-                                // unlike ordinary source-over blending. All raster
-                                // pipelines have depth disabled; scratch depth
-                                // can be cleared once for the entire physical pass.
-                                let bounds = crate::bounds(
-                                    crate::point(ScaledPixels(raster.origin.x as f32), ScaledPixels(raster.origin.y as f32)),
-                                    crate::size(ScaledPixels(region.width as f32), ScaledPixels(region.height as f32)));
-                                let mut clear = Vec::with_capacity(PACKED_QUAD_BYTES);
-                                write_quad(&mut clear, &Quad { bounds, content_mask: ContentMask::new(bounds),
-                                    background: crate::rgba(0).into(), ..Default::default() });
-                                let clear_buffer = resources.buffer(device, &clear, BufferUsage::STORAGE)?;
-                                let clear_buffers = FrameResourceBuffers { quad_buffer: clear_buffer, quad_capacity: 1, ..buffers };
-                                let group = resources.binding(device, self.quad_bind_group_layout, quad_resource_bindings(&clear_buffers))?;
+                                // One page-space transparent clear binding per
+                                // extent, shared by all dirty cells and pages.
+                                // Scissor selects the exact rectangle.
+                                let class = (target_extent.width(), target_extent.height());
+                                let group = if let Some(&group) = clear_bindings.get(&class) { group } else {
+                                    let bounds = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+                                        crate::size(ScaledPixels(class.0 as f32), ScaledPixels(class.1 as f32)));
+                                    let mut clear = Vec::with_capacity(PACKED_QUAD_BYTES);
+                                    write_quad(&mut clear, &Quad { bounds, content_mask: ContentMask::new(bounds),
+                                        background: crate::rgba(0).into(), ..Default::default() });
+                                    let clear_buffer = resources.buffer(device, &clear, BufferUsage::STORAGE)?;
+                                    let globals = pack_global_params(DrawableSize { width: class.0, height: class.1 }, true, [0., 0.]);
+                                    let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
+                                    let clear_buffers = FrameResourceBuffers { global_buffer, quad_buffer: clear_buffer, quad_capacity: 1, ..buffers };
+                                    let group = resources.binding(device, self.quad_bind_group_layout, quad_resource_bindings(&clear_buffers))?;
+                                    clear_bindings.insert(class, group);
+                                    group
+                                };
                                 commands.insert(0, RenderCommand::Draw(DrawCommand {
                                     pipeline: self.pipelines.retained_clear, bind_groups: bind_group_list([group]),
                                     vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: 0,
