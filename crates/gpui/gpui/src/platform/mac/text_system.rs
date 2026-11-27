@@ -197,7 +197,15 @@ impl PlatformTextSystem for MacTextSystem {
         glyph_id: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<GlyphRasterization> {
-        self.0.read().rasterize_glyph(glyph_id, raster_bounds)
+        let mut rasterized = self.0.read().rasterize_glyph(glyph_id, raster_bounds)?;
+        // Color conversion does not require the font registry read guard;
+        // let an unrelated text shaping writer acquire it immediately.
+        if glyph_id.is_emoji {
+            if let GlyphRasterization::Bitmap { bytes, .. } = &mut rasterized {
+                swap_rgba_pa_to_bgra_buffer(bytes);
+            }
+        }
+        Ok(rasterized)
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
@@ -450,10 +458,9 @@ impl MacTextSystemState {
                     cx,
                 );
 
-            if params.is_emoji {
-                // Convert from RGBA with premultiplied alpha to BGRA with straight alpha.
-                swap_rgba_pa_to_bgra_buffer(&mut bytes);
-            }
+            // End the native bitmap context before handing its backing
+            // bytes to the lock-free conversion stage.
+            drop(cx);
 
             Ok(GlyphRasterization::Bitmap {
                 size: bitmap_size,

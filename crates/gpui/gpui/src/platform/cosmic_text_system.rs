@@ -369,9 +369,19 @@ impl PlatformTextSystem for CosmicTextSystem {
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<GlyphRasterization> {
-        self.with_state(TextOperation::Rasterize, |state| {
-            state.rasterize_glyph(params, raster_bounds)
-        })
+        if raster_bounds.size.width.0 == 0 || raster_bounds.size.height.0 == 0 {
+            anyhow::bail!("glyph bounds are empty");
+        }
+        // Swash owns its font and glyph caches behind the mutable state.
+        // Only obtain the owned image there. Channel conversion, mask
+        // expansion and stable-frame padding have no font-state dependency.
+        let image = self.with_state(TextOperation::Rasterize, |state| {
+            state.glyph_image(params).with_context(|| {
+                let font = &state.loaded_fonts[params.font_id.0].font;
+                format!("no image for {params:?} in font {font:?}")
+            })
+        })?;
+        rasterize_owned_image(image, params, raster_bounds)
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
@@ -1039,8 +1049,11 @@ impl CosmicTextSystemState {
     }
 
     fn glyph_image_bounds(&mut self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
-        let image = self.glyph_image(params)?;
-        Some(swash_image_bounds(&image))
+        let key = self.glyph_cache_key(params);
+        // Bounds depend only on Placement. Do not clone SwashImage::data
+        // for a metrics query (including every stable-frame sample glyph).
+        self.swash_cache.get_image(&mut self.font_system, key)
+            .as_ref().map(swash_image_bounds)
     }
 
     fn stable_vertical_raster_frame(
@@ -1112,35 +1125,6 @@ impl CosmicTextSystemState {
             Ok(apply_stable_vertical_frame(glyph_bounds, frame))
         } else {
             Ok(glyph_bounds)
-        }
-    }
-
-    #[profiling::function]
-    fn rasterize_glyph(
-        &mut self,
-        params: &RenderGlyphParams,
-        glyph_bounds: Bounds<DevicePixels>,
-    ) -> Result<GlyphRasterization> {
-        if glyph_bounds.size.width.0 == 0 || glyph_bounds.size.height.0 == 0 {
-            anyhow::bail!("glyph bounds are empty");
-        } else {
-            let bitmap_size = glyph_bounds.size;
-            let image = self.glyph_image(params).with_context(|| {
-                let font = &self.loaded_fonts[params.font_id.0].font;
-                format!("no image for {params:?} in font {font:?}")
-            })?;
-            let bytes = if params.is_emoji {
-                swash_image_to_polychrome_bitmap(image, bitmap_size)?
-            } else if params.is_cjk {
-                swash_image_to_stable_vertical_frame_mask(image, glyph_bounds)?
-            } else {
-                swash_image_to_monochrome_mask(image, bitmap_size)?
-            };
-
-            Ok(GlyphRasterization::Bitmap {
-                size: bitmap_size,
-                bytes,
-            })
         }
     }
 
@@ -1908,6 +1892,23 @@ const SYSTEM_FALLBACK_COVERAGE_SAMPLE: &[(char, u32)] = &[
     ('က', 10),
 ];
 
+#[profiling::function]
+fn rasterize_owned_image(
+    image: SwashImage,
+    params: &RenderGlyphParams,
+    glyph_bounds: Bounds<DevicePixels>,
+) -> Result<GlyphRasterization> {
+    let bitmap_size = glyph_bounds.size;
+    let bytes = if params.is_emoji {
+        swash_image_to_polychrome_bitmap(image, bitmap_size)?
+    } else if params.is_cjk {
+        swash_image_to_stable_vertical_frame_mask(image, glyph_bounds)?
+    } else {
+        swash_image_to_monochrome_mask(image, bitmap_size)?
+    };
+    Ok(GlyphRasterization::Bitmap { size: bitmap_size, bytes })
+}
+
 fn swash_image_to_monochrome_mask(
     image: SwashImage,
     bitmap_size: Size<DevicePixels>,
@@ -1960,12 +1961,11 @@ fn copy_mask_to_frame(
         expected_source_len
     );
 
-    let mut frame = vec![
-        0;
-        frame_width
-            .checked_mul(frame_height)
-            .context("stable vertical frame bitmap is too large")?
-    ];
+    if source_bounds == frame_bounds {
+        return Ok(source);
+    }
+    let frame_len = frame_width.checked_mul(frame_height)
+        .context("stable vertical frame bitmap is too large")?;
     let offset_x = source_bounds.origin.x.0 - frame_bounds.origin.x.0;
     let offset_y = source_bounds.origin.y.0 - frame_bounds.origin.y.0;
     anyhow::ensure!(
@@ -1978,14 +1978,14 @@ fn copy_mask_to_frame(
         source_bounds
     );
 
+    let mut frame = vec![0; frame_len];
+    // One contiguous copy per row, instead of per-pixel address arithmetic.
+    // Bounds were validated before allocating the destination.
     for source_y in 0..source_height {
-        let target_y = offset_y + source_y as i32;
-        for source_x in 0..source_width {
-            let target_x = offset_x + source_x as i32;
-            let source_index = source_y * source_width + source_x;
-            let target_index = target_y as usize * frame_width + target_x as usize;
-            frame[target_index] = source[source_index];
-        }
+        let source_start = source_y * source_width;
+        let target_start = (offset_y as usize + source_y) * frame_width + offset_x as usize;
+        frame[target_start..target_start + source_width]
+            .copy_from_slice(&source[source_start..source_start + source_width]);
     }
 
     Ok(frame)
@@ -2016,9 +2016,8 @@ fn glyph_pixel_count(bitmap_size: Size<DevicePixels>) -> Result<usize> {
 
 fn rgba_to_bgra(mut bytes: Vec<u8>, pixel_count: usize) -> Result<Vec<u8>> {
     ensure_rgba_len(bytes.len(), pixel_count, "color glyph bitmap")?;
-    for pixel in bytes.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
+    let len = bytes.len();
+    crate::swap_rgba_to_bgra_rows(&mut bytes, len, 1);
     Ok(bytes)
 }
 
@@ -3280,5 +3279,34 @@ mod tests {
             copy_mask_to_frame(source, source_bounds, frame_bounds).expect("frame copy succeeds");
 
         assert_eq!(frame, vec![0, 0, 10, 20, 30, 40, 0, 0]);
+    }
+}
+
+
+#[cfg(test)]
+mod owned_raster_tests {
+    use super::*;
+
+    #[test]
+    fn stable_frame_with_identical_bounds_reuses_bitmap_allocation() {
+        let bounds = Bounds {
+            origin: point(DevicePixels(2), DevicePixels(-8)),
+            size: size(DevicePixels(17), DevicePixels(19)),
+        };
+        let bytes = vec![123; 17 * 19];
+        let ptr = bytes.as_ptr();
+        let output = copy_mask_to_frame(bytes, bounds, bounds).unwrap();
+        assert_eq!(output.as_ptr(), ptr);
+        assert_eq!(output, vec![123; 17 * 19]);
+    }
+
+    #[test]
+    fn color_glyph_channel_conversion_matches_scalar_for_tails() {
+        for count in [0, 1, 15, 16, 17, 33, 257] {
+            let input: Vec<u8> = (0..count * 4).map(|index| (index * 73 + 17) as u8).collect();
+            let mut expected = input.clone();
+            for pixel in expected.chunks_exact_mut(4) { pixel.swap(0, 2); }
+            assert_eq!(rgba_to_bgra(input, count).unwrap(), expected);
+        }
     }
 }
