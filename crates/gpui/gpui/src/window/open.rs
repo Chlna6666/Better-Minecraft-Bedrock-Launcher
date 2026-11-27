@@ -538,6 +538,7 @@ impl Window {
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+            element_states: Default::default(),
             presentation_state: PresentationState::default(),
             render_dirty_region: DirtyRegion::empty(),
             animation_dirty_region: DirtyRegion::empty(),

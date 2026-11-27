@@ -155,6 +155,7 @@ impl Window {
     }
 
     fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
+        self.element_states.begin_frame();
         let was_dirty = self.invalidator.is_dirty();
         let frame_budget = self.frame_throttle.frame_budget();
         self.dirty_frame_scheduled = false;
@@ -193,9 +194,7 @@ impl Window {
         if was_dirty && !self.invalidator.active_view_scoped() {
             self.force_view_cache_refresh = true;
         }
-        // Establish abort eligibility exactly once, before any Prepaint/Paint
-        // handler can move state from rendered_frame. The per-element snapshot
-        // decision and the eventual deadline-abort decision share this latch.
+        // Establish abort eligibility exactly once before Prepaint/Paint.
         // Time passing may clear the recent-input guard, but it must NEVER
         // retroactively make an already-running frame abortable.
         self.frame_can_degrade =
@@ -233,7 +232,8 @@ impl Window {
         self.degraded_draw_count = self.degraded_draw_count.saturating_add(1);
         self.restore_input_handler_after_degraded_draw(restored_input_handler_index);
         self.finish_layout_and_text_frame(false);
-        let frame_retained_capacity = self.next_frame.retained_capacity();
+        let frame_retained_capacity =
+            self.next_frame.retained_capacity() + self.element_states.capacity();
         let scene_metrics = self.next_frame.scene().frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
         self.last_generation_stats.frame_retained_capacity = frame_retained_capacity;
@@ -242,8 +242,6 @@ impl Window {
         record_scene_frame_metrics(scene_metrics);
         self.rendered_frame
             .rollback_replayed_input_handlers(&mut self.next_frame);
-        self.rendered_frame
-            .rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
         // Prepaint may already have computed a hit test against the rejected
         // frame. Event dispatch must see only the still-committed geometry.
@@ -270,6 +268,8 @@ impl Window {
         self.finish_layout_and_text_frame(true);
         let scene_finish_started_at = Instant::now();
         self.next_frame.finish(&mut self.rendered_frame);
+        let accesses = &self.next_frame.accessed_element_states;
+        self.element_states.finish_frame(accesses.keys(0..accesses.len()));
         let scene_finish_time = scene_finish_started_at.elapsed();
         let scene_animation_values = self
             .animation_engine
@@ -311,7 +311,8 @@ impl Window {
         );
         self.presentation_state
             .publish_pending(paint, scene_animation_values);
-        let frame_retained_capacity = self.next_frame.retained_capacity();
+        let frame_retained_capacity =
+            self.next_frame.retained_capacity() + self.element_states.capacity();
         let scene_metrics = self.next_frame.scene().frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
         self.last_generation_stats.frame_retained_capacity = frame_retained_capacity;

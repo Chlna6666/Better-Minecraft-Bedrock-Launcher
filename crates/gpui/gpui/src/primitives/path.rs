@@ -16,9 +16,6 @@ use super::DrawOrder;
 #[allow(non_camel_case_types, unused)]
 pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
 
-type PathVerticesTransformFn =
-    fn(&[PathVertex<Pixels>], f32, f32, Point<ScaledPixels>) -> Vec<PathVertex<ScaledPixels>>;
-
 // SIMD path is retained for an explicit opt-in benchmark and equivalence
 // tests. The production renderer currently chooses scalar after the
 // previous gather/scatter implementation showed no demonstrated GPU/CPU
@@ -36,6 +33,19 @@ fn transform_point(
     point.scale(device_scale) * visual_scale + translation
 }
 
+fn transform_path_vertex(
+    vertex: PathVertex<Pixels>,
+    device_scale: f32,
+    visual_scale: f32,
+    translation: Point<ScaledPixels>,
+) -> PathVertex<ScaledPixels> {
+    PathVertex {
+        xy_position: transform_point(vertex.xy_position, device_scale, visual_scale, translation),
+        st_position: vertex.st_position,
+    }
+}
+
+#[cfg(any(test, feature = "bench-support"))]
 fn transform_path_vertices_scalar(
     vertices: &[PathVertex<Pixels>],
     device_scale: f32,
@@ -44,16 +54,8 @@ fn transform_path_vertices_scalar(
 ) -> Vec<PathVertex<ScaledPixels>> {
     vertices
         .iter()
-        .map(|vertex| PathVertex {
-            xy_position: transform_point(
-                vertex.xy_position,
-                device_scale,
-                visual_scale,
-                translation,
-            ),
-            st_position: vertex.st_position,
-            content_mask: vertex.content_mask,
-        })
+        .cloned()
+        .map(|vertex| transform_path_vertex(vertex, device_scale, visual_scale, translation))
         .collect()
 }
 
@@ -128,7 +130,6 @@ fn transform_path_vertices_simd<S: Simd>(
             transformed.push(PathVertex {
                 xy_position: point(ScaledPixels(x), ScaledPixels(y)),
                 st_position: vertex.st_position,
-                content_mask: vertex.content_mask,
             });
         }
     }
@@ -204,16 +205,12 @@ impl Path<Pixels> {
             animation_id: self.animation_id,
             bounds: self.bounds.scale(factor),
             content_mask: self.content_mask.scale(factor),
-            // Rasterizers consume the path-level mask. The per-vertex field is only a tiny legacy
-            // marker retained for internal struct-literal compatibility, so scaling vertices now
-            // copies only xy/st data instead of duplicating a large ContentMask for every vertex.
             vertices: Arc::new(self
                 .vertices
                 .iter()
                 .map(|vertex| PathVertex {
                     xy_position: vertex.xy_position.scale(factor),
                     st_position: vertex.st_position,
-                    content_mask: vertex.content_mask,
                 })
                 .collect()),
             start: self.start.map(|start| start.scale(factor)),
@@ -229,7 +226,7 @@ impl Path<Pixels> {
     /// DPI scaling happens before the renderer-owned visual scale and translation. This preserves
     /// the previous floating-point results while avoiding an intermediate scaled vertex vector.
     pub(crate) fn paint_scale_transform(
-        &self,
+        self,
         device_scale: f32,
         visual_scale: f32,
         translation: Point<ScaledPixels>,
@@ -238,7 +235,17 @@ impl Path<Pixels> {
             device_scale,
             visual_scale,
             translation,
-            transform_path_vertices_scalar,
+            |vertices, device_scale, visual_scale, translation| {
+                let transform = |vertex| {
+                    transform_path_vertex(vertex, device_scale, visual_scale, translation)
+                };
+                match Arc::try_unwrap(vertices) {
+                    // IntoIter can reuse the allocation because logical and
+                    // scaled vertices have the same size and alignment.
+                    Ok(vertices) => vertices.into_iter().map(transform).collect(),
+                    Err(vertices) => vertices.iter().cloned().map(transform).collect(),
+                }
+            },
         )
     }
 
@@ -249,11 +256,13 @@ impl Path<Pixels> {
         visual_scale: f32,
         translation: Point<ScaledPixels>,
     ) -> Path<ScaledPixels> {
-        self.scale_and_transform_for_paint_with(
+        self.clone().scale_and_transform_for_paint_with(
             device_scale,
             visual_scale,
             translation,
-            transform_path_vertices_scalar,
+            |vertices, device_scale, visual_scale, translation| {
+                transform_path_vertices_scalar(&vertices, device_scale, visual_scale, translation)
+            },
         )
     }
 
@@ -264,20 +273,27 @@ impl Path<Pixels> {
         visual_scale: f32,
         translation: Point<ScaledPixels>,
     ) -> Path<ScaledPixels> {
-        self.scale_and_transform_for_paint_with(
+        self.clone().scale_and_transform_for_paint_with(
             device_scale,
             visual_scale,
             translation,
-            transform_path_vertices_selected,
+            |vertices, device_scale, visual_scale, translation| {
+                transform_path_vertices_selected(&vertices, device_scale, visual_scale, translation)
+            },
         )
     }
 
     fn scale_and_transform_for_paint_with(
-        &self,
+        self,
         device_scale: f32,
         visual_scale: f32,
         translation: Point<ScaledPixels>,
-        transform_vertices: PathVerticesTransformFn,
+        transform_vertices: impl FnOnce(
+            Arc<Vec<PathVertex<Pixels>>>,
+            f32,
+            f32,
+            Point<ScaledPixels>,
+        ) -> Vec<PathVertex<ScaledPixels>>,
     ) -> Path<ScaledPixels> {
         let scaled_bounds = self.bounds.scale(device_scale);
         let bounds = Bounds {
@@ -308,7 +324,7 @@ impl Path<Pixels> {
             animation_id: self.animation_id,
             bounds,
             content_mask,
-            vertices: Arc::new(transform_vertices(&self.vertices, device_scale, visual_scale, translation)),
+            vertices: Arc::new(transform_vertices(self.vertices, device_scale, visual_scale, translation)),
             start: transform_point(self.start, device_scale, visual_scale, translation),
             current: transform_point(self.current, device_scale, visual_scale, translation),
             contour_count: self.contour_count,
@@ -379,17 +395,14 @@ impl Path<Pixels> {
         vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
-            content_mask: 0,
         });
         vertices.push(PathVertex {
             xy_position: xy.1,
             st_position: st.1,
-            content_mask: 0,
         });
         vertices.push(PathVertex {
             xy_position: xy.2,
             st_position: st.2,
-            content_mask: 0,
         });
     }
 
@@ -495,9 +508,16 @@ mod tests {
         );
 
         assert_eq!(selected_vertices, scalar_vertices);
+        let shared = path.clone().paint_scale_transform(
+            1.25, 0.875, point(ScaledPixels(4.0), ScaledPixels(-3.0)),
+        );
+        assert_eq!(shared.vertices.as_slice(), scalar_vertices.as_slice());
+        let original_buffer = path.vertices.as_ptr().cast::<()>();
         let transformed =
             path.paint_scale_transform(1.25, 0.875, point(ScaledPixels(4.0), ScaledPixels(-3.0)));
         assert_eq!(transformed.vertices.as_slice(), scalar_vertices.as_slice());
+        assert_eq!(transformed.vertices.as_ptr().cast::<()>(), original_buffer);
+        assert_eq!(std::mem::size_of::<PathVertex<ScaledPixels>>(), 16);
     }
 }
 
@@ -516,8 +536,5 @@ where
 pub(crate) struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub(crate) xy_position: Point<P>,
     pub(crate) st_position: Point<f32>,
-    /// Legacy marker retained only so existing internal struct literals remain source-compatible.
-    /// Path clipping is represented once on `Path::content_mask`; no renderer reads this field.
-    pub(crate) content_mask: u8,
 }
 

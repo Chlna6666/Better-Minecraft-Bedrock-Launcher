@@ -101,13 +101,11 @@ impl Window {
         self.with_element_state_erased(
             global_id,
             TypeId::of::<S>(),
-            TypeId::of::<Option<S>>(),
-            std::any::type_name::<S>(),
             empty_state_slot::<S>,
             &mut |initialized, state_slot, window| {
                 let state_slot = state_slot
                     .downcast_mut::<Option<S>>()
-                    .expect("element state slot type was validated before callback");
+                    .expect("element state slot type must match its key");
                 let state = if initialized {
                     Some(state_slot.take().expect(
                         "reentrant call to with_element_state for the same state type and element id",
@@ -131,46 +129,18 @@ impl Window {
         &mut self,
         global_id: &GlobalElementId,
         state_type: TypeId,
-        state_slot_type: TypeId,
-        requested_type_name: &'static str,
         empty_state_slot: fn() -> Box<dyn Any>,
         f: &mut dyn FnMut(bool, &mut dyn Any, &mut Self),
     ) {
         self.invalidator.debug_assert_paint_or_prepaint();
 
-        let (key, state) = self.take_element_state(global_id, state_type);
-        let (mut inner, initialized) = if let Some(any) = state {
-            let ElementStateBox {
-                inner,
-                #[cfg(debug_assertions)]
-                type_name,
-            } = any;
-            if inner.as_ref().type_id() != state_slot_type {
-                #[cfg(debug_assertions)]
-                panic!(
-                    "invalid element state type for id, requested {:?}, actual: {:?}",
-                    requested_type_name, type_name
-                );
-                #[cfg(not(debug_assertions))]
-                panic!(
-                    "invalid element state type for id, requested {:?}",
-                    requested_type_name
-                );
-            }
-            (inner, true)
-        } else {
-            (empty_state_slot(), false)
-        };
-
+        let key = (global_id.clone(), state_type);
+        self.next_frame.accessed_element_states.push(Some(key.clone()));
+        let existing = self.element_states.take(&key);
+        let initialized = existing.is_some();
+        let mut inner = existing.unwrap_or_else(empty_state_slot);
         f(initialized, inner.as_mut(), self);
-        self.insert_element_state(
-            key,
-            ElementStateBox {
-                inner,
-                #[cfg(debug_assertions)]
-                type_name: requested_type_name,
-            },
-        );
+        self.element_states.store(key, inner);
     }
 
     /// A variant of `with_element_state` that allows the element's id to be optional. This is a convenience
@@ -205,30 +175,6 @@ impl Window {
             result
         }
     }
-     fn take_element_state(
-        &mut self,
-        global_id: &GlobalElementId,
-        state_type: TypeId,
-    ) -> ((GlobalElementId, TypeId), Option<ElementStateBox>) {
-        let key = (global_id.clone(), state_type);
-        self.next_frame.accessed_element_states.push(Some(key.clone()));
-        let state = self
-            .next_frame
-            .element_states
-            .remove(&key)
-            .or_else(|| self.rendered_frame.element_states.remove(&key));
-        (key, state)
-    }
-
-    #[inline(never)]
-    fn insert_element_state(
-        &mut self,
-        key: (GlobalElementId, TypeId),
-        state: ElementStateBox,
-    ) -> Option<ElementStateBox> {
-        self.next_frame.element_states.insert(key, state)
-    }
-
     #[inline(never)]
     fn observe_keyed_state<S: 'static>(state: &Entity<S>, current_view: EntityId, cx: &mut App) {
         cx.observe(state, move |_, cx| {

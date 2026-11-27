@@ -161,6 +161,36 @@ impl RasterTileCache {
     /// Resident physical texel bytes, including busy invalid allocations.
     pub fn bytes(&self) -> u64 { self.bytes }
 
+    /// Changes the byte limit and releases eligible least-recently-used tiles.
+    /// A busy tile, or a tile already selected by the current frame, stays
+    /// resident until a later call can retire it. New physical allocations
+    /// obey the new limit immediately.
+    pub fn resize_budget<D: ResourceDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+        budget: u64,
+    ) -> Result<()> {
+        self.budget = budget;
+        self.evict_to(device, budget)?;
+        Ok(())
+    }
+
+    /// Logical byte limit for new physical allocations.
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
+
+    fn evict_to<D: ResourceDevice + ?Sized>(&mut self, device: &mut D, limit: u64) -> Result<bool> {
+        while self.bytes > limit {
+            let Some(victim) = self.entries.iter()
+                .filter(|(_, e)| e.idle() && e.last_used != self.frame)
+                .min_by_key(|(_, e)| e.last_used).map(|(&k, _)| k)
+            else { return Ok(false); };
+            self.release(device, victim)?;
+        }
+        Ok(true)
+    }
+
     /// Adopt clean tiles (including pending writes) across consecutive generations only.
     /// Missed generations have no complete dirty-set proof.
     pub fn advance_layer(&mut self, layer: u64, generation: u64, mut dirty: impl FnMut(RasterTileKey) -> bool) {
@@ -400,13 +430,7 @@ impl RasterTileCache {
                 .and_then(|n| n.checked_mul(u64::from(format.bytes_per_pixel())))
                 .ok_or_else(|| Error::InvalidInput("tile byte size overflow".into()))?;
             if bytes > self.budget { return Ok(None); }
-            while self.bytes > self.budget - bytes {
-                let Some(victim) = self.entries.iter()
-                    .filter(|(_, e)| e.idle() && e.last_used != self.frame)
-                    .min_by_key(|(_, e)| e.last_used).map(|(&k, _)| k)
-                else { return Ok(None); };
-                self.release(device, victim)?;
-            }
+            if !self.evict_to(device, self.budget - bytes)? { return Ok(None); }
             let texture = device.create_texture(&TextureDescriptor {
                 label: Some("resident raster tile".into()), size: raster.extent,
                 mip_level_count: 1, format,

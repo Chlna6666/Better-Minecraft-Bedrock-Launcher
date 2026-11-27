@@ -80,7 +80,6 @@ struct ScrollInputGeometry {
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
-    pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     // Tombstones cancel speculative layout-state replay without shifting frame ranges.
     pub(super) accessed_element_states: state_access::StateAccessLog,
     pub(crate) mouse_listeners: Vec<MouseListener>,
@@ -306,7 +305,6 @@ impl Frame {
         Frame {
             focus: None,
             window_active: false,
-            element_states: FxHashMap::default(),
             accessed_element_states: state_access::StateAccessLog::default(),
             mouse_listeners: Vec::new(),
             mounted_scroll_sources: Vec::new(),
@@ -353,7 +351,6 @@ impl Frame {
             || !self.deferred_draws.is_empty()
             || !self.cursor_styles.is_empty();
 
-        self.element_states.clear();
         self.accessed_element_states.clear();
         self.mouse_listeners.clear();
         self.mounted_scroll_sources.clear();
@@ -613,22 +610,6 @@ impl Frame {
         self.accessed_element_states.freeze();
         self.dispatch_tree.freeze();
         self.hitboxes.freeze();
-        for element_state_key in self.accessed_element_states.keys(0..self.accessed_element_states.len()) {
-            if prev_frame.element_states.is_empty() {
-                break;
-            }
-            if let Some((element_state_key, element_state)) =
-                prev_frame.element_states.remove_entry(element_state_key)
-            {
-                // Snapshot-based progressive frames keep the committed
-                // element state in prev_frame during construction. Fresh
-                // candidate state must win on successful publication.
-                self.element_states
-                    .entry(element_state_key)
-                    .or_insert(element_state);
-            }
-        }
-
         // A complete Frame is committed atomically, so speculative IME
         // transfers no longer need an abort journal after publication.
         self.replayed_input_handlers.clear();
@@ -653,19 +634,7 @@ impl Frame {
         }
     }
 
-    /// Abort a candidate generation without dropping IME handlers still
-    /// owned by the last committed tree. The platform may already own the
-    /// active handler; only nonempty speculative slots are restored.
-    /// Keep committed snapshots, but migrate non-cloneable states moved by
-    /// older Element implementations back from an aborted candidate.
-    /// Never overwrite an intact committed element snapshot with an
-    /// uncommitted range generation.
-    pub(crate) fn rollback_element_states(&mut self, candidate: &mut Self) {
-        for (key, state) in candidate.element_states.drain() {
-            self.element_states.entry(key).or_insert(state);
-        }
-    }
-
+    /// Restore IME handlers transferred from the still-committed frame.
     pub(crate) fn rollback_replayed_input_handlers(&mut self, candidate: &mut Self) -> usize {
         rollback_replayed_option_transfers(
             &mut self.input_handlers,
@@ -675,8 +644,7 @@ impl Frame {
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
-        self.element_states.capacity()
-            + self.painter.construction_capacity()
+        self.painter.construction_capacity()
             + self.retained_paint.retained_capacity()
             + self.accessed_element_states.capacity()
             + self.dispatch_tree.retained_capacity()
@@ -698,12 +666,6 @@ impl Frame {
     }
 
     fn trim_retained_capacity(&mut self) {
-        let state_target = FRAME_MIN_RETAINED_CAPACITY.max(self.element_states.len());
-        if self.element_states.capacity()
-            > state_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.element_states.shrink_to(state_target);
-        }
         self.accessed_element_states.trim(false);
         self.dispatch_tree.trim_retained_capacity(false);
         trim_frame_vec_capacity(
@@ -792,12 +754,6 @@ impl Frame {
             }};
         }
 
-        let state_target = FRAME_MIN_RETAINED_CAPACITY.max(current.element_states.len());
-        if self.element_states.capacity()
-            > state_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.element_states.shrink_to(state_target);
-        }
         self.accessed_element_states.trim_for_reuse(&current.accessed_element_states);
         self.dispatch_tree.trim_for_reuse(&current.dispatch_tree);
         trim_vec_against!(mouse_listeners);
@@ -846,8 +802,6 @@ impl Frame {
                 } else {
                     FRAME_MIN_RETAINED_CAPACITY
                 };
-                self.element_states
-                    .shrink_to(floor.max(self.element_states.len()));
                 self.accessed_element_states.trim(true);
                 self.dispatch_tree
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
@@ -896,23 +850,6 @@ impl Frame {
         capacity
     }
 
-    pub(super) fn release_image_element_bitmaps(&mut self) {
-        let image_state_type = TypeId::of::<crate::ImageElementState>();
-        for ((_, type_id), state) in &mut self.element_states {
-            if *type_id != image_state_type {
-                continue;
-            }
-            let Some(state) = state
-                .inner
-                .downcast_mut::<Option<crate::ImageElementState>>()
-                .and_then(Option::as_mut)
-            else {
-                continue;
-            };
-            state.current_image = None;
-            state.current_frame = None;
-        }
-    }
 }
 
 fn rollback_replayed_option_transfers<T>(
@@ -974,47 +911,6 @@ mod publication_tests {
             0
         );
         assert_eq!(candidate, vec![Some(17)]);
-    }
-
-    fn test_cached_slot(value: u64) -> ElementStateBox {
-        ElementStateBox {
-            inner: Box::new(Some(value)),
-            #[cfg(debug_assertions)]
-            type_name: "Option<u64>",
-        }
-    }
-
-    fn test_cached_value(slot: &ElementStateBox) -> Option<u64> {
-        slot.inner.downcast_ref::<Option<u64>>().copied().flatten()
-    }
-
-    #[test]
-    fn abort_keeps_existing_committed_snapshot_and_discards_candidate() {
-        let key = (GlobalElementId::default(), TypeId::of::<u64>());
-        let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
-        let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
-        old.element_states.insert(key.clone(), test_cached_slot(10));
-        candidate
-            .element_states
-            .insert(key.clone(), test_cached_slot(20));
-        old.rollback_element_states(&mut candidate);
-        assert_eq!(test_cached_value(&old.element_states[&key]), Some(10));
-        assert!(candidate.element_states.is_empty());
-    }
-
-    #[test]
-    fn successful_frame_prefers_candidate_state_over_committed_snapshot() {
-        let key = (GlobalElementId::default(), TypeId::of::<u64>());
-        let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
-        let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
-        old.element_states.insert(key.clone(), test_cached_slot(10));
-        candidate
-            .element_states
-            .insert(key.clone(), test_cached_slot(20));
-        candidate.accessed_element_states.push(Some(key.clone()));
-        candidate.finish(&mut old);
-        assert_eq!(test_cached_value(&candidate.element_states[&key]), Some(20));
-        assert!(!old.element_states.contains_key(&key));
     }
 
     #[test]

@@ -1051,7 +1051,7 @@ fn pure_window_move_does_not_dirty_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn test_window_reports_missing_raw_handles_without_panicking(cx: &mut TestAppContext) {
-    use winit::raw_window_handle::{HandleError, HasDisplayHandle as _, HasWindowHandle as _};
+    use raw_window_handle::{HandleError, HasDisplayHandle as _, HasWindowHandle as _};
 
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

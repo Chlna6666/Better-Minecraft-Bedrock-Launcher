@@ -27,8 +27,7 @@ impl Window {
     pub fn rebuild_map_image_atlas(&mut self) {
         self.animated_image_slots.clear();
         self.image_paint_tile_cache.clear();
-        self.rendered_frame.release_image_element_bitmaps();
-        self.next_frame.release_image_element_bitmaps();
+        self.element_states.release_image_bitmaps();
         self.force_full_redraw.set(true);
         self.force_view_cache_refresh = true;
         self.platform_window

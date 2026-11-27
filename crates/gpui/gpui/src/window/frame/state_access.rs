@@ -1,5 +1,5 @@
 //! Immutable, UI-thread-owned element-state access pages. State values
-//! remain in the existing Frame map; only ownership records are shared.
+//! remain in the window's state store; only access records are shared.
 use crate::GlobalElementId;
 use std::{any::TypeId, mem, ops::Range, rc::Rc};
 

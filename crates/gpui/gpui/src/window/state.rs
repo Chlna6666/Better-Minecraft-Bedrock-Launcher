@@ -218,12 +218,6 @@ pub(super) struct PendingInput {
     pub(super) timer: Option<Task<()>>,
 }
 
-pub(crate) struct ElementStateBox {
-    pub(crate) inner: Box<dyn Any>,
-    #[cfg(debug_assertions)]
-    pub(crate) type_name: &'static str,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ElementVisualTransform {
     pub(crate) scale: f32,
@@ -523,6 +517,7 @@ pub struct Window {
     pub(super) image_paint_live_tiles_scratch: FxHashSet<(crate::AtlasTextureId, u32)>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    pub(super) element_states: super::element_states::ElementStates,
     pub(super) presentation_state: PresentationState,
     pub(super) render_dirty_region: DirtyRegion,
     pub(super) animation_dirty_region: DirtyRegion,

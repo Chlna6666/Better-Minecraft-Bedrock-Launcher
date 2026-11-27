@@ -875,8 +875,7 @@ impl Window {
             super::focus::ELEMENT_ARENA.with_borrow_mut(|arena| arena.trim());
         }
         if releases_resident_image_element_bitmaps(level) {
-            self.rendered_frame.release_image_element_bitmaps();
-            self.next_frame.release_image_element_bitmaps();
+            self.element_states.release_image_bitmaps();
         }
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.image_paint_tile_cache.clear();
@@ -905,6 +904,7 @@ impl Window {
         }
 
         self.text_style_stack.trim(floor, eager);
+        self.element_states.trim(floor, eager);
         trim_collection!(self.rendered_entity_stack);
         trim_collection!(self.view_bounds_stack);
         trim_collection!(self.element_offset_stack);
