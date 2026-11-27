@@ -180,6 +180,56 @@ fn report_state_owner(route: Option<EntityId>, changed: &mut SmallVec<[EntityId;
     }
 }
 
+// Bounded history of actual application notifications. This is not a
+// per-row registry: row snapshots use their existing sorted read slices.
+#[derive(Clone, Copy)]
+enum RowNotification {
+    Entity(EntityId),
+    Global(TypeId, bool),
+}
+
+impl RowNotification {
+    fn affects(self, reads: &crate::RenderDependencies) -> bool {
+        match self {
+            Self::Entity(entity) => reads.entities.binary_search(&entity).is_ok(),
+            Self::Global(global, exists) => {
+                reads.globals.binary_search(&(global, None)).is_ok()
+                    || reads.globals.binary_search(&(global, Some(!exists))).is_ok()
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct RowNotifications {
+    sequence: u64,
+    events: std::collections::VecDeque<RowNotification>,
+}
+
+impl RowNotifications {
+    const CAPACITY: usize = 128;
+
+    fn push(&mut self, event: RowNotification) {
+        if self.events.len() == Self::CAPACITY {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+        self.sequence = self.sequence.wrapping_add(1);
+    }
+
+    fn unchanged(&self, since: u64, reads: &crate::RenderDependencies) -> bool {
+        if reads.entities.is_empty() && reads.globals.is_empty() {
+            return true;
+        }
+        let count = self.sequence.wrapping_sub(since);
+        if count > self.events.len() as u64 {
+            // A lagging row cannot prove that no relevant event was lost.
+            return false;
+        }
+        !self.events.iter().rev().take(count as usize).any(|event| event.affects(reads))
+    }
+}
+
 // Requests are accumulated until begin_draw_cycle consumes them. In
 // particular a wheel event must not turn a pending model/overlay refresh
 // into a placement-only frame.
@@ -212,6 +262,7 @@ struct WindowInvalidatorInner {
     // requires the conservative window-wide fallback.
     view_reads: FxHashMap<Option<EntityId>, CommittedReads>,
     owner_state_routing: OwnerStateRouting,
+    row_notifications: RowNotifications,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -250,6 +301,7 @@ impl WindowInvalidator {
                 dirty_views: FxHashSet::default(),
                 view_reads: FxHashMap::default(),
                 owner_state_routing: OwnerStateRouting::default(),
+                row_notifications: RowNotifications::default(),
                 render_dependencies: FxHashMap::default(),
                 global_read_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
@@ -531,6 +583,7 @@ impl WindowInvalidator {
     /// Never synthesize an Entity Notify for the dependent views.
     pub(crate) fn invalidate_global_dependency(&self, global: TypeId, exists: bool) {
         let mut inner = self.inner.borrow_mut();
+        inner.row_notifications.push(RowNotification::Global(global, exists));
         let mut owners = SmallVec::<[EntityId; 4]>::new();
         // A value read always depends on a write. Existence reads depend
         // only on a change from the observed boolean (including absence).
@@ -622,6 +675,7 @@ impl WindowInvalidator {
     fn invalidate_entity(&self, entity: EntityId, cx: &mut App, resolve_dependencies: bool) -> bool {
         let mut inner = self.inner.borrow_mut();
         let (owners, unknown) = if resolve_dependencies {
+            inner.row_notifications.push(RowNotification::Entity(entity));
             match inner.render_dependencies.get(&entity) {
                 Some(Some(owners)) => (owners.clone(), false),
                 Some(None) => (smallvec::smallvec![entity], true),
@@ -739,6 +793,15 @@ impl WindowInvalidator {
             placement: inner.scroll_placement_revision,
         };
         (current.content, inner.drawing_placement == Some(current))
+    }
+
+    /// Capture the notification boundary before recording row dependencies.
+    pub(super) fn row_notification_epoch(&self) -> u64 {
+        self.inner.borrow().row_notifications.sequence
+    }
+
+    pub(super) fn row_dependencies_unchanged(&self, since: u64, reads: &crate::RenderDependencies) -> bool {
+        self.inner.borrow().row_notifications.unchanged(since, reads)
     }
 
     /// A scoped content draw can retain rows from a provably clean owner.
@@ -1148,6 +1211,41 @@ mod view_invalidation_tests {
     }
 
     #[test]
+    fn row_notifications_match_entity_global_and_existence_reads() {
+        let model = EntityId::from(1);
+        let unrelated = EntityId::from(2);
+        let global = TypeId::of::<u32>();
+        let reads = crate::RenderDependencies {
+            entities: Rc::from([model]),
+            globals: Rc::from([(global, Some(true))]),
+            ..Default::default()
+        };
+        let mut notifications = RowNotifications::default();
+        let start = notifications.sequence;
+        notifications.push(RowNotification::Entity(unrelated));
+        notifications.push(RowNotification::Global(global, true));
+        assert!(notifications.unchanged(start, &reads));
+        notifications.push(RowNotification::Global(global, false));
+        assert!(!notifications.unchanged(start, &reads));
+        let start = notifications.sequence;
+        notifications.push(RowNotification::Entity(model));
+        assert!(!notifications.unchanged(start, &reads));
+        let start = notifications.sequence;
+        for _ in 0..=RowNotifications::CAPACITY {
+            notifications.push(RowNotification::Entity(unrelated));
+        }
+        assert!(!notifications.unchanged(start, &reads));
+        assert!(notifications.unchanged(start, &Default::default()));
+        let value_reads = crate::RenderDependencies {
+            globals: Rc::from([(global, None)]),
+            ..Default::default()
+        };
+        let start = notifications.sequence;
+        notifications.push(RowNotification::Global(global, true));
+        assert!(!notifications.unchanged(start, &value_reads));
+    }
+
+    #[test]
     fn scoped_route_delta_preserves_unrelated_and_common_edges() {
         let first = EntityId::from(1);
         let second = EntityId::from(2);
@@ -1364,7 +1462,14 @@ mod view_invalidation_tests {
             log.entity(Some(second), model);
             invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
             invalidator.set_dirty(false);
+            let epoch = invalidator.row_notification_epoch();
+            let reads = crate::RenderDependencies {
+                entities: Rc::from([model]),
+                ..Default::default()
+            };
+            assert!(invalidator.row_dependencies_unchanged(epoch, &reads));
             assert!(invalidator.invalidate_dependency(model, cx));
+            assert!(!invalidator.row_dependencies_unchanged(epoch, &reads));
             assert_eq!(invalidator.take_views(), FxHashSet::from_iter([first, second]));
         });
     }

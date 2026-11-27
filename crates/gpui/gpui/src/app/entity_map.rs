@@ -232,6 +232,14 @@ impl EntityMap {
         self.tracking_frame_dependencies
     }
 
+    pub(crate) fn dependency_read_index(&self) -> crate::DependencyReadIndex {
+        self.dependencies.borrow_mut().dependency_read_index()
+    }
+
+    pub(crate) fn dependency_reads_since(&self, start: crate::DependencyReadIndex) -> crate::RenderDependencies {
+        self.dependencies.borrow_mut().dependency_reads_since(start)
+    }
+
     pub(crate) fn state_read_index(&self) -> usize {
         self.dependencies.borrow().state_read_index()
     }

@@ -234,6 +234,10 @@ pub(crate) struct AppDependencies {
     global_log: Vec<(TypeId, Option<bool>)>,
     state_read_log: Rc<RefCell<Vec<StateRead>>>,
     recording: DependencyRecording,
+    // The latest nested capture boundary also protects adjacent equal reads
+    // from being elided across rows owned by the same view.
+    capture_entities: usize,
+    capture_globals: usize,
     ranges: Vec<LogRanges>,
     scratch_entities: Vec<EntityId>,
     scratch_globals: Vec<(TypeId, Option<bool>)>,
@@ -245,6 +249,13 @@ pub(crate) struct AppDependencies {
 #[derive(Default)]
 struct DependencyRecording {
     owner: Option<EntityId>,
+    entities: usize,
+    globals: usize,
+    states: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DependencyReadIndex {
     entities: usize,
     globals: usize,
     states: usize,
@@ -286,7 +297,7 @@ impl AppDependencies {
     pub(crate) fn note_access(&mut self, entity_id: EntityId) {
         // From Fast note_access: an equal adjacent read may be elided only
         // within the same recording boundary.
-        if self.entity_log.len() > self.recording.entities
+        if self.entity_log.len() > self.recording.entities.max(self.capture_entities)
             && self.entity_log.last() == Some(&entity_id)
         {
             return;
@@ -296,7 +307,7 @@ impl AppDependencies {
 
     #[inline]
     pub(crate) fn note_global_read(&mut self, global: (TypeId, Option<bool>)) {
-        if self.global_log.len() > self.recording.globals
+        if self.global_log.len() > self.recording.globals.max(self.capture_globals)
             && self.global_log.last() == Some(&global)
         {
             return;
@@ -336,6 +347,8 @@ impl AppDependencies {
         self.state_read_log.borrow_mut().clear();
         self.ranges.clear();
         self.recording = DependencyRecording::default();
+        self.capture_entities = 0;
+        self.capture_globals = 0;
     }
 
     /// Finish each owner's disjoint read ranges once. Publish the interned
@@ -398,6 +411,27 @@ impl AppDependencies {
 
     pub(crate) fn begin_state_reads(&self) -> StateReadRecording {
         StateReadRecording::enter(Some(self.state_read_log.clone()))
+    }
+
+    pub(crate) fn dependency_read_index(&mut self) -> DependencyReadIndex {
+        self.capture_entities = self.entity_log.len();
+        self.capture_globals = self.global_log.len();
+        DependencyReadIndex {
+            entities: self.capture_entities,
+            globals: self.capture_globals,
+            states: self.state_read_index(),
+        }
+    }
+
+    /// Borrow the original owner logs and intern each dependency kind.
+    /// Nested captures do not consume or change the enclosing owner record.
+    pub(crate) fn dependency_reads_since(&mut self, start: DependencyReadIndex) -> RenderDependencies {
+        let entities = intern_range(&mut self.interned_entities, &mut self.scratch_entities,
+            &self.entity_log[start.entities..]);
+        let globals = intern_range(&mut self.interned_globals, &mut self.scratch_globals,
+            &self.global_log[start.globals..]);
+        let states = self.state_reads_since(start.states);
+        RenderDependencies { entities, globals, states }
     }
 
     pub(crate) fn state_read_index(&self) -> usize {
@@ -860,6 +894,35 @@ mod state_dedup_tests {
         state.bump();
         assert!(!validation.unchanged(&reads));
         assert_eq!(validation.0.get(), ValidatedEpoch::Unchecked);
+    }
+
+    #[test]
+    fn row_capture_boundaries_preserve_adjacent_reads_and_nested_owner_logs() {
+        let mut log = AppDependencies::default();
+        let owner = EntityId::from(1_u64);
+        let model = EntityId::from(2_u64);
+        let global = (TypeId::of::<u32>(), Some(true));
+        log.set_owner(Some(owner));
+        log.note_access(model);
+        log.note_global_read(global);
+        let outer = log.dependency_read_index();
+        log.note_access(model);
+        log.note_global_read(global);
+        let inner = log.dependency_read_index();
+        log.note_access(model);
+        log.note_global_read(global);
+        let nested = log.dependency_reads_since(inner);
+        let enclosing = log.dependency_reads_since(outer);
+        assert_eq!(&*nested.entities, &[model]);
+        assert_eq!(&*nested.globals, &[global]);
+        assert!(Rc::ptr_eq(&nested.entities, &enclosing.entities));
+        assert!(Rc::ptr_eq(&nested.globals, &enclosing.globals));
+        let sets = log.into_sets();
+        assert_eq!(&*sets[&Some(owner)].entities, &[model]);
+        assert_eq!(&*sets[&Some(owner)].globals, &[global]);
+        let fresh = log.dependency_read_index();
+        let empty = log.dependency_reads_since(fresh);
+        assert!(empty.entities.is_empty() && empty.globals.is_empty());
     }
 
     #[test]

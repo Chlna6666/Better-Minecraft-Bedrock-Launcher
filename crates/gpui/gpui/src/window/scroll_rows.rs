@@ -5,10 +5,10 @@
 use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::{ScrollPaint, ScrollPaintTarget}};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
-    ScrollCapture, Size, StateRead, StateReadValidation, Window,
+    ScrollCapture, Size, StateRead, StateReadValidation, RenderDependencies, Window,
 };
 use collections::{FxHashMap, FxHashSet};
-use std::{cell::RefCell, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
+use std::{cell::{Cell, RefCell}, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
@@ -65,6 +65,7 @@ pub(crate) enum RowListIdentity {
 pub(crate) struct RowPlan {
     key: u64,
     revision: u64,
+    notification_epoch: u64,
     placement_only: bool,
     row_revision: Option<RowRevision>,
     context: Rc<ListContext>,
@@ -121,12 +122,13 @@ pub(crate) struct RowPrepaint {
     pub(crate) row_revision: u64,
     pub(crate) origin: Point<Pixels>,
     pub(crate) records: Range<PrepaintStateIndex>,
-    pub(crate) reads: Rc<[StateRead]>,
+    pub(crate) reads: RenderDependencies,
     pub(crate) validation: StateReadValidation,
 }
 
 struct RowRecord {
     revision: u64,
+    notification_epoch: u64,
     context: Rc<ListContext>,
     prepaint: RowPrepaint,
     paint: Range<PaintIndex>,
@@ -138,7 +140,8 @@ struct RowMeasurement {
     index: usize,
     count: usize,
     context: RetainedPaintContext,
-    reads: Rc<[StateRead]>,
+    reads: RenderDependencies,
+    notification_epoch: Cell<u64>,
     validation: StateReadValidation,
     size: Size<Pixels>,
 }
@@ -212,16 +215,21 @@ impl Window {
             && previous.index == index
             && previous.count == count
             && self.retained_paint_context_matches(&previous.context)
-            && previous.validation.unchanged(&previous.reads)
+            && self.invalidator.row_dependencies_unchanged(previous.notification_epoch.get(), &previous.reads)
+            && previous.validation.unchanged(&previous.reads.states)
         {
             let size = previous.size;
+            // A successfully validated immutable measurement may advance
+            // its notification proof without rebuilding or cloning reads.
+            previous.notification_epoch.set(self.invalidator.row_notification_epoch());
             self.next_frame.scroll_rows.measurements.insert(id.clone(), (revision, previous.clone()));
             self.replayed_view_owners.insert(self.current_view());
             return size;
         }
         // Do not clone the inherited text style on a measurement hit.
         let context = self.current_retained_paint_context();
-        let start = cx.entities.state_read_index();
+        let notification_epoch = self.invalidator.row_notification_epoch();
+        let start = cx.entities.dependency_read_index();
         let (size, cacheable) = measure(self, cx);
         if cacheable {
             self.next_frame.scroll_rows.measurements.insert(id.clone(), (revision, Rc::new(RowMeasurement {
@@ -229,7 +237,8 @@ impl Window {
                 index,
                 count,
                 context,
-                reads: cx.entities.state_reads_since(start),
+                reads: cx.entities.dependency_reads_since(start),
+                notification_epoch: Cell::new(notification_epoch),
                 validation: StateReadValidation::default(),
                 size,
             })));
@@ -288,6 +297,7 @@ impl Window {
         Some(RowPlan {
             key,
             revision,
+            notification_epoch: self.invalidator.row_notification_epoch(),
             placement_only,
             row_revision,
             hover_held: self.scroll_hover_is_held(cx),
@@ -335,7 +345,8 @@ impl Window {
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = hitbox_range(&record.prepaint);
         record.content.covers(viewport, delta)
-            && record.prepaint.validation.unchanged(&record.prepaint.reads)
+            && self.invalidator.row_dependencies_unchanged(record.notification_epoch, &record.prepaint.reads)
+            && record.prepaint.validation.unchanged(&record.prepaint.reads.states)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
             && (plan.hover_held || !self.hits_scroll_row(&self.rendered_frame.hitboxes, hitboxes, logical_delta))
@@ -414,7 +425,7 @@ impl Window {
             item.paint(self, cx);
             return;
         }
-        let read_start = cx.entities.state_read_index();
+        let read_start = cx.entities.dependency_read_index();
         let start = self.paint_index();
         let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
             .map(|previous| Arc::clone(&previous.content));
@@ -424,11 +435,11 @@ impl Window {
             self.restore_scroll_row_after_wheel(cx);
         }
         let paint = start..self.paint_index();
-        let paint_reads = cx.entities.state_reads_since(read_start);
-        if !paint_reads.is_empty() {
-            prepaint.reads = crate::merge_state_reads(&prepaint.reads, &paint_reads);
+        let paint_reads = cx.entities.dependency_reads_since(read_start);
+        if !paint_reads.states.is_empty() {
             prepaint.validation = StateReadValidation::default();
         }
+        prepaint.reads.merge_replayed(&paint_reads);
         self.remember_scroll_row(plan, row, prepaint, paint, content);
     }
 
@@ -492,6 +503,7 @@ impl Window {
             (plan.key, row),
             RowRecord {
                 revision: plan.revision,
+                notification_epoch: plan.notification_epoch,
                 context: plan.context.clone(),
                 prepaint,
                 paint,

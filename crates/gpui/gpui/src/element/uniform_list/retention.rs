@@ -50,22 +50,25 @@ pub(super) fn prepaint(
             .iter()
             .position(|&reused| reused)
             .map_or(range.end, |distance| row + distance);
-        let read_start = cx.entities.state_read_index();
+        let read_start = cx.entities.dependency_read_index();
         let items = render(row..next, window, cx);
-        let shared_reads = cx.entities.state_reads_since(read_start);
+        let shared_reads = cx.entities.dependency_reads_since(read_start);
         window.with_content_mask(Some(content_mask), |window| {
             for (mut item, index) in items.into_iter().zip(row..next) {
                 let origin = row_origin(index);
                 let capture = plan.can_capture(&mut item);
                 let before =
-                    capture.then(|| (window.prepaint_index(), cx.entities.state_read_index()));
+                    capture.then(|| (window.prepaint_index(), cx.entities.dependency_read_index()));
                 window.with_list_item_layout_key(index, |window| {
                     item.layout_as_root(available_space, window, cx);
                     item.prepaint_at(origin, window, cx);
                 });
                 if let Some((start, read_start)) = before {
-                    let extra = cx.entities.state_reads_since(read_start);
-                    let reads = crate::merge_state_reads(&shared_reads, &extra);
+                    let extra = cx.entities.dependency_reads_since(read_start);
+                    // The renderer takes a range, so its reads belong to
+                    // every row in that batch. Layout/prepaint are per-row.
+                    let mut reads = shared_reads.clone();
+                    reads.merge_replayed(&extra);
                     let prepaint = RowPrepaint {
                         row_revision: plan.row_revision(index),
                         origin,

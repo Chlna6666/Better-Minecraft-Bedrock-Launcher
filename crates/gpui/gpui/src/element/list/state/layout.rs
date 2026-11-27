@@ -171,7 +171,7 @@ impl StateInner {
                     (None, size, None)
                 } else {
                     with_item_retained_key(window, item_index, |window| {
-                        let read_start = retained_rows.map(|_| cx.entities.state_read_index());
+                        let read_start = retained_rows.map(|_| cx.entities.dependency_read_index());
                         let mut element = render_item(item_index, window, cx);
                         let read_start = read_start.filter(|_| {
                             visible_height < available_height
@@ -179,7 +179,7 @@ impl StateInner {
                         });
                         measured_item_count += 1;
                         let element_size = element.layout_as_root(available_item_space, window, cx);
-                        let reads = read_start.map(|start| cx.entities.state_reads_since(start));
+                        let reads = read_start.map(|start| cx.entities.dependency_reads_since(start));
                         (Some(element), element_size, reads)
                     })
                 };
@@ -410,7 +410,7 @@ impl StateInner {
                         Some(mask),
                         |window| {
                             let start = item.capture_reads.as_ref()
-                                .map(|_| (window.prepaint_index(), cx.entities.state_read_index()));
+                                .map(|_| (window.prepaint_index(), cx.entities.dependency_read_index()));
                             with_item_retained_key(window, item.index, |window| {
                                 if let Some(element) = item.element.as_mut() {
                                     element.prepaint_at(item_origin, window, cx);
@@ -421,8 +421,9 @@ impl StateInner {
                                     let prepaint = window.reuse_scroll_row(plan, item.index, item_origin);
                                     plan.record_prepaint(item.index, prepaint);
                                 } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
-                                    let prepaint_reads = cx.entities.state_reads_since(read_start);
-                                    let reads = crate::merge_state_reads(&reads, &prepaint_reads);
+                                    let prepaint_reads = cx.entities.dependency_reads_since(read_start);
+                                    let mut reads = reads;
+                                    reads.merge_replayed(&prepaint_reads);
                                     plan.record_prepaint(item.index, RowPrepaint {
                                         row_revision: plan.row_revision(item.index),
                                         origin: item_origin,
