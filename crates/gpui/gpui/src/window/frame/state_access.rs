@@ -71,18 +71,38 @@ impl StateAccessLog {
     }
 
     pub(in crate::window) fn push(&mut self, key: Option<Key>) {
+        self.pack_sparse_tail();
+        self.push_pending(key);
+    }
+
+    #[inline]
+    fn push_pending(&mut self, key: Option<Key>) {
         self.pending.push(key);
         self.len += 1;
-        if self.pending.len() == PAGE_LEN { self.freeze(); }
+        if self.pending.len() == PAGE_LEN { self.seal_pending(); }
+    }
+
+    fn pack_sparse_tail(&mut self) {
+        if !self.pending.is_empty() { return; }
+        let Some(last) = self.blocks.last() else { return; };
+        let Some(page) = &last.page else { return; };
+        if last.len * 4 >= page.len() { return; }
+        let last = self.blocks.pop().unwrap();
+        let page = last.page.unwrap();
+        self.pending.extend_from_slice(&page[last.start..last.start + last.len]);
+        // Existing logical entries: do not advance len.
     }
 
     pub(in crate::window) fn freeze(&mut self) {
+        self.pack_sparse_tail();
+        self.seal_pending();
+    }
+
+    fn seal_pending(&mut self) {
         if self.pending.is_empty() { return; }
-        let mut pending = mem::take(&mut self.pending);
-        // A short tail should not pin a full page capacity.
-        if pending.capacity() > pending.len().saturating_mul(2) {
-            pending.shrink_to_fit();
-        }
+        // A bounded page is cheaper than a shrink/reallocate on every short
+        // fragment. Capacity is at most PAGE_LEN on the normal build path.
+        let pending = mem::take(&mut self.pending);
         let len = pending.len();
         self.blocks.push(Block { page: Some(Rc::new(pending)), start: 0, len, end: self.len });
     }
@@ -116,16 +136,22 @@ impl StateAccessLog {
             let adjacent = self.pending.is_empty() && self.blocks.last().is_some_and(|last|
                 match (&last.page, &block.page) {
                     (Some(a), Some(b)) => Rc::ptr_eq(a, b) && last.start + last.len == block.start,
+                    (None, None) => true,
                     _ => false,
                 });
+            if adjacent {
+                self.append(block);
+                continue;
+            }
+            self.pack_sparse_tail();
             if let Some(page) = &block.page
-                && !adjacent && block.len * 4 < page.len()
+                && !self.pending.is_empty() && block.len * 4 < page.len()
             {
                 for key in &page[block.start..block.start + block.len] {
-                    self.push(key.clone());
+                    self.push_pending(key.clone());
                 }
             } else {
-                self.freeze();
+                self.seal_pending();
                 self.append(block);
             }
         }
@@ -186,8 +212,16 @@ impl StateAccessLog {
     }
 
     pub(in crate::window) fn clear(&mut self) {
-        self.blocks.clear();
         self.pending.clear();
+        for block in self.blocks.drain(..) {
+            if let Some(page) = block.page
+                && let Ok(mut keys) = Rc::try_unwrap(page)
+                && keys.capacity() > self.pending.capacity()
+            {
+                keys.clear();
+                self.pending = keys;
+            }
+        }
         self.len = 0;
     }
 
@@ -240,6 +274,28 @@ mod tests {
         assert_eq!(candidate.keys(110..115).cloned().collect::<Vec<_>>(), (20..25).map(key).collect::<Vec<_>>());
         source.clear();
         assert_eq!(candidate.key(114), Some(&key(24)));
+    }
+
+    #[test]
+    fn adjacent_single_access_replays_share_one_page() {
+        let mut source = StateAccessLog::default();
+        for i in 0..PAGE_LEN { source.push(Some(key(i))); }
+        source.freeze();
+        let mut target = StateAccessLog::default();
+        for i in 0..PAGE_LEN {
+            target.share(&source, i..i+1);
+            assert_eq!(target.len(), i+1);
+        }
+        target.freeze();
+        assert_eq!(target.blocks.len(), 1);
+        assert!(Rc::ptr_eq(source.blocks[0].page.as_ref().unwrap(), target.blocks[0].page.as_ref().unwrap()));
+        assert_eq!(target.keys(0..PAGE_LEN).cloned().collect::<Vec<_>>(), (0..PAGE_LEN).map(key).collect::<Vec<_>>());
+        target.cancel(3..5);
+        assert_eq!(source.key(3), Some(&key(3)));
+        assert!(target.key(3).is_none());
+        target.move_to_end(0..6);
+        assert_eq!(target.key(PAGE_LEN), Some(&key(0)));
+        assert!(target.key(PAGE_LEN+3).is_none());
     }
 
     #[test]

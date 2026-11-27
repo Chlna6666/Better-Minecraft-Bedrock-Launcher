@@ -78,12 +78,31 @@ impl NodeStore {
     fn capacity(&self) -> usize { self.spans.capacity() + self.pending.capacity() }
 
     fn push(&mut self, node: DispatchNode) {
+        self.pack_sparse_tail();
+        self.push_pending(node);
+    }
+
+    #[inline]
+    fn push_pending(&mut self, node: DispatchNode) {
         self.pending.push(node);
         self.len += 1;
-        if self.pending.len() == NODE_PAGE_LEN { self.freeze(); }
+        if self.pending.len() == NODE_PAGE_LEN { self.seal_pending(); }
+    }
+
+    fn pack_sparse_tail(&mut self) {
+        if !self.pending.is_empty() { return; }
+        let Some(last) = self.spans.last() else { return; };
+        if last.len * 4 >= last.owner.len() { return; }
+        let last = self.spans.pop().unwrap();
+        self.pending.extend_from_slice(&last.owner[last.start..last.start + last.len]);
     }
 
     fn freeze(&mut self) {
+        self.pack_sparse_tail();
+        self.seal_pending();
+    }
+
+    fn seal_pending(&mut self) {
         if self.pending.is_empty() { return; }
         let nodes = std::mem::take(&mut self.pending);
         let len = nodes.len();
@@ -121,20 +140,21 @@ impl NodeStore {
             let len = end - begin;
             let adjacent = self.pending.is_empty() && self.spans.last().is_some_and(|last|
                 Rc::ptr_eq(&last.owner, &span.owner) && last.start + last.len == start);
-            // Avoid pinning a large payload page for isolated replayed nodes.
-            if !adjacent && len * 4 < span.owner.len() {
-                for node in &span.owner[start..start + len] { self.push(node.clone()); }
-                continue;
-            }
-            self.freeze();
-            self.len += len;
             if adjacent {
+                self.len += len;
                 let last = self.spans.last_mut().unwrap();
                 last.len += len;
                 last.end = self.len;
-            } else {
-                self.spans.push(NodeSpan { owner: span.owner.clone(), start, len, end: self.len });
+                continue;
             }
+            self.pack_sparse_tail();
+            if !self.pending.is_empty() && len * 4 < span.owner.len() {
+                for node in &span.owner[start..start + len] { self.push_pending(node.clone()); }
+                continue;
+            }
+            self.seal_pending();
+            self.len += len;
+            self.spans.push(NodeSpan { owner: span.owner.clone(), start, len, end: self.len });
         }
         let pending_start = source.len - source.pending.len();
         for node in &source.pending[range.start.saturating_sub(pending_start)..range.end.saturating_sub(pending_start)] {
@@ -777,6 +797,19 @@ mod node_page_tests {
         assert_eq!(target.iter().count(), NODE_PAGE_LEN + 2);
         source.clear();
         assert_eq!(target[1].view_id, Some(EntityId::from(7_u64)));
+    }
+
+    #[test]
+    fn single_node_replays_share_contiguous_page() {
+        let mut source = NodeStore::default();
+        for _ in 0..NODE_PAGE_LEN { source.push(DispatchNode::default()); }
+        source.freeze();
+        let mut target = NodeStore::default();
+        for index in 0..NODE_PAGE_LEN { target.share(&source, index..index+1); }
+        target.freeze();
+        assert_eq!(target.spans.len(), 1);
+        assert!(Rc::ptr_eq(&source.spans[0].owner, &target.spans[0].owner));
+        assert_eq!(target.len(), NODE_PAGE_LEN);
     }
 
     #[test]
