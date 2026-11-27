@@ -16,6 +16,8 @@ pub(in crate::window) struct ScrollPaint {
     operations: Arc<Operations>,
     raster_eligible: bool,
     static_order: bool,
+    // Optional compact, immutable row texture in captured physical pixels.
+    row_raster_bounds: Option<Bounds<ScaledPixels>>,
     // Allocated only for a source actually published as a native layer.
     native_id: std::sync::OnceLock<u64>,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
@@ -103,6 +105,7 @@ impl ScrollPaint {
         let mut atlas_tiles = collections::FxHashSet::default();
         let mut order = super::frame::StaticPaintOrder::default();
         let mut static_order = true;
+        let mut visual: Option<PaintBlockBounds> = None;
         let mut raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len());
         // Residency belongs to the frozen source even when GPU raster
@@ -121,18 +124,32 @@ impl ScrollPaint {
             raster_eligible = raster_eligible
                 && super::frame::static_scroll_raster_operation(operation, coverage);
             static_order = static_order && order.accept(operation);
+            if raster_eligible && static_order
+                && let PaintOperation::Primitive(primitive) = operation
+            {
+                let bounds = primitive.visual_bounds();
+                if !bounds.is_empty() {
+                    let bounds = PaintBlockBounds::new(bounds);
+                    visual = Some(visual.map_or(bounds, |old| old.union(bounds)));
+                }
+            }
         }
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
             Self::blocks(&operations).map(Self::block_bounds).collect()
         } else {
             Box::default()
         };
+        let static_order = raster_eligible && static_order && order.complete();
+        let row_raster_bounds = if static_order {
+            visual.and_then(|visual| compact_row_raster(visual, coverage))
+        } else { None };
         Self {
             origin,
             coverage,
             operations: Arc::new(operations),
             raster_eligible,
-            static_order: raster_eligible && static_order && order.complete(),
+            static_order,
+            row_raster_bounds,
             native_id: std::sync::OnceLock::new(),
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
@@ -220,7 +237,21 @@ impl ScrollPaint {
         }
         let mut placement = self.placement(viewport.scale(scale), delta)?;
         let id = *self.native_id.get_or_init(super::frame::next_layer_id);
-        placement.native = Some(NativeScrollGeometry { id, viewport, scale });
+        placement.native = Some(NativeScrollGeometry { id, viewport, scale, row_bounds: None });
+        Some(placement)
+    }
+
+    /// A row owns a compact, fixed raster rectangle rather than one
+    /// viewport-sized strip for every visible item. Only placement and
+    /// clipping change when the row crosses the edge of the list.
+    pub(super) fn native_row_placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
+        scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
+        let row_bounds = self.row_raster_bounds?;
+        let mut placement = self.native_placement(viewport, scale, delta)?;
+        if moved(row_bounds, delta).intersect(&placement.viewport.bounds).is_empty() {
+            return None;
+        }
+        placement.native.as_mut()?.row_bounds = Some(row_bounds);
         Some(placement)
     }
 
@@ -277,6 +308,7 @@ pub(in crate::window) struct NativeScrollGeometry {
     pub(in crate::window) id: u64,
     pub(in crate::window) viewport: ContentMask<Pixels>,
     pub(in crate::window) scale: f32,
+    pub(in crate::window) row_bounds: Option<Bounds<ScaledPixels>>,
 }
 
 /// Immutable placement, suitable for a published Paint generation.
@@ -310,7 +342,8 @@ impl ScrollPlacement {
     /// The viewport is a conservative damage bound for every projected
     /// primitive, including a newly exposed part of the overscan.
     pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
-        self.viewport.bounds
+        self.native.and_then(|native| native.row_bounds)
+            .map_or(self.viewport.bounds, |row| moved(row, self.delta).intersect(&self.viewport.bounds))
     }
 
     pub(crate) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
@@ -327,6 +360,34 @@ pub(crate) fn native_scroll_fixture(operations: Operations, coverage: Bounds<Sca
     viewport: ContentMask<Pixels>) -> ScrollPlacement {
     Arc::new(ScrollPaint::new(Point::default(), coverage, operations))
         .native_placement(viewport, 1., Point::default()).expect("certified native scroll source")
+}
+
+/// Conservative AA guard, rounded out once in the source coordinate
+/// system. Never sample outside the captured coverage. Bound texture size
+/// independently of the list viewport and fall back for oversized rows.
+fn compact_row_raster(visual: PaintBlockBounds, coverage: Bounds<ScaledPixels>) -> Option<Bounds<ScaledPixels>> {
+    let left = (visual.left.0 - 2.).floor().max(coverage.left().0.ceil());
+    let top = (visual.top.0 - 2.).floor().max(coverage.top().0.ceil());
+    let right = (visual.right.0 + 2.).ceil().min(coverage.right().0.floor());
+    let bottom = (visual.bottom.0 + 2.).ceil().min(coverage.bottom().0.floor());
+    if ![left, top, right, bottom].into_iter().all(|v| v.is_finite() && v.abs() <= 1_048_576.)
+        || right <= left || bottom <= top || right - left > 4096. || bottom - top > 512.
+    {
+        return None;
+    }
+    // Rounding inward at a fractional capture edge would drop pixels.
+    if left > visual.left.0 || top > visual.top.0 || right < visual.right.0 || bottom < visual.bottom.0 {
+        return None;
+    }
+    Some(Bounds::new(point(ScaledPixels(left), ScaledPixels(top)),
+        crate::size(ScaledPixels(right - left), ScaledPixels(bottom - top))))
+}
+
+#[cfg(test)]
+pub(crate) fn native_row_fixture(operations: Operations, coverage: Bounds<ScaledPixels>,
+    viewport: ContentMask<Pixels>, delta: Point<ScaledPixels>) -> ScrollPlacement {
+    Arc::new(ScrollPaint::new(Point::default(), coverage, operations))
+        .native_row_placement(viewport, 1., delta).expect("compact native row source")
 }
 
 fn moved(bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels>) -> Bounds<ScaledPixels> {

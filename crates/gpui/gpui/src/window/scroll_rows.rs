@@ -360,15 +360,27 @@ impl Window {
         let same_placement = previous.prepaint.origin == prepaint.origin;
         let start = self.paint_index();
         let scale = self.scale_factor();
-        let viewport = self.visual_content_mask().scale(scale);
+        let viewport = self.visual_content_mask();
         let delta = prepaint.origin.scale(scale) - content.origin.scale(scale);
-        if same_placement {
-            // Prepaint already proved identical context and valid ranges.
-            // Reuse the committed visible scene, including native immutable
-            // spans, rather than clipping and projecting the overscan again.
-            self.replay_validated_scene(old_paint.start.scene_index..old_paint.end.scene_index);
-        } else {
-            content.replay(&mut self.next_frame.painter, viewport, delta);
+        let old_range = old_paint.start.scene_index..old_paint.end.scene_index;
+        let was_deferred = old_range.len() == 1 && matches!(
+            self.rendered_frame.scene().paint_operations.get(old_range.start),
+            Some(crate::PaintOperation::DeferredScroll(_))
+        );
+        // Both List and UniformList enter here after validating input and
+        // content dependencies. Keep the existing row's source alive and
+        // replace only its native placement. New rows still paint normally.
+        let deferred = (!same_placement || was_deferred)
+            && self.platform_window.supports_deferred_scroll()
+            && self.scene_animation.is_none()
+            && content.native_row_placement(viewport, scale, delta)
+                .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
+        if !deferred {
+            if same_placement && !was_deferred {
+                self.replay_validated_scene(old_range);
+            } else {
+                content.replay(&mut self.next_frame.painter, viewport.scale(scale), delta);
+            }
         }
         self.replay_validated_paint_records(&old_paint);
         if !hitbox_range(&prepaint).is_empty()

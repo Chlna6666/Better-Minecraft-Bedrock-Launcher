@@ -431,6 +431,10 @@ impl LayerFrame {
         Some((self.source_viewport.bounds, self.translation?))
     }
 
+    pub(crate) fn native_row_raster(&self) -> Option<Bounds<ScaledPixels>> {
+        self.placement.as_ref()?.native_geometry()?.row_bounds
+    }
+
     pub(crate) fn has_visible_row_source(&self) -> bool {
         self.content.raster.is_some_and(|raster| raster.visible_rows)
     }

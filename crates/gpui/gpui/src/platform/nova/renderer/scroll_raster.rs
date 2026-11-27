@@ -32,6 +32,26 @@ fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec
         return None;
     }
     let [dx, dy] = translation;
+    if let Some(row) = layer.native_row_raster() {
+        let x = integer(row.left())?;
+        let y = integer(row.top())?;
+        let end_x = integer(row.right())?;
+        let end_y = integer(row.bottom())?;
+        let extent = Extent2d::new(u32::try_from(end_x.checked_sub(x)?).ok()?,
+            u32::try_from(end_y.checked_sub(y)?).ok()?).ok()?;
+        let (_, source_origin) = layer.raster_source_for_tile([i64::from(x), i64::from(y),
+            i64::from(end_x), i64::from(end_y)])?;
+        // A fixed texture and key across edge clipping, including partial
+        // rows. The original list viewport remains the composite mask.
+        return Some(vec![Request {
+            key: RasterTileKey { layer: layer.id, x, y },
+            raster: RasterTile { origin: SignedOrigin2d { x, y }, extent },
+            source_origin,
+            bounds: crate::bounds(crate::point(ScaledPixels(x.checked_add(dx)? as f32),
+                ScaledPixels(y.checked_add(dy)? as f32)),
+                crate::size(ScaledPixels(extent.width() as f32), ScaledPixels(extent.height() as f32))),
+        }]);
+    }
     let content_left = left.checked_sub(dx)?;
     let content_top = top.checked_sub(dy)?;
     let content_bottom = bottom.checked_sub(dy)?;
@@ -913,6 +933,37 @@ mod tests {
         assert_eq!(plan[2].source_origin, [0, 320]);
         assert_eq!(plan[0].bounds.top(), ScaledPixels(0.));
         assert_eq!(plan[2].bounds.bottom(), ScaledPixels(512.));
+    }
+
+    #[test]
+    fn compact_native_row_uses_one_fixed_texture_when_clipped_by_list_edge() {
+        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(128.), crate::px(512.))));
+        let coverage = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(-512.)),
+            crate::size(ScaledPixels(128.), ScaledPixels(1536.)));
+        let bounds = crate::bounds(crate::point(ScaledPixels(8.), ScaledPixels(24.)),
+            crate::size(ScaledPixels(100.), ScaledPixels(32.)));
+        let mut ops = crate::scene::Operations::default();
+        ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds, content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let placement = crate::window::scroll_paint::native_row_fixture(ops, coverage, viewport,
+            crate::point(ScaledPixels(0.), ScaledPixels(-32.)));
+        let mut painter = crate::scene::Painter::default();
+        assert!(painter.push_deferred_scroll(placement));
+        painter.finish();
+        let scene = painter.into_scene();
+        let layers = crate::window::SceneLayers::capture_native(&scene, None);
+        let layer = &layers.frames[0];
+        let requests = requests(layer, DrawableSize { width: 128, height: 512 }).unwrap();
+        assert_eq!(requests.len(), 1);
+        let row = &requests[0];
+        assert_eq!(row.source_origin, [6, 22]);
+        assert_eq!(row.raster.extent, Extent2d::new(104, 36).unwrap());
+        assert_eq!(row.bounds.top(), ScaledPixels(-10.));
+        assert_eq!(row.bounds.bottom(), ScaledPixels(26.));
+        assert_eq!(layer.root_static_raster().unwrap().0, viewport.scale(1.).bounds);
+        assert_eq!(layer.adopt_tile(1, [6, 22, 110, 58], 1.), Some(1));
     }
 
     #[test]
