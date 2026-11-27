@@ -450,7 +450,7 @@ pub(crate) struct SceneLayers {
 impl SceneLayers {
     // Native GPU tests use the production admission and coordinate mapping
     // with a frozen ScrollPaint-style operation page.
-    #[cfg(all(test, target_os = "windows"))]
+    #[cfg(test)]
     pub(crate) fn raster_fixture(
         &mut self,
         operations: Operations,

@@ -464,6 +464,9 @@ impl NovaRenderer {
     /// Preserve the physical allocations for outstanding fences, invalidate
     /// the snapshots, and request complete redraw of the latest geometry.
     fn invalidate_failed_gpu_submission(&mut self) {
+        // Failed native work is not a completion proof. Disable further
+        // direct scroll submissions if one of their cohorts is quarantined.
+        self.scroll_raster_failed |= !self.scroll_raster_resources.is_empty();
         self.raster_tiles.invalidate_all();
         self.root_color.invalidate();
         self.filters.invalidate();

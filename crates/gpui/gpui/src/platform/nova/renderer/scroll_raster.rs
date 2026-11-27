@@ -225,7 +225,7 @@ impl NovaRenderer {
         Ok(outcome)
     }
 
-    fn scroll_raster_present<D: ResourceDevice + PresentationDevice>(
+    fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice>(
         &mut self, device: &mut D, layer: &crate::window::LayerFrame, requests: &[Request], slot: usize,
     ) -> Result<Option<bool>> {
         let format = self.surface_format;
@@ -237,9 +237,10 @@ impl NovaRenderer {
         // owner. Accept a pending lease only if its exact writer is tracked.
         let mut reads: Vec<Option<RasterTileRead>> = requests.iter().map(|request| {
             self.raster_tiles.lookup_ordered(request.key, layer.generation, request.raster, format,
-                |writer| self.pending_submissions.iter().any(|pending| pending.submission == writer))
+                |writer| self.pending_submissions.iter().any(|pending| pending.submission == writer || pending.predecessors.contains(&writer)))
         }).collect();
         let misses = reads.iter().filter(|read| read.is_none()).count();
+        let mut new_writer = None;
         if misses != 0 {
             let mut resources = Resources::default();
             let mut passes = Vec::<RasterPass>::with_capacity(misses);
@@ -318,6 +319,7 @@ impl NovaRenderer {
             self.pending_submissions.push(PendingSubmission { submission: writer,
                 predecessors: SmallVec::new(), frame_resource_index: slot, publication: None });
             self.scroll_raster_resources.push((writer, resources));
+            new_writer = Some(writer);
             for pass in passes { self.raster_tiles.finish_write(pass.write, Some(writer))?; }
             for (request, read) in requests.iter().zip(&mut reads) {
                 if read.is_none() {
@@ -371,8 +373,18 @@ impl NovaRenderer {
             present_region: None,
         })?;
         if let Some(reader) = outcome.frame().and_then(|frame| frame.submission) {
+            // A producer and its consumer occupy one presentation slot.
+            // Keep the producer independently pollable as a predecessor;
+            // do not count it as a second frame in the pacing controller.
+            let mut predecessors = SmallVec::new();
+            if let Some(writer) = new_writer {
+                if let Some(index) = self.pending_submissions.iter().position(|entry| entry.submission == writer) {
+                    self.pending_submissions.remove(index);
+                    predecessors.push(writer);
+                }
+            }
             self.pending_submissions.push(PendingSubmission { submission: reader,
-                predecessors: SmallVec::new(), frame_resource_index: slot, publication: None });
+                predecessors, frame_resource_index: slot, publication: None });
             self.scroll_raster_resources.push((reader, resources));
             for read in reads { self.raster_tiles.record_ordered_reader(read, reader)?; }
         } else if outcome.frame().is_none() {
@@ -383,5 +395,51 @@ impl NovaRenderer {
         log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={}",
             requests.len(), misses, requests.len() - misses);
         Ok(Some(outcome.was_presented()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(translation: [i32; 2], capture_top: f32, capture_height: f32) -> crate::window::Paint {
+        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(128.), crate::px(512.))));
+        let coverage = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(capture_top)),
+            crate::size(ScaledPixels(128.), ScaledPixels(capture_height)));
+        let mut operations = crate::scene::Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds: viewport.scale(1.).bounds, content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let mut paint = crate::window::Paint::default();
+        paint.layers.raster_fixture(operations, coverage, viewport, translation);
+        paint
+    }
+
+    #[test]
+    fn signed_tiles_use_stable_content_keys_and_original_capture_projection() {
+        let paint = fixture([0, 64], -512., 1536.);
+        let layer = &paint.layers.frames[0];
+        let plan = requests(layer, DrawableSize { width: 128, height: 512 }).unwrap();
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[0].key.y, -1);
+        assert_eq!(plan[0].raster.origin.y, -256);
+        assert_eq!(plan[0].source_origin, [0, -192]);
+        assert_eq!(plan[0].bounds.top(), ScaledPixels(-192.));
+        assert_eq!(plan[1].key.y, 0);
+        assert_eq!(plan[2].bounds.top(), ScaledPixels(320.));
+        assert_eq!(plan[2].bounds.bottom(), ScaledPixels(576.));
+    }
+
+    #[test]
+    fn cannot_sample_unproven_edge_pixels() {
+        let paint = fixture([0, 64], 0., 512.);
+        assert!(requests(&paint.layers.frames[0], DrawableSize { width: 128, height: 512 }).is_none());
+    }
+
+    #[test]
+    fn viewport_outside_drawable_is_not_admitted() {
+        let paint = fixture([0, 0], -512., 1536.);
+        assert!(requests(&paint.layers.frames[0], DrawableSize { width: 127, height: 512 }).is_none());
     }
 }
