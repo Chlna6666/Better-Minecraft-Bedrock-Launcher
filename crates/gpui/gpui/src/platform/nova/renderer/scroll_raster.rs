@@ -711,11 +711,12 @@ struct RasterPass {
     commands: Vec<RenderCommand>,
 }
 
-// Metal has no attachment-local LoadAction::Clear. A Replace draw is
-// already used by the retained renderer for transparent source repair.
-// Keep it on the same GPUI shader ABI, not a new backend clear pipeline.
+// All five native backends use a Replace draw for regional clearing.
+// OpenGL requires its ordinary full-attachment viewport, not the legacy
+// PixelExact sub-viewport mapping (which flips scissors independently).
 fn shared_raster_pages<D: PresentationDevice>(device: &D, backend: Option<gfx_core::BackendKind>) -> bool {
-    device.exact_offscreen_region_clear_supported() || backend == Some(gfx_core::BackendKind::Metal)
+    device.exact_offscreen_region_clear_supported()
+        || matches!(backend, Some(gfx_core::BackendKind::Metal | gfx_core::BackendKind::OpenGl))
 }
 
 struct PhysicalRasterPass {
@@ -1157,7 +1158,11 @@ impl NovaRenderer {
                 clear_region: None,
                 depth_attachment: Some(DepthAttachment { target: pass.depth,
                     depth_load_op: LoadOp::Clear(1.), stencil_load_op: None }),
-                viewport: Some(RasterTile { origin: SignedOrigin2d::ZERO, extent: pass.extent }.viewport()), resolve_target: None,
+                // Projection already maps content into attachment pixels.
+                // The full attachment viewport is implicit; in GL this
+                // selects the same row-zero convention as texture uploads,
+                // sampling and ordinary full-target draws.
+                viewport: None, resolve_target: None,
             }).collect();
             log::trace!(target: "gpui::diagnostics", "scroll raster producers: logical_writes={} physical_passes={}", passes.len(), physical.len());
             let tags = vec![None; descriptors.len()];
@@ -1204,6 +1209,9 @@ impl NovaRenderer {
                 let (viewport, translation) = plan.layer.root_static_raster().context("missing scroll viewport")?;
                 append_placement(&mut placement_bytes, viewport, translation);
                 for (request, read) in plan.requests.iter().zip(&reads[offset..offset + plan.requests.len()]) {
+                    debug_assert_eq!(request.bounds.origin, crate::point(
+                        ScaledPixels((request.raster.origin.x + translation[0]) as f32),
+                        ScaledPixels((request.raster.origin.y + translation[1]) as f32)));
                     records.push(CompositeRecord { layer_slot: (index + 1) as u32, raster: request.raster,
                         region: read.region() });
                 }

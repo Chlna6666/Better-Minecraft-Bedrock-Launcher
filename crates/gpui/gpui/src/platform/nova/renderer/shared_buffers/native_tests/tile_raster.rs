@@ -461,7 +461,11 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     if let Some(glyph) = glyph {
         source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::MonochromeSprite(glyph)));
     }
-    let second_quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
+    // The second cell is asymmetric vertically: detect an incorrect GL
+    // scissor flip or texture row convention, not just an incorrect color.
+    let second_bounds = crate::bounds(crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(32.)),
+        crate::size(crate::ScaledPixels(64.), crate::ScaledPixels(32.)));
+    let second_quad = Quad { bounds: second_bounds, content_mask: crate::ContentMask::new(coverage),
         background: crate::rgb(0x0000ff).into(), ..Default::default() };
     let mut second_source = crate::scene::Operations::default();
     second_source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(second_quad)));
@@ -575,7 +579,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         let second_read = renderer.raster_tiles.lookup_ordered(second_key, 1, tile, Format::Bgra8Unorm, |_| false)
             .expect("second native scroll texture");
         let second = second_read.texture();
-        let paged = device!(renderer, device, { device.exact_offscreen_region_clear_supported() });
+        let paged = true; // All native test backends now use full-attachment page projection.
         if paged {
             assert_eq!(texture, second, "equal size classes share a physical page");
             assert_ne!(read.region(), second_read.region());
@@ -590,16 +594,17 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, second, "second layer must retain its physical texture");
         }
         second_physical = Some(second);
-        let assert_cell = |lease: gfx_core::RasterTileRead, expected: [u8; 4]| {
+        let assert_cell = |lease: gfx_core::RasterTileRead, row: u32, expected: [u8; 4]| {
             let region = lease.region();
             device!(renderer, device, {
                 let pixels = device.read_texture(lease.texture().texture).expect("physical page pixels");
-                let offset = (region.y + region.height / 2) as usize * pixels.bytes_per_row as usize
+                let offset = (region.y + row) as usize * pixels.bytes_per_row as usize
                     + (region.x + region.width / 2) as usize * 4;
                 assert_eq!(&pixels.bytes[offset..offset + 4], &expected);
             });
         };
-        assert_cell(second_read, [255, 0, 0, 255]);
+        assert_cell(second_read, 16, [0, 0, 0, 0]);
+        assert_cell(second_read, 48, [255, 0, 0, 255]);
         assert_eq!(renderer.raster_tiles.bytes(), 2 * 64 * 64 * 4, "two misses allocate exactly two cells");
         assert_eq!(renderer.raster_tiles.logical_tiles(), 2);
         assert_eq!(renderer.raster_tiles.physical_textures(), if paged { 1 } else { 2 });
@@ -607,7 +612,8 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
         physical = Some(texture);
-        assert_cell(read, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
+        assert_cell(read, 16, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
+        assert_cell(read, 48, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
     }
     if with_extension {
         use std::sync::atomic::Ordering;
