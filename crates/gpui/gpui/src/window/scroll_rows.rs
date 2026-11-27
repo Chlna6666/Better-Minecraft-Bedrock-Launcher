@@ -8,7 +8,7 @@ use crate::{
     ScrollCapture, Size, StateRead, StateReadStatus, Window,
 };
 use collections::FxHashMap;
-use std::{ops::Range, rc::Rc};
+use std::{collections::VecDeque, ops::Range, rc::Rc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
@@ -57,10 +57,23 @@ pub(crate) struct RowPlan {
     revision: u64,
     context: Rc<ListContext>,
     hover_held: bool,
-    pub(crate) prepainted: FxHashMap<usize, RowPrepaint>,
+    // Both list implementations prepaint and paint rows in the same order.
+    // The transient records therefore need no per-frame hash table.
+    prepainted: VecDeque<(usize, RowPrepaint)>,
 }
 
 impl RowPlan {
+    pub(crate) fn record_prepaint(&mut self, row: usize, prepaint: RowPrepaint) {
+        debug_assert!(self.prepainted.back().is_none_or(|(previous, _)| *previous < row));
+        self.prepainted.push_back((row, prepaint));
+    }
+
+    fn take_prepaint(&mut self, row: usize) -> Option<RowPrepaint> {
+        let (next, _) = self.prepainted.front()?;
+        debug_assert!(*next >= row, "scroll prepaint records must follow paint order");
+        (*next == row).then(|| self.prepainted.pop_front().unwrap().1)
+    }
+
     pub(crate) fn can_capture(&self, item: &mut AnyElement) -> bool {
         if self.context.inherited.visual_content_mask.corner_radii == Default::default() {
             item.can_capture_scroll_paint()
@@ -195,7 +208,7 @@ impl Window {
             key,
             revision,
             hover_held: self.scroll_hover_is_held(cx),
-            prepainted: FxHashMap::default(),
+            prepainted: VecDeque::new(),
             context: Rc::new(ListContext {
                 identity,
                 item_count,
@@ -280,9 +293,7 @@ impl Window {
         cx: &mut App,
     ) {
         let prepaint = plan.and_then(|plan| {
-            plan.prepainted
-                .remove(&row)
-                .map(|prepaint| (plan, prepaint))
+            plan.take_prepaint(row).map(|prepaint| (plan, prepaint))
         });
         match (item, prepaint) {
             (Some(mut item), Some((plan, prepaint))) => {

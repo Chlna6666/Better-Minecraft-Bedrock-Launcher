@@ -14,7 +14,43 @@ pub(super) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
     operations: Operations,
-    block_bounds: Box<[Option<Bounds<ScaledPixels>>]>,
+    block_bounds: Box<[Option<PaintBlockBounds>]>,
+}
+
+/// Exact corners avoid inward rounding when aggregating widely separated
+/// primitives (as in Zed's native BoundsTree). A known block contains only
+/// nonempty, finite primitive bounds and no paint scope markers.
+#[derive(Clone, Copy)]
+struct PaintBlockBounds {
+    left: ScaledPixels,
+    top: ScaledPixels,
+    right: ScaledPixels,
+    bottom: ScaledPixels,
+}
+
+impl PaintBlockBounds {
+    fn new(bounds: Bounds<ScaledPixels>) -> Self {
+        Self { left: bounds.left(), top: bounds.top(), right: bounds.right(), bottom: bounds.bottom() }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    fn intersects(self, other: Self) -> bool {
+        self.left < other.right && self.right > other.left
+            && self.top < other.bottom && self.bottom > other.top
+    }
+
+    fn contained_by(self, other: Self) -> bool {
+        self.left >= other.left && self.right <= other.right
+            && self.top >= other.top && self.bottom <= other.bottom
+    }
 }
 
 impl Window {
@@ -78,8 +114,8 @@ impl ScrollPaint {
             .flat_map(|slice| slice.chunks(OPERATIONS_PER_BLOCK))
     }
 
-    fn block_bounds(operations: &[PaintOperation]) -> Option<Bounds<ScaledPixels>> {
-        let mut union: Option<Bounds<ScaledPixels>> = None;
+    fn block_bounds(operations: &[PaintOperation]) -> Option<PaintBlockBounds> {
+        let mut union: Option<PaintBlockBounds> = None;
         for operation in operations {
             // Always replay scope markers in painter order, even when the
             // block's visible primitives are all clipped.
@@ -93,11 +129,15 @@ impl ScrollPaint {
             {
                 return None;
             }
-            if !bounds.is_empty() {
-                union = Some(union.map_or(bounds, |previous| previous.union(&bounds)));
+            // Degenerate geometry must keep the original per-operation
+            // intersection semantics; it cannot prove a fully visible block.
+            if bounds.is_empty() {
+                return None;
             }
+            let bounds = PaintBlockBounds::new(bounds);
+            union = Some(union.map_or(bounds, |previous| previous.union(bounds)));
         }
-        Some(union.unwrap_or_default())
+        union
     }
 
     pub(super) fn translation(
@@ -128,11 +168,17 @@ impl ScrollPaint {
     ) {
         let mut layers = SmallVec::<[bool; 8]>::new();
         let source_viewport = Bounds::new(viewport.bounds.origin - delta, viewport.bounds.size);
+        let viewport_edges = PaintBlockBounds::new(source_viewport);
+        let nonempty_viewport = !source_viewport.is_empty()
+            && [viewport_edges.left, viewport_edges.top, viewport_edges.right, viewport_edges.bottom]
+                .into_iter().all(|edge| edge.0.is_finite());
         for (index, block) in Self::blocks(&self.operations).enumerate() {
-            if let Some(Some(bounds)) = self.block_bounds.get(index)
-                && (bounds.is_empty() || !bounds.intersects(&source_viewport))
-            {
-                continue;
+            let mut fully_visible = false;
+            if let Some(Some(bounds)) = self.block_bounds.get(index) {
+                if !bounds.intersects(viewport_edges) {
+                    continue;
+                }
+                fully_visible = nonempty_viewport && bounds.contained_by(viewport_edges);
             }
             for operation in block {
                 match operation {
@@ -149,7 +195,7 @@ impl ScrollPaint {
                         }
                     }
                     PaintOperation::Primitive(primitive) => {
-                        if primitive.visual_bounds().intersects(&source_viewport) {
+                        if fully_visible || primitive.visual_bounds().intersects(&source_viewport) {
                             painter.insert_primitive(project_primitive(primitive, delta, viewport));
                         }
                     }
@@ -205,6 +251,16 @@ fn project_primitive(
 mod tests {
     use super::*;
     use crate::{Quad, px, size};
+
+    #[test]
+    fn block_edges_keep_the_far_corner_without_reconstructing_width() {
+        let bounds = |x, width| Bounds::new(point(px(x), px(0.)), size(px(width), px(1.))).scale(1.);
+        let left = PaintBlockBounds::new(bounds(-16_777_216., 1.));
+        let right = PaintBlockBounds::new(bounds(0.5, 0.5));
+        let union = left.union(right);
+        assert!(union.intersects(PaintBlockBounds::new(bounds(0.5, 0.25))));
+        assert!(!union.contained_by(right));
+    }
 
     #[test]
     fn scroll_blocks_cull_disjoint_primitives_and_keep_paint_order() {

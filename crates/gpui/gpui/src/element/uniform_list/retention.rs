@@ -40,7 +40,7 @@ pub(super) fn prepaint(
     while row < range.end {
         if reused[row - range.start] {
             let prepaint = window.reuse_scroll_row(&plan, row, row_origin(row));
-            plan.prepainted.insert(row, prepaint);
+            plan.record_prepaint(row, prepaint);
             frame.items.push((row, None));
             row += 1;
             continue;
@@ -74,7 +74,7 @@ pub(super) fn prepaint(
                         records: start..window.prepaint_index(),
                         reads,
                     };
-                    plan.prepainted.insert(index, prepaint);
+                    plan.record_prepaint(index, prepaint);
                 }
                 frame.items.push((index, Some(item)));
             }

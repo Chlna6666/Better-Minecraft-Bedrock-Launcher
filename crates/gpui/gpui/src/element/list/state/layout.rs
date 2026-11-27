@@ -410,7 +410,7 @@ impl StateInner {
                             if let Some(plan) = row_plan.as_mut() {
                                 if item.element.is_none() {
                                     let prepaint = window.reuse_scroll_row(plan, item.index, item_origin);
-                                    plan.prepainted.insert(item.index, prepaint);
+                                    plan.record_prepaint(item.index, prepaint);
                                 } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
                                     let prepaint_reads = cx.entities.state_reads_since(read_start);
                                     let reads = if prepaint_reads.is_empty() {
@@ -418,7 +418,7 @@ impl StateInner {
                                     } else {
                                         reads.iter().chain(prepaint_reads.iter()).cloned().collect()
                                     };
-                                    plan.prepainted.insert(item.index, RowPrepaint {
+                                    plan.record_prepaint(item.index, RowPrepaint {
                                         origin: item_origin,
                                         records: start..window.prepaint_index(),
                                         reads,
