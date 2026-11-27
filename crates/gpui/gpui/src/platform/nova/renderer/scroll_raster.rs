@@ -256,9 +256,36 @@ impl StaticStreams {
     }
 }
 
+struct LayerPlan<'a> {
+    layer: &'a crate::window::LayerFrame,
+    span: std::ops::Range<usize>,
+    requests: Vec<Request>,
+}
+
+fn layer_plan<'a>(layers: &'a [crate::window::LayerFrame], scene_len: usize, size: DrawableSize) -> Vec<LayerPlan<'a>> {
+    let mut candidates: Vec<_> = layers.iter().filter_map(|layer| {
+        let [prefix, suffix] = layer.root_static_outside()?;
+        let span = prefix.end..if suffix.is_empty() { scene_len } else { suffix.start };
+        if span.start > span.end || span.end > scene_len { return None; }
+        Some(LayerPlan { layer, span, requests: requests(layer, size)? })
+    }).collect();
+    candidates.sort_by_key(|plan| (plan.span.start, std::cmp::Reverse(plan.span.end)));
+    let mut end = 0;
+    let mut total = 0;
+    candidates.retain(|plan| {
+        // Nested or overlapping captures cannot both replace the same root
+        // operations. Prefer the enclosing span; leave other content intact.
+        if plan.span.start < end || total + plan.requests.len() > MAX_TILES { return false; }
+        total += plan.requests.len();
+        end = plan.span.end;
+        true
+    });
+    candidates
+}
+
 struct OutsideRoot {
     streams: StaticStreams,
-    prefix_runs: usize,
+    boundaries: Vec<usize>,
 }
 
 fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId, AtlasTile>,
@@ -274,10 +301,17 @@ fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId
 }
 
 impl OutsideRoot {
-    fn pack(renderer: &NovaRenderer, layer: &crate::window::LayerFrame, scene: &crate::Scene) -> Option<Self> {
-        let ranges = layer.root_static_outside()?;
+    fn pack(renderer: &NovaRenderer, plans: &[LayerPlan<'_>], scene: &crate::Scene) -> Option<Self> {
+        let mut ranges = Vec::with_capacity(plans.len() + 1);
+        let mut start = 0;
+        for plan in plans {
+            if start > plan.span.start { return None; }
+            ranges.push(start..plan.span.start);
+            start = plan.span.end;
+        }
+        ranges.push(start..scene.len());
         let mut ids = Vec::new();
-        for range in ranges {
+        for range in &ranges {
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
                 match operation {
                     PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
@@ -289,7 +323,7 @@ impl OutsideRoot {
         let placements = if ids.is_empty() { FxHashMap::default() }
             else { renderer.atlas.ready_scroll_glyphs(&ids)? };
         let mut streams = StaticStreams::default();
-        let mut prefix_runs = 0;
+        let mut boundaries = Vec::with_capacity(plans.len());
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
@@ -303,9 +337,9 @@ impl OutsideRoot {
                     _ => return None,
                 }
             }
-            if index == 0 { prefix_runs = streams.runs.len(); }
+            if index < plans.len() { boundaries.push(streams.runs.len()); }
         }
-        Some(Self { streams, prefix_runs })
+        Some(Self { streams, boundaries })
     }
 }
 
@@ -426,10 +460,8 @@ impl NovaRenderer {
         {
             return Ok(None);
         }
-        let Some(layer) = packet.paint.layers.frames.iter().find(|layer| layer.root_static_raster().is_some()) else {
-            return Ok(None);
-        };
-        let Some(requests) = requests(layer, self.active_size) else { return Ok(None); };
+        let plans = layer_plan(&packet.paint.layers.frames, packet.paint.scene.len(), self.active_size);
+        if plans.is_empty() { return Ok(None); }
         // Keep the normal atlas retirement path reachable even during a long
         // run of direct presentations. Only scan dependencies when removals exist.
         if self.atlas.has_pending_removals() {
@@ -486,15 +518,15 @@ impl NovaRenderer {
         });
         let result = match &mut *lock_backend(&backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
+            NovaBackend::Dx11(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
             #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
-            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
+            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
+            NovaBackend::Dx12(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
+            NovaBackend::Metal(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
             #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
-            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
+            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
         };
@@ -530,9 +562,9 @@ impl NovaRenderer {
     }
 
     fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice>(
-        &mut self, device: &mut D, layer: &crate::window::LayerFrame, scene: &crate::Scene, requests: &[Request], slot: usize,
+        &mut self, device: &mut D, plans: &[LayerPlan<'_>], scene: &crate::Scene, slot: usize,
     ) -> Result<Option<bool>> {
-        let Some(outside) = OutsideRoot::pack(self, layer, scene) else { return Ok(None); };
+        let Some(outside) = OutsideRoot::pack(self, plans, scene) else { return Ok(None); };
         let format = self.surface_format;
         let original = self.frame_resources[slot].buffers;
         if self.submitted_frames % 120 == 0 {
@@ -540,7 +572,8 @@ impl NovaRenderer {
         }
         // All writes for these tiles are issued on OrderedGraphics by this
         // owner. Accept a pending lease only if its exact writer is tracked.
-        let mut reads: Vec<Option<RasterTileRead>> = requests.iter().map(|request| {
+        let requests: Vec<_> = plans.iter().flat_map(|plan| plan.requests.iter().map(move |request| (plan.layer, request))).collect();
+        let mut reads: Vec<Option<RasterTileRead>> = requests.iter().map(|(layer, request)| {
             self.raster_tiles.lookup_ordered(request.key, layer.generation, request.raster, format,
                 |writer| self.pending_submissions.iter().any(|pending| pending.submission == writer || pending.predecessors.contains(&writer)))
         }).collect();
@@ -550,82 +583,89 @@ impl NovaRenderer {
             let mut resources = Resources::default();
             let mut passes = Vec::<RasterPass>::with_capacity(misses);
             let prepare = (|| -> Result<bool> {
-                let first = reads.iter().position(Option::is_none).unwrap();
-                let request = &requests[first];
-                let x = i64::from(request.raster.origin.x);
-                let y = i64::from(request.raster.origin.y);
-                let (operations, _) = layer.raster_source_for_tile([x, y,
-                    x + i64::from(request.raster.extent.width()), y + i64::from(request.raster.extent.height())])
-                    .context("missing immutable scroll source")?;
-                // Use the existing native Painter ordering for the immutable
-                // source, including equal-order type/atlas sorting. Only a miss
-                // builds this temporary stream; no persistent CPU Scene cache.
-                let placements = if layer.raster_atlas_tiles().is_empty() {
-                    FxHashMap::default()
-                } else {
-                    let Some(placements) = self.atlas.ready_scroll_glyphs(layer.raster_atlas_tiles()) else {
-                        return Ok(false);
-                    };
-                    placements
-                };
-                let mut painter = crate::scene::Painter::default();
-                for operation in operations.iter() {
-                    match operation {
-                        PaintOperation::Primitive(primitive) => {
-                            let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
-                            painter.insert_primitive(primitive);
-                        }
-                        PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
-                        PaintOperation::EndLayer => painter.pop_layer(),
-                        _ => return Ok(false),
-                    }
-                }
-                painter.finish();
-                let source = painter.into_scene();
-                let mut streams = StaticStreams::default();
-                // The same native batch iterator as the normal renderer.
-                for batch in source.batches() {
-                    macro_rules! pack {
-                        ($slice:expr, $kind:ident) => {
-                            for value in $slice {
-                                if streams.push(&Primitive::$kind(*value), false).is_none() { return Ok(false); }
-                            }
-                        };
-                    }
-                    match batch {
-                        crate::scene::PrimitiveBatch::Quads { quads, .. } => { pack!(quads, Quad); }
-                        crate::scene::PrimitiveBatch::Shadows { shadows, .. } => { pack!(shadows, Shadow); }
-                        crate::scene::PrimitiveBatch::Underlines(underlines) => { pack!(underlines, Underline); }
-                        crate::scene::PrimitiveBatch::MonochromeSprites { sprites, .. } => { pack!(sprites, MonochromeSprite); }
-                        crate::scene::PrimitiveBatch::PolychromeSprites { sprites, .. } => { pack!(sprites, PolychromeSprite); }
-                        _ => return Ok(false),
-                    }
-                }
-                if streams.runs.is_empty() { return Ok(false); }
-                let source_buffers = streams.upload(device, &mut resources, original,
-                    &pack_text_raster_params(&self.rendering_parameters), None)?;
                 let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
-                for (request, read) in requests.iter().zip(&reads) {
-                    if read.is_some() { continue; }
-                    let raster = RasterTile {
-                        origin: SignedOrigin2d { x: request.source_origin[0], y: request.source_origin[1] },
-                        extent: request.raster.extent,
+                let mut offset = 0;
+                for plan in plans {
+                    let layer = plan.layer;
+                    let end = offset + plan.requests.len();
+                    let layer_reads = &reads[offset..end];
+                    offset = end;
+                    let Some(first) = layer_reads.iter().position(Option::is_none) else { continue; };
+                    let request = &plan.requests[first];
+                    let x = i64::from(request.raster.origin.x);
+                    let y = i64::from(request.raster.origin.y);
+                    let (operations, _) = layer.raster_source_for_tile([x, y,
+                        x + i64::from(request.raster.extent.width()), y + i64::from(request.raster.extent.height())])
+                        .context("missing immutable scroll source")?;
+                    // Use the existing native Painter ordering for the immutable
+                    // source, including equal-order type/atlas sorting. Only a miss
+                    // builds this temporary stream; no persistent CPU Scene cache.
+                    let placements = if layer.raster_atlas_tiles().is_empty() {
+                        FxHashMap::default()
+                    } else {
+                        let Some(placements) = self.atlas.ready_scroll_glyphs(layer.raster_atlas_tiles()) else {
+                            return Ok(false);
+                        };
+                        placements
                     };
-                    let globals = pack_global_params(DrawableSize { width: raster.extent.width(), height: raster.extent.height() },
-                        true, [raster.origin.x as f32, raster.origin.y as f32]);
-                    let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
-                    let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                    let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied)?;
-                    let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
-                        let target = create_depth_target(device, "scroll raster", raster.extent)?;
-                        resources.depths.push(target);
-                        depth_views.push((raster.extent, target.1));
-                        target.1
-                    };
-                    let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
-                        return Ok(false);
-                    };
-                    passes.push(RasterPass { write, raster, depth, commands });
+                    let mut painter = crate::scene::Painter::default();
+                    for operation in operations.iter() {
+                        match operation {
+                            PaintOperation::Primitive(primitive) => {
+                                let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
+                                painter.insert_primitive(primitive);
+                            }
+                            PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
+                            PaintOperation::EndLayer => painter.pop_layer(),
+                            _ => return Ok(false),
+                        }
+                    }
+                    painter.finish();
+                    let source = painter.into_scene();
+                    let mut streams = StaticStreams::default();
+                    // The same native batch iterator as the normal renderer.
+                    for batch in source.batches() {
+                        macro_rules! pack {
+                            ($slice:expr, $kind:ident) => {
+                                for value in $slice {
+                                    if streams.push(&Primitive::$kind(*value), false).is_none() { return Ok(false); }
+                                }
+                            };
+                        }
+                        match batch {
+                            crate::scene::PrimitiveBatch::Quads { quads, .. } => { pack!(quads, Quad); }
+                            crate::scene::PrimitiveBatch::Shadows { shadows, .. } => { pack!(shadows, Shadow); }
+                            crate::scene::PrimitiveBatch::Underlines(underlines) => { pack!(underlines, Underline); }
+                            crate::scene::PrimitiveBatch::MonochromeSprites { sprites, .. } => { pack!(sprites, MonochromeSprite); }
+                            crate::scene::PrimitiveBatch::PolychromeSprites { sprites, .. } => { pack!(sprites, PolychromeSprite); }
+                            _ => return Ok(false),
+                        }
+                    }
+                    if streams.runs.is_empty() { return Ok(false); }
+                    let source_buffers = streams.upload(device, &mut resources, original,
+                        &pack_text_raster_params(&self.rendering_parameters), None)?;
+                    for (request, read) in plan.requests.iter().zip(layer_reads) {
+                        if read.is_some() { continue; }
+                        let raster = RasterTile {
+                            origin: SignedOrigin2d { x: request.source_origin[0], y: request.source_origin[1] },
+                            extent: request.raster.extent,
+                        };
+                        let globals = pack_global_params(DrawableSize { width: raster.extent.width(), height: raster.extent.height() },
+                            true, [raster.origin.x as f32, raster.origin.y as f32]);
+                        let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
+                        let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
+                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied)?;
+                        let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
+                            let target = create_depth_target(device, "scroll raster", raster.extent)?;
+                            resources.depths.push(target);
+                            depth_views.push((raster.extent, target.1));
+                            target.1
+                        };
+                        let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
+                            return Ok(false);
+                        };
+                        passes.push(RasterPass { write, raster, depth, commands });
+                    }
                 }
                 Ok(true)
             })();
@@ -658,7 +698,7 @@ impl NovaRenderer {
             self.scroll_raster_resources.push((writer, resources));
             new_writer = Some(writer);
             for pass in passes { self.raster_tiles.finish_write(pass.write, Some(writer))?; }
-            for (request, read) in requests.iter().zip(&mut reads) {
+            for ((layer, request), read) in requests.iter().zip(&mut reads) {
                 if read.is_none() {
                     *read = self.raster_tiles.lookup_ordered(request.key, layer.generation, request.raster, format,
                         |dependency| dependency == writer);
@@ -666,7 +706,6 @@ impl NovaRenderer {
             }
         }
         let reads: Vec<_> = reads.into_iter().collect::<Option<Vec<_>>>().context("incomplete scroll tile set")?;
-        let (viewport, _) = layer.root_static_raster().context("missing scroll viewport")?;
         if self.scroll_composite_slots.len() <= slot {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
@@ -674,7 +713,8 @@ impl NovaRenderer {
         let prepare = (|| -> Result<Vec<RenderCommand>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
             let mut bytes = Vec::with_capacity(requests.len() * PACKED_POLY_SPRITE_BYTES);
-            for request in requests {
+            for (layer, request) in &requests {
+                let (viewport, _) = layer.root_static_raster().context("missing scroll viewport")?;
                 write_polychrome_sprite(&mut bytes, &PolychromeSprite {
                     order: 0, bounds: request.bounds, content_mask: ContentMask::new(viewport),
                     corner_radii: Default::default(), grayscale: false, opacity: 1., sampling: 2, animation_id: None,
@@ -695,16 +735,24 @@ impl NovaRenderer {
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
                 &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
-            let mut commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend)?;
-            let suffix = commands.split_off(outside.prefix_runs);
-            commands.reserve(reads.len() + suffix.len());
-            for (index, read) in reads.iter().enumerate() {
-                let group = resources.binding(device, self.poly_sprite_bind_group_layout,
-                    poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler))?;
-                commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
-                    vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: index as u32, scissor: None }));
+            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend)?;
+            let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
+            let mut root = root_commands.into_iter();
+            let mut root_offset = 0;
+            let mut tile_offset = 0;
+            for (plan, &boundary) in plans.iter().zip(&outside.boundaries) {
+                commands.extend(root.by_ref().take(boundary - root_offset));
+                root_offset = boundary;
+                let end = tile_offset + plan.requests.len();
+                for (index, read) in reads[tile_offset..end].iter().enumerate() {
+                    let group = resources.binding(device, self.poly_sprite_bind_group_layout,
+                        poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler))?;
+                    commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
+                        vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: (tile_offset + index) as u32, scissor: None }));
+                }
+                tile_offset = end;
             }
-            commands.extend(suffix);
+            commands.extend(root);
             Ok(commands)
         })();
         let commands = match prepare {
@@ -753,8 +801,8 @@ impl NovaRenderer {
             for read in reads { self.raster_tiles.quarantine_reader(read); }
             anyhow::bail!("scroll present returned no native reader fence");
         }
-        log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={} outside_runs={}",
-            requests.len(), misses, requests.len() - misses, outside.streams.runs.len());
+        log::trace!(target: "gpui::diagnostics", "scroll raster present: layers={} tiles={} misses={} hits={} outside_runs={}",
+            plans.len(), requests.len(), misses, requests.len() - misses, outside.streams.runs.len());
         Ok(Some(outcome.was_presented()))
     }
 }
