@@ -121,25 +121,17 @@ impl FrameUpload {
             .vertices
             .len()
             .saturating_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        self.path_rasterization_encode_scratch.clear();
-        if self.path_rasterization_encode_scratch.capacity() < encoded_bytes {
-            self.path_rasterization_encode_scratch
-                .reserve(encoded_bytes);
-        }
+        // The cache entry owns the encoder's original allocation. Do not
+        // retain a second high-water scratch buffer or copy its entire payload.
+        let mut bytes = Vec::with_capacity(encoded_bytes);
         for vertex in path.vertices.iter() {
-            write_path_rasterization_vertex(
-                &mut self.path_rasterization_encode_scratch,
-                vertex,
-                &path.color,
-                &content_mask,
-            );
+            write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &content_mask);
         }
-        debug_assert_eq!(self.path_rasterization_encode_scratch.len(), encoded_bytes);
+        debug_assert_eq!(bytes.len(), encoded_bytes);
         let entry = PathRasterizationCacheEntry {
-            bytes: Arc::<[u8]>::from(self.path_rasterization_encode_scratch.as_slice()),
+            bytes: Arc::new(bytes),
             vertex_count,
         };
-        self.path_rasterization_encode_scratch.clear();
         self.path_rasterization_cache.insert(key, entry.clone());
         self.path_rasterization_cache_misses =
             self.path_rasterization_cache_misses.saturating_add(1);

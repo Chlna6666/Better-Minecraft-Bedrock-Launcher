@@ -102,7 +102,6 @@ impl FrameUpload {
             self.animated_visual_bounds_scratch.capacity()
                 * std::mem::size_of::<crate::Bounds<crate::ScaledPixels>>(),
             self.path_paint_key_scratch.capacity(),
-            self.path_rasterization_encode_scratch.capacity(),
             cache.layer_scene_encodings.capacity()
                 * std::mem::size_of::<(u64, CachedLayerSceneEncoding)>(),
             cache
@@ -249,24 +248,15 @@ impl FrameUpload {
         self.path_geometry_hash_memo.shrink_to(path_cache_floor);
 
         self.path_paint_key_scratch.clear();
-        self.path_rasterization_encode_scratch.clear();
         match level {
             GpuiMemoryTrimLevel::Aggressive => {
                 self.path_paint_key_scratch.shrink_to(0);
-                self.path_rasterization_encode_scratch.shrink_to(0);
             }
             GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
                 // ContentMask + Background packing normally fits comfortably in this floor. Keep
                 // one small allocation hot so a light trim does not force the very next path to
                 // allocate again.
                 trim_upload_vec(&mut self.path_paint_key_scratch, 128, multiplier);
-                // Keep enough room for a small path while releasing a pathological one-off SVG
-                // high-water mark when the renderer receives a trim signal.
-                trim_upload_vec(
-                    &mut self.path_rasterization_encode_scratch,
-                    256 * PACKED_PATH_RASTERIZATION_VERTEX_BYTES,
-                    multiplier,
-                );
             }
         }
 

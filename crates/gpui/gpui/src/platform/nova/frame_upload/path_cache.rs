@@ -15,7 +15,7 @@ pub(in crate::platform::nova) struct PathRasterizationCacheKey {
 
 #[derive(Clone, Debug)]
 pub(in crate::platform::nova) struct PathRasterizationCacheEntry {
-    pub(in crate::platform::nova) bytes: Arc<[u8]>,
+    pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
     pub(in crate::platform::nova) vertex_count: u32,
 }
 
@@ -39,7 +39,7 @@ impl PathRasterizationCache {
         self.entries
             .values()
             .filter_map(|(entry, _)| {
-                seen.insert(Arc::as_ptr(&entry.bytes) as *const u8 as usize)
+                seen.insert(Arc::as_ptr(&entry.bytes))
                     .then_some(entry.bytes.len() as u64)
             })
             .sum()
@@ -83,9 +83,9 @@ impl PathRasterizationCache {
     ) {
         self.compact_access_order();
         if let Some((previous, _)) = self.entries.remove(&key) {
-            self.retained_bytes -= previous.bytes.len();
+            self.retained_bytes -= previous.bytes.capacity();
         }
-        let bytes = entry.bytes.len();
+        let bytes = entry.bytes.capacity();
         if bytes > MAX_PATH_RASTERIZATION_CACHE_BYTES {
             return;
         }
@@ -114,7 +114,7 @@ impl PathRasterizationCache {
                 .is_some_and(|(_, current)| *current == stamp)
                 && let Some((entry, _)) = self.entries.remove(&key)
             {
-                self.retained_bytes -= entry.bytes.len();
+                self.retained_bytes -= entry.bytes.capacity();
             }
         }
     }
@@ -228,7 +228,7 @@ mod tests {
 
     fn entry(value: u8) -> PathRasterizationCacheEntry {
         PathRasterizationCacheEntry {
-            bytes: Arc::<[u8]>::from([value]),
+            bytes: Arc::new(vec![value]),
             vertex_count: 3,
         }
     }
@@ -260,7 +260,7 @@ mod tests {
             cache.insert(
                 key(id),
                 PathRasterizationCacheEntry {
-                    bytes: vec![id as u8; payload_len].into(),
+                    bytes: Arc::new(vec![id as u8; payload_len]),
                     vertex_count: 3,
                 },
             );
@@ -273,7 +273,7 @@ mod tests {
         cache.insert(
             key(3),
             PathRasterizationCacheEntry {
-                bytes: vec![3; payload_len].into(),
+                bytes: Arc::new(vec![3; payload_len]),
                 vertex_count: 3,
             },
         );
@@ -293,7 +293,7 @@ mod tests {
         cache.insert(
             key(0),
             PathRasterizationCacheEntry {
-                bytes: Arc::from([2; 8]),
+                bytes: Arc::new(vec![2; 8]),
                 vertex_count: 3,
             },
         );
@@ -312,7 +312,7 @@ mod tests {
         let mut cache = PathRasterizationCache::default();
         cache.insert(key(0), entry(1));
         let oversized = PathRasterizationCacheEntry {
-            bytes: vec![0; MAX_PATH_RASTERIZATION_CACHE_BYTES + 1].into(),
+            bytes: Arc::new(vec![0; MAX_PATH_RASTERIZATION_CACHE_BYTES + 1]),
             vertex_count: 3,
         };
         let released = Arc::downgrade(&oversized.bytes);
@@ -321,6 +321,23 @@ mod tests {
         assert!(cache.get(&key(1)).is_none());
         assert!(cache.get(&key(0)).is_some());
         assert_eq!(cache.retained_bytes, 1);
+    }
+
+    #[test]
+    fn byte_budget_charges_owned_capacity_without_copying_payload() {
+        let mut cache = PathRasterizationCache::default();
+        let mut bytes = Vec::with_capacity(1024);
+        bytes.extend_from_slice(&[1, 2, 3]);
+        let capacity = bytes.capacity();
+        let ptr = bytes.as_ptr();
+        cache.insert(key(0), PathRasterizationCacheEntry {
+            bytes: Arc::new(bytes),
+            vertex_count: 3,
+        });
+        assert_eq!(cache.retained_bytes, capacity);
+        assert_eq!(cache.get(&key(0)).unwrap().bytes.as_ptr(), ptr);
+        cache.evict_to_fit(usize::MAX, capacity - 1);
+        assert_eq!(cache.retained_bytes, 0);
     }
 
     #[test]
