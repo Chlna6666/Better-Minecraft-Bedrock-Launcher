@@ -1,6 +1,7 @@
 use super::state::{ElementVisualTransform, InputModality, PresentationState};
 use super::*;
 
+/// Default logical window size before applying display bounds.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> Bounds<Pixels> {
