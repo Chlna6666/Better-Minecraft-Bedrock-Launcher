@@ -28,6 +28,12 @@ pub(super) struct ScrollViews {
 }
 
 impl ScrollViews {
+    pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut FxHashSet<(crate::AtlasTextureId, u32)>) {
+        for view in self.views.values() {
+            view.source.collect_atlas_tile_ids_into(live);
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         self.viewport = None;
         self.views.clear();

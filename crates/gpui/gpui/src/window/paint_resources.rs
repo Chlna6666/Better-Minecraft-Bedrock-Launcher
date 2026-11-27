@@ -132,6 +132,26 @@ fn crop_image_tile_to_visible_bounds(
 }
 
 impl Window {
+    fn collect_image_paint_live_tiles(
+        &self,
+        live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>,
+    ) {
+        self.rendered_frame.scene().collect_polychrome_tile_ids_into(live);
+        self.next_frame.painter.collect_polychrome_tile_ids_into(live);
+        self.next_frame.painter.collect_scroll_capture_tile_ids_into(live);
+        // Both committed and candidate captures can later project images
+        // that are outside the current viewport. Their dependency sets
+        // were collected once when each immutable source was created.
+        for frame in [&self.rendered_frame, &self.next_frame] {
+            frame.scroll_views.collect_atlas_tile_ids_into(live);
+            frame.scroll_rows.collect_atlas_tile_ids_into(live);
+        }
+        for paint in self.presentation_state.committed_paints() {
+            paint.scene.collect_polychrome_tile_ids_into(live);
+            paint.layers.collect_atlas_tile_ids_into(live);
+        }
+    }
+
     fn record_external_texture_damage(&mut self, damage: Bounds<ScaledPixels>) {
         if damage.is_empty() {
             return;
@@ -695,15 +715,7 @@ impl Window {
 
         let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
         live_tiles.clear();
-        self.rendered_frame
-            .scene()
-            .collect_polychrome_tile_ids_into(&mut live_tiles);
-        self.next_frame
-            .painter
-            .collect_polychrome_tile_ids_into(&mut live_tiles);
-        for scene in self.presentation_state.committed_scenes() {
-            scene.collect_polychrome_tile_ids_into(&mut live_tiles);
-        }
+        self.collect_image_paint_live_tiles(&mut live_tiles);
 
         let has_live_static_residency = self.image_paint_tile_cache.iter().any(|(key, tile)| {
             key.image_id == image_id && live_tiles.contains(&(tile.texture_id, tile.tile_id.0))
@@ -766,15 +778,7 @@ impl Window {
 
         let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
         live_tiles.clear();
-        self.rendered_frame
-            .scene()
-            .collect_polychrome_tile_ids_into(&mut live_tiles);
-        self.next_frame
-            .painter
-            .collect_polychrome_tile_ids_into(&mut live_tiles);
-        for scene in self.presentation_state.committed_scenes() {
-            scene.collect_polychrome_tile_ids_into(&mut live_tiles);
-        }
+        self.collect_image_paint_live_tiles(&mut live_tiles);
 
         let atlas = self.sprite_atlas.clone();
         self.image_paint_tile_cache.retain(|key, tile| {

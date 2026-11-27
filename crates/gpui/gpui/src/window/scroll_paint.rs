@@ -15,7 +15,7 @@ pub(in crate::window) struct ScrollPaint {
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
     raster_eligible: bool,
-    raster_atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
+    atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
@@ -97,21 +97,25 @@ impl ScrollPaint {
     fn new(origin: Point<Pixels>, coverage: Bounds<ScaledPixels>, mut operations: Operations) -> Self {
         operations.finish();
         // Qualify once, not on each scrolled frame or GPU owner request.
-        let mut raster_atlas_tiles = collections::FxHashSet::default();
-        let raster_eligible = operations.len() != 0
-            && operations.range_is_replayable(0..operations.len())
-            && operations.iter().all(|operation| {
-                match operation {
-                    PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
-                        raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
-                    }
-                    PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
-                        raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
-                    }
-                    _ => {}
+        let mut atlas_tiles = collections::FxHashSet::default();
+        let mut raster_eligible = operations.len() != 0
+            && operations.range_is_replayable(0..operations.len());
+        // Residency belongs to the frozen source even when GPU raster
+        // admission fails. Do not stop gathering dependencies at the first
+        // unsupported operation: later offscreen images can scroll into view.
+        for operation in operations.iter() {
+            match operation {
+                PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
+                    atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
-                super::frame::static_scroll_raster_operation(operation, coverage)
-            });
+                PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
+                    atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                }
+                _ => {}
+            }
+            raster_eligible = raster_eligible
+                && super::frame::static_scroll_raster_operation(operation, coverage);
+        }
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
             Self::blocks(&operations).map(Self::block_bounds).collect()
         } else {
@@ -122,9 +126,13 @@ impl ScrollPaint {
             coverage,
             operations: Arc::new(operations),
             raster_eligible,
-            raster_atlas_tiles: if raster_eligible { raster_atlas_tiles.into_iter().collect::<Vec<_>>().into() } else { Arc::default() },
+            atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
         }
+    }
+
+    pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
+        live.extend(self.atlas_tiles.iter().copied());
     }
 
     fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {
@@ -251,7 +259,7 @@ pub(in crate::window) struct ScrollPlacement {
 impl ScrollPlacement {
     pub(in crate::window) fn raster_source(&self) -> (&Arc<Operations>, Bounds<ScaledPixels>,
         Point<ScaledPixels>, &Arc<[(crate::AtlasTextureId, u32)]>) {
-        (&self.source.operations, self.source.coverage, self.delta, &self.source.raster_atlas_tiles)
+        (&self.source.operations, self.source.coverage, self.delta, &self.source.atlas_tiles)
     }
 
     pub(in crate::window) fn replay(&self, painter: &mut Painter) {

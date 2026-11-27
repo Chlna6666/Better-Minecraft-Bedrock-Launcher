@@ -424,11 +424,11 @@ impl PresentationState {
             self.active_values.extend(values);
         }
     }
-    pub(crate) fn committed_scenes(&self) -> impl Iterator<Item = &Scene> {
+    pub(crate) fn committed_paints(&self) -> impl Iterator<Item = &crate::window::Paint> {
         self.active
             .iter()
             .chain(self.pending.iter())
-            .map(|paint| &paint.scene)
+            .map(Arc::as_ref)
     }
     pub(crate) fn has_pending_scene(&self) -> bool {
         self.pending.is_some()

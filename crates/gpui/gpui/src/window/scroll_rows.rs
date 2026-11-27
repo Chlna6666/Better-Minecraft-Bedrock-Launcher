@@ -19,6 +19,12 @@ pub(super) struct ScrollRows {
 }
 
 impl ScrollRows {
+    pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
+        for row in self.rows.values() {
+            row.content.collect_atlas_tile_ids_into(live);
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         self.rows.clear();
         self.measurements.clear();

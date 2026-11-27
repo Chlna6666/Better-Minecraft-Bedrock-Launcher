@@ -76,6 +76,21 @@ impl Painter {
         self.scroll_capture.take().expect("open scroll paint capture")
     }
 
+    /// An image can be evicted while its element is still being captured.
+    /// Pending capture operations have not reached the ordinary Scene yet.
+    pub(crate) fn collect_scroll_capture_tile_ids_into(
+        &self,
+        live: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
+    ) {
+        if let Some(capture) = &self.scroll_capture {
+            for operation in capture.iter() {
+                if let PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) = operation {
+                    live.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                }
+            }
+        }
+    }
+
     pub(crate) fn construction_capacity(&self) -> usize {
         self.primitive_bounds.retained_capacity()
             + self.layer_stack.capacity()
