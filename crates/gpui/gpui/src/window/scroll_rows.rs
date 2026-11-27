@@ -60,7 +60,10 @@ pub(super) struct UniformPlacementCandidate {
     key: u64,
     pub(super) offset: Rc<ScrollOffset>,
     pub(super) sampled: Point<Pixels>,
+    pub(super) owner: crate::EntityId,
     mounted_source: usize,
+    pub(super) stale_input: bool,
+    input_moves: SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
     pub(super) placements: Vec<(usize, ScrollPlacement)>,
     origins: Vec<(RowKey, Point<Pixels>)>,
     proof: Rc<UniformPlacementProof>,
@@ -68,7 +71,11 @@ pub(super) struct UniformPlacementCandidate {
 }
 
 impl UniformPlacementCandidate {
-    pub(super) fn commit(self, frame: &mut super::Frame) {
+    pub(super) fn commit(
+        self, frame: &mut super::Frame,
+        input_moves: &mut SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
+    ) {
+        input_moves.extend(self.input_moves);
         for (key, origin) in self.origins {
             frame.scroll_rows.rows.get_mut(&key).expect("validated row").prepaint.origin = origin;
         }
@@ -85,6 +92,25 @@ impl UniformPlacementCandidate {
         }
         frame.mounted_scroll_sources[self.mounted_source].acknowledge(&self.offset.version);
     }
+}
+
+/// Adjacent records with the same translation share a single hitbox span
+/// update. Reject overlap rather than translate a record twice.
+fn append_row_input_move(
+    moves: &mut SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
+    input: Range<usize>, delta: Point<Pixels>,
+) -> Result<(), Outcome> {
+    if let Some((previous, previous_delta)) = moves.last_mut() {
+        if input.start < previous.end {
+            return Err(Outcome::InputRecords);
+        }
+        if input.start == previous.end && delta == *previous_delta {
+            previous.end = input.end;
+            return Ok(());
+        }
+    }
+    moves.push((input, delta));
+    Ok(())
 }
 
 type RowKey = (u64, usize);
@@ -694,6 +720,8 @@ impl RowPlan {
 
 pub(crate) struct RowPrepaint {
     pub(crate) row_revision: u64,
+    /// No nested input clip or visual transform changed during capture.
+    pub(crate) fixed_input_clip: bool,
     pub(crate) origin: Point<Pixels>,
     pub(crate) records: Range<PrepaintStateIndex>,
     pub(crate) reads: RenderDependencies,
@@ -920,12 +948,12 @@ impl Window {
         }
     }
 
-    /// Stable-membership fixed-height lists can use the same atomic
-    /// placement publication as full scrolling views. Initially admit only
-    /// passive rows: no moving listeners, hitboxes or independently retained
-    /// descendant views. A boundary crossing is normal row replay work.
+    /// Stable-membership fixed-height lists use the same atomic publication
+    /// as full scrolling views. Fixed-clip hitboxes can move in place, but
+    /// arbitrary coordinate-capturing listeners and independently retained
+    /// descendants still require normal row replay.
     pub(super) fn prepare_uniform_row_placement(
-        &self, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+        &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
         changed: &[(usize, &MountedScrollSource)], paint: &super::Paint,
     ) -> Result<UniformPlacementCandidate, Outcome> {
         let frame = &self.rendered_frame;
@@ -951,6 +979,9 @@ impl Window {
         let mut placements = Vec::with_capacity(binding.visible.len());
         let mut origins = Vec::with_capacity(binding.visible.len());
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
+        let mut input_moves = SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
+        let mut stale_input = false;
+        let hover_held = self.scroll_hover_deadline_active(cx);
         let scale = self.scale_factor();
         let mut routing = rows.notification_routing.borrow_mut();
         for row in binding.visible.clone() {
@@ -965,8 +996,7 @@ impl Window {
             }
             let pre = &record.prepaint.records;
             let span = &record.paint;
-            if !hitbox_range(&record.prepaint).is_empty()
-                || pre.start.tooltips_index != pre.end.tooltips_index
+            if pre.start.tooltips_index != pre.end.tooltips_index
                 || pre.start.deferred_draws_index != pre.end.deferred_draws_index
                 || span.start.mouse_listeners_index != span.end.mouse_listeners_index
                 || span.start.input_handlers_index != span.end.input_handlers_index
@@ -991,6 +1021,25 @@ impl Window {
                 .ok_or(Outcome::PreviousPlacement)?;
             if !old.same_paint(&expected) { return Err(Outcome::PreviousMarker); }
             let origin = binding.origin(row, sampled);
+            let logical_delta = origin - record.prepaint.origin;
+            let input = hitbox_range(&record.prepaint);
+            if !input.is_empty() {
+                if !record.prepaint.fixed_input_clip
+                    || !frame.hitboxes.contains(&input)
+                    || frame.hitboxes.slices(input.clone()).any(|(slice, _)| {
+                        slice.iter().any(|hitbox| hitbox.content_mask != viewport)
+                    })
+                {
+                    return Err(Outcome::InputRecords);
+                }
+                if !hover_held && (self.hits_scroll_row(&frame.hitboxes, input.clone(), Point::default())
+                    || self.hits_scroll_row(&frame.hitboxes, input.clone(), logical_delta))
+                {
+                    return Err(Outcome::Hover);
+                }
+                stale_input |= hover_held;
+                append_row_input_move(&mut input_moves, input, logical_delta)?;
+            }
             let delta = record.content.translation(origin, scale).ok_or(Outcome::FractionalTranslation)?;
             let placement = record.content.native_row_placement(viewport, scale, delta)
                 .ok_or(Outcome::PlacementGeometry)?;
@@ -1046,8 +1095,8 @@ impl Window {
             return Err(Outcome::Damage);
         }
         Ok(UniformPlacementCandidate {
-            key, offset, sampled, mounted_source: *mounted_source,
-            placements, origins, proof, damage,
+            key, offset, sampled, owner, mounted_source: *mounted_source,
+            placements, origins, proof, damage, input_moves, stale_input,
         })
     }
 
@@ -1109,6 +1158,7 @@ impl Window {
         let reads = record.prepaint.reads.clone();
         let validation = record.prepaint.validation.clone();
         let row_revision = record.prepaint.row_revision;
+        let fixed_input_clip = record.prepaint.fixed_input_clip;
         let start = self.prepaint_index();
         let delta = origin - record.prepaint.origin;
         if !hitbox_range(&record.prepaint).is_empty() {
@@ -1122,6 +1172,7 @@ impl Window {
         self.replayed_view_owners.insert(self.current_view());
         RowPrepaint {
             row_revision,
+            fixed_input_clip,
             origin,
             records: start..self.prepaint_index(),
             reads,
@@ -1316,6 +1367,19 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn row_input_moves_coalesce_adjacent_spans_but_reject_overlap() {
+        let mut moves = SmallVec::new();
+        let delta = crate::point(crate::px(0.), crate::px(-2.));
+        let other = crate::point(crate::px(0.), crate::px(-3.));
+        append_row_input_move(&mut moves, 1..3, delta).unwrap();
+        append_row_input_move(&mut moves, 3..5, delta).unwrap();
+        append_row_input_move(&mut moves, 7..8, delta).unwrap();
+        append_row_input_move(&mut moves, 8..9, other).unwrap();
+        assert_eq!(moves.as_slice(), &[(1..5, delta), (7..8, delta), (8..9, other)]);
+        assert!(matches!(append_row_input_move(&mut moves, 8..10, other), Err(Outcome::InputRecords)));
+    }
 
     #[test]
     fn uniform_placement_membership_uses_the_normal_materialization_formula() {

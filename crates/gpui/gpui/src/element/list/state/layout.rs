@@ -410,7 +410,8 @@ impl StateInner {
                         Some(mask),
                         |window| {
                             let start = item.capture_reads.as_ref()
-                                .map(|_| (window.prepaint_index(), cx.entities.dependency_read_index()));
+                                .map(|_| (window.prepaint_index(), cx.entities.dependency_read_index(),
+                                    window.next_frame.input_clip_epoch));
                             with_item_retained_key(window, item.index, |window| {
                                 if let Some(element) = item.element.as_mut() {
                                     element.prepaint_at(item_origin, window, cx);
@@ -420,12 +421,13 @@ impl StateInner {
                                 if item.element.is_none() {
                                     let prepaint = window.reuse_scroll_row(plan, item.index, item_origin);
                                     plan.record_prepaint(item.index, prepaint);
-                                } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
+                                } else if let (Some((start, read_start, clip_epoch)), Some(reads)) = (start, item.capture_reads.take()) {
                                     let prepaint_reads = cx.entities.row_reads_since(read_start);
                                     let mut reads = reads;
                                     reads.merge_replayed(&prepaint_reads);
                                     plan.record_prepaint(item.index, RowPrepaint {
                                         row_revision: plan.row_revision(item.index),
+                                        fixed_input_clip: clip_epoch == window.next_frame.input_clip_epoch,
                                         origin: item_origin,
                                         records: start..window.prepaint_index(),
                                         reads,

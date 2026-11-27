@@ -622,10 +622,23 @@ impl SceneLayers {
         self.with_scroll_placements(&[(index, placement.clone())], window_opaque)
     }
 
+    #[cfg(test)]
     pub(in crate::window) fn with_scroll_placements(
         &self,
         placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
         window_opaque: bool,
+    ) -> Option<Self> {
+        self.with_scroll_placements_checked(placements, window_opaque, false)
+    }
+
+    /// The scene has already certified unchanged marker identity and
+    /// topology. Moving bounds preserve the flat-root order proof, but
+    /// scoped isolation and LCD underlays need fresh geometry validation.
+    pub(in crate::window) fn with_scroll_placements_checked(
+        &self,
+        placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
+        window_opaque: bool,
+        bounds_changed: bool,
     ) -> Option<Self> {
         if placements.is_empty() || self.window_opaque != window_opaque {
             return None;
@@ -643,10 +656,19 @@ impl SceneLayers {
         if !self.ordered {
             return None;
         }
+        if bounds_changed && (!self.flat_root
+            || self.frames.iter().any(|layer| layer.background.is_some() || layer.root_static_span().is_none())
+            || placements.iter().any(|(_, placement)| placement.has_lcd_glyphs()))
+        {
+            return None;
+        }
         let mut frames = self.frames.clone();
+        // Both marker replacements and native frames are in scene order.
+        // Locate each slot once rather than restart the scan for every row.
+        let mut slots = self.frames.iter().enumerate();
         for (index, placement) in placements {
             let span = *index..*index + 1;
-            let slot = self.frames.iter().position(|layer| layer.root_static_span() == Some(&span))?;
+            let (slot, _) = slots.find(|(_, layer)| layer.root_static_span() == Some(&span))?;
             let old = &self.frames[slot];
             let geometry = placement.native_geometry();
             let viewport = placement.viewport();

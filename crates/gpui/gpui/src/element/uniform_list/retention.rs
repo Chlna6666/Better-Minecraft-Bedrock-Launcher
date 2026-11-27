@@ -64,12 +64,13 @@ pub(super) fn prepaint(
                 let origin = row_origin(index);
                 let capture = plan.can_capture(&mut item);
                 let before =
-                    capture.then(|| (window.prepaint_index(), cx.entities.dependency_read_index()));
+                    capture.then(|| (window.prepaint_index(), cx.entities.dependency_read_index(),
+                        window.next_frame.input_clip_epoch));
                 window.with_list_item_layout_key(index, |window| {
                     item.layout_as_root(available_space, window, cx);
                     item.prepaint_at(origin, window, cx);
                 });
-                if let Some((start, read_start)) = before {
+                if let Some((start, read_start, clip_epoch)) = before {
                     let extra = cx.entities.row_reads_since(read_start);
                     // The renderer takes a range, so its reads belong to
                     // every row in that batch. Layout/prepaint are per-row.
@@ -77,6 +78,7 @@ pub(super) fn prepaint(
                     reads.merge_replayed(&extra);
                     let prepaint = RowPrepaint {
                         row_revision: plan.row_revision(index),
+                        fixed_input_clip: clip_epoch == window.next_frame.input_clip_epoch,
                         origin,
                         records: start..window.prepaint_index(),
                         reads,

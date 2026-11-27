@@ -164,8 +164,8 @@ struct PlacementTransaction {
 
 impl Window {
     /// Direct commit for independent native vertical scrollers with one
-    /// complete retained child each. No nested captures, virtual-list rows,
-    /// external effects, or partially captured content are admitted.
+    /// complete retained child each, or a stable uniform-list row set.
+    /// Nested captures, external effects and partial captures are rejected.
     fn prepare_scroll_placement(&self, cx: &App) -> Result<PlacementTransaction, Outcome> {
         let (epoch, owners) = self.invalidator.pending_placement().ok_or(Outcome::Invalidation)?;
         // Scheduling an ordinary wheel frame sets refreshing. Its pending
@@ -226,7 +226,7 @@ impl Window {
         if owners.len() == 1 {
             match self.prepare_placement_member(cx, epoch, owners[0], old_paint, &changed) {
                 Err(Outcome::MissingCapture) => {
-                    let uniform = self.prepare_uniform_row_placement(epoch, owners[0], &changed, old_paint)?;
+                    let uniform = self.prepare_uniform_row_placement(cx, epoch, owners[0], &changed, old_paint)?;
                     let paint = old_paint.with_scroll_placements(&uniform.placements,
                         self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
                         .ok_or(Outcome::ScenePublication)?;
@@ -414,13 +414,19 @@ impl Window {
             view.stale_input = member.stale_input;
             frame.mounted_scroll_sources[member.mounted_source].acknowledge(&member.offset.version);
         }
+        let mut input_moves = smallvec::SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
+        let mut stale_row_owner = None;
         let uniform_damage = transaction.uniform.map(|list| {
             let damage = list.damage;
-            list.commit(frame);
+            if list.stale_input { stale_row_owner = Some(list.owner); }
+            list.commit(frame, &mut input_moves);
             damage
         });
-        frame.commit_scroll_placements(Arc::clone(&transaction.paint),
-            transaction.members.iter().map(|member| (member.hitboxes.clone(), member.delta)));
+        input_moves.extend(transaction.members.iter().map(|member| (member.hitboxes.clone(), member.delta)));
+        frame.commit_scroll_placements(Arc::clone(&transaction.paint), input_moves);
+        if let Some(owner) = stale_row_owner {
+            self.scroll_hover.row_owners.insert(owner);
+        }
         self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
         if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
             self.active_dirty_to_present_started_at = Some(
@@ -461,7 +467,9 @@ impl Window {
         super::record_scene_frame_metrics(self.last_generation_stats.scene);
         super::record_frame_retained_capacity(self.last_generation_stats.frame_retained_capacity);
         self.reset_cursor_style(cx);
-        if transaction.members.iter().any(|member| member.stale_input) { self.schedule_scroll_hover_restore(cx); }
+        if stale_row_owner.is_some() || transaction.members.iter().any(|member| member.stale_input) {
+            self.schedule_scroll_hover_restore(cx);
+        }
         scroll_placement::record(Outcome::Committed);
         log::trace!(target: "gpui::diagnostics", "gpui placement-only frame committed without root traversal");
         true
@@ -777,9 +785,12 @@ impl Window {
         self.scroll_hover.painting
     }
 
+    pub(super) fn scroll_hover_deadline_active(&self, cx: &App) -> bool {
+        self.scroll_hover.deadline.is_some_and(|end| cx.background_executor().now() < end)
+    }
+
     pub(super) fn scroll_hover_is_held(&self, cx: &App) -> bool {
-        self.invalidator.scroll_content_revision().1
-            && self.scroll_hover.deadline.is_some_and(|end| cx.background_executor().now() < end)
+        self.invalidator.scroll_content_revision().1 && self.scroll_hover_deadline_active(cx)
     }
 
     fn invalidate_scrolled_view_input(&mut self) -> bool {

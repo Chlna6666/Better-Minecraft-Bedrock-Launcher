@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_row_placement_recertifies_moving_visual_bounds() {
+    fn compact_row_placement_inherits_flat_root_proof_when_bounds_move() {
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
         let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
         let quad = Quad {
@@ -603,7 +603,14 @@ mod tests {
         retention.finish(&mut scene);
         let mut paint = crate::window::Paint::new(scene, Arc::new(retention), Default::default());
         paint.layers = crate::window::SceneLayers::capture(&paint.scene, None, true);
+        let direct = paint.layers.with_scroll_placements_checked(&[(0, moved.clone())], true, true)
+            .expect("flat row without LCD underlay inherits root proof");
         let next = paint.with_scroll_placement(0, moved.clone(), true).expect("row marker moves");
+        assert_eq!(direct.frames.len(), 1);
+        assert!(Arc::ptr_eq(&direct.frames[0].content, &paint.layers.frames[0].content));
+        let rebuilt = crate::window::SceneLayers::capture(&next.scene, Some(&paint.layers), true);
+        assert_eq!(direct.frames[0].root_static_raster(), rebuilt.frames[0].root_static_raster());
+        assert_eq!(direct.frames[0].root_static_raster(), next.layers.frames[0].root_static_raster());
         assert!(matches!(paint.scene.paint_operations.view(0), Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&old)));
         assert!(matches!(next.scene.paint_operations.view(0), Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&moved)));
         assert!(next.scene.paint_operations.shares_boundary_storage(&paint.scene.paint_operations));
