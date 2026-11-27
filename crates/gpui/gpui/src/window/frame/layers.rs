@@ -65,9 +65,10 @@ impl LayerContent {
         operations: &Arc<Operations>,
         source_coverage: Bounds<ScaledPixels>,
         delta: Point<ScaledPixels>,
-        record: &LayerRecord,
+        translation: Option<[i32; 2]>,
+        source_viewport: ContentMask<ScaledPixels>,
     ) -> Option<Self> {
-        let [x, y] = record.translation?;
+        let [x, y] = translation?;
         // Capture coordinates = stable content coordinates + source origin.
         // The viewport moved by delta since this capture was painted.
         let origin = translation_point([x, y]) - delta;
@@ -77,9 +78,9 @@ impl LayerContent {
         };
         let source_origin = [integral(origin.x)?, integral(origin.y)?];
         let coverage = translated_bounds(source_coverage, Point::default() - origin);
-        let visible = LayerFrame::coverage(record.source_viewport, record.translation);
+        let visible = LayerFrame::coverage(source_viewport, translation);
         if coverage.intersect(&visible) != visible
-            || record.source_viewport.corner_radii != Default::default()
+            || source_viewport.corner_radii != Default::default()
         {
             return None;
         }
@@ -375,14 +376,30 @@ impl LayerFrame {
         (damage, Some(common))
     }
 
-    /// Only adjacent generations can inherit a tile. Its coordinates are
-    /// stable content pixels, NOT the current viewport placement.
+    /// Borrow the original capture, along with the signed projection origin
+    /// for this content-space tile. The cache key itself must remain in
+    /// content coordinates. The renderer can compile this source on a miss;
+    /// a resident hit need not inspect a single primitive.
+    pub(crate) fn raster_source_for_tile(
+        &self, rect: [i64; 4],
+    ) -> Option<(&Operations, [i32; 2])> {
+        let origin = self.content.raster?.source_origin_for_tile(rect)?;
+        Some((&self.content.operations, origin))
+    }
+
+    /// Only adjacent generations can inherit a visible-source tile. Direct
+    /// overscan sources remain in the same generation until content changes.
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {
         // Overscan residency is keyed in stable content space. A same-generation
         // tile is valid only within the immutable source's certified coverage.
-        if let Some(raster) = self.content.raster {
-            raster.source_origin_for_tile(rect)?;
-            return (generation == self.generation).then_some(generation);
+        if self.content.raster.is_some() {
+            if generation != self.generation || !scale.is_finite() || scale <= 0.
+                || self.viewport.scale(scale) != self.source_viewport
+            {
+                return None;
+            }
+            self.raster_source_for_tile(rect)?;
+            return Some(generation);
         }
         if generation == self.generation {
             return Some(generation);
@@ -420,6 +437,34 @@ pub(crate) struct SceneLayers {
 }
 
 impl SceneLayers {
+    // Native GPU tests use the production admission and coordinate mapping
+    // with a frozen ScrollPaint-style operation page.
+    #[cfg(all(test, target_os = "windows"))]
+    pub(crate) fn raster_fixture(
+        &mut self,
+        operations: Operations,
+        coverage: Bounds<ScaledPixels>,
+        viewport: ContentMask<Pixels>,
+        translation: [i32; 2],
+    ) {
+        let mut operations = operations;
+        operations.finish();
+        assert!(operations.range_is_replayable(0..operations.len()));
+        assert!(operations.iter().all(|op| static_scroll_raster_operation(op, coverage)));
+        let operations = Arc::new(operations);
+        let content = LayerContent::from_scroll(
+            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.),
+        ).expect("fixture source coverage");
+        assert!(Arc::ptr_eq(&operations, &content.operations));
+        self.frames.push(LayerFrame {
+            layout_key: 1, id: 1, generation: 1,
+            damage: LayerDamage::Full, previous_coverage: None,
+            translation: Some(translation), source_viewport: viewport.scale(1.),
+            viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
+            content: Arc::new(content),
+        });
+    }
+
     pub(super) fn capture(
         scene: &Scene,
         records: &[LayerRecord],
@@ -451,18 +496,10 @@ impl SceneLayers {
             // Derive the physical scale from the owning retained view, not the
             // current native drawable (which can already have resized).
             let direct = if record.rows.is_empty() && !range.is_empty() {
-                view_records.iter().find_map(|slot| {
-                    let view = slot.record.as_ref()?;
-                    (view.paint_range.start.scene_index == range.start
-                        && view.paint_range.end.scene_index == range.end)
-                        .then_some(view.context.device_scale_factor)
-                }).and_then(|scale| {
-                    if record.viewport.scale(scale) != record.source_viewport { return None; }
-                    let (operations, coverage, delta) = scroll_views.raster_source(
-                        view_records, &range, record.viewport, scale,
-                    )?;
-                    LayerContent::from_scroll(operations, coverage, delta, record)
-                })
+                scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
+                    .and_then(|(operations, coverage, delta)| LayerContent::from_scroll(
+                        operations, coverage, delta, record.translation, record.source_viewport,
+                    ))
             } else { None };
             let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
@@ -521,6 +558,31 @@ mod tests {
         assert_eq!(source.source_origin_for_tile([0, 0, 256, 256]), Some([0, -128]));
         assert_eq!(source.source_origin_for_tile([0, 768, 256, 1024]), Some([0, 640]));
         assert_eq!(source.source_origin_for_tile([0, 900, 256, 1156]), None);
+    }
+
+    #[test]
+    fn scroll_source_shares_operations_and_keeps_capture_origin_after_scroll() {
+        let viewport = ContentMask::new(Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(512.), ScaledPixels(256.)),
+        ));
+        let coverage = Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(-256.)),
+            size(ScaledPixels(512.), ScaledPixels(768.)),
+        );
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds: viewport.bounds, content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        operations.finish();
+        let operations = Arc::new(operations);
+        let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
+            Some([0, -128]), viewport).unwrap();
+        let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
+            Some([0, -192]), viewport).unwrap();
+        assert!(Arc::ptr_eq(&before.operations, &after.operations));
+        assert!(before.raster == after.raster);
+        assert_eq!(after.raster.unwrap().source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
     }
 
     #[test]

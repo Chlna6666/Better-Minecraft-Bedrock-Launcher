@@ -34,10 +34,15 @@ fn verify(backend: RendererBackend) {
         crate::point(crate::ScaledPixels(18.), crate::ScaledPixels(26.)),
         crate::size(crate::ScaledPixels(24.), crate::ScaledPixels(24.)),
     );
-    let mut painter = crate::scene::Painter::default();
-    painter.insert_primitive(Quad {
+    let coverage = crate::bounds(
+        crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(-65536.)),
+        crate::size(crate::ScaledPixels(65600.), crate::ScaledPixels(65600.)),
+    );
+    let mut capture = crate::scene::Painter::default();
+    capture.begin_scroll_capture();
+    capture.insert_primitive(Quad {
         bounds,
-        content_mask: crate::ContentMask::new(bounds),
+        content_mask: crate::ContentMask::new(coverage),
         corner_radii: crate::Corners::all(crate::ScaledPixels(6.)),
         background: crate::rgba(0x40e08080).into(),
         ..Default::default()
@@ -46,13 +51,39 @@ fn verify(backend: RendererBackend) {
         bounds.origin + crate::point(crate::ScaledPixels(65536.), crate::ScaledPixels(-65536.)),
         bounds.size,
     );
-    painter.insert_primitive(Quad {
+    capture.insert_primitive(Quad {
         bounds: distant,
-        content_mask: crate::ContentMask::new(distant),
+        content_mask: crate::ContentMask::new(coverage),
         corner_radii: crate::Corners::all(crate::ScaledPixels(6.)),
         background: crate::rgba(0x40e08080).into(),
         ..Default::default()
     });
+    let mut paint = crate::window::Paint::default();
+    let viewport = crate::ContentMask::new(crate::bounds(
+        crate::point(crate::px(0.), crate::px(0.)),
+        crate::size(crate::px(64.), crate::px(64.)),
+    ));
+    paint.layers.raster_fixture(capture.end_scroll_capture(), coverage, viewport, [0, -128]);
+    let layer = &paint.layers.frames[0];
+    let (operations, origin) = layer.raster_source_for_tile([16, 152, 32, 168])
+        .expect("published content-space tile source");
+    assert_eq!(origin, [16, 24]);
+    let (_, far_origin) = layer.raster_source_for_tile([65552, -65384, 65568, -65368])
+        .expect("published far signed tile source");
+    assert_eq!(far_origin, [65552, -65512]);
+    assert!(layer.raster_source_for_tile([0, -65536, 16, -65520]).is_none());
+
+    // Compile the immutable source through the ordinary native upload
+    // pipeline. RasterTile supplies projection; no primitive is translated.
+    let mut painter = crate::scene::Painter::default();
+    for operation in operations.iter() {
+        match operation {
+            crate::scene::PaintOperation::Primitive(primitive) => painter.insert_primitive(primitive.clone()),
+            crate::scene::PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
+            crate::scene::PaintOperation::EndLayer => painter.pop_layer(),
+            _ => unreachable!("static raster source"),
+        }
+    }
     painter.finish();
     upload(
         &mut renderer,
@@ -68,18 +99,19 @@ fn verify(backend: RendererBackend) {
     let original_buffers = renderer.frame_resources[0].buffers;
     renderer.raster_tiles.begin_frame();
     let resident_key = RasterTileKey { layer: 1, x: 0, y: 0 };
-    let resident_raster = RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } };
+    let resident_raster = RasterTile { extent: tile, origin: SignedOrigin2d { x: origin[0], y: origin[1] } };
+    let cache_raster = RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 152 } };
     let (reference, resident) = device!(renderer, device, {
         let mut results = Vec::new();
         let mut resident = None;
         for raster in [
             RasterTile { extent: source, origin: SignedOrigin2d::ZERO },
-            RasterTile { extent: tile, origin: SignedOrigin2d { x: 16, y: 24 } },
-            RasterTile { extent: tile, origin: SignedOrigin2d { x: 65552, y: -65512 } },
+            resident_raster,
+            RasterTile { extent: tile, origin: SignedOrigin2d { x: far_origin[0], y: far_origin[1] } },
         ] {
             let extent = raster.extent;
             let write = if raster == resident_raster {
-                Some(renderer.raster_tiles.prepare(device, resident_key, 1, raster, Format::Bgra8Unorm)
+                Some(renderer.raster_tiles.prepare(device, resident_key, 1, cache_raster, Format::Bgra8Unorm)
                     .expect("resident allocation").expect("cache capacity"))
             } else { None };
             let (color, color_view) = if let Some(write) = &write {
@@ -152,7 +184,7 @@ fn verify(backend: RendererBackend) {
             if let Some(id) = submission {
                 if let Some(reservation) = write.take() {
                     renderer.raster_tiles.finish_write(reservation, Some(id)).expect("track native writer");
-                    assert!(renderer.raster_tiles.lookup(resident_key, 1, resident_raster, Format::Bgra8Unorm).is_none());
+                    assert!(renderer.raster_tiles.lookup(resident_key, 1, cache_raster, Format::Bgra8Unorm).is_none());
                 }
                 device.wait_submission(id).expect("native raster fence");
                 renderer.raster_tiles.complete(id);
@@ -192,7 +224,7 @@ fn verify(backend: RendererBackend) {
 
     renderer.raster_tiles.begin_frame();
     renderer.raster_tiles.advance_layer(1, 2, |_| false);
-    let cached = renderer.raster_tiles.lookup(resident_key, 2, resident_raster, Format::Bgra8Unorm)
+    let cached = renderer.raster_tiles.lookup(resident_key, 2, cache_raster, Format::Bgra8Unorm)
         .expect("clean generation retains physical tile");
     assert_eq!((cached.texture, cached.view), resident);
     assert_eq!(renderer.raster_tiles.bytes(), 16 * 16 * 4);

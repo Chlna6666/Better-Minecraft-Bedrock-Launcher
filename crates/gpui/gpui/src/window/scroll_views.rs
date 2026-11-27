@@ -40,16 +40,23 @@ impl ScrollViews {
         records: &[super::view_retention::ViewRecordSlot],
         range: &Range<usize>,
         viewport: ContentMask<Pixels>,
-        scale: f32,
+        source_viewport: ContentMask<crate::ScaledPixels>,
     ) -> Option<(&Arc<crate::scene::Operations>, Bounds<crate::ScaledPixels>, Point<crate::ScaledPixels>)> {
+        if self.views.is_empty() {
+            return None;
+        }
         let mut candidates = records.iter().filter_map(|slot| {
-            let view = self.views.get(&slot.key)?;
             let record = slot.record.as_ref()?;
-            if view.owner != slot.owner || view.viewport != viewport
-                || record.context.device_scale_factor != scale
-                || record.context.visual_content_mask != viewport
-                || record.paint_range.start.scene_index != range.start
+            let scale = record.context.device_scale_factor;
+            if record.paint_range.start.scene_index != range.start
                 || record.paint_range.end.scene_index != range.end
+                || viewport.scale(scale) != source_viewport
+            {
+                return None;
+            }
+            let view = self.views.get(&slot.key)?;
+            if view.owner != slot.owner || view.viewport != viewport
+                || record.context.visual_content_mask != viewport
             {
                 return None;
             }
