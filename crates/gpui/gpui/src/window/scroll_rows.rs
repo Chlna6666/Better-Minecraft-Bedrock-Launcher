@@ -5,7 +5,7 @@
 use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::{ScrollPaint, ScrollPaintTarget}};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
-    ScrollCapture, Size, StateRead, StateReadStatus, Window,
+    ScrollCapture, Size, StateRead, StateReadValidation, Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
@@ -122,6 +122,7 @@ pub(crate) struct RowPrepaint {
     pub(crate) origin: Point<Pixels>,
     pub(crate) records: Range<PrepaintStateIndex>,
     pub(crate) reads: Rc<[StateRead]>,
+    pub(crate) validation: StateReadValidation,
 }
 
 struct RowRecord {
@@ -138,6 +139,7 @@ struct RowMeasurement {
     count: usize,
     context: RetainedPaintContext,
     reads: Rc<[StateRead]>,
+    validation: StateReadValidation,
     size: Size<Pixels>,
 }
 
@@ -210,7 +212,7 @@ impl Window {
             && previous.index == index
             && previous.count == count
             && self.retained_paint_context_matches(&previous.context)
-            && previous.reads.iter().all(|read| read.status() == StateReadStatus::Unchanged)
+            && previous.validation.unchanged(&previous.reads)
         {
             let size = previous.size;
             self.next_frame.scroll_rows.measurements.insert(id.clone(), (revision, previous.clone()));
@@ -228,6 +230,7 @@ impl Window {
                 count,
                 context,
                 reads: cx.entities.state_reads_since(start),
+                validation: StateReadValidation::default(),
                 size,
             })));
         }
@@ -332,11 +335,7 @@ impl Window {
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = hitbox_range(&record.prepaint);
         record.content.covers(viewport, delta)
-            && record
-                .prepaint
-                .reads
-                .iter()
-                .all(|read| read.status() == StateReadStatus::Unchanged)
+            && record.prepaint.validation.unchanged(&record.prepaint.reads)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
             && (plan.hover_held || !self.hits_scroll_row(&self.rendered_frame.hitboxes, hitboxes, logical_delta))
@@ -351,6 +350,7 @@ impl Window {
         let record = &self.rendered_frame.scroll_rows.rows[&(plan.key, row)];
         let recorded = record.prepaint.records.clone();
         let reads = record.prepaint.reads.clone();
+        let validation = record.prepaint.validation.clone();
         let row_revision = record.prepaint.row_revision;
         let start = self.prepaint_index();
         let delta = origin - record.prepaint.origin;
@@ -368,6 +368,7 @@ impl Window {
             origin,
             records: start..self.prepaint_index(),
             reads,
+            validation,
         }
     }
 
@@ -426,6 +427,7 @@ impl Window {
         let paint_reads = cx.entities.state_reads_since(read_start);
         if !paint_reads.is_empty() {
             prepaint.reads = crate::merge_state_reads(&prepaint.reads, &paint_reads);
+            prepaint.validation = StateReadValidation::default();
         }
         self.remember_scroll_row(plan, row, prepaint, paint, content);
     }

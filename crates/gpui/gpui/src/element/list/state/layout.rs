@@ -428,6 +428,7 @@ impl StateInner {
                                         origin: item_origin,
                                         records: start..window.prepaint_index(),
                                         reads,
+                                        validation: Default::default(),
                                     });
                                 }
                             }

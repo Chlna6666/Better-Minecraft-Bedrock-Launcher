@@ -9,10 +9,10 @@
 //! and each first query of a node looks its parent up, then stores the node's
 //! origin and bounds. Upstream keeps both in `FxHashMap<LayoutId, _>`s and
 //! clears them at the end of every frame. [`LayoutIdMap`] answers the same
-//! calls from a `Vec` indexed by the slot half of the node id, and forgets
-//! everything at the end of a frame by starting a new pass instead of
-//! clearing. What `layout_bounds` computes, pixel snapping included, is left
-//! exactly as upstream wrote it.
+//! calls from a `Vec` indexed by the slot half of the node id. BMCBL retains
+//! entries across frames and revokes them through native layout mutation
+//! and topology removal; a new pass provides O(1) exceptional invalidation.
+//! Pixel snapping remains unchanged.
 //!
 //! [`TaffyLayoutEngine::layout_bounds`]: crate::layout::TaffyLayoutEngine::layout_bounds
 
@@ -129,7 +129,23 @@ impl<V: Copy + Default> LayoutIdMap<V> {
         self.entries.capacity()
     }
 
-    /// Forgets every entry, at the end of a frame, without touching them.
+    /// Trim only the dead suffix under explicit memory pressure; a live slot
+    /// retains its original generational identity and index.
+    pub(crate) fn trim_dead_tail(&mut self, floor: usize) {
+        if self.is_empty() {
+            self.trim_empty(floor);
+            return;
+        }
+        let live_end = self.entries.iter().rposition(|entry| entry.pass == self.pass)
+            .map_or(0, |index| index + 1);
+        let target = floor.max(live_end);
+        if self.entries.capacity() > target.saturating_mul(4) {
+            self.entries.truncate(live_end);
+            self.entries.shrink_to(target);
+        }
+    }
+
+    /// Forgets every entry without touching them (DPI changes or abort).
     pub(crate) fn clear(&mut self) {
         self.live = 0;
         self.pass = self.pass.wrapping_add(1);

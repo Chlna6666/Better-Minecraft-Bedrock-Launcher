@@ -34,12 +34,15 @@ fn interaction_flags_preserve_native_size_measure_cache(cx: &mut TestAppContext)
             engine.compute_layout(first, AvailableSpace::min_size(), window, cx);
             let measured = engine.layout_bounds(first, scale_factor).size;
             engine.clear();
+            assert!(engine.absolute_layout_bounds.get(&first).is_some());
             let second = request(&mut engine, true);
             assert_eq!(first, second);
             assert!(!engine.taffy.dirty(second.into()).unwrap());
             engine.compute_layout(second, AvailableSpace::min_size(), window, cx);
             assert_eq!(engine.layout_bounds(second, scale_factor).size, measured);
             assert_eq!(engine.layout_cache_metrics(), (1, 0));
+            assert_eq!(engine.bounds_cache_hits, 1);
+            assert_eq!(engine.bounds_cache_misses, 0);
         })
         .unwrap();
 }
@@ -98,4 +101,43 @@ fn standalone_child_compute_invalidates_cached_parent_placement(cx: &mut TestApp
             assert_eq!(engine.layout_bounds(child, 1.).origin.x, px(15.));
         })
         .unwrap();
+}
+
+#[gpui::test]
+fn persistent_bounds_follow_native_mutation_and_scale_conversion(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let scale = window.scale_factor();
+        let request = |engine: &mut TaffyLayoutEngine, padding: f32| {
+            let mut child_style = Style::default();
+            child_style.size.width = px(20.).into();
+            child_style.size.height = px(10.).into();
+            let child = engine.request_layout(owner("bounds-child"), false, child_style, px(16.), scale, &[]);
+            let mut parent_style = Style::default();
+            parent_style.padding.left = px(padding).into();
+            let parent = engine.request_layout(owner("bounds-parent"), false, parent_style, px(16.), scale, &[child]);
+            (child, parent)
+        };
+        let (child, parent) = request(&mut engine, 16.);
+        engine.compute_layout(parent, AvailableSpace::min_size(), window, cx);
+        let first = engine.layout_bounds(child, scale);
+        engine.clear();
+        assert_eq!(engine.absolute_layout_bounds.get(&child), Some(&first));
+        let (next_child, next_parent) = request(&mut engine, 32.);
+        assert_eq!((child, parent), (next_child, next_parent));
+        engine.compute_layout(parent, AvailableSpace::min_size(), window, cx);
+        let moved = engine.layout_bounds(child, scale);
+        assert!(moved.origin.x > first.origin.x);
+        // Conversion alone must not return a previous-scale logical bounds.
+        let half = engine.layout_bounds(child, scale * 2.);
+        assert_eq!(half.origin.x.0, moved.origin.x.0 / 2.);
+        assert_eq!(half.size.width.0, moved.size.width.0 / 2.);
+        assert_eq!(engine.layout_bounds(child, scale), moved);
+        engine.abort_frame();
+        assert!(engine.absolute_layout_bounds.get(&child).is_none());
+    }).unwrap();
 }

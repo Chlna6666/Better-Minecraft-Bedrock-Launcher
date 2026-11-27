@@ -71,6 +71,7 @@ pub(super) fn prepaint(
                         origin,
                         records: start..window.prepaint_index(),
                         reads,
+                        validation: Default::default(),
                     };
                     plan.record_prepaint(index, prepaint);
                 }

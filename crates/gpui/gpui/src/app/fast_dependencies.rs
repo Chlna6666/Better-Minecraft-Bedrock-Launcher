@@ -440,6 +440,43 @@ impl StateVersion {
     }
 }
 
+// A weak snapshot becomes invalid on the final owner's drop even without a
+// version bump. Publish that transition to the same UI-thread generation.
+impl Drop for StateVersion {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) != 0 {
+            // State owners may be destroyed during thread-local teardown.
+            let _ = STATE_GENERATION.try_with(|generation| {
+                generation.set(generation.get().wrapping_add(1));
+            });
+        }
+    }
+}
+
+/// A successful validation can be reused only while the generation remains
+/// unchanged. Never certify a newly captured or merged snapshot implicitly.
+#[derive(Clone, Default)]
+pub(crate) struct StateReadValidation(Cell<Option<u64>>);
+
+impl StateReadValidation {
+    pub(crate) fn unchanged(&self, reads: &[StateRead]) -> bool {
+        if reads.is_empty() {
+            return true;
+        }
+        let generation = state_generation();
+        if self.0.get() == Some(generation) {
+            return true;
+        }
+        if reads.iter().all(|read| read.status() == StateReadStatus::Unchanged) {
+            self.0.set(Some(generation));
+            true
+        } else {
+            self.0.set(None);
+            false
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StateReadStatus { Unchanged, Changed, Dead }
 
@@ -579,6 +616,32 @@ impl Drop for StateReadRecording {
 #[cfg(test)]
 mod state_dedup_tests {
     use super::*;
+
+    #[test]
+    fn validation_epoch_rejects_changed_and_dropped_states() {
+        let state = StateVersion::default();
+        let reads = [StateRead::new(&state)];
+        let validation = StateReadValidation::default();
+        assert!(validation.unchanged(&reads));
+        let generation = state_generation();
+        assert!(validation.unchanged(&reads));
+        assert_eq!(validation.0.get(), Some(generation));
+        let clone = state.clone();
+        drop(clone);
+        assert_eq!(state_generation(), generation);
+        drop(state);
+        assert_ne!(state_generation(), generation);
+        assert!(!validation.unchanged(&reads));
+        assert_eq!(reads[0].status(), StateReadStatus::Dead);
+
+        let state = StateVersion::default();
+        let reads = [StateRead::new(&state)];
+        let validation = StateReadValidation::default();
+        assert!(validation.unchanged(&reads));
+        state.bump();
+        assert!(!validation.unchanged(&reads));
+        assert_eq!(validation.0.get(), None);
+    }
 
     #[test]
     fn sorted_union_matches_reference_and_shares_subsets() {

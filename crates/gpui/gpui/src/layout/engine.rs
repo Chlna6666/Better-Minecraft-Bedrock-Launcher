@@ -289,6 +289,8 @@ pub struct TaffyLayoutEngine {
     default_measured_style: Option<DefaultMeasuredStyle>,
     pub(super) absolute_layout_bounds: LayoutIdMap<Bounds<Pixels>>,
     unrounded_layout_origins: LayoutIdMap<(f32, f32)>,
+    // Rounded logical bounds depend on the window's device scale.
+    bounds_scale_bits: Option<u32>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     // Taffy stores device-pixel geometry; equal logical constraints at a new
     // DPI must not reuse the previous physical layout.
@@ -354,6 +356,7 @@ impl TaffyLayoutEngine {
             default_measured_style: None,
             absolute_layout_bounds: LayoutIdMap::default(),
             unrounded_layout_origins: LayoutIdMap::default(),
+            bounds_scale_bits: None,
             computed_layouts: FxHashSet::default(),
             root_constraints: FxHashMap::default(),
             layout_bounds_scratch_space: Vec::new(),
@@ -452,6 +455,10 @@ impl TaffyLayoutEngine {
             self.remove_native_node(id);
         }
         self.claimed_this_frame = 0;
+        // An aborted candidate can have performed speculative native writes.
+        self.absolute_layout_bounds.clear();
+        self.unrounded_layout_origins.clear();
+        self.bounds_scale_bits = None;
         self.clear();
         self.committed_claim_log.clear();
     }
@@ -460,7 +467,6 @@ impl TaffyLayoutEngine {
         // Observe the frame that just finished before clearing it. This is the real active layout
         // working set and lets a large-to-small page transition return excess buckets without
         // disturbing stable large pages.
-        let bounds_were_empty = self.absolute_layout_bounds.is_empty() && self.unrounded_layout_origins.is_empty();
         let computed_layout_count = self.computed_layouts.len();
         let node_working_set = self.nodes_requested;
 
@@ -495,8 +501,9 @@ impl TaffyLayoutEngine {
         self.release_unclaimed_nodes();
         self.claimed_this_frame = 0;
         self.request_frame = self.request_frame.wrapping_add(1);
-        self.absolute_layout_bounds.clear();
-        self.unrounded_layout_origins.clear();
+        // Native placement writes and topology edits revoke affected entries
+        // when they happen. Surviving nodes keep their device-space origins
+        // and logical bounds across the frame boundary.
         self.computed_layouts.clear();
 
         macro_rules! trim_to_working_set {
@@ -508,10 +515,8 @@ impl TaffyLayoutEngine {
                 }
             }};
         }
-        if bounds_were_empty {
-            self.absolute_layout_bounds.trim_empty(Self::MIN_RETAINED_CAPACITY);
-            self.unrounded_layout_origins.trim_empty(Self::MIN_RETAINED_CAPACITY);
-        }
+        self.absolute_layout_bounds.trim_empty(Self::MIN_RETAINED_CAPACITY);
+        self.unrounded_layout_origins.trim_empty(Self::MIN_RETAINED_CAPACITY);
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
         trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
         trim_to_working_set!(self.claimed_key_log, self.committed_claim_log.len());
@@ -536,8 +541,6 @@ impl TaffyLayoutEngine {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => 0,
         };
-        self.absolute_layout_bounds.trim_empty(floor);
-        self.unrounded_layout_origins.trim_empty(floor);
         self.computed_layouts
             .shrink_to(floor.max(self.computed_layouts.len()));
         self.layout_bounds_scratch_space
@@ -580,6 +583,15 @@ impl TaffyLayoutEngine {
                     true
                 }
             });
+        }
+        // Retire dead high slots after offscreen node removal. Never move
+        // a live entry to a different slot or scan these tables every frame.
+        if matches!(level, GpuiMemoryTrimLevel::Light) {
+            self.absolute_layout_bounds.trim_empty(floor);
+            self.unrounded_layout_origins.trim_empty(floor);
+        } else {
+            self.absolute_layout_bounds.trim_dead_tail(floor);
+            self.unrounded_layout_origins.trim_dead_tail(floor);
         }
         self.root_constraints
             .shrink_to(floor.max(self.root_constraints.len()));
@@ -1601,6 +1613,14 @@ impl TaffyLayoutEngine {
     }
 
     pub fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {
+        let scale_bits = scale_factor.to_bits();
+        if self.bounds_scale_bits != Some(scale_bits) {
+            // Native origins are device-space values. Their validity is
+            // independent of the logical conversion; native geometry
+            // changes at the new DPI still flow through the observer.
+            self.absolute_layout_bounds.clear();
+            self.bounds_scale_bits = Some(scale_bits);
+        }
         if let Some(layout) = self.absolute_layout_bounds.get(&id).cloned() {
             self.bounds_cache_hits = self.bounds_cache_hits.saturating_add(1);
             return layout;
