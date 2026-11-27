@@ -236,6 +236,10 @@ impl EntityMap {
         self.dependencies.borrow_mut().dependency_read_index()
     }
 
+    pub(crate) fn row_reads_since(&self, start: crate::DependencyReadIndex) -> crate::RenderDependencies {
+        self.dependencies.borrow_mut().row_reads_since(start)
+    }
+
     pub(crate) fn dependency_reads_since(&self, start: crate::DependencyReadIndex) -> crate::RenderDependencies {
         self.dependencies.borrow_mut().dependency_reads_since(start)
     }

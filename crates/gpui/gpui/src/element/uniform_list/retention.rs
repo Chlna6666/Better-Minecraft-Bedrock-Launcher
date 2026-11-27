@@ -52,7 +52,7 @@ pub(super) fn prepaint(
             .map_or(range.end, |distance| row + distance);
         let read_start = cx.entities.dependency_read_index();
         let items = render(row..next, window, cx);
-        let shared_reads = cx.entities.dependency_reads_since(read_start);
+        let shared_reads = cx.entities.row_reads_since(read_start);
         window.with_content_mask(Some(content_mask), |window| {
             for (mut item, index) in items.into_iter().zip(row..next) {
                 let origin = row_origin(index);
@@ -64,7 +64,7 @@ pub(super) fn prepaint(
                     item.prepaint_at(origin, window, cx);
                 });
                 if let Some((start, read_start)) = before {
-                    let extra = cx.entities.dependency_reads_since(read_start);
+                    let extra = cx.entities.row_reads_since(read_start);
                     // The renderer takes a range, so its reads belong to
                     // every row in that batch. Layout/prepaint are per-row.
                     let mut reads = shared_reads.clone();

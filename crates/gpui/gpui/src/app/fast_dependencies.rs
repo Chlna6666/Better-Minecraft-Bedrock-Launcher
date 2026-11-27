@@ -259,6 +259,8 @@ pub(crate) struct DependencyReadIndex {
     entities: usize,
     globals: usize,
     states: usize,
+    owner: Option<EntityId>,
+    range_start: usize,
 }
 
 struct LogRanges {
@@ -266,6 +268,22 @@ struct LogRanges {
     entities: Range<usize>,
     globals: Range<usize>,
     states: Range<usize>,
+    row: bool,
+}
+
+/// Owner reads outside captured row ranges. Aggregate dependencies still
+/// drive window routing; these slices certify notification provenance.
+#[derive(Clone, Default)]
+pub(crate) struct OwnerOwnReads {
+    pub(crate) entities: Rc<[EntityId]>,
+    pub(crate) globals: Rc<[(TypeId, Option<bool>)]>,
+}
+
+impl OwnerOwnReads {
+    pub(crate) fn merge_replayed(&mut self, previous: &Self) {
+        self.entities = merge_sorted(&self.entities, &previous.entities);
+        self.globals = merge_sorted(&self.globals, &previous.globals);
+    }
 }
 
 /// The entity and global portion of Fast's RenderDependencies. Global presence
@@ -328,6 +346,7 @@ impl AppDependencies {
                 entities,
                 globals,
                 states,
+                row: false,
             });
         }
     }
@@ -353,7 +372,7 @@ impl AppDependencies {
 
     /// Finish each owner's disjoint read ranges once. Publish the interned
     /// lists directly, without constructing temporary empty owner sets.
-    pub(crate) fn finish(&mut self, mut publish: impl FnMut(Option<EntityId>, RenderDependencies)) {
+    pub(crate) fn finish(&mut self, mut publish: impl FnMut(Option<EntityId>, RenderDependencies, OwnerOwnReads)) {
         self.close_recording();
         self.ranges.sort_unstable_by_key(|range| (range.owner, range.states.start));
         let states_log = self.state_read_log.borrow();
@@ -361,7 +380,7 @@ impl AppDependencies {
         for group in self.ranges.chunk_by(|a, b| a.owner == b.owner) {
             if let [range] = group {
                 let states = &states_log[range.states.clone()];
-                publish(range.owner, RenderDependencies {
+                let reads = RenderDependencies {
                     entities: intern_range(
                         &mut self.interned_entities,
                         &mut self.scratch_entities,
@@ -377,7 +396,16 @@ impl AppDependencies {
                     } else {
                         unique_states(states)
                     },
-                });
+                };
+                let own = if range.row {
+                    OwnerOwnReads {
+                        entities: self.interned_entities.get(&[]),
+                        globals: self.interned_globals.get(&[]),
+                    }
+                } else {
+                    OwnerOwnReads { entities: reads.entities.clone(), globals: reads.globals.clone() }
+                };
+                publish(range.owner, reads, own);
                 continue;
             }
             let mut state_ranges = group.iter().map(|range| &states_log[range.states.clone()])
@@ -389,7 +417,7 @@ impl AppDependencies {
                     first.iter().chain(second).chain(state_ranges.flatten()),
                 ),
             };
-            publish(group[0].owner, RenderDependencies {
+            let reads = RenderDependencies {
                 entities: intern_ranges(
                     &mut self.interned_entities,
                     &mut self.scratch_entities,
@@ -403,7 +431,22 @@ impl AppDependencies {
                     group.iter().map(|range| range.globals.clone()),
                 ),
                 states,
-            });
+            };
+            let own = if group.iter().all(|range| !range.row) {
+                OwnerOwnReads { entities: reads.entities.clone(), globals: reads.globals.clone() }
+            } else {
+                OwnerOwnReads {
+                    entities: intern_ranges(
+                        &mut self.interned_entities, &mut self.scratch_entities, &self.entity_log,
+                        group.iter().filter(|range| !range.row).map(|range| range.entities.clone()),
+                    ),
+                    globals: intern_ranges(
+                        &mut self.interned_globals, &mut self.scratch_globals, &self.global_log,
+                        group.iter().filter(|range| !range.row).map(|range| range.globals.clone()),
+                    ),
+                }
+            };
+            publish(group[0].owner, reads, own);
         }
         drop(states_log);
         self.clear();
@@ -414,18 +457,46 @@ impl AppDependencies {
     }
 
     pub(crate) fn dependency_read_index(&mut self) -> DependencyReadIndex {
+        // An abandoned capture remains classified as ordinary owner work.
+        self.close_recording();
         self.capture_entities = self.entity_log.len();
         self.capture_globals = self.global_log.len();
         DependencyReadIndex {
             entities: self.capture_entities,
             globals: self.capture_globals,
             states: self.state_read_index(),
+            owner: self.recording.owner,
+            range_start: self.ranges.len(),
         }
     }
 
-    /// Borrow the original owner logs and intern each dependency kind.
-    /// Nested captures do not consume or change the enclosing owner record.
+    /// Mark only completed captures and only the original owner's ranges.
+    /// Nested child-view reads retain their actual dispatch owner.
+    pub(crate) fn row_reads_since(&mut self, start: DependencyReadIndex) -> RenderDependencies {
+        self.close_recording();
+        if start.owner.is_some() {
+            for range in &mut self.ranges[start.range_start..] {
+                if range.owner == start.owner {
+                    range.row = true;
+                }
+            }
+        }
+        self.snapshot_reads_since(start)
+    }
+
+    /// Measurement may contain nested row captures but influence the entire
+    /// list's geometry. Keep same-owner reads in this interval conservative.
     pub(crate) fn dependency_reads_since(&mut self, start: DependencyReadIndex) -> RenderDependencies {
+        self.close_recording();
+        for range in &mut self.ranges[start.range_start..] {
+            if range.owner == start.owner {
+                range.row = false;
+            }
+        }
+        self.snapshot_reads_since(start)
+    }
+
+    fn snapshot_reads_since(&mut self, start: DependencyReadIndex) -> RenderDependencies {
         let entities = intern_range(&mut self.interned_entities, &mut self.scratch_entities,
             &self.entity_log[start.entities..]);
         let globals = intern_range(&mut self.interned_globals, &mut self.scratch_globals,
@@ -462,7 +533,7 @@ impl AppDependencies {
     #[cfg(test)]
     pub(crate) fn into_sets(&mut self) -> FxHashMap<Option<EntityId>, RenderDependencies> {
         let mut sets = FxHashMap::default();
-        self.finish(|owner, reads| { sets.insert(owner, reads); });
+        self.finish(|owner, reads, _| { sets.insert(owner, reads); });
         sets
     }
 }
@@ -894,6 +965,55 @@ mod state_dedup_tests {
         state.bump();
         assert!(!validation.unchanged(&reads));
         assert_eq!(validation.0.get(), ValidatedEpoch::Unchecked);
+    }
+
+    #[test]
+    fn enclosing_measurement_keeps_nested_row_dependencies_owned() {
+        let owner = EntityId::from(1_u64);
+        let model = EntityId::from(2_u64);
+        let mut log = AppDependencies::default();
+        log.set_owner(Some(owner));
+        let measure = log.dependency_read_index();
+        let row = log.dependency_read_index();
+        log.note_access(model);
+        log.row_reads_since(row);
+        log.dependency_reads_since(measure);
+        log.finish(|_, reads, own| {
+            assert_eq!(&*reads.entities, &[model]);
+            assert_eq!(&*own.entities, &[model]);
+        });
+    }
+
+    #[test]
+    fn owner_reads_exclude_only_completed_same_owner_row_ranges() {
+        let owner = EntityId::from(1_u64);
+        let child = EntityId::from(2_u64);
+        let row_only = EntityId::from(3_u64);
+        let both = EntityId::from(4_u64);
+        let child_model = EntityId::from(5_u64);
+        let abandoned = EntityId::from(6_u64);
+        let g = (TypeId::of::<u32>(), None);
+        let mut log = AppDependencies::default();
+        log.set_owner(Some(owner));
+        log.note_access(both);
+        let start = log.dependency_read_index();
+        log.note_access(row_only);
+        log.note_access(both);
+        log.note_global_read(g);
+        log.set_owner(Some(child));
+        log.note_access(child_model);
+        log.set_owner(Some(owner));
+        log.row_reads_since(start);
+        log.note_global_read(g);
+        let _abandoned = log.dependency_read_index();
+        log.note_access(abandoned);
+        let mut sets = FxHashMap::default();
+        log.finish(|owner, all, own| { sets.insert(owner, (all, own)); });
+        let (all, own) = &sets[&Some(owner)];
+        assert_eq!(&*all.entities, &[row_only, both, abandoned]);
+        assert_eq!(&*own.entities, &[both, abandoned]);
+        assert_eq!(&*own.globals, &[g]);
+        assert_eq!(&*sets[&Some(child)].1.entities, &[child_model]);
     }
 
     #[test]

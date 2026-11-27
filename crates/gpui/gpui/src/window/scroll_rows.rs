@@ -149,8 +149,8 @@ struct RowMeasurement {
 // Both the committed and current owner path must agree. A directly dirty
 // ancestor may have changed an otherwise untracked closure capture. A
 // dirty descendant also prevents implicit reuse of the parent's row records.
-// Versioned lists may certify their own directly dirty owner, never a
-// directly dirty ancestor or a changed owner path.
+// An explicit revision or a certified row-only notification may admit the
+// directly dirty owner, never a directly dirty ancestor or a changed path.
 fn clean_owner_path(
     owner: crate::EntityId,
     current: &[crate::EntityId],
@@ -172,6 +172,14 @@ impl Window {
         }
         let owner = self.rendered_entity_stack.last().copied()?;
         let (revision, placement_only) = self.invalidator.row_replay_revision()?;
+        // An automatic proof never overrides a second independently dirty
+        // descendant. Explicit revisions retain their existing contract.
+        let allow_dirty_owner = versioned || (!placement_only
+            && self.invalidator.row_only_dirty(owner)
+            && self.direct_dirty_views.iter().all(|&dirty| dirty == owner
+                || (self.rendered_frame.dispatch_tree.has_view_route(dirty)
+                    && !self.rendered_frame.dispatch_tree.view_path_reversed(dirty)
+                        .any(|ancestor| ancestor == owner))));
         if !placement_only
             && (!self.has_completed_rendered_frame
                 || self.rendered_frame.focus != self.focus
@@ -179,7 +187,8 @@ impl Window {
                 || !clean_owner_path(
                     owner, &self.rendered_entity_stack,
                     self.rendered_frame.dispatch_tree.view_path_reversed(owner),
-                    &self.dirty_views, &self.direct_dirty_views, versioned,
+                    &self.dirty_views, &self.direct_dirty_views,
+                    allow_dirty_owner,
                 ))
         {
             return None;
@@ -435,7 +444,7 @@ impl Window {
             self.restore_scroll_row_after_wheel(cx);
         }
         let paint = start..self.paint_index();
-        let paint_reads = cx.entities.dependency_reads_since(read_start);
+        let paint_reads = cx.entities.row_reads_since(read_start);
         if !paint_reads.states.is_empty() {
             prepaint.validation = StateReadValidation::default();
         }

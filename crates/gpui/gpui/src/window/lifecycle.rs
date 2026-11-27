@@ -108,6 +108,7 @@ impl Window {
 /// scratch for publication, not an additional owner index.
 struct CommittedReads {
     reads: crate::RenderDependencies,
+    own_reads: crate::OwnerOwnReads,
     state_validation: crate::StateReadValidation,
     route: Option<EntityId>,
     keep: bool,
@@ -190,13 +191,26 @@ enum RowNotification {
 
 impl RowNotification {
     fn affects(self, reads: &crate::RenderDependencies) -> bool {
+        self.matches(&reads.entities, &reads.globals)
+    }
+
+    fn matches(self, entities: &[EntityId], globals: &[(TypeId, Option<bool>)]) -> bool {
         match self {
-            Self::Entity(entity) => reads.entities.binary_search(&entity).is_ok(),
+            Self::Entity(entity) => entities.binary_search(&entity).is_ok(),
             Self::Global(global, exists) => {
-                reads.globals.binary_search(&(global, None)).is_ok()
-                    || reads.globals.binary_search(&(global, Some(!exists))).is_ok()
+                globals.binary_search(&(global, None)).is_ok()
+                    || globals.binary_search(&(global, Some(!exists))).is_ok()
             }
         }
+    }
+}
+
+impl CommittedReads {
+    fn row_only_notification(&self, owner: EntityId, event: RowNotification) -> bool {
+        self.route == Some(owner)
+            && !matches!(event, RowNotification::Entity(entity) if entity == owner)
+            && event.affects(&self.reads)
+            && !event.matches(&self.own_reads.entities, &self.own_reads.globals)
     }
 }
 
@@ -263,6 +277,8 @@ struct WindowInvalidatorInner {
     view_reads: FxHashMap<Option<EntityId>, CommittedReads>,
     owner_state_routing: OwnerStateRouting,
     row_notifications: RowNotifications,
+    pending_row_only: FxHashSet<EntityId>,
+    active_row_only: FxHashSet<EntityId>,
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -286,6 +302,22 @@ struct WindowInvalidatorInner {
     drawing_scoped_content: Option<PlacementEpoch>,
 }
 
+impl WindowInvalidatorInner {
+    fn mark_dependency_dirty(&mut self, owner: EntityId, event: Option<RowNotification>) {
+        let row_only = event.is_some_and(|event| self.view_reads.get(&Some(owner))
+            .is_some_and(|entry| entry.row_only_notification(owner, event)));
+        // Every cause for this owner must be row-only.
+        if row_only {
+            if !self.dirty_views.contains(&owner) {
+                self.pending_row_only.insert(owner);
+            }
+        } else {
+            self.pending_row_only.remove(&owner);
+        }
+        self.dirty_views.insert(owner);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct WindowInvalidator {
     inner: Rc<RefCell<WindowInvalidatorInner>>,
@@ -302,6 +334,8 @@ impl WindowInvalidator {
                 view_reads: FxHashMap::default(),
                 owner_state_routing: OwnerStateRouting::default(),
                 row_notifications: RowNotifications::default(),
+                pending_row_only: FxHashSet::default(),
+                active_row_only: FxHashSet::default(),
                 render_dependencies: FxHashMap::default(),
                 global_read_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
@@ -442,10 +476,11 @@ impl WindowInvalidator {
             }
         }
 
-        log.finish(|owner, mut reads| {
+        log.finish(|owner, mut reads, mut own_reads| {
             if let Some(entry) = inner.view_reads.get_mut(&owner) {
                 if entry.keep {
                     reads.merge_replayed(&entry.reads);
+                    own_reads.merge_replayed(&entry.own_reads);
                 }
                 let route = owner.filter(|owner| has_route(*owner));
                 if route != entry.route || !entry.reads.same_routes(&reads) {
@@ -465,6 +500,7 @@ impl WindowInvalidator {
                     }
                 }
                 entry.reads = reads;
+                entry.own_reads = own_reads;
                 entry.keep = true;
             } else {
                 let route = owner.filter(|owner| has_route(*owner));
@@ -474,6 +510,7 @@ impl WindowInvalidator {
                 rebuild_routes |= update_dependency_routes(global_routes, &[], route, &reads.globals, route);
                 inner.view_reads.insert(owner, CommittedReads {
                     reads,
+                    own_reads,
                     state_validation: Default::default(),
                     route,
                     keep: true,
@@ -608,7 +645,9 @@ impl WindowInvalidator {
             return;
         }
         inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
-        inner.dirty_views.extend(owners.iter().copied());
+        for &owner in &owners {
+            inner.mark_dependency_dirty(owner, Some(RowNotification::Global(global, exists)));
+        }
         inner.pending_work.insert(FrameWork::CONTENT);
         inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
         if !inner.dirty {
@@ -651,7 +690,9 @@ impl WindowInvalidator {
         } else {
             inner.pending_work.insert(FrameWork::CONTENT);
             inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
-            inner.dirty_views.extend(owners);
+            for owner in owners {
+                inner.mark_dependency_dirty(owner, None);
+            }
         }
         inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
         if inner.draw_phase != DrawPhase::None {
@@ -696,7 +737,10 @@ impl WindowInvalidator {
         inner
             .dirty_to_present_started_at
             .get_or_insert_with(Instant::now);
-        inner.dirty_views.extend(owners.iter().copied());
+        for &owner in &owners {
+            let event = (resolve_dependencies && !unknown).then_some(RowNotification::Entity(entity));
+            inner.mark_dependency_dirty(owner, event);
+        }
         inner.pending_work.insert(FrameWork::CONTENT);
         inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
         if inner.draw_phase == DrawPhase::None {
@@ -734,6 +778,8 @@ impl WindowInvalidator {
             inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
             inner.pending_view_scoped = false;
             inner.active_view_scoped = false;
+            inner.pending_row_only.clear();
+            inner.active_row_only.clear();
             inner.pending_work.insert(FrameWork::CONTENT);
             inner.scroll_content_revision = inner.scroll_content_revision.wrapping_add(1);
             inner.drawing_placement = None;
@@ -741,6 +787,12 @@ impl WindowInvalidator {
         } else {
             inner.active_view_scoped = inner.pending_view_scoped;
             inner.pending_view_scoped = false;
+            let inner = &mut *inner;
+            mem::swap(&mut inner.pending_row_only, &mut inner.active_row_only);
+            inner.pending_row_only.clear();
+            if !inner.active_view_scoped {
+                inner.active_row_only.clear();
+            }
             let work = std::mem::take(&mut inner.pending_work);
             let epoch = PlacementEpoch {
                 content: inner.scroll_content_revision,
@@ -796,6 +848,10 @@ impl WindowInvalidator {
     }
 
     /// Capture the notification boundary before recording row dependencies.
+    pub(super) fn row_only_dirty(&self, owner: EntityId) -> bool {
+        self.inner.borrow().active_row_only.contains(&owner)
+    }
+
     pub(super) fn row_notification_epoch(&self) -> u64 {
         self.inner.borrow().row_notifications.sequence
     }
@@ -875,7 +931,11 @@ impl WindowInvalidator {
         let mut views = mem::take(&mut inner.dirty_views);
         // Until direct placement publication is admitted, retain the full
         // existing invalidation semantics: a scroll owner is traversed.
-        views.extend(inner.pending_placement_views.drain(..));
+        let inner = &mut *inner;
+        for owner in inner.pending_placement_views.drain(..) {
+            inner.pending_row_only.remove(&owner);
+            views.insert(owner);
+        }
         views
     }
 
@@ -902,6 +962,8 @@ impl WindowInvalidator {
         }
 
         trim_collection!(dirty_views);
+        trim_collection!(pending_row_only);
+        trim_collection!(active_row_only);
         if eager {
             inner.pending_placement_views.shrink_to_fit();
         }
@@ -1208,6 +1270,61 @@ mod view_invalidation_tests {
         assert_eq!(inner.render_dependencies[&new_model].as_ref().unwrap().as_slice(), &[rebuilt]);
         assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[replayed]);
         assert!(!inner.view_reads.contains_key(&Some(removed)));
+    }
+
+    #[test]
+    fn global_row_only_provenance_preserves_presence_semantics() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let global = TypeId::of::<u32>();
+        let mut log = crate::AppDependencies::default();
+        log.set_owner(Some(owner));
+        log.note_global_read((global, Some(true)));
+        let start = log.dependency_read_index();
+        log.note_global_read((global, None));
+        log.row_reads_since(start);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        invalidator.set_dirty(false);
+        invalidator.invalidate_global_dependency(global, true);
+        assert!(invalidator.inner.borrow().pending_row_only.contains(&owner));
+        invalidator.invalidate_global_dependency(global, false);
+        assert!(!invalidator.inner.borrow().pending_row_only.contains(&owner));
+    }
+
+    #[test]
+    fn row_only_provenance_requires_all_causes_and_excludes_self_notify() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let model = EntityId::from(2);
+        let own = EntityId::from(3);
+        let mut log = crate::AppDependencies::default();
+        log.set_owner(Some(owner));
+        log.note_access(own);
+        let start = log.dependency_read_index();
+        log.note_access(model);
+        log.note_access(owner);
+        log.row_reads_since(start);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(), &FxHashSet::default(), |_| true, |_| true);
+        let mut inner = invalidator.inner.borrow_mut();
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(model)));
+        assert!(inner.pending_row_only.contains(&owner));
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(own)));
+        assert!(!inner.pending_row_only.contains(&owner));
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(model)));
+        assert!(!inner.pending_row_only.contains(&owner));
+        inner.dirty_views.clear();
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(owner)));
+        assert!(!inner.pending_row_only.contains(&owner));
+        inner.dirty_views.clear();
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(model)));
+        assert!(inner.pending_row_only.contains(&owner));
+        inner.pending_view_scoped = true;
+        drop(inner);
+        invalidator.take_views();
+        invalidator.set_dirty(false);
+        assert!(invalidator.row_only_dirty(owner));
+        invalidator.set_dirty(true);
+        assert!(!invalidator.row_only_dirty(owner));
     }
 
     #[test]

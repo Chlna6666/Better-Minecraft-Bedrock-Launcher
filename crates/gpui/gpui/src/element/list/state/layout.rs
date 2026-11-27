@@ -179,7 +179,7 @@ impl StateInner {
                         });
                         measured_item_count += 1;
                         let element_size = element.layout_as_root(available_item_space, window, cx);
-                        let reads = read_start.map(|start| cx.entities.dependency_reads_since(start));
+                        let reads = read_start.map(|start| cx.entities.row_reads_since(start));
                         (Some(element), element_size, reads)
                     })
                 };
@@ -421,7 +421,7 @@ impl StateInner {
                                     let prepaint = window.reuse_scroll_row(plan, item.index, item_origin);
                                     plan.record_prepaint(item.index, prepaint);
                                 } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
-                                    let prepaint_reads = cx.entities.dependency_reads_since(read_start);
+                                    let prepaint_reads = cx.entities.row_reads_since(read_start);
                                     let mut reads = reads;
                                     reads.merge_replayed(&prepaint_reads);
                                     plan.record_prepaint(item.index, RowPrepaint {

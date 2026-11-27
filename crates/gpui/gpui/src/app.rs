@@ -50,7 +50,7 @@ pub use context::*;
 pub use context_traits::*;
 pub(crate) use effects::Effect;
 pub use entity_map::*;
-pub(crate) use fast_dependencies::{AppDependencies, DependencyReadIndex, RenderDependencies, StateVersion, StateRead, StateReadStatus, StateReadValidation, StateMutationCursor, merge_state_reads, state_generation};
+pub(crate) use fast_dependencies::{AppDependencies, DependencyReadIndex, OwnerOwnReads, RenderDependencies, StateVersion, StateRead, StateReadStatus, StateReadValidation, StateMutationCursor, merge_state_reads, state_generation};
 pub use events::*;
 pub use memory::*;
 pub use state::*;
