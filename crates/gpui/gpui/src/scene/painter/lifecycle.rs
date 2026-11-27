@@ -142,7 +142,7 @@ impl Painter {
                 &mut self.scene.polychrome_sprites,
             );
         }
-         if let Some((previous, (same_paint, same_batch_topology))) = previous.zip(reuse) {
+        if let Some((previous, (same_paint, same_batch_topology))) = previous.zip(reuse) {
             if same_paint || same_batch_topology {
                 self.scene
                     .prepared_batches

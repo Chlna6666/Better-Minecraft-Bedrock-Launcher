@@ -730,6 +730,29 @@ mod view_invalidation_tests {
     use super::*;
 
     #[test]
+    fn placement_commit_consumes_only_the_exact_pending_transaction() {
+        let invalidator = WindowInvalidator::new();
+        invalidator.set_dirty(false);
+        let owner = EntityId::from(1);
+        invalidator.invalidate_scroll_views([owner]);
+        let (epoch, expected_owner) = invalidator.pending_placement().unwrap();
+        assert_eq!(expected_owner, owner);
+        assert!(!invalidator.commit_placement(epoch, EntityId::from(2)));
+        assert_eq!(invalidator.pending_placement(), Some((epoch, owner)));
+        invalidator.set_replay_only_dirty();
+        assert!(!invalidator.commit_placement(epoch, owner));
+        assert!(invalidator.is_dirty());
+        assert_eq!(invalidator.take_views(), FxHashSet::from_iter([owner]));
+        invalidator.set_dirty(false);
+        invalidator.invalidate_scroll_views([owner]);
+        let (next, _) = invalidator.pending_placement().unwrap();
+        assert_ne!(epoch, next);
+        assert!(invalidator.commit_placement(next, owner));
+        assert!(!invalidator.is_dirty());
+        assert!(invalidator.take_views().is_empty());
+    }
+
+    #[test]
     fn placement_requests_coalesce_without_advancing_content_generation() {
         let invalidator = WindowInvalidator::new();
         invalidator.set_dirty(false);

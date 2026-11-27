@@ -537,6 +537,44 @@ mod tests {
     }
 
     #[test]
+    fn direct_placement_publication_keeps_old_paint_and_draw_allocations_live() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let quad = Quad {
+            bounds: Bounds::new(point(px(0.), px(16.)), size(px(40.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(coverage), ..Default::default()
+        };
+        let mut ops = Operations::default();
+        ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, ops));
+        let first = source.native_placement(viewport, 1., Point::default()).unwrap();
+        let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let mut painter = Painter::for_frame();
+        painter.insert_primitive(quad);
+        assert!(painter.push_deferred_scroll(first.clone()));
+        painter.insert_primitive(quad);
+        painter.finish();
+        let mut old = painter.into_scene();
+        let mut retention = crate::window::retained::RetainedPaint::default();
+        retention.finish(&mut old);
+        let mut publication = crate::window::Paint::new(old, Arc::new(retention), Default::default());
+        publication.layers = crate::window::SceneLayers::capture(&publication.scene, None, true);
+        let publication = Arc::new(publication);
+        let next = publication.with_scroll_placement(1, moved.clone(), true).unwrap();
+        assert_ne!(next.scene.revision, publication.scene.revision);
+        assert_eq!(next.scene.len(), publication.scene.len());
+        assert!(std::ptr::eq(&next.scene.quads[0], &publication.scene.quads[0]));
+        assert!(std::ptr::eq(&next.scene.quads[1], &publication.scene.quads[1]));
+        assert!(matches!(publication.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(old)) if old.same_paint(&first)));
+        assert!(matches!(next.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(new)) if new.same_paint(&moved)));
+        assert!(Arc::ptr_eq(&next.layers.frames[0].content, &publication.layers.frames[0].content));
+        assert!(next.with_scroll_placement(0, moved.clone(), true).is_none());
+        assert!(next.with_scroll_placement(1, moved, true).is_none());
+        drop(publication);
+        assert_eq!(next.scene.quads.len(), 2);
+    }
+
+    #[test]
     fn placement_only_finish_carries_retained_gpu_chunk_qualification() {
         use crate::window::retained::RetainedPaint;
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);

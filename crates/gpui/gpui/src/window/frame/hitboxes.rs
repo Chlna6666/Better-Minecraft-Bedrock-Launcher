@@ -298,6 +298,31 @@ mod tests {
     }
 
     #[test]
+    fn committed_translation_splits_only_descriptors_and_keeps_fixed_clips() {
+        let mut store = HitboxStore::default();
+        for index in 0..PAGE_LEN * 2 { store.push(hitbox(index)); }
+        store.freeze();
+        let owners = [store.spans[0].owner.clone(), store.spans[1].owner.clone()];
+        let before = store.iter().collect::<Vec<_>>();
+        let moved = 17..PAGE_LEN + 11;
+        store.translate_committed(moved.clone(), point(px(0.), px(-5.)));
+        assert_eq!(store.spans.len(), 4);
+        assert_eq!(store.len(), before.len());
+        assert!(store.spans.iter().all(|span| owners.iter().any(|owner| Rc::ptr_eq(owner, &span.owner))));
+        for (index, actual) in store.iter().enumerate() {
+            assert_eq!(actual.id, before[index].id);
+            assert_eq!(actual.content_mask, before[index].content_mask);
+            assert_eq!(actual.bounds.origin.y, before[index].bounds.origin.y
+                + if moved.contains(&index) { px(-5.) } else { px(0.) });
+        }
+        store.translate_committed(moved, point(px(0.), px(5.)));
+        assert_eq!(store.spans.len(), 4, "stable range never fragments further");
+        for (actual, before) in store.iter().zip(before) {
+            assert_eq!(actual.bounds, before.bounds);
+        }
+    }
+
+    #[test]
     fn projected_pages_share_storage_and_keep_fixed_clip() {
         let mut source = HitboxStore::default();
         for index in 0..PAGE_LEN * 2 { source.push(hitbox(index)); }

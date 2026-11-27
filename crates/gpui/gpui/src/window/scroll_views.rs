@@ -678,6 +678,65 @@ mod binding_tests {
     use super::*;
     use crate::{point, px};
 
+    #[gpui::test]
+    fn native_placement_transaction_skips_the_entire_root_lifecycle(cx: &mut crate::TestAppContext) {
+        use crate::{AppContext as _, Context, Entity, InteractiveElement, IntoElement,
+            ParentElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent,
+            StatefulInteractiveElement, Styled, div, point, px};
+        use std::cell::Cell;
+
+        struct Page;
+        impl Render for Page {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().relative().w(px(200.)).h(px(512.)).flex_shrink_0().child(
+                    div().absolute().left(px(20.)).top(px(128.)).size(px(32.)).bg(crate::red())
+                )
+            }
+        }
+        struct Scroller { child: Entity<Page>, builds: Rc<Cell<usize>> }
+        impl Render for Scroller {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                div().id("direct-scroller").w(px(200.)).h(px(128.)).overflow_y_scroll()
+                    .child(self.child.clone())
+            }
+        }
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Scroller { child: cx.new(|_| Page), builds: builds.clone() }
+        });
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(30.), px(71.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(-32.), app);
+            window.draw(app).clear();
+            assert!(window.rendered_frame.scene().paint_operations.has_deferred_scroll());
+            assert!(window.test_present().is_accepted());
+            let before = builds.get();
+            let old = window.rendered_frame.published_paint();
+            window.dispatch_event(wheel(-32.), app);
+            assert!(window.prepare_scroll_placement(app).is_some(), "complete source must admit placement");
+            window.draw(app).clear();
+            let new = window.rendered_frame.published_paint();
+            assert_eq!(builds.get(), before, "root Render must not execute");
+            assert_eq!(window.last_generation_stats.prepaint_elapsed, Duration::ZERO);
+            assert_eq!(window.last_generation_stats.paint_elapsed, Duration::ZERO);
+            assert_ne!(old.scene.revision, new.scene.revision);
+            assert!(!window.invalidator.is_dirty());
+            assert_eq!(old.scene.len(), new.scene.len());
+            assert!(window.test_present().is_accepted());
+            window.dispatch_event(wheel(-250.), app);
+            assert!(window.prepare_scroll_placement(app).is_none(), "coverage miss must fall back");
+            window.draw(app).clear();
+            assert!(builds.get() > before);
+        });
+    }
+
     #[test]
     fn placement_requires_the_same_live_source_and_exact_sample() {
         let first = Rc::new(ScrollOffset::default());

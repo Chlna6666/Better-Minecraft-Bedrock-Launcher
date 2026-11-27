@@ -50,6 +50,8 @@ pub(crate) struct TestWindowState {
     #[cfg(test)]
     owns_scene_animations: bool,
     #[cfg(test)]
+    deferred_scroll_support: bool,
+    #[cfg(test)]
     scene_animation_query_count: usize,
     input_handler: Option<PlatformInputHandler>,
     is_maximized: bool,
@@ -133,6 +135,8 @@ impl TestWindow {
             capture_submitted_packets: false,
             #[cfg(test)]
             owns_scene_animations: false,
+            #[cfg(test)]
+            deferred_scroll_support: false,
             #[cfg(test)]
             scene_animation_query_count: 0,
             input_handler: None,
@@ -221,6 +225,11 @@ impl TestWindow {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_deferred_scroll_support(&self, enabled: bool) {
+        self.0.lock().deferred_scroll_support = enabled;
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_scene_animation_owner(&self, owns_scene_animations: bool) {
         self.0.lock().owns_scene_animations = owns_scene_animations;
     }
@@ -297,6 +306,11 @@ impl TestWindow {
 }
 
 impl PlatformWindow for TestWindow {
+    #[cfg(test)]
+    fn supports_deferred_scroll(&self) -> bool {
+        self.0.lock().deferred_scroll_support
+    }
+
     #[cfg(test)]
     fn has_active_presentation_animations(&self) -> bool {
         self.0.lock().scene_animation_query_count += 1;
