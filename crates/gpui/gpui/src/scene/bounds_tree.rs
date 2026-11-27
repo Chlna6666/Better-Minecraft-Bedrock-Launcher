@@ -1,10 +1,71 @@
-use crate::{Bounds, Half};
+use crate::Bounds;
 use std::{
-    cmp,
+    cmp::{self, Ordering},
     fmt::Debug,
     ops::{Add, Range, Sub},
     sync::Arc,
 };
+
+// Adapted from Zed GPUI #67443: keep the exact corners of every
+// subtree. Reconstructing a far corner from an aggregate width can
+// round it inward and omit an overlapping primitive.
+#[derive(Clone, Debug)]
+struct NodeBounds<U> {
+    min_x: U,
+    min_y: U,
+    max_x: U,
+    max_y: U,
+}
+
+impl<U> NodeBounds<U>
+where
+    U: Clone + Debug + Default + PartialEq + PartialOrd + Add<U, Output = U> + Sub<Output = U>,
+{
+    fn from_bounds(bounds: &Bounds<U>) -> Self {
+        Self {
+            min_x: bounds.origin.x.clone(),
+            min_y: bounds.origin.y.clone(),
+            max_x: bounds.origin.x.clone() + bounds.size.width.clone(),
+            max_y: bounds.origin.y.clone() + bounds.size.height.clone(),
+        }
+    }
+
+    fn intersects(&self, other: &Self) -> bool {
+        self.min_x < other.max_x && self.max_x > other.min_x
+            && self.min_y < other.max_y && self.max_y > other.min_y
+    }
+
+    fn union(&self, other: &Self) -> Self {
+        Self {
+            min_x: min_value(self.min_x.clone(), other.min_x.clone()),
+            min_y: min_value(self.min_y.clone(), other.min_y.clone()),
+            max_x: max_value(self.max_x.clone(), other.max_x.clone()),
+            max_y: max_value(self.max_y.clone(), other.max_y.clone()),
+        }
+    }
+
+    fn half_perimeter(&self) -> U {
+        (self.max_x.clone() - self.min_x.clone()) + (self.max_y.clone() - self.min_y.clone())
+    }
+}
+
+fn min_value<U: PartialOrd>(a: U, b: U) -> U {
+    match a.partial_cmp(&b) {
+        Some(Ordering::Greater) => b,
+        Some(_) => a,
+        None if a.partial_cmp(&a).is_some() => a,
+        None => b,
+    }
+}
+
+fn max_value<U: PartialOrd>(a: U, b: U) -> U {
+    match a.partial_cmp(&b) {
+        Some(Ordering::Less) => b,
+        Some(_) => a,
+        None if a.partial_cmp(&a).is_some() => a,
+        None => b,
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct BoundsTree<U>
@@ -27,7 +88,6 @@ where
         + PartialOrd
         + Add<U, Output = U>
         + Sub<Output = U>
-        + Half
         + Default,
 {
     pub fn clear(&mut self) {
@@ -140,7 +200,7 @@ where
     ) -> usize {
         if count == 1 {
             let (bounds, order) = leaves.next().expect("qualified ordering leaf");
-            nodes.push(Node::Leaf { bounds, order });
+            nodes.push(Node::Leaf { bounds: NodeBounds::from_bounds(&bounds), order });
         } else {
             let left_count = count / 2;
             let left = Self::build_ordered_subtree(nodes, left_count, leaves);
@@ -153,6 +213,7 @@ where
     }
 
     fn insert_internal(&mut self, new_bounds: Bounds<U>, retained_order: Option<u32>) -> u32 {
+        let new_bounds = NodeBounds::from_bounds(&new_bounds);
         // If the tree is empty, make the root the new leaf.
         if self.root.is_none() {
             let order = retained_order.unwrap_or(1);
@@ -249,11 +310,16 @@ where
         }
     }
 
-    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, max_ordering: u32) -> u32 {
+    fn find_max_ordering(&self, index: usize, bounds: &NodeBounds<U>, max_ordering: u32) -> u32 {
         Self::find_in_nodes(&self.nodes, index, bounds, max_ordering)
     }
 
-    fn find_in_nodes(nodes: &[Node<U>], index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
+    fn find_in_nodes(nodes: &[Node<U>], index: usize, bounds: &NodeBounds<U>, mut max_ordering: u32) -> u32 {
+        // Prune by order before testing geometry, including shared pages.
+        // A leaf cannot improve a maximum we already found.
+        if nodes[index].max_ordering() <= max_ordering {
+            return max_ordering;
+        }
         match &nodes[index] {
             Node::Shared { page } => {
                 let root = page.len() - 1;
@@ -272,10 +338,9 @@ where
                 left,
                 right,
                 bounds: node_bounds,
-                max_order: node_max_ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
+                if bounds.intersects(node_bounds) {
                     let left_max_ordering = nodes[*left].max_ordering();
                     let right_max_ordering = nodes[*right].max_ordering();
                     if left_max_ordering > right_max_ordering {
@@ -291,7 +356,7 @@ where
         max_ordering
     }
 
-    fn push_leaf(&mut self, bounds: Bounds<U>, order: u32) -> usize {
+    fn push_leaf(&mut self, bounds: NodeBounds<U>, order: u32) -> usize {
         self.nodes.push(Node::Leaf { bounds, order });
         self.nodes.len() - 1
     }
@@ -331,7 +396,7 @@ where
     U: Clone + Debug + Default + PartialEq,
 {
     Leaf {
-        bounds: Bounds<U>,
+        bounds: NodeBounds<U>,
         order: u32,
     },
     Shared {
@@ -340,7 +405,7 @@ where
     Internal {
         left: usize,
         right: usize,
-        bounds: Bounds<U>,
+        bounds: NodeBounds<U>,
         max_order: u32,
     },
 }
@@ -349,7 +414,7 @@ impl<U> Node<U>
 where
     U: Clone + Debug + Default + PartialEq,
 {
-    fn bounds(&self) -> &Bounds<U> {
+    fn bounds(&self) -> &NodeBounds<U> {
         match self {
             Node::Leaf { bounds, .. } => bounds,
             Node::Shared { page } => page.last().expect("nonempty page").bounds(),
@@ -467,6 +532,31 @@ mod tests {
                 let actual_ordering = tree.insert(bounds);
                 assert_eq!(actual_ordering, expected_ordering);
             }
+        }
+    }
+
+    #[test]
+    fn shared_subtree_keeps_far_corner_at_large_coordinate_span() {
+        let rect = |x, width| Bounds::new(Point { x, y: 0.0f32 }, Size { width, height: 1.0 });
+        let left = rect(-16_777_216.0, 1.0);
+        let right = rect(0.5, 0.5);
+        let query = rect(0.5, 0.25);
+        assert!(right.intersects(&query));
+        let mut tree = BoundsTree::default();
+        tree.extend_ordered(0..2, None, [(left, 1), (right, 2)].into_iter());
+        assert_eq!(tree.insert(query), 3);
+    }
+
+    #[test]
+    fn unordered_leaf_does_not_poison_shared_subtree_bounds() {
+        let rect = |x| Bounds::new(Point { x, y: 0.0f32 }, Size { width: 1.0, height: 1.0 });
+        for leaves in [
+            [(rect(f32::NAN), 1), (rect(2.0), 2)],
+            [(rect(2.0), 2), (rect(f32::NAN), 1)],
+        ] {
+            let mut tree = BoundsTree::default();
+            tree.extend_ordered(0..2, None, leaves.into_iter());
+            assert_eq!(tree.insert(rect(2.0)), 3);
         }
     }
 
