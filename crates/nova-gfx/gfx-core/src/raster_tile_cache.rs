@@ -1,6 +1,6 @@
 //! Physical tile residency. Generation adoption follows GPUI Fast's clean-tile rule.
 use crate::{BindGroupDescriptor, BindGroupId, Error, Format, MemoryLocation, RasterTile, ResourceDevice, Result,
-    SubmissionId, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
+    Extent2d, ScissorRect, SubmissionId, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
     TextureViewDescriptor, TextureViewId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -35,12 +35,15 @@ pub struct RasterTileRead {
     serial: u64,
     texture: RasterTileTexture,
     writer: Option<SubmissionId>,
+    region: ScissorRect,
 }
 impl RasterTileRead {
     /// Native sampled texture.
     pub fn texture(self) -> RasterTileTexture { self.texture }
     /// The outstanding writer which must precede the consumer.
     pub fn writer(self) -> Option<SubmissionId> { self.writer }
+    /// Exact texels occupied by this logical tile in the physical attachment.
+    pub fn region(self) -> ScissorRect { self.region }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,10 +55,16 @@ pub struct RasterTileWrite {
     key: RasterTileKey,
     serial: u64,
     texture: RasterTileTexture,
+    region: ScissorRect,
+    target_extent: Extent2d,
 }
 impl RasterTileWrite {
     /// Attachment to clear and rasterize.
     pub fn texture(&self) -> RasterTileTexture { self.texture }
+    /// Attachment-local rectangle; no draw or clear may escape it.
+    pub fn region(&self) -> ScissorRect { self.region }
+    /// Physical attachment extent (may contain several logical tiles).
+    pub fn target_extent(&self) -> Extent2d { self.target_extent }
 }
 
 struct Entry {
@@ -64,6 +73,7 @@ struct Entry {
     texture: TextureId,
     view: Option<TextureViewId>,
     bytes: u64,
+    page_slot: Option<u8>,
     generation: u64,
     serial: u64,
     state: State,
@@ -82,8 +92,38 @@ impl Entry {
         self.stale = true;
         if self.state == State::Ready { self.state = State::Invalid; }
     }
+    fn region(&self, page: Option<&Page>) -> ScissorRect {
+        ScissorRect { x: 0, y: page.zip(self.page_slot).map_or(0, |(page, slot)| u32::from(slot) * page.cell.height()),
+            width: self.raster.extent.width(), height: self.raster.extent.height() }
+    }
     fn handles(&self) -> Option<RasterTileTexture> {
         Some(RasterTileTexture { texture: self.texture, view: self.view? })
+    }
+}
+
+// Fixed size classes avoid a second atlas allocator and fragmentation
+// metadata. Each page has four independently fenced vertical cells.
+const PAGE_CELLS: u8 = 4;
+
+fn page_cell(extent: Extent2d) -> Option<Extent2d> {
+    if extent.width() > 2048 || extent.height() > 128 { return None; }
+    Extent2d::new(extent.width().next_power_of_two().max(64),
+        extent.height().next_power_of_two().max(16)).ok()
+}
+
+struct Page {
+    cell: Extent2d,
+    extent: Extent2d,
+    format: Format,
+    view: Option<TextureViewId>,
+    bytes: u64,
+    occupied: u8,
+    sampling_bindings: SmallVec<[(usize, BindGroupId); 2]>,
+}
+
+impl Page {
+    fn free_slot(&self) -> Option<u8> {
+        (0..PAGE_CELLS).find(|&slot| self.occupied & (1 << slot) == 0)
     }
 }
 
@@ -94,6 +134,7 @@ impl Entry {
 /// are inserted; unavailable or busy tiles require ordinary fallback.
 pub struct RasterTileCache {
     entries: HashMap<RasterTileKey, Entry>,
+    pages: HashMap<TextureId, Page>,
     frame: u64,
     serial: u64,
     bytes: u64,
@@ -102,7 +143,7 @@ pub struct RasterTileCache {
 impl RasterTileCache {
     /// Hard logical texture byte budget (excludes driver padding).
     pub fn new(budget: u64) -> Self {
-        Self { entries: HashMap::new(), frame: 0, serial: 0, bytes: 0, budget }
+        Self { entries: HashMap::new(), pages: HashMap::new(), frame: 0, serial: 0, bytes: 0, budget }
     }
 
     /// Begin a frame; used tiles are protected from LRU eviction in this frame.
@@ -176,7 +217,7 @@ impl RasterTileCache {
     /// Resolve completed pixels, independent of viewport placement.
     pub fn lookup(&mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format) -> Option<RasterTileTexture> {
         let e = self.entries.get_mut(&key)?;
-        if e.state != State::Ready || e.stale || e.generation != generation
+        if e.page_slot.is_some() || e.state != State::Ready || e.stale || e.generation != generation
             || e.raster != raster || e.format != format { return None; }
         e.last_used = self.frame;
         e.handles()
@@ -200,7 +241,7 @@ impl RasterTileCache {
         };
         let texture = e.handles()?;
         e.last_used = self.frame;
-        Some(RasterTileRead { key, serial: e.serial, texture, writer })
+        Some(RasterTileRead { key, serial: e.serial, texture, writer, region: e.region(self.pages.get(&e.texture)) })
     }
 
     /// Reuse a sampled descriptor for a physical tile and stable consumer
@@ -221,11 +262,16 @@ impl RasterTileCache {
                     _ => false,
                 })
             .ok_or_else(|| Error::InvalidInput("binding references a superseded tile lease".into()))?;
-        if let Some((_, binding)) = e.sampling_bindings.iter().find(|(key, _)| *key == slot) {
+        // Shared pages sample the same physical view and stable consumer
+        // buffers. Region selection is an instance attribute, not a binding.
+        let bindings = if e.page_slot.is_some() {
+            &mut self.pages.get_mut(&e.texture).expect("resident page").sampling_bindings
+        } else { &mut e.sampling_bindings };
+        if let Some((_, binding)) = bindings.iter().find(|(key, _)| *key == slot) {
             return Ok(*binding);
         }
         let binding = device.create_bind_group(&descriptor())?;
-        e.sampling_bindings.push((slot, binding));
+        bindings.push((slot, binding));
         Ok(binding)
     }
 
@@ -251,16 +297,39 @@ impl RasterTileCache {
     pub fn prepare<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
         key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
     ) -> Result<Option<RasterTileWrite>> {
+        self.prepare_internal(device, key, generation, raster, format, false)
+    }
+
+    /// Reserve a page subrectangle when a suitable size class is available.
+    /// The caller MUST use exact regional clears, clip all draws to the
+    /// returned region, and order all page writes and readers on one queue.
+    /// Otherwise use the standalone `prepare` API. No extra fence domain
+    /// is introduced: each logical entry owns its writer and reader leases.
+    pub fn prepare_paged<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format,
+    ) -> Result<Option<RasterTileWrite>> {
+        self.prepare_internal(device, key, generation, raster, format, true)
+    }
+
+    fn prepare_internal<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, paged: bool,
+    ) -> Result<Option<RasterTileWrite>> {
         if let Some(e) = self.entries.get(&key) {
             if !e.idle() || (e.state == State::Ready && e.last_used == self.frame) {
                 return Ok(None);
             }
-            if e.raster.extent != raster.extent || e.format != format || e.view.is_none() {
+            if e.raster.extent != raster.extent || e.format != format || e.view.is_none()
+                || (!paged && e.page_slot.is_some()) {
                 self.release(device, key)?;
             }
         }
         let serial = self.serial.checked_add(1)
             .ok_or_else(|| Error::InvalidInput("tile reservation overflow".into()))?;
+        if !self.entries.contains_key(&key) && paged {
+            if let Some(cell) = page_cell(raster.extent) {
+                self.allocate_page_slot(device, key, generation, raster, format, serial, cell)?;
+            }
+        }
         if !self.entries.contains_key(&key) {
             let bytes = u64::from(raster.extent.width())
                 .checked_mul(u64::from(raster.extent.height()))
@@ -283,7 +352,7 @@ impl RasterTileCache {
             })?;
             // Retain ownership even if view creation and cleanup fail.
             self.entries.insert(key, Entry {
-                raster, format, texture, view: None, bytes, generation, serial,
+                raster, format, texture, view: None, bytes, page_slot: None, generation, serial,
                 state: State::Invalid, stale: true, last_used: self.frame,
                 readers: SmallVec::new(), sampling_bindings: SmallVec::new(),
             });
@@ -303,7 +372,53 @@ impl RasterTileCache {
         e.state = State::Reserved;
         e.stale = false;
         e.last_used = self.frame;
-        Ok(Some(RasterTileWrite { key, serial, texture: e.handles().unwrap() }))
+        let page = self.pages.get(&e.texture);
+        Ok(Some(RasterTileWrite { key, serial, texture: e.handles().unwrap(),
+            region: e.region(page), target_extent: page.map_or(raster.extent, |page| page.extent) }))
+    }
+
+    fn allocate_page_slot<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
+        key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, serial: u64, cell: Extent2d,
+    ) -> Result<()> {
+        let candidate = self.pages.iter().find_map(|(&texture, page)| {
+            (page.cell == cell && page.format == format && page.view.is_some())
+                .then(|| page.free_slot().map(|slot| (texture, slot))).flatten()
+        });
+        let (texture, slot) = if let Some(candidate) = candidate { candidate } else {
+            let extent = Extent2d::new(cell.width(), cell.height() * u32::from(PAGE_CELLS))?;
+            let bytes = u64::from(extent.width()) * u64::from(extent.height()) * u64::from(format.bytes_per_pixel());
+            // Do not evict useful pixels just to speculate on an empty page.
+            // The standalone allocator retains its existing exact-budget LRU.
+            if bytes > self.budget.saturating_sub(self.bytes) { return Ok(()); }
+            let texture = device.create_texture(&TextureDescriptor {
+                label: Some("resident raster tile page".into()), size: extent,
+                mip_level_count: 1, format,
+                usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED | TextureUsage::COPY_SRC,
+                memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2,
+                sample_count: 1,
+            })?;
+            self.pages.insert(texture, Page { cell, extent, format, view: None, bytes,
+                occupied: 1, sampling_bindings: SmallVec::new() });
+            self.bytes += bytes;
+            self.entries.insert(key, Entry { raster, format, texture, view: None, bytes: 0,
+                page_slot: Some(0), generation, serial, state: State::Invalid, stale: true,
+                last_used: self.frame, readers: SmallVec::new(), sampling_bindings: SmallVec::new() });
+            let view = match device.create_texture_view(&TextureViewDescriptor {
+                label: None, texture, format, base_mip_level: 0, mip_level_count: 1,
+            }) {
+                Ok(view) => view,
+                Err(error) => { self.release(device, key)?; return Err(error); }
+            };
+            self.pages.get_mut(&texture).unwrap().view = Some(view);
+            self.entries.get_mut(&key).unwrap().view = Some(view);
+            return Ok(());
+        };
+        let page = self.pages.get_mut(&texture).expect("allocated page");
+        page.occupied |= 1 << slot;
+        self.entries.insert(key, Entry { raster, format, texture, view: page.view, bytes: 0,
+            page_slot: Some(slot), generation, serial, state: State::Invalid, stale: true,
+            last_used: self.frame, readers: SmallVec::new(), sampling_bindings: SmallVec::new() });
+        Ok(())
     }
 
     fn reservation(&mut self, write: &RasterTileWrite) -> Result<&mut Entry> {
@@ -335,7 +450,7 @@ impl RasterTileCache {
     /// Register an accepted sampling submission before any cache mutation.
     pub fn record_reader(&mut self, key: RasterTileKey, texture: RasterTileTexture, submission: SubmissionId) -> Result<()> {
         let e = self.entries.get_mut(&key)
-            .filter(|e| e.state == State::Ready && e.handles() == Some(texture))
+            .filter(|e| e.page_slot.is_none() && e.state == State::Ready && e.handles() == Some(texture))
             .ok_or_else(|| Error::InvalidInput("reader references nonresident tile".into()))?;
         if !e.readers.contains(&submission) { e.readers.push(submission); }
         Ok(())
@@ -387,6 +502,31 @@ impl RasterTileCache {
         let e = self.entries.get_mut(&key).unwrap();
         debug_assert!(e.idle());
         e.invalidate();
+        if let Some(slot) = e.page_slot {
+            let page = self.pages.get_mut(&e.texture).expect("resident page");
+            let mask = 1 << slot;
+            if page.occupied != mask {
+                page.occupied &= !mask;
+                self.entries.remove(&key);
+                return Ok(());
+            }
+            // Last logical slot is idle, hence every prior page user has
+            // retired. Destroy shared sampling bindings before the view.
+            while let Some((_, binding)) = page.sampling_bindings.last().copied() {
+                device.destroy_bind_group(binding)?;
+                page.sampling_bindings.pop();
+            }
+            if let Some(view) = page.view {
+                device.destroy_texture_view(view)?;
+                page.view = None;
+                e.view = None;
+            }
+            device.destroy_texture(e.texture)?;
+            self.bytes -= page.bytes;
+            self.pages.remove(&e.texture);
+            self.entries.remove(&key);
+            return Ok(());
+        }
         while let Some((_, binding)) = e.sampling_bindings.last().copied() {
             device.destroy_bind_group(binding)?;
             e.sampling_bindings.pop();
@@ -405,7 +545,7 @@ impl RasterTileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Extent2d, SignedOrigin2d};
+    use crate::SignedOrigin2d;
     fn key(x: i32) -> RasterTileKey { RasterTileKey { layer: 7, x, y: -1 } }
     fn raster() -> RasterTile {
         RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(16, 16).unwrap() }
@@ -414,10 +554,26 @@ mod tests {
         Entry {
             raster: raster(), format: Format::Bgra8Unorm,
             texture: TextureId::from_parts(1, 1), view: Some(TextureViewId::from_parts(1, 1)),
-            bytes: 1024, generation, serial: 1, state, stale: false,
+            bytes: 1024, page_slot: None, generation, serial: 1, state, stale: false,
             last_used: 0, readers: SmallVec::new(), sampling_bindings: SmallVec::new(),
         }
     }
+    #[test]
+    fn page_size_classes_bound_waste_and_find_independent_cells() {
+        let cell = page_cell(Extent2d::new(300, 17).unwrap()).unwrap();
+        assert_eq!(cell, Extent2d::new(512, 32).unwrap());
+        assert!(page_cell(Extent2d::new(2049, 32).unwrap()).is_none());
+        let mut page = Page { cell, extent: Extent2d::new(512, 128).unwrap(),
+            format: Format::Bgra8Unorm, view: None, bytes: 512 * 128 * 4,
+            occupied: 0b0101, sampling_bindings: SmallVec::new() };
+        assert_eq!(page.free_slot(), Some(1));
+        let mut tile = entry(1, State::Ready);
+        tile.page_slot = Some(2);
+        assert_eq!(tile.region(Some(&page)), ScissorRect { x: 0, y: 64, width: 16, height: 16 });
+        page.occupied = 0b1111;
+        assert_eq!(page.free_slot(), None);
+    }
+
     #[test]
     fn clean_generation_adoption() {
         let mut c = RasterTileCache::new(4096);
