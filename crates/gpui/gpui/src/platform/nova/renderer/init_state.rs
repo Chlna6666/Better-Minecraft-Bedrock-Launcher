@@ -98,6 +98,7 @@ impl NovaRenderer {
             raster_tile_context: None,
             scroll_raster_resources: Vec::new(),
             scroll_composite_slots: Vec::new(),
+            scroll_outside_root: None,
             scroll_raster_failed: false,
             atlas_sampler: resources.atlas_sampler,
             path_texture: resources.path_texture,

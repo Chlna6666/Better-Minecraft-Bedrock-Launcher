@@ -214,6 +214,7 @@ pub(crate) struct NovaRenderer {
     raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
     scroll_raster_resources: Vec<(SubmissionId, scroll_raster::Resources)>,
     scroll_composite_slots: Vec<scroll_raster::CompositeSlot>,
+    scroll_outside_root: Option<Arc<scroll_raster::OutsideRoot>>,
     scroll_raster_failed: bool,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
@@ -1436,6 +1437,10 @@ impl NovaRenderer {
     }
 
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
+        // CPU encoding ownership is independent of submitted native buffers.
+        if !matches!(level, GpuiMemoryTrimLevel::Light) {
+            self.scroll_outside_root = None;
+        }
         let submissions_drained = if !matches!(level, GpuiMemoryTrimLevel::Light) {
             // Memory compaction can destroy native buffers used by an
             // independent Compute/COPY producer. Trim is a slow path: drain

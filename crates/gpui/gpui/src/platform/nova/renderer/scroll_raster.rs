@@ -336,10 +336,21 @@ fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::
     Some(ranges)
 }
 
-struct OutsideRoot {
+/// One retained encoding of the exact complement of promoted root spans.
+/// Share existing immutable operation pages, never retain a previous Scene
+/// or its fallback. Atlas generations protect resolved physical UVs.
+pub(super) struct OutsideRoot {
+    source: crate::scene::Operations,
+    source_ends: Vec<usize>,
+    atlas_epoch: Option<[u64; 3]>,
     streams: StaticStreams,
     boundaries: Vec<usize>,
     extensions: Vec<crate::PaintRendererExtension>,
+}
+
+fn outside_atlas_epoch(renderer: &NovaRenderer) -> [u64; 3] {
+    [renderer.atlas.placement_generation(), renderer.atlas.texture_set_generation(),
+        renderer.atlas.scroll_content_generation()]
 }
 
 /// Translate run boundaries to command boundaries once. An extension may
@@ -374,10 +385,22 @@ fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId
 }
 
 impl OutsideRoot {
-    fn pack(renderer: &NovaRenderer, plans: &[LayerPlan<'_>], scene: &crate::Scene) -> Option<Self> {
-        let ranges = outside_ranges(plans, scene.len())?;
+    fn matches_ranges(&self, scene: &crate::scene::Operations, ranges: &[std::ops::Range<usize>]) -> bool {
+        if ranges.len() != self.source_ends.len() { return false; }
+        let mut start = 0;
+        for (range, &end) in ranges.iter().zip(&self.source_ends) {
+            if !self.source.range(start..end).matches_by(scene.range(range.clone()), PaintOperation::same_paint) {
+                return false;
+            }
+            start = end;
+        }
+        true
+    }
+
+    fn pack(renderer: &NovaRenderer, ranges: &[std::ops::Range<usize>], scene: &crate::Scene) -> Option<Self> {
+        let before = outside_atlas_epoch(renderer);
         let mut ids = Vec::new();
-        for range in &ranges {
+        for range in ranges {
             for operation in scene.paint_operations.get_range(range.clone())?.iter() {
                 match operation {
                     PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
@@ -389,7 +412,7 @@ impl OutsideRoot {
         let placements = if ids.is_empty() { FxHashMap::default() }
             else { renderer.atlas.ready_root_glyphs(&ids)? };
         let mut streams = StaticStreams { root_lcd: cfg!(target_os = "windows"), ..Default::default() };
-        let mut boundaries = Vec::with_capacity(plans.len());
+        let mut boundaries = Vec::with_capacity(ranges.len().saturating_sub(1));
         let mut extensions = Vec::new();
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;
@@ -410,9 +433,20 @@ impl OutsideRoot {
                     _ => return None,
                 }
             }
-            if index < plans.len() { boundaries.push(streams.runs.len()); }
+            if index + 1 < ranges.len() { boundaries.push(streams.runs.len()); }
         }
-        Some(Self { streams, boundaries, extensions })
+        let atlas_epoch = if ids.is_empty() { None } else {
+            if outside_atlas_epoch(renderer) != before { return None; }
+            Some(before)
+        };
+        let mut source = crate::scene::Operations::default();
+        let mut source_ends = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            source.share(&scene.paint_operations, range.clone());
+            source_ends.push(source.len());
+        }
+        source.compact();
+        Some(Self { source, source_ends, atlas_epoch, streams, boundaries, extensions })
     }
 }
 
@@ -472,6 +506,22 @@ struct RasterPass {
 }
 
 impl NovaRenderer {
+    fn retained_outside_root(&mut self, plans: &[LayerPlan<'_>], scene: &crate::Scene) -> Option<Arc<OutsideRoot>> {
+        let ranges = outside_ranges(plans, scene.len())?;
+        let epoch = outside_atlas_epoch(self);
+        if let Some(root) = &self.scroll_outside_root
+            && root.atlas_epoch.is_none_or(|previous| previous == epoch)
+            && root.matches_ranges(&scene.paint_operations, &ranges)
+        {
+            return Some(Arc::clone(root));
+        }
+        // A failed pack must not retain stale extension inputs or atlas UVs.
+        self.scroll_outside_root = None;
+        let root = Arc::new(OutsideRoot::pack(self, &ranges, scene)?);
+        self.scroll_outside_root = Some(Arc::clone(&root));
+        Some(root)
+    }
+
     pub(super) fn destroy_scroll_composite_slots(&mut self) {
         // An unknown reader or failed fence is not safe to reclaim. The
         // device registry retains the allocations until device teardown.
@@ -534,12 +584,15 @@ impl NovaRenderer {
     pub(super) fn try_scroll_raster_present(&mut self, packet: &mut PresentationPacket) -> Result<Option<bool>> {
         // A None submission is NOT a completed fence. All admitted backends
         // must return a tracked writer from the ordered offscreen API.
+        if packet.paint.layers.frames.is_empty() {
+            self.scroll_outside_root = None;
+            return Ok(None);
+        }
         if self.scroll_raster_failed || self.live_resize_active
             || self.presentation_submission_mode() == GpuSubmissionMode::Synchronous
             || self.surface_format != Format::Bgra8Unorm
             || !packet.presentation_animation_values.is_empty()
             || !packet.presentation_animation_timelines.is_empty()
-            || packet.paint.layers.frames.is_empty()
         {
             return Ok(None);
         }
@@ -657,7 +710,7 @@ impl NovaRenderer {
         &mut self, device: &mut D, plans: &[LayerPlan<'_>], scene: &crate::Scene, slot: usize,
         frame_time: Instant,
     ) -> Result<Option<bool>> {
-        let Some(outside) = OutsideRoot::pack(self, plans, scene) else { return Ok(None); };
+        let Some(outside) = self.retained_outside_root(plans, scene) else { return Ok(None); };
         let format = self.surface_format;
         let original = self.frame_resources[slot].buffers;
         if self.submitted_frames % 120 == 0 {
@@ -1041,6 +1094,24 @@ mod tests {
         assert_eq!(row.bounds.bottom(), ScaledPixels(26.));
         assert_eq!(layer.root_static_raster().unwrap().0, viewport.scale(1.).bounds);
         assert_eq!(layer.adopt_tile(1, [6, 22, 110, 58], 1.), Some(1));
+    }
+
+    #[test]
+    fn outside_root_reuses_exact_ranges_but_not_changed_insertion_boundaries() {
+        let mut source = crate::scene::Operations::default();
+        let quad = || PaintOperation::Primitive(Primitive::Quad(Quad::default()));
+        source.push(quad());
+        source.push(quad());
+        source.push(quad());
+        source.finish();
+        let mut retained = crate::scene::Operations::default();
+        retained.share(&source, 0..1);
+        retained.share(&source, 2..3);
+        let root = OutsideRoot { source: retained, source_ends: vec![1, 2], atlas_epoch: None,
+            streams: StaticStreams::default(), boundaries: vec![1], extensions: vec![] };
+        assert!(root.matches_ranges(&source, &[0..1, 2..3]));
+        assert!(!root.matches_ranges(&source, &[0..2, 3..3]));
+        assert!(!root.matches_ranges(&source, &[0..3]));
     }
 
     #[test]
