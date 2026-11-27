@@ -9,6 +9,11 @@ use super::{InputEvent, MouseEvent, PlatformInput};
 pub struct ExternalPaths(pub(crate) SmallVec<[PathBuf; 2]>);
 
 impl ExternalPaths {
+    /// Wraps paths received from a native drag session.
+    pub fn new(paths: SmallVec<[PathBuf; 2]>) -> Self {
+        Self(paths)
+    }
+
     /// Convert this collection of paths into a slice.
     pub fn paths(&self) -> &[PathBuf] {
         &self.0

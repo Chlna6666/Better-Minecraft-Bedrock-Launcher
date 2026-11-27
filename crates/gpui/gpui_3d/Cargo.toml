@@ -69,6 +69,7 @@ name = "native_realtime"
 path = "examples/native_realtime/main.rs"
 
 [dev-dependencies]
+gpui_platform = { path = "../gpui_platform" }
 criterion = "0.5"
 gfx-core = { path = "../../nova-gfx/gfx-core" }
 # The shader translation test drives the WGSL frontend directly; production shaders come from

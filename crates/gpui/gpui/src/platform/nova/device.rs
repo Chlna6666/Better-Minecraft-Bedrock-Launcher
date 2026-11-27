@@ -28,7 +28,7 @@ pub(super) struct DeviceKey {
     /// Pipeline-cache root; cache ownership is part of the shared-device identity.
     pub(super) pipeline_cache_dir: Option<PathBuf>,
     /// Native GL display connection; other APIs select adapters without one.
-    pub(super) native_display: Option<::winit::raw_window_handle::RawDisplayHandle>,
+    pub(super) native_display: Option<::raw_window_handle::RawDisplayHandle>,
 }
 
 /// A backend device shared by every window created on the same thread.
@@ -132,7 +132,7 @@ fn create_backend(backend: RendererBackend, descriptor: &DeviceDescriptor) -> Re
 pub(super) fn discard_unused_device(
     backend: RendererBackend,
     options: &RendererOptions,
-    native_display: Option<::winit::raw_window_handle::RawDisplayHandle>,
+    native_display: Option<::raw_window_handle::RawDisplayHandle>,
 ) {
     let key = DeviceKey {
         backend,
@@ -167,8 +167,8 @@ pub(super) fn discard_unused_device(
 )]
 pub(super) fn shared_opengl_device(
     options: &RendererOptions,
-    display: ::winit::raw_window_handle::RawDisplayHandle,
-    window: ::winit::raw_window_handle::RawWindowHandle,
+    display: ::raw_window_handle::RawDisplayHandle,
+    window: ::raw_window_handle::RawWindowHandle,
 ) -> Result<SharedBackend> {
     let key = DeviceKey {
         backend: RendererBackend::NovaOpenGl,

@@ -391,7 +391,7 @@ mod macos {
             crate_dir.join("src/primitives/transform.rs"),
             crate_dir.join("src/window/content_mask.rs"),
             crate_dir.join("src/platform/atlas.rs"),
-            crate_dir.join("src/platform/mac/metal_renderer.rs"),
+            crate_dir.join("src/platform/metal/metal_renderer.rs"),
         ];
         for src_path in src_paths {
             println!("cargo:rerun-if-changed={}", src_path.display());
@@ -421,7 +421,7 @@ mod macos {
             std::fs::write(&out_path, stitched_contents)?;
             Ok(out_path)
         }
-        let shader_source_path = "./src/platform/mac/shaders.metal";
+        let shader_source_path = "./src/platform/metal/shaders.metal";
         let shader_path = PathBuf::from_str(shader_source_path).unwrap();
         stitch_header(header_path, &shader_path).unwrap();
         println!("cargo:rerun-if-changed={}", &shader_source_path);
@@ -430,7 +430,7 @@ mod macos {
     #[cfg(not(feature = "runtime_shaders"))]
     fn compile_metal_shaders(header_path: &Path) {
         use std::process::{self, Command};
-        let shader_path = "./src/platform/mac/shaders.metal";
+        let shader_path = "./src/platform/metal/shaders.metal";
         let air_output_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.air");
         let metallib_output_path =
             PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.metallib");

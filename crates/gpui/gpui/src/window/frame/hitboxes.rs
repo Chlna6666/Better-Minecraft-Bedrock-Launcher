@@ -259,7 +259,7 @@ impl HitboxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentMask, HitboxBehavior, size};
+    use crate::{ContentMask, HitboxBehavior, size, window::hitbox::HitboxId};
 
     fn hitbox(index: usize) -> Hitbox {
         let bounds = Bounds::new(point(px(0.), px(index as f32)), size(px(10.), px(1.)));

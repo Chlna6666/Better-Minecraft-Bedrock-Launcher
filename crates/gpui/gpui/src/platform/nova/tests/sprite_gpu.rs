@@ -517,7 +517,7 @@ pub(in crate::platform) mod native_window {
         },
         core::w,
     };
-    use winit::raw_window_handle::{
+    use raw_window_handle::{
         RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
     };
 
@@ -579,23 +579,23 @@ pub(in crate::platform) mod native_window {
             RawWindowHandle::Win32(handle)
         }
     }
-    impl winit::raw_window_handle::HasDisplayHandle for Window {
+    impl raw_window_handle::HasDisplayHandle for Window {
         fn display_handle(
             &self,
         ) -> Result<
-            winit::raw_window_handle::DisplayHandle<'_>,
-            winit::raw_window_handle::HandleError,
+            raw_window_handle::DisplayHandle<'_>,
+            raw_window_handle::HandleError,
         > {
-            Ok(winit::raw_window_handle::DisplayHandle::windows())
+            Ok(raw_window_handle::DisplayHandle::windows())
         }
     }
-    impl winit::raw_window_handle::HasWindowHandle for Window {
+    impl raw_window_handle::HasWindowHandle for Window {
         fn window_handle(
             &self,
-        ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
+        ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
         {
             // SAFETY: the HWND is owned by self and remains live throughout this borrow.
-            Ok(unsafe { winit::raw_window_handle::WindowHandle::borrow_raw(self.handle()) })
+            Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(self.handle()) })
         }
     }
     impl Drop for Window {

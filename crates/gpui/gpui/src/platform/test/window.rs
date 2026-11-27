@@ -14,7 +14,7 @@ use std::{
     thread,
     time::Duration,
 };
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub(crate) struct TestWindowState {
     pub(crate) bounds: Bounds<Pixels>,
@@ -65,18 +65,18 @@ pub(crate) struct TestWindow(pub(crate) Rc<Mutex<TestWindowState>>);
 impl HasWindowHandle for TestWindow {
     fn window_handle(
         &self,
-    ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
     {
-        Err(winit::raw_window_handle::HandleError::NotSupported)
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
 impl HasDisplayHandle for TestWindow {
     fn display_handle(
         &self,
-    ) -> Result<winit::raw_window_handle::DisplayHandle<'_>, winit::raw_window_handle::HandleError>
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
     {
-        Err(winit::raw_window_handle::HandleError::NotSupported)
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 

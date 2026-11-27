@@ -8,9 +8,9 @@ use super::*;
 #[cfg(target_os = "windows")]
 pub(super) fn native_windows_hwnd<W>(window: &W) -> Option<isize>
 where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+    W: ::raw_window_handle::HasWindowHandle + ?Sized,
 {
-    use ::winit::raw_window_handle::RawWindowHandle;
+    use ::raw_window_handle::RawWindowHandle;
 
     let raw_window_handle = window.window_handle().ok()?.as_raw();
     let RawWindowHandle::Win32(handle) = raw_window_handle else {
@@ -22,7 +22,7 @@ where
 #[cfg(target_os = "windows")]
 fn native_windows_drawable_size<W>(window: &W) -> Option<Size<DevicePixels>>
 where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+    W: ::raw_window_handle::HasWindowHandle + ?Sized,
 {
     use windows::Win32::{
         Foundation::{HWND, RECT},
@@ -49,7 +49,7 @@ pub(super) fn resolve_initial_drawable_size<W>(
     requested: Size<DevicePixels>,
 ) -> Size<DevicePixels>
 where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+    W: ::raw_window_handle::HasWindowHandle + ?Sized,
 {
     #[cfg(target_os = "windows")]
     if let Some(native) = native_windows_drawable_size(window) {

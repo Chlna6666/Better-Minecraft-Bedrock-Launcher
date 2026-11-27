@@ -5,7 +5,7 @@ mod context;
 mod renderer;
 
 #[cfg(target_os = "macos")]
-pub(crate) use apple_compat::*;
+pub use apple_compat::{Context, Renderer, new_renderer};
 pub(crate) use atlas::*;
 pub(crate) use context::*;
 pub(crate) use renderer::*;

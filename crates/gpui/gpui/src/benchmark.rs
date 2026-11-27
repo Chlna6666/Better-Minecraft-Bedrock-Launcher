@@ -143,7 +143,7 @@ impl PathTransformBenchmark {
 
     /// Transforms the path and returns the requested workload size.
     pub fn transform(&self) -> usize {
-        let transformed = self.path.paint_scale_transform(
+        let transformed = self.path.clone().paint_scale_transform(
             1.25,
             0.875,
             point(ScaledPixels(4.0), ScaledPixels(-3.0)),

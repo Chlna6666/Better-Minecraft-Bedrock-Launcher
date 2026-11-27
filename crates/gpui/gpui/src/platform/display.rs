@@ -84,6 +84,13 @@ pub trait PlatformDisplay: Send + Sync + Debug {
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub struct DisplayId(pub(crate) u32);
 
+impl DisplayId {
+    /// Creates an identifier from a platform-owned display number.
+    pub const fn from_native(id: u32) -> Self {
+        Self(id)
+    }
+}
+
 impl From<DisplayId> for u32 {
     fn from(id: DisplayId) -> Self {
         id.0

@@ -1,5 +1,7 @@
 //! Immutable scroll content publication, adapted from GPUI Fast's LayerContent.
 use crate::{Bounds, ContentMask, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperationRef, PrimitiveRef, Scene}};
+#[cfg(test)]
+use crate::Pixels;
 use collections::{FxHashMap, FxHashSet};
 use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 

@@ -1,4 +1,4 @@
-//! Owner-thread sampling of retained resources; no allocation policy changes.
+//! Owner-thread memory accounting and scroll tile budget policy.
 use super::*;
 use crate::{
     BufferMemoryProfile, DeviceMemoryProfile, MemoryBudgetProfile, MemoryUsage,
@@ -7,6 +7,44 @@ use crate::{
 use gfx_core::{
     DeviceMemoryBudget, DiagnosticsDevice, MemoryAccounting, MemoryBudget, ResourceStats,
 };
+use std::time::Duration;
+
+pub(super) const MAX_SCROLL_TILE_BYTES: u64 = 64 * 1024 * 1024;
+const SCROLL_TILE_BUDGET_STEP: u64 = 4 * 1024 * 1024;
+const SCROLL_TILE_BUDGET_INTERVAL: Duration = Duration::from_secs(1);
+
+fn scroll_tile_budget(local: MemoryBudget, tile_bytes: u64, previous: u64) -> u64 {
+    // Keep a portion of the driver budget free for ordinary rendering
+    // allocations and other windows. Usage already includes resident tiles.
+    let headroom_reserve = (local.budget_bytes / 16).min(MAX_SCROLL_TILE_BYTES);
+    let other_usage = local.usage_bytes.saturating_sub(tile_bytes);
+    let available = local
+        .budget_bytes
+        .saturating_sub(headroom_reserve)
+        .saturating_sub(other_usage);
+    let rounded = available / SCROLL_TILE_BUDGET_STEP * SCROLL_TILE_BUDGET_STEP;
+    let target = rounded.min(MAX_SCROLL_TILE_BYTES);
+    if target < previous || rounded > previous.saturating_add(SCROLL_TILE_BUDGET_STEP) {
+        target
+    } else {
+        previous
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn scroll_tile_budget_releases_pressure_and_recovers_with_headroom() {
+    let mib = 1024 * 1024;
+    let local = |usage| MemoryBudget {
+        budget_bytes: 1024 * mib,
+        usage_bytes: usage * mib,
+    };
+    assert_eq!(scroll_tile_budget(local(960), 32 * mib, MAX_SCROLL_TILE_BYTES), 32 * mib);
+    assert_eq!(scroll_tile_budget(local(956), 32 * mib, 32 * mib), 32 * mib);
+    assert_eq!(scroll_tile_budget(local(952), 32 * mib, 32 * mib), 40 * mib);
+    assert_eq!(scroll_tile_budget(local(1040), 32 * mib, 40 * mib), 0);
+    assert_eq!(scroll_tile_budget(local(512), 0, 0), MAX_SCROLL_TILE_BYTES);
+}
 
 impl NovaBackend {
     pub(super) fn compact_memory(&mut self) -> gfx_core::Result<gfx_core::MemoryCompactReport> {
@@ -85,6 +123,31 @@ impl FrameResourceBuffers {
 }
 
 impl NovaRenderer {
+    pub(super) fn update_scroll_tile_budget<D: gfx_core::ResourceDevice + DiagnosticsDevice>(
+        &mut self,
+        device: &mut D,
+    ) -> gfx_core::Result<()> {
+        let previous = self.raster_tiles.budget();
+        let resident = self.raster_tiles.bytes();
+        let mut target = previous;
+        let now = Instant::now();
+        if self
+            .scroll_tile_budget_sampled_at
+            .is_none_or(|sampled| now.duration_since(sampled) >= SCROLL_TILE_BUDGET_INTERVAL)
+        {
+            self.scroll_tile_budget_sampled_at = Some(now);
+            if let Ok(Some(budget)) = device.memory_budget()
+                && let Some(local) = budget.local
+            {
+                target = scroll_tile_budget(local, resident, previous);
+            }
+        }
+        if target != previous || resident > target {
+            self.raster_tiles.resize_budget(device, target)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn sample_memory(&mut self, force: bool, render_error: Option<&anyhow::Error>) {
         if self.destroyed || (!force && !self.memory_profile.due()) {
             return;

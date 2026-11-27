@@ -886,7 +886,6 @@ fn path_rasterization_vertex_packer_matches_shader_storage_stride() {
             y: crate::ScaledPixels(2.0),
         },
         st_position: Point { x: 0.25, y: 0.75 },
-        content_mask: Default::default(),
     };
 
     write_path_rasterization_vertex(

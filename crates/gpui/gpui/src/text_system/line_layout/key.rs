@@ -9,8 +9,10 @@ use std::{
 /// A run of text with a single font.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct FontRun {
-    pub(crate) len: usize,
-    pub(crate) font_id: FontId,
+    /// Number of UTF-8 bytes shaped by this font.
+    pub len: usize,
+    /// Font selected for these bytes.
+    pub font_id: FontId,
 }
 
 pub(super) trait AsCacheKeyRef {

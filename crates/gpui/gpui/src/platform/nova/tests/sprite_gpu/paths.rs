@@ -35,7 +35,6 @@ pub(super) fn verify_pixels<D>(
             &crate::PathVertex_ScaledPixels {
                 xy_position: point(crate::ScaledPixels(x), crate::ScaledPixels(y)),
                 st_position: point(0.0, 0.0),
-                content_mask: 0,
             },
             &background,
             &content_mask,

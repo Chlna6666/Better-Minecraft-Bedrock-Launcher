@@ -306,6 +306,9 @@ fn verify(backend: RendererBackend) {
             if let Some(id) = submission {
                 renderer.raster_tiles.record_reader(resident_key, cached, id).expect("track native tile reader");
                 assert!(renderer.raster_tiles.has_pending_users());
+                renderer.raster_tiles.begin_frame();
+                renderer.raster_tiles.resize_budget(device, 0).expect("apply pressure with a native reader");
+                assert_eq!(renderer.raster_tiles.bytes(), 16 * 16 * 4);
                 device.wait_submission(id).expect("native composite fence");
                 renderer.raster_tiles.complete(id);
             }
@@ -321,7 +324,8 @@ fn verify(backend: RendererBackend) {
         device.destroy_buffer(global_buffer).expect("retire composite globals");
         device.destroy_texture_view(target_view).expect("retire target view");
         device.destroy_texture(target).expect("retire target");
-        renderer.raster_tiles.clear(device).expect("retire completed resident tile");
+        renderer.raster_tiles.begin_frame();
+        renderer.raster_tiles.resize_budget(device, 0).expect("retire completed resident tile under pressure");
         assert_eq!(renderer.raster_tiles.bytes(), 0);
     });
     renderer.destroy();

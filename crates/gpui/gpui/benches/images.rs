@@ -302,7 +302,7 @@ fn images(criterion: &mut Criterion) {
 
 fn batch_png(criterion: &mut Criterion, bytes: &Arc<[u8]>) {
     const IMAGE_COUNT: usize = 8;
-    let executor = gpui::background_executor();
+    let executor = gpui_platform::background_executor();
     let mut group = criterion.benchmark_group("image_render/png_batch_8");
     group.sample_size(10);
     group.throughput(Throughput::Elements(

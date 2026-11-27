@@ -22,6 +22,7 @@ GPUI 是 Rust 桌面应用的 GPU 加速 UI 框架，混合即时模式与保留
 
 ```toml
 [dependencies]
+gpui_platform = { path = "crates/gpui/gpui_platform" }
 gpui = { path = "crates/gpui/gpui", default-features = false, features = [
     "mimalloc-collect",
     "nova-gfx",
@@ -31,7 +32,7 @@ gpui = { path = "crates/gpui/gpui", default-features = false, features = [
 
 ```rust
 use gpui::prelude::*;
-use gpui::{div, App, Application, Context, IntoElement, Render, Window};
+use gpui::{div, App, Context, IntoElement, Render, Window};
 
 struct Hello;
 
@@ -42,7 +43,7 @@ impl Render for Hello {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(Default::default(), |_, cx| cx.new(|_| Hello))
             .expect("open window");
         cx.activate(true);

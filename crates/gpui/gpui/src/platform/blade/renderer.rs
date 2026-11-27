@@ -421,7 +421,7 @@ pub struct BladeRenderer {
 
 impl BladeRenderer {
     pub fn new<
-        I: ::winit::raw_window_handle::HasWindowHandle + ::winit::raw_window_handle::HasDisplayHandle,
+        I: ::raw_window_handle::HasWindowHandle + ::raw_window_handle::HasDisplayHandle,
     >(
         context: &BladeContext,
         window: &I,
@@ -768,7 +768,15 @@ impl BladeRenderer {
         self.destroy_path_intermediate_textures();
     }
 
-    pub fn draw(&mut self, scene: &Scene) {
+    pub fn platform_atlas(&self) -> Arc<dyn crate::PlatformAtlas> {
+        self.sprite_atlas().clone()
+    }
+
+    pub fn draw_packet(&mut self, packet: &crate::PresentationPacket) {
+        self.draw(&packet.paint.scene);
+    }
+
+    pub(crate) fn draw(&mut self, scene: &Scene) {
         let draw_started = std::time::Instant::now();
         record_backdrop_blur_primitive_count(scene.backdrop_blurs.len());
         let scene_operation_count = scene.len();

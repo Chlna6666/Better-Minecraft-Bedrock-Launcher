@@ -1284,11 +1284,12 @@ impl NovaRenderer {
         Ok(outcome)
     }
 
-    fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice + PipelineDevice + SubmissionDevice>(
+    fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice + PipelineDevice + SubmissionDevice + gfx_core::DiagnosticsDevice>(
         &mut self, device: &mut D, plans: &[LayerPlan<'_>], scene: &crate::Scene, slot: usize,
         frame_time: Instant,
     ) -> Result<Option<bool>> {
         let Some(outside) = self.retained_outside_root(plans, scene) else { return Ok(None); };
+        self.update_scroll_tile_budget(device)?;
         let format = self.surface_format;
         let original = self.frame_resources[slot].buffers;
         if self.submitted_frames % 120 == 0 {

@@ -210,7 +210,7 @@ impl Window {
 }
 
 impl HasWindowHandle for Window {
-    fn window_handle(&self) -> Result<winit::raw_window_handle::WindowHandle<'_>, HandleError> {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, HandleError> {
         self.platform_window.window_handle()
     }
 }
@@ -218,7 +218,7 @@ impl HasWindowHandle for Window {
 impl HasDisplayHandle for Window {
     fn display_handle(
         &self,
-    ) -> std::result::Result<winit::raw_window_handle::DisplayHandle<'_>, HandleError> {
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, HandleError> {
         self.platform_window.display_handle()
     }
 }

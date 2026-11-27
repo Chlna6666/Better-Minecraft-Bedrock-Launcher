@@ -1,19 +1,6 @@
-use crate::{BackgroundExecutor, RendererBackend, RendererOptions};
-use std::{path::Path, rc::Rc};
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-use super::HeadlessClient;
-#[cfg(target_os = "macos")]
-use super::MacPlatform;
-#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "wayland"))]
-use super::WaylandClient;
-#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
-use super::X11Client;
-use super::traits::Platform;
+use crate::RendererBackend;
 #[cfg(target_os = "windows")]
-use super::WindowsPlatform;
-#[cfg(target_os = "windows")]
-use gpui_windows::dialogs::show_error;
+use std::path::Path;
 
 /// Returns the Windows application manifest GPUI uses for DPI awareness.
 #[cfg(target_os = "windows")]
@@ -179,63 +166,3 @@ pub fn enumerate_gpu_adapters(_backend: RendererBackend) -> Vec<crate::GpuAdapte
 
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub use super::test::TestDispatcher;
-
-/// Returns a background executor for the current platform.
-pub fn background_executor() -> BackgroundExecutor {
-    current_platform(true, RendererOptions::default()).background_executor()
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn current_platform(
-    headless: bool,
-    renderer_options: RendererOptions,
-) -> Rc<dyn Platform> {
-    Rc::new(MacPlatform::with_renderer_options(headless, renderer_options))
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) fn current_platform(
-    headless: bool,
-    renderer_options: RendererOptions,
-) -> Rc<dyn Platform> {
-    #[cfg(feature = "x11")]
-    use anyhow::Context as _;
-
-    if headless {
-        return Rc::new(HeadlessClient::new());
-    }
-
-    match guess_compositor() {
-        #[cfg(feature = "wayland")]
-        "Wayland" => Rc::new(WaylandClient::new(renderer_options)),
-
-        #[cfg(feature = "x11")]
-        "X11" => Rc::new(
-            X11Client::new(renderer_options)
-                .context("Failed to initialize X11 client.")
-                .unwrap(),
-        ),
-
-        "Headless" => Rc::new(HeadlessClient::new()),
-        _ => unreachable!(),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub use gpui_linux::guess_compositor;
-
-#[cfg(target_os = "windows")]
-pub(crate) fn current_platform(
-    headless: bool,
-    renderer_options: RendererOptions,
-) -> Rc<dyn Platform> {
-    if headless {
-        return Rc::new(WindowsPlatform::new_headless());
-    }
-
-    Rc::new(
-        WindowsPlatform::new(renderer_options)
-            .inspect_err(|err| show_error("Failed to launch", err.to_string()))
-            .unwrap(),
-    )
-}
