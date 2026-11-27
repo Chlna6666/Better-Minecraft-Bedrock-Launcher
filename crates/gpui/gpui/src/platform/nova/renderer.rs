@@ -16,6 +16,7 @@ mod extensions;
 mod filters;
 mod frame_graph;
 mod root_color;
+mod scroll_raster;
 #[cfg(target_os = "windows")]
 use drawable::native_windows_hwnd;
 use drawable::resolve_initial_drawable_size;
@@ -211,6 +212,8 @@ pub(crate) struct NovaRenderer {
     // Scroll texture residency belongs to the same native GPU owner as Root/Filter.
     raster_tiles: gfx_core::RasterTileCache,
     raster_tile_context: Option<(u64, Option<retained_upload::StaticStreamToken>, u32)>,
+    scroll_raster_resources: Vec<(SubmissionId, scroll_raster::Resources)>,
+    scroll_raster_failed: bool,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
@@ -683,6 +686,9 @@ impl NovaRenderer {
             // the retained scene has no animation and no callback can fire.
             self.submission_retry_pending = true;
             return Ok(false);
+        }
+        if let Some(presented) = self.try_scroll_raster_present(packet)? {
+            return Ok(presented);
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = {
@@ -1198,6 +1204,9 @@ impl NovaRenderer {
             if !lock_backend(&self.backend).reserve_present_frame(self.swapchain)? {
                 self.submission_retry_pending = true;
                 return Ok(false);
+            }
+            if let Some(presented) = self.try_scroll_raster_present(&mut packet)? {
+                return Ok(presented);
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = {

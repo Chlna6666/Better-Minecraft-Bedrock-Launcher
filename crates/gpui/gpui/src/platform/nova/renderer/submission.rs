@@ -184,7 +184,7 @@ impl NovaRenderer {
     /// synthetic Scene/Present or scheduling UI work.
     pub(crate) fn has_pollable_offscreen_retirements(&self) -> bool {
         !self.auxiliary_submissions.is_empty()
-            || ((!self.retired_offscreen_targets.is_empty() || self.raster_tiles.has_pending_users())
+            || ((!self.retired_offscreen_targets.is_empty() || self.raster_tiles.has_pending_users() || !self.scroll_raster_resources.is_empty())
                 && !self.pending_submissions.is_empty())
     }
 
@@ -248,7 +248,7 @@ impl NovaRenderer {
         submit_presentation_buffers(&self.backend, &batch)
     }
 
-    fn poll_pending_submissions(&mut self) -> Result<()> {
+    pub(super) fn poll_pending_submissions(&mut self) -> Result<()> {
         let _phase = crate::diagnostics::gpu_owner::phases::enter(
             crate::diagnostics::gpu_owner::phases::Phase::FencePoll,
         );
@@ -596,7 +596,7 @@ impl NovaRenderer {
         self.submission_mode
     }
 
-    fn next_available_frame_resource_index(&self) -> Result<usize> {
+    pub(super) fn next_available_frame_resource_index(&self) -> Result<usize> {
         for index in 0..self.frame_resources.len() {
             if self
                 .pending_submissions

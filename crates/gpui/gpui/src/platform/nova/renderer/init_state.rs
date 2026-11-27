@@ -96,6 +96,8 @@ impl NovaRenderer {
             // GPUI Fast's per-window logical budget. Texture allocation is lazy.
             raster_tiles: gfx_core::RasterTileCache::new(64 * 1024 * 1024),
             raster_tile_context: None,
+            scroll_raster_resources: Vec::new(),
+            scroll_raster_failed: false,
             atlas_sampler: resources.atlas_sampler,
             path_texture: resources.path_texture,
             path_texture_view: resources.path_texture_view,

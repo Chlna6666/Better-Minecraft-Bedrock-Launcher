@@ -135,7 +135,7 @@ use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
 pub(crate) use frame::{
-    DeferredDraw, Frame, LayerScrollPosition, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
+    DeferredDraw, Frame, LayerFrame, LayerScrollPosition, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
     RetainedPaintContext, RetainedSceneSegment,
 };
 pub(crate) use view_splice::ViewSplice;
