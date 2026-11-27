@@ -52,6 +52,34 @@ fn immutable_runs_merge_with_new_orders_without_copying_shared_payload() {
 }
 
 #[test]
+fn full_stream_shares_descriptors_and_detaches_only_on_mutation() {
+    let mut source = PrimitiveStream::default();
+    for order in [1, 3, 5, 7] {
+        source.push(quad(order));
+    }
+    source.finish();
+    let mut current = PrimitiveStream::default();
+    current.share(&source, 0..source.len());
+    assert!(source.segments.shares_storage(&current.segments));
+    assert_eq!(Arc::strong_count(&source.segments[0].owner), 1);
+    assert!(source.same_physical_ranges(&current));
+
+    current.push(quad(9));
+    current.finish();
+    assert!(!source.segments.shares_storage(&current.segments));
+    assert_eq!(&source[0] as *const Quad, &current[0] as *const Quad);
+    assert_eq!(source.len(), 4);
+    assert_eq!(current.len(), 5);
+
+    let mut placement = PrimitiveStream::default();
+    placement.share(&source, 0..source.len());
+    placement.clear();
+    assert_eq!(placement.len(), 0);
+    assert_eq!(source.len(), 4);
+    assert_eq!(source[3].order, 7);
+}
+
+#[test]
 fn interleaved_runs_preserve_earlier_source_on_equal_order() {
     let mut previous = PrimitiveStream::default();
     let mut first = quad(2);

@@ -105,6 +105,7 @@ pub(crate) struct QuadReplay {
     pub(crate) quad_range: Range<usize>,
 }
 
+#[derive(Clone)]
 struct Segment<T> {
     owner: Arc<Vec<T>>,
     range: Range<usize>,
@@ -120,10 +121,65 @@ impl<T> Segment<T> {
     }
 }
 
+// A completed stream can share its entire descriptor table, not just
+// the primitive allocations referenced by its entries. Empty streams do
+// not allocate a control block; mutation detaches only the descriptors.
+struct SegmentTable<T>(Option<Arc<Vec<Segment<T>>>>);
+
+impl<T> Default for SegmentTable<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> std::ops::Deref for SegmentTable<T> {
+    type Target = [Segment<T>];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl<T: Clone> SegmentTable<T> {
+    fn make_mut(&mut self) -> &mut Vec<Segment<T>> {
+        Arc::make_mut(self.0.get_or_insert_with(Arc::default))
+    }
+
+    fn share_from(&mut self, previous: &Self) {
+        self.0 = previous.0.clone();
+    }
+
+    fn shares_storage(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn take_for_merge(&mut self) -> Vec<Segment<T>> {
+        self.0.take().map_or_else(Vec::new, Arc::unwrap_or_clone)
+    }
+
+    fn clear(&mut self) {
+        if let Some(segments) = self.0.as_mut().and_then(Arc::get_mut) {
+            segments.clear();
+        } else {
+            self.0 = None;
+        }
+    }
+
+    fn shrink_to_fit(&mut self) {
+        if let Some(segments) = self.0.as_mut().and_then(Arc::get_mut) {
+            segments.shrink_to_fit();
+        }
+    }
+}
+
 /// Sorted logical primitive storage backed by immutable payload segments and newly painted runs.
 /// Segment boundaries do not change primitive indices or GPU ownership.
 pub(crate) struct PrimitiveStream<T: Ordered> {
-    segments: Vec<Segment<T>>,
+    segments: SegmentTable<T>,
     pending: Vec<T>,
     len: usize,
 }
@@ -141,7 +197,7 @@ impl<T: Ordered> PayloadIdentity<T> {
             && self
                 .segments
                 .iter()
-                .zip(&stream.segments)
+                .zip(stream.segments.iter())
                 .all(|((owner, range), segment)| {
                     owner.as_ptr() == Arc::as_ptr(&segment.owner) && *range == segment.range
                 })
@@ -151,7 +207,7 @@ impl<T: Ordered> PayloadIdentity<T> {
 impl<T: Ordered> Default for PrimitiveStream<T> {
     fn default() -> Self {
         Self {
-            segments: Vec::new(),
+            segments: SegmentTable::default(),
             pending: Vec::new(),
             len: 0,
         }
@@ -179,25 +235,27 @@ impl<T: Ordered> PrimitiveStream<T> {
         self.len += 1;
     }
     pub(crate) fn capacity(&self) -> usize {
-        self.segments
-            .iter()
-            .map(|segment| segment.range.len())
-            .sum::<usize>()
-            + self.pending.capacity()
+        self.len - self.pending.len() + self.pending.capacity()
     }
     pub(crate) fn shrink_to(&mut self, floor: usize) {
         self.pending.shrink_to(floor);
-        self.segments.shrink_to(self.segments.len());
+        self.segments.shrink_to_fit();
     }
     pub(crate) fn clear(&mut self) {
         self.pending.clear();
-        for segment in self.segments.drain(..) {
-            if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
-                && owner.capacity() > self.pending.capacity()
-            {
-                owner.clear();
-                self.pending = owner;
+        // Never detach a shared table just to discard it. Only a unique
+        // descriptor owner can contribute its primitive allocations to scratch.
+        if let Some(segments) = self.segments.0.as_mut().and_then(Arc::get_mut) {
+            for segment in segments.drain(..) {
+                if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
+                    && owner.capacity() > self.pending.capacity()
+                {
+                    owner.clear();
+                    self.pending = owner;
+                }
             }
+        } else {
+            self.segments.0 = None;
         }
         self.len = 0;
     }
@@ -266,11 +324,7 @@ impl<T: Ordered> PrimitiveStream<T> {
         // boundaries, ordering and cumulative offsets. In an empty target
         // adopt its descriptors directly without re-running append checks.
         if self.len == 0 && range.start == 0 && range.end == previous.len {
-            self.segments.extend(previous.segments.iter().map(|segment| Segment {
-                owner: Arc::clone(&segment.owner),
-                range: segment.range.clone(),
-                end: segment.end,
-            }));
+            self.segments.share_from(&previous.segments);
             self.len = previous.len;
             return;
         }
@@ -316,7 +370,8 @@ impl<T: Ordered> PrimitiveStream<T> {
     fn append(&mut self, owner: Arc<Vec<T>>, range: Range<usize>) {
         let end = self.segments.last().map_or(0, |segment| segment.end) + range.len();
         self.len += range.len();
-        if let Some(previous) = self.segments.last_mut()
+        let segments = self.segments.make_mut();
+        if let Some(previous) = segments.last_mut()
             && Arc::ptr_eq(&previous.owner, &owner)
             && previous.range.end == range.start
             // Operation-owned ranges can be individually sorted while their
@@ -328,7 +383,7 @@ impl<T: Ordered> PrimitiveStream<T> {
             previous.end = end;
             return;
         }
-        self.segments.push(Segment { owner, range, end });
+        segments.push(Segment { owner, range, end });
     }
     fn freeze_pending(&mut self) {
         if !self.pending.is_empty() {
@@ -353,7 +408,7 @@ impl<T: Ordered> PrimitiveStream<T> {
         }) {
             return;
         }
-        let mut sources = std::mem::take(&mut self.segments);
+        let mut sources = self.segments.take_for_merge();
         let mut heads = BinaryHeap::new();
         for (index, segment) in sources.iter().enumerate() {
             heads.push(Reverse((segment.slice()[0].sort_key(), index)));
@@ -411,10 +466,11 @@ impl<T: Ordered> PrimitiveStream<T> {
     pub(super) fn same_physical_ranges(&self, previous: &Self) -> bool {
         self.pending.is_empty() && previous.pending.is_empty()
             && self.len == previous.len
-            && self.segments.len() == previous.segments.len()
-            && self.segments.iter().zip(&previous.segments).all(|(a, b)| {
-                Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
-            })
+            && (self.segments.shares_storage(&previous.segments)
+                || (self.segments.len() == previous.segments.len()
+                    && self.segments.iter().zip(previous.segments.iter()).all(|(a, b)| {
+                        Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
+                    })))
     }
 
     pub(super) fn has_full_physical_ranges(&self) -> bool {
@@ -431,8 +487,14 @@ impl<T: Ordered> PrimitiveStream<T> {
         &mut self,
         compacted: &collections::FxHashMap<*const Vec<T>, super::page_compaction::CompactedPage<Vec<T>>>,
     ) {
+        // No matching owner means no mutation, including on a shared table.
+        if compacted.is_empty() || !self.segments.iter().any(|segment| {
+            compacted.contains_key(&Arc::as_ptr(&segment.owner))
+        }) {
+            return;
+        }
         // Logical offsets and existing descriptor capacity stay intact.
-        for segment in &mut self.segments {
+        for segment in self.segments.make_mut() {
             if let Some(page) = compacted.get(&Arc::as_ptr(&segment.owner)) {
                 segment.range = page.remap(segment.range.clone());
                 segment.owner = Arc::clone(&page.owner);
