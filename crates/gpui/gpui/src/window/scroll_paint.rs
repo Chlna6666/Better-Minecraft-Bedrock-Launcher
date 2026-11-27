@@ -16,6 +16,7 @@ pub(in crate::window) struct ScrollPaint {
     operations: Arc<Operations>,
     raster_eligible: bool,
     static_order: bool,
+    scoped_order: bool,
     // Optional compact, immutable row texture in captured physical pixels.
     row_raster_bounds: Option<Bounds<ScaledPixels>>,
     // Allocated only for a source actually published as a native layer.
@@ -105,6 +106,8 @@ impl ScrollPaint {
         let mut atlas_tiles = collections::FxHashSet::default();
         let mut order = super::frame::StaticPaintOrder::default();
         let mut static_order = true;
+        let mut scoped = super::frame::StaticPaintOrder::default();
+        let mut scoped_order = scoped.accept(&PaintOperation::StartLayer(coverage));
         let mut visual: Option<PaintBlockBounds> = None;
         let mut raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len());
@@ -124,6 +127,7 @@ impl ScrollPaint {
             raster_eligible = raster_eligible
                 && super::frame::static_scroll_raster_operation(operation, coverage);
             static_order = static_order && order.accept(operation);
+            scoped_order = scoped_order && scoped.accept(operation);
             if raster_eligible && static_order
                 && let PaintOperation::Primitive(primitive) = operation
             {
@@ -140,6 +144,7 @@ impl ScrollPaint {
             Box::default()
         };
         let static_order = raster_eligible && static_order && order.complete();
+        let scoped_order = static_order && scoped_order && scoped.accept(&PaintOperation::EndLayer) && scoped.complete();
         let row_raster_bounds = if static_order {
             visual.and_then(|visual| compact_row_raster(visual, coverage))
         } else { None };
@@ -149,6 +154,7 @@ impl ScrollPaint {
             operations: Arc::new(operations),
             raster_eligible,
             static_order,
+            scoped_order,
             row_raster_bounds,
             native_id: std::sync::OnceLock::new(),
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
@@ -331,6 +337,8 @@ impl ScrollPlacement {
     pub(in crate::window) fn native_geometry(&self) -> Option<NativeScrollGeometry> { self.native }
 
     pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
+
+    pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }
 
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.source, &other.source)
@@ -577,10 +585,21 @@ mod tests {
         assert!(nested.paint_operations.has_deferred_scroll());
         let nested_layers = crate::window::SceneLayers::capture_native(&nested.scene, Some(&layers));
         assert_eq!(nested_layers.frames.len(), 1);
-        assert!(nested_layers.frames[0].root_static_span().is_none());
+        assert_eq!(nested_layers.frames[0].root_static_span(), Some(&(1..2)));
         assert_eq!(nested_layers.frames[0].id, layers.frames[0].id);
         assert!(Arc::ptr_eq(&nested_layers.frames[0].content, &layers.frames[0].content));
         assert_eq!(nested_layers.frames[0].adopt_tile(1, [0, 16, 40, 80], 1.), Some(1));
+        // An overlapping ordinary sibling shares the parent order and
+        // might be reordered across the placement on eager expansion.
+        let mut conflict = Painter::default();
+        conflict.push_layer(viewport.bounds);
+        conflict.insert_primitive(outside(0.));
+        assert!(conflict.push_deferred_scroll(placement.clone()));
+        conflict.pop_layer();
+        conflict.finish();
+        let conflict_layers = crate::window::SceneLayers::capture_native(&conflict.scene, Some(&layers));
+        assert_eq!(conflict_layers.frames.len(), 1);
+        assert!(conflict_layers.frames[0].root_static_span().is_none());
         let nested_paint = crate::window::Paint::new(nested.into_scene(), Arc::default(), Default::default());
         assert!(!nested_paint.owner_fallback().unwrap().unwrap().scene.paint_operations.has_deferred_scroll());
         assert_eq!(scene.bounds_for_range(1..2), Some(viewport.bounds));

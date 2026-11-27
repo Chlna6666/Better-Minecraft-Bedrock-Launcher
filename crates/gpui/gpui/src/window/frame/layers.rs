@@ -513,38 +513,86 @@ impl LayerFrame {
     }
 }
 
-/// Prove painter order by geometry rather than relying on DrawOrder from
-/// an incomplete root. Each independent ordering leaf (a primitive or a
-/// flat scope) covers every pixel it can produce. Overlapping leaves are
-/// therefore ordered by BoundsTree insertion; disjoint leaves commute.
-/// Within one scope the native kind order must also agree with raw paint.
+/// Prove raw painter order without relying on the provisional DrawOrder of
+/// an unexpanded root. A nested scope receives a different native order
+/// while its parent's suffix retains the parent's earlier order. Admit
+/// such scopes only when their pixels commute with every sibling.
 #[derive(Default)]
 pub(in crate::window) struct StaticPaintOrder {
-    scope: Option<Bounds<ScaledPixels>>,
+    scopes: smallvec::SmallVec<[ScopeOrder; 4]>,
+    root_lcd: bool,
+}
+
+struct ScopeOrder {
+    bounds: Bounds<ScaledPixels>,
+    visual: Option<Bounds<ScaledPixels>>,
+    isolated: Option<Bounds<ScaledPixels>>,
     kind: Option<u8>,
     unstable_bounds: Option<Bounds<ScaledPixels>>,
 }
 
+fn union_visual(target: &mut Option<Bounds<ScaledPixels>>, bounds: Bounds<ScaledPixels>) {
+    if !bounds.is_empty() {
+        *target = Some(target.map_or(bounds, |old| old.union(&bounds)));
+    }
+}
+
+fn contains_visual(bounds: Bounds<ScaledPixels>, visual: Bounds<ScaledPixels>) -> bool {
+    visual.is_empty() || bounds.intersect(&visual) == visual
+}
+
+impl ScopeOrder {
+    fn append_isolated(&mut self, visual: Bounds<ScaledPixels>) -> bool {
+        if !contains_visual(self.bounds, visual)
+            || self.visual.is_some_and(|old| old.intersects(&visual))
+        {
+            return false;
+        }
+        union_visual(&mut self.visual, visual);
+        union_visual(&mut self.isolated, visual);
+        true
+    }
+}
+
 impl StaticPaintOrder {
+    pub(in crate::window) fn root() -> Self {
+        Self { root_lcd: cfg!(target_os = "windows"), ..Self::default() }
+    }
+
     pub(in crate::window) fn accept(&mut self, operation: &PaintOperation) -> bool {
         match operation {
             PaintOperation::StartLayer(bounds) => {
-                if self.scope.is_some() || ![bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0].into_iter().all(f32::is_finite) {
+                if ![bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0].into_iter().all(f32::is_finite) {
                     return false;
                 }
-                self.scope = Some(*bounds);
-                self.kind = None;
-                self.unstable_bounds = None;
+                self.scopes.push(ScopeOrder { bounds: *bounds, visual: None, isolated: None,
+                    kind: None, unstable_bounds: None });
                 true
             }
-            PaintOperation::EndLayer => self.scope.take().is_some(),
-            PaintOperation::DeferredScroll(placement) => self.scope.is_none() && placement.has_static_order(),
+            PaintOperation::EndLayer => {
+                let Some(scope) = self.scopes.pop() else { return false; };
+                if let (Some(parent), Some(visual)) = (self.scopes.last_mut(), scope.visual) {
+                    parent.append_isolated(visual)
+                } else { true }
+            }
+            PaintOperation::DeferredScroll(placement) => {
+                if !placement.has_static_order() { return false; }
+                if let Some(scope) = self.scopes.last_mut() {
+                    // Replaying under an inherited layer can collapse the
+                    // source's independent primitive orders into one order.
+                    placement.has_scoped_order() && scope.append_isolated(placement.visual_bounds())
+                } else { true }
+            }
             PaintOperation::Primitive(primitive) => {
-                if static_raster_bounds(primitive).is_none() {
+                let lcd = self.root_lcd && matches!(primitive, Primitive::MonochromeSprite(sprite)
+                    if sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel
+                    && sprite.transformation == TransformationMatrix::unit()
+                    && sprite.animation_id.is_none());
+                if !lcd && static_raster_bounds(primitive).is_none() {
                     return false;
                 }
-                // An offscreen shadow's visible fringe can survive tile
-                // rasterization after eager projection drops its base.
+                // A shadow fringe outside its native ordering bounds
+                // cannot be certified by this geometric proof.
                 let kind = match primitive {
                     Primitive::Shadow(shadow) if shadow.blur_radius.0 == 0. => 0,
                     Primitive::Quad(_) => 1,
@@ -554,21 +602,27 @@ impl StaticPaintOrder {
                     _ => return false,
                 };
                 let visual = primitive.visual_bounds();
-                let ordering = self.scope.unwrap_or_else(|| primitive.bounds().intersect(&primitive.content_mask().bounds));
-                if !visual.is_empty() && ordering.intersect(&visual) != visual {
+                if ![visual.left().0, visual.top().0, visual.right().0, visual.bottom().0].into_iter().all(f32::is_finite) {
                     return false;
                 }
-                if self.scope.is_some() {
-                    if self.kind.is_some_and(|old| old > kind) { return false; }
-                    if self.kind != Some(kind) { self.unstable_bounds = None; }
-                    // Sprite and underline streams use unstable native
-                    // sorting. Atlas relocation can also change sort keys.
-                    // Equal-kind overlapping geometry is not a proof.
-                    if kind >= 3 && !visual.is_empty() {
-                        if self.unstable_bounds.is_some_and(|old| old.intersects(&visual)) { return false; }
-                        self.unstable_bounds = Some(self.unstable_bounds.map_or(visual, |old| old.union(&visual)));
+                let ordering = self.scopes.last().map_or_else(
+                    || primitive.bounds().intersect(&primitive.content_mask().bounds), |scope| scope.bounds);
+                if !contains_visual(ordering, visual) { return false; }
+                if let Some(scope) = self.scopes.last_mut() {
+                    if scope.isolated.is_some_and(|old| old.intersects(&visual))
+                        || scope.kind.is_some_and(|old| old > kind)
+                    {
+                        return false;
                     }
-                    self.kind = Some(kind);
+                    if scope.kind != Some(kind) { scope.unstable_bounds = None; }
+                    // Equal-kind unstable streams can be reordered by
+                    // texture/sampling changes. Only disjoint pixels commute.
+                    if kind >= 3 && !visual.is_empty() {
+                        if scope.unstable_bounds.is_some_and(|old| old.intersects(&visual)) { return false; }
+                        union_visual(&mut scope.unstable_bounds, visual);
+                    }
+                    union_visual(&mut scope.visual, visual);
+                    scope.kind = Some(kind);
                 }
                 true
             }
@@ -576,7 +630,7 @@ impl StaticPaintOrder {
         }
     }
 
-    pub(in crate::window) fn complete(&self) -> bool { self.scope.is_none() }
+    pub(in crate::window) fn complete(&self) -> bool { self.scopes.is_empty() }
 }
 
 // A raw paint-order split is valid only if the native quad stream has
@@ -590,7 +644,7 @@ fn ordered_static_root(scene: &Scene) -> bool {
         return false;
     }
     if scene.paint_operations.has_deferred_scroll() {
-        let mut proof = StaticPaintOrder::default();
+        let mut proof = StaticPaintOrder::root();
         return scene.paint_operations.iter().all(|operation| proof.accept(operation)) && proof.complete();
     }
     let mut previous = None;
@@ -776,8 +830,9 @@ impl SceneLayers {
             };
             frames.push(LayerFrame {
                 layout_key: None, id: geometry.id, generation: 1,
-                static_root_span: (ordered && scene.can_reuse_range_bounds(index..index + 1))
-                    .then_some(index..index + 1),
+                // Native markers are self-contained even inside a proven
+                // ordinary scope; the outside stream preserves its delimiters.
+                static_root_span: ordered.then_some(index..index + 1),
                 damage: LayerDamage::Full, previous_coverage: None,
                 translation, source_viewport, viewport: geometry.viewport,
                 offset: LayerScrollPosition::Pixels(point(crate::px(delta.x.0 / geometry.scale), crate::px(delta.y.0 / geometry.scale))),
