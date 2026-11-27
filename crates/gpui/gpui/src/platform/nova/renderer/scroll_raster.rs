@@ -793,6 +793,42 @@ mod tests {
     }
 
     #[test]
+    fn visible_row_tiles_clip_edges_without_changing_interior_grid() {
+        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(128.), crate::px(512.))));
+        let mut painter = crate::scene::Painter::default();
+        painter.insert_primitive(Quad { bounds: viewport.scale(1.).bounds,
+            content_mask: viewport.scale(1.), ..Default::default() });
+        painter.finish();
+        let scene = painter.into_scene();
+        let mut paint = crate::window::Paint::default();
+        paint.layers.visible_row_fixture(&scene, viewport, [0, 64]);
+        let plan = requests(&paint.layers.frames[0], DrawableSize { width: 128, height: 512 }).unwrap();
+        assert_eq!(plan.iter().map(|tile| (tile.key.y, tile.raster.origin.y, tile.raster.extent.height()))
+            .collect::<Vec<_>>(), vec![(-1, -64, 64), (0, 0, 256), (1, 256, 192)]);
+        assert_eq!(plan[0].source_origin, [0, 0]);
+        assert_eq!(plan[1].source_origin, [0, 64]);
+        assert_eq!(plan[2].source_origin, [0, 320]);
+        assert_eq!(plan[0].bounds.top(), ScaledPixels(0.));
+        assert_eq!(plan[2].bounds.bottom(), ScaledPixels(512.));
+    }
+
+    #[test]
+    fn static_streams_keep_kind_order_and_never_merge_across_promoted_span() {
+        let quad = Primitive::Quad(Quad::default());
+        let shadow = Primitive::Shadow(crate::Shadow::default());
+        let mut streams = StaticStreams::default();
+        streams.push(&shadow, false).unwrap();
+        streams.push(&quad, false).unwrap();
+        streams.push(&quad, false).unwrap();
+        streams.push(&quad, true).unwrap();
+        streams.push(&shadow, false).unwrap();
+        assert_eq!(streams.runs.iter().map(|run| (run.kind, run.first, run.count)).collect::<Vec<_>>(),
+            vec![(SourceKind::Shadow, 0, 1), (SourceKind::Quad, 0, 2),
+                 (SourceKind::Quad, 2, 1), (SourceKind::Shadow, 1, 1)]);
+    }
+
+    #[test]
     fn cannot_sample_unproven_edge_pixels() {
         let paint = fixture([0, 64], 0., 512.);
         assert!(requests(&paint.layers.frames[0], DrawableSize { width: 128, height: 512 }).is_none());

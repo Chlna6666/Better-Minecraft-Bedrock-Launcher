@@ -599,6 +599,23 @@ impl SceneLayers {
     }
 
     #[cfg(test)]
+    pub(crate) fn visible_row_fixture(&mut self, scene: &Scene, viewport: ContentMask<Pixels>,
+        translation: [i32; 2]) {
+        let range = 0..scene.len();
+        let rows: Vec<_> = range.clone().map(|row| LayerPart { row: Some(row), operations: row..row+1 }).collect();
+        let content = LayerContent::from_visible_rows(scene, range.clone(), &rows, viewport.scale(1.), Some(translation))
+            .expect("visible row capture");
+        self.frames.push(LayerFrame {
+            layout_key: 1, id: 1, generation: 1,
+            static_root_outside: static_outside_ranges(scene, range),
+            damage: LayerDamage::Full, previous_coverage: None,
+            translation: Some(translation), source_viewport: viewport.scale(1.), viewport,
+            offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
+            content: Arc::new(content),
+        });
+    }
+
+    #[cfg(test)]
     pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
         self.frames[0].static_root_outside = ordered_static_root(scene)
             .then(|| static_outside_ranges(scene, range)).flatten();
@@ -738,6 +755,7 @@ mod tests {
         let source = ContentRaster {
             source_origin: [0, -128],
             quad_only: true,
+            visible_rows: false,
             coverage: Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
                 size(ScaledPixels(512.), ScaledPixels(1024.))),
         };
@@ -864,6 +882,30 @@ mod tests {
         assert!(!entering.matches_translated(&old, [0, 0], [0, -128], common, viewport));
         let reordered = content(&[Quad { order: 1, ..quad(172.) }]);
         assert!(!reordered.matches_translated(&old, [0, 0], [0, -128], common, viewport));
+    }
+
+    #[test]
+    fn visible_row_raster_keeps_original_pages_and_exact_coverage() {
+        let viewport = ContentMask::new(Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(0.)), size(ScaledPixels(128.), ScaledPixels(512.))));
+        let mut painter = Painter::default();
+        for y in [0., 256.] {
+            let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(y)),
+                size(ScaledPixels(128.), ScaledPixels(256.)));
+            painter.insert_primitive(Quad { bounds, content_mask: viewport, ..Default::default() });
+        }
+        painter.finish();
+        let scene = painter.into_scene();
+        let rows = [LayerPart { row: Some(12), operations: 0..1 },
+            LayerPart { row: Some(13), operations: 1..2 }];
+        let content = LayerContent::from_visible_rows(&scene, 0..2, &rows, viewport, Some([0, 64])).unwrap();
+        assert_eq!(content.parts.as_ref(), &rows);
+        assert!(std::ptr::eq(&content.operations[0], &scene.paint_operations[0]));
+        let raster = content.raster.unwrap();
+        assert!(raster.visible_rows);
+        assert_eq!(raster.source_origin_for_tile([0, -64, 128, 0]), Some([0, 0]));
+        assert!(raster.source_origin_for_tile([0, -256, 128, 0]).is_none());
+        assert!(raster.source_origin_for_tile([0, 256, 128, 512]).is_none());
     }
 
     #[test]
