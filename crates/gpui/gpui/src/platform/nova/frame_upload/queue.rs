@@ -313,10 +313,12 @@ impl NovaAtlasState {
         bytes: &[u8],
         padding: u32,
     ) -> bool {
-        self.enqueue_tile_upload_kind(texture_id, texture_kind, origin, size, bytes, padding)
+        self.enqueue_tile_upload_kind(texture_id, texture_kind, origin, size, bytes, padding, true)
     }
 
-    pub(in crate::platform::nova) fn enqueue_tile_upload_kind(
+    // A fresh physical allocation must follow all earlier queued writes,
+    // not search for (or overwrite) a descriptor belonging to a prior tile.
+    pub(in crate::platform::nova) fn enqueue_new_tile_upload(
         &mut self,
         texture_id: AtlasTextureId,
         texture_kind: AtlasTextureKind,
@@ -324,6 +326,19 @@ impl NovaAtlasState {
         size: Size<DevicePixels>,
         bytes: &[u8],
         padding: u32,
+    ) -> bool {
+        self.enqueue_tile_upload_kind(texture_id, texture_kind, origin, size, bytes, padding, false)
+    }
+
+    fn enqueue_tile_upload_kind(
+        &mut self,
+        texture_id: AtlasTextureId,
+        texture_kind: AtlasTextureKind,
+        origin: Point<DevicePixels>,
+        size: Size<DevicePixels>,
+        bytes: &[u8],
+        padding: u32,
+        replace_existing: bool,
     ) -> bool {
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
@@ -361,7 +376,7 @@ impl NovaAtlasState {
                 .saturating_sub(i32::try_from(padding).unwrap_or(0))
                 .max(0) as u32,
         };
-        if let Some(pending_upload) = self.pending_uploads.iter().rev().find(|upload| {
+        if replace_existing && let Some(pending_upload) = self.pending_uploads.iter().rev().find(|upload| {
             upload.texture_id == texture_id
                 && upload.origin == upload_origin
                 && upload.size == extent

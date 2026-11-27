@@ -238,6 +238,31 @@ impl NovaAtlas {
         });
     }
 
+    fn publish_glyph_batch(
+        &self,
+        keys: &[AtlasKey],
+        entries: &[Option<Arc<AtlasBuildEntry>>],
+        pending: &mut Vec<(usize, u64, Size<DevicePixels>, Vec<u8>)>,
+        ready: &mut [Option<AtlasTile>],
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        for (index, generation, size, bytes) in pending.drain(..) {
+            let key = &keys[index];
+            let entry = entries[index].as_ref().expect("owned glyph build");
+            ready[index] = if entry.generation.load(AtomicOrdering::Acquire) != generation {
+                state.tiles.get(key).copied()
+            } else if let Some(tile) = state.tiles.get(key).copied() {
+                Some(tile)
+            } else {
+                state.publish_new_tile(key.clone(), size, &bytes)
+            };
+        }
+        self.publish_state_flags(&state);
+    }
+
     fn lookup_or_restore_tile(&self, key: &AtlasKey) -> Option<AtlasTile> {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         if let Some(tile) = state.tiles.get(key) {
@@ -475,28 +500,11 @@ impl PlatformAtlas for NovaAtlas {
             return Ok(Some(*tile));
         }
 
-        let Some(tile) = state.allocate_and_upload(&key, size, &bytes) else {
-            let texture_kind = key.texture_kind();
-            if state.full_kinds_logged.insert(texture_kind) {
-                log::warn!(
-                    concat!(
-                        "nova atlas allocation deferred; atlas allocation is unavailable and the shared fallback ",
-                        "tile will be used: kind={:?} size={}x{}"
-                    ),
-                    texture_kind,
-                    size.width.0.max(1),
-                    size.height.0.max(1)
-                );
-            }
-            let fallback = state.fallback_tile(texture_kind);
-            self.publish_state_flags(&state);
-            return Ok(fallback);
-        };
         let image_key = match &key {
             AtlasKey::Image(params) => Some((params.image_id, params.frame_slot)),
             _ => None,
         };
-        state.tiles.insert(key, tile);
+        let tile = state.publish_new_tile(key, size, &bytes);
         self.publish_state_flags(&state);
         drop(state);
         if let Some((image_id, frame_slot)) = image_key {
@@ -504,7 +512,7 @@ impl PlatformAtlas for NovaAtlas {
                 "image_atlas stage=allocate image_id={image_id:?} frame_slot={frame_slot} size_px={}x{} staged_bytes={}",
                 size.width.0, size.height.0, bytes.len());
         }
-        Ok(Some(tile))
+        Ok(tile)
     }
 
     fn refresh_tile_with<'a>(
@@ -583,69 +591,64 @@ impl PlatformAtlas for NovaAtlas {
         build: &mut dyn FnMut() -> Result<GlyphRasterization>,
     ) -> Result<Option<AtlasTile>> {
         let key = AtlasKey::from(params.clone());
-        let mut build_tile = || match build()? {
-            GlyphRasterization::Bitmap { size, bytes } => Ok(Some((size, Cow::Owned(bytes)))),
-            GlyphRasterization::ColorLayers {
-                size,
-                layers,
-                fallback,
-            } => {
-                let width = usize::try_from(size.width.0).ok();
-                let height = usize::try_from(size.height.0).ok();
-                let Some((width, height)) = width.zip(height) else {
-                    return Ok(Some((fallback.size, Cow::Owned(fallback.bytes))));
-                };
-                let mut pixels = vec![[0.0f32; 4]; width.saturating_mul(height)];
-                for layer in layers {
-                    let layer_width = usize::try_from(layer.bounds.size.width.0).unwrap_or(0);
-                    let layer_height = usize::try_from(layer.bounds.size.height.0).unwrap_or(0);
-                    for layer_y in 0..layer_height {
-                        let destination_y = layer.bounds.origin.y.0 + layer_y as i32;
-                        if destination_y < 0 || destination_y >= size.height.0 {
-                            continue;
-                        }
-                        for layer_x in 0..layer_width {
-                            let destination_x = layer.bounds.origin.x.0 + layer_x as i32;
-                            if destination_x < 0 || destination_x >= size.width.0 {
-                                continue;
-                            }
-                            let alpha_index = layer_y * layer_width + layer_x;
-                            let Some(mask) = layer.alpha.get(alpha_index) else {
-                                continue;
-                            };
-                            let source_alpha = f32::from(*mask) / 255.0 * layer.color.a;
-                            let destination_index =
-                                destination_y as usize * width + destination_x as usize;
-                            let destination = &mut pixels[destination_index];
-                            let destination_alpha = destination[3];
-                            let output_alpha =
-                                source_alpha + destination_alpha * (1.0 - source_alpha);
-                            if output_alpha > 0.0 {
-                                let retained = destination_alpha * (1.0 - source_alpha);
-                                destination[0] = (layer.color.b * source_alpha
-                                    + destination[0] * retained)
-                                    / output_alpha;
-                                destination[1] = (layer.color.g * source_alpha
-                                    + destination[1] * retained)
-                                    / output_alpha;
-                                destination[2] = (layer.color.r * source_alpha
-                                    + destination[2] * retained)
-                                    / output_alpha;
-                            }
-                            destination[3] = output_alpha;
-                        }
-                    }
-                }
-                let bytes = pixels
-                    .into_iter()
-                    .flat_map(|pixel| {
-                        pixel.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
-                    })
-                    .collect();
-                Ok(Some((size, Cow::Owned(bytes))))
-            }
+        let mut build_tile = || {
+            let (size, bytes) = glyph_bitmap(build()?);
+            Ok(Some((size, Cow::Owned(bytes))))
         };
         self.ensure_tile_with(key, &mut build_tile)
+    }
+
+    fn ensure_glyphs_with(
+        &self,
+        params: &[RenderGlyphParams],
+        build: &mut dyn FnMut(&RenderGlyphParams) -> Result<GlyphRasterization>,
+    ) -> Result<Vec<Option<AtlasTile>>> {
+        // Bound the number of simultaneously owned glyph bitmaps and key
+        // gates. Contended keys fall back only AFTER releasing other gates.
+        const ALLOCATION_BATCH: usize = 4;
+        const BATCH_BITMAP_BYTES: usize = 2 * 1024 * 1024;
+        let mut output = Vec::with_capacity(params.len());
+        for group in params.chunks(ALLOCATION_BATCH) {
+            let keys: Vec<_> = group.iter().cloned().map(AtlasKey::Glyph).collect();
+            let mut ready: Vec<_> = {
+                let state = self.state.lock().expect("nova atlas lock poisoned");
+                keys.iter().map(|key| state.tiles.get(key).copied()).collect()
+            };
+            let entries: Vec<_> = keys.iter().zip(&ready).map(|(key, tile)| {
+                tile.is_none().then(|| self.build_entry(key))
+            }).collect();
+            let mut guards = Vec::with_capacity(group.len());
+            let mut deferred = Vec::new();
+            let mut pending = Vec::new();
+            let mut pending_bytes = 0usize;
+            for (index, entry) in entries.iter().enumerate() {
+                let Some(entry) = entry else { continue };
+                let Ok(guard) = entry.build.try_lock() else {
+                    deferred.push(index);
+                    continue;
+                };
+                guards.push(guard);
+                if let Some(tile) = self.lookup_or_restore_tile(&keys[index]) {
+                    ready[index] = Some(tile);
+                    continue;
+                }
+                let generation = entry.generation.load(AtomicOrdering::Acquire);
+                let (size, bytes) = glyph_bitmap(build(&group[index])?);
+                pending_bytes = pending_bytes.saturating_add(bytes.capacity());
+                pending.push((index, generation, size, bytes));
+                if pending_bytes >= BATCH_BITMAP_BYTES {
+                    self.publish_glyph_batch(&keys, &entries, &mut pending, &mut ready);
+                    pending_bytes = 0;
+                }
+            }
+            self.publish_glyph_batch(&keys, &entries, &mut pending, &mut ready);
+            drop(guards);
+            for index in deferred {
+                ready[index] = self.ensure_glyph_with(&group[index], &mut || build(&group[index]))?;
+            }
+            output.extend(ready);
+        }
+        Ok(output)
     }
 
     fn supports_parallel_glyphs(&self) -> bool {
@@ -714,6 +717,71 @@ impl PlatformAtlas for NovaAtlas {
             self.publish_state_flags(&state);
         }
     }
+}
+
+fn glyph_bitmap(raster: GlyphRasterization) -> (Size<DevicePixels>, Vec<u8>) {
+        match raster {
+            GlyphRasterization::Bitmap { size, bytes } => (size, bytes),
+            GlyphRasterization::ColorLayers {
+                size,
+                layers,
+                fallback,
+            } => {
+                let width = usize::try_from(size.width.0).ok();
+                let height = usize::try_from(size.height.0).ok();
+                let Some((width, height)) = width.zip(height) else {
+                    return (fallback.size, fallback.bytes);
+                };
+                let mut pixels = vec![[0.0f32; 4]; width.saturating_mul(height)];
+                for layer in layers {
+                    let layer_width = usize::try_from(layer.bounds.size.width.0).unwrap_or(0);
+                    let layer_height = usize::try_from(layer.bounds.size.height.0).unwrap_or(0);
+                    for layer_y in 0..layer_height {
+                        let destination_y = layer.bounds.origin.y.0 + layer_y as i32;
+                        if destination_y < 0 || destination_y >= size.height.0 {
+                            continue;
+                        }
+                        for layer_x in 0..layer_width {
+                            let destination_x = layer.bounds.origin.x.0 + layer_x as i32;
+                            if destination_x < 0 || destination_x >= size.width.0 {
+                                continue;
+                            }
+                            let alpha_index = layer_y * layer_width + layer_x;
+                            let Some(mask) = layer.alpha.get(alpha_index) else {
+                                continue;
+                            };
+                            let source_alpha = f32::from(*mask) / 255.0 * layer.color.a;
+                            let destination_index =
+                                destination_y as usize * width + destination_x as usize;
+                            let destination = &mut pixels[destination_index];
+                            let destination_alpha = destination[3];
+                            let output_alpha =
+                                source_alpha + destination_alpha * (1.0 - source_alpha);
+                            if output_alpha > 0.0 {
+                                let retained = destination_alpha * (1.0 - source_alpha);
+                                destination[0] = (layer.color.b * source_alpha
+                                    + destination[0] * retained)
+                                    / output_alpha;
+                                destination[1] = (layer.color.g * source_alpha
+                                    + destination[1] * retained)
+                                    / output_alpha;
+                                destination[2] = (layer.color.r * source_alpha
+                                    + destination[2] * retained)
+                                    / output_alpha;
+                            }
+                            destination[3] = output_alpha;
+                        }
+                    }
+                }
+                let bytes = pixels
+                    .into_iter()
+                    .flat_map(|pixel| {
+                        pixel.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    })
+                    .collect();
+                (size, bytes)
+            }
+        }
 }
 
 fn preferred_atlas_axis_size(content_axis: i32) -> Option<u32> {
@@ -794,6 +862,31 @@ impl NovaAtlasState {
         self.disabled_kinds.insert(texture_kind);
     }
 
+    fn publish_new_tile(
+        &mut self,
+        key: AtlasKey,
+        size: Size<DevicePixels>,
+        bytes: &[u8],
+    ) -> Option<AtlasTile> {
+        let Some(tile) = self.allocate_and_upload(&key, size, bytes) else {
+            let texture_kind = key.texture_kind();
+            if self.full_kinds_logged.insert(texture_kind) {
+                log::warn!(
+                    concat!(
+                        "nova atlas allocation deferred; atlas allocation is unavailable and the shared fallback ",
+                        "tile will be used: kind={:?} size={}x{}"
+                    ),
+                    texture_kind,
+                    size.width.0.max(1),
+                    size.height.0.max(1)
+                );
+            }
+            return self.fallback_tile(texture_kind);
+        };
+        self.tiles.insert(key, tile);
+        Some(tile)
+    }
+
     fn allocate_and_upload(
         &mut self,
         key: &AtlasKey,
@@ -848,7 +941,7 @@ impl NovaAtlasState {
                 allocation_min_y.saturating_add(i32::try_from(NOVA_ATLAS_TILE_PADDING).ok()?),
             ),
         };
-        if !self.enqueue_tile_upload_kind(
+        if !self.enqueue_new_tile_upload(
             texture_id,
             texture_kind,
             origin,
@@ -1052,6 +1145,62 @@ mod tests {
             DevicePixels(512),
             DevicePixels(512)
         )));
+    }
+
+    #[test]
+    fn glyph_batch_publishes_distinct_tiles_and_reuses_resident_keys() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let params: Vec<_> = (0..4).map(|glyph| RenderGlyphParams {
+            font_id: crate::FontId(0),
+            glyph_id: crate::GlyphId(glyph),
+            font_size: crate::px(12.0),
+            subpixel_variant: Point::default(),
+            scale_factor: 1.0,
+            grayscale_antialiasing: true,
+            is_emoji: false,
+            is_cjk: false,
+        }).collect();
+        let mut builds = 0;
+        let tiles = atlas.ensure_glyphs_with(&params, &mut |_| {
+            builds += 1;
+            Ok(GlyphRasterization::Bitmap {
+                size: size(DevicePixels(2), DevicePixels(2)),
+                bytes: vec![255; 4],
+            })
+        }).expect("glyph batch");
+        assert_eq!(builds, 4);
+        assert!(tiles.iter().all(Option::is_some));
+        assert_eq!(atlas.pending_upload_count_for_test(), 4);
+        let repeated = atlas.ensure_glyphs_with(&params, &mut |_| {
+            anyhow::bail!("resident glyph must not rebuild")
+        }).expect("resident batch");
+        assert_eq!(tiles, repeated);
+    }
+
+    #[test]
+    fn glyph_batch_rejects_invalidated_build() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let params = RenderGlyphParams {
+            font_id: crate::FontId(0),
+            glyph_id: crate::GlyphId(1),
+            font_size: crate::px(12.0),
+            subpixel_variant: Point::default(),
+            scale_factor: 1.0,
+            grayscale_antialiasing: true,
+            is_emoji: false,
+            is_cjk: false,
+        };
+        let result = atlas.ensure_glyphs_with(std::slice::from_ref(&params), &mut |params| {
+            atlas.remove(&AtlasKey::Glyph(params.clone()));
+            Ok(GlyphRasterization::Bitmap {
+                size: size(DevicePixels(2), DevicePixels(2)),
+                bytes: vec![255; 4],
+            })
+        }).expect("invalidated batch");
+        assert_eq!(result, vec![None]);
+        assert_eq!(atlas.pending_upload_count_for_test(), 0);
     }
 
     #[test]

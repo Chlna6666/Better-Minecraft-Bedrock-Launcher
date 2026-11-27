@@ -101,6 +101,18 @@ pub trait PlatformAtlas: Send + Sync {
         })
     }
 
+    /// Ensures glyphs in input order. Backends may publish several allocations
+    /// together, but must preserve their normal invalidation and fallback rules.
+    fn ensure_glyphs_with(
+        &self,
+        params: &[RenderGlyphParams],
+        build: &mut dyn FnMut(&RenderGlyphParams) -> Result<GlyphRasterization>,
+    ) -> Result<Vec<Option<AtlasTile>>> {
+        params.iter().map(|params| {
+            self.ensure_glyph_with(params, &mut || build(params))
+        }).collect()
+    }
+
     /// Whether independent glyph requests may be prepared on background workers.
     fn supports_parallel_glyphs(&self) -> bool {
         false

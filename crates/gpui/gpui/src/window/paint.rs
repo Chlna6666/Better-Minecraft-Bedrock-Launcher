@@ -173,10 +173,23 @@ fn prepare_misses(
     misses: Vec<GlyphBatchMiss>,
     context: GlyphPaintContext,
 ) -> Result<Vec<(SmallVec<[usize; 4]>, Option<PreparedGlyph>)>> {
-    misses.into_iter().map(|miss| {
-        let prepared = prepare_glyph(text, atlas, &miss.params, miss.origins.iter().copied(), &context)?;
-        Ok((miss.indices, prepared))
-    }).collect()
+    let mut results = Vec::with_capacity(misses.len());
+    let mut params = Vec::with_capacity(misses.len());
+    let mut visible = Vec::with_capacity(misses.len());
+    for miss in misses {
+        let bounds = text.raster_bounds(&miss.params)?;
+        if miss.origins.iter().copied().any(|origin| glyph_visible(origin, bounds, &context)) {
+            visible.push((miss.indices, bounds));
+            params.push(miss.params);
+        } else {
+            results.push((miss.indices, None));
+        }
+    }
+    let tiles = atlas.ensure_glyphs_with(&params, &mut |params| text.rasterize_glyph(params))?;
+    for ((indices, bounds), tile) in visible.into_iter().zip(tiles) {
+        results.push((indices, tile.map(|tile| (bounds, tile))));
+    }
+    Ok(results)
 }
 
 impl Window {
