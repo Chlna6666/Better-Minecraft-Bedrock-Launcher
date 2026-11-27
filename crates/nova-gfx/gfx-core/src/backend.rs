@@ -1318,6 +1318,23 @@ pub trait PresentationDevice {
         })
     }
 
+    /// Present an immutable producer-owned command stream. The allocation
+    /// identity allows native backends to retain command encoding plans
+    /// without hashing or comparing every draw. Resource IDs, attachment
+    /// state and submission lifetimes must still be validated by the backend.
+    /// The default preserves tracked presentation, including rejected WSI
+    /// presents with accepted GPU work.
+    fn render_and_present_owned(
+        &mut self,
+        frame: &PresentFrameDescriptor<'_>,
+        owner: &std::sync::Arc<[crate::RenderCommand]>,
+    ) -> Result<PresentOutcome> {
+        if !std::ptr::eq(frame.commands, owner.as_ref()) {
+            return Err(Error::InvalidInput("owned present stream identity mismatch".into()));
+        }
+        self.render_and_present_tracked(frame)
+    }
+
     /// Records one offscreen render pass.
     ///
     /// Backends that support deferred offscreen completion may override
@@ -1754,6 +1771,31 @@ mod offscreen_submission_tests {
             });
             Ok(None)
         }
+    }
+
+    #[test]
+    fn owned_present_rejects_nonidentical_command_allocation() {
+        let owner: std::sync::Arc<[crate::RenderCommand]> = vec![crate::RenderCommand::Draw(crate::DrawCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: Default::default(),
+            vertex_count: 3,
+            instance_count: 1,
+            first_vertex: 0,
+            first_instance: 0,
+            scissor: None,
+        })].into();
+        let copy: std::sync::Arc<[crate::RenderCommand]> = owner.to_vec().into();
+        let frame = PresentFrameDescriptor {
+            swapchain: crate::SwapchainId::from_parts(1, 1),
+            render_pass: RenderPassId::from_parts(1, 1),
+            commands: owner.as_ref(),
+            color_load_op: LoadOp::Load,
+            depth_attachment: None,
+            present_region: None,
+        };
+        let mut device = MockDevice::default();
+        assert!(matches!(device.render_and_present_owned(&frame, &copy), Err(Error::InvalidInput(_))));
+        assert!(matches!(device.render_and_present_owned(&frame, &owner), Err(Error::Unavailable(_))));
     }
 
     #[test]

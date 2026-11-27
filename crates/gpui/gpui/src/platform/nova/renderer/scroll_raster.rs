@@ -1698,11 +1698,11 @@ impl NovaRenderer {
         } else { None };
         // Preserve root prefix -> resident tiles -> root suffix. The
         // promoted fragment is never encoded or drawn on this path.
-        let outcome = match device.render_and_present_tracked(&PresentFrameDescriptor {
+        let outcome = match device.render_and_present_owned(&PresentFrameDescriptor {
             swapchain: self.swapchain, render_pass: self.render_pass, commands: &commands,
             color_load_op: LoadOp::Clear(clear_color()), depth_attachment: Some(self.depth_attachment()),
             present_region: None,
-        }) {
+        }, &commands) {
             Ok(outcome) => outcome,
             Err(error) => {
                 // DX11/GL may record native draws before Present or fence
