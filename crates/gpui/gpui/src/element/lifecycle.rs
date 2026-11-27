@@ -144,46 +144,79 @@ impl GlobalElementId {
 // Copyright 2022 - 2025 Zed Industries, Inc.
 // Copyright 2026 Longbridge.
 // SPDX-License-Identifier: Apache-2.0
-/// The global ids handed out this frame and the last, by the hash of their
-/// path.
-///
-/// An element whose path is the one it had on the frame before, which is
-/// nearly every element, is given the id it had then, rather than a copy of
-/// the whole element id stack to be dropped id by id when the frame is done.
-#[derive(Default)]
+/// One persistent identity table. The path hash is already the map key;
+/// only the immutable path allocation and its access generation are stored.
+struct GlobalIdEntry {
+    path: Arc<[ElementId]>,
+    stamp: u64,
+}
+
+/// The high bit marks an identity first inserted by the candidate frame.
+/// It is meaningful only while the low bits equal the current epoch.
+const CANDIDATE_ID: u64 = 1 << 63;
+
 pub(crate) struct GlobalIdCache {
-    previous: collections::FxHashMap<u64, GlobalElementId>,
-    current: collections::FxHashMap<u64, GlobalElementId>,
+    entries: collections::FxHashMap<u64, GlobalIdEntry>,
+    epoch: u64,
+    used: usize,
+}
+
+impl Default for GlobalIdCache {
+    fn default() -> Self {
+        Self { entries: collections::FxHashMap::default(), epoch: 1, used: 0 }
+    }
 }
 
 impl GlobalIdCache {
-    /// The global id of `path`: one handed out already if there is one, a
-    /// new one otherwise.
     pub(crate) fn get(&mut self, path: &ElementIdStack) -> GlobalElementId {
         let hash = path.hash();
-        if let Some(id) = self.current.get(&hash)
-            && path.matches(id.0.as_ref())
-        {
-            return id.clone();
+        if let Some(entry) = self.entries.get_mut(&hash) {
+            if !path.matches(&entry.path) {
+                // A hash is not identity. A rare collision uses an
+                // uncached path without replacing the committed owner.
+                return path.global_id();
+            }
+            if entry.stamp & !CANDIDATE_ID != self.epoch {
+                entry.stamp = self.epoch;
+                self.used += 1;
+            }
+            return GlobalElementId(Arc::clone(&entry.path), hash);
         }
-        let id = match self.previous.get(&hash) {
-            Some(id) if path.matches(id.0.as_ref()) => id.clone(),
-            _ => path.global_id(),
-        };
-        self.current.insert(hash, id.clone());
+        let id = path.global_id();
+        self.entries.insert(hash, GlobalIdEntry {
+            path: Arc::clone(&id.0),
+            stamp: self.epoch | CANDIDATE_ID,
+        });
+        self.used += 1;
         id
     }
 
-    /// Keeps this frame's ids for the next one to find, and forgets the
-    /// previous frame's.
     pub(crate) fn finish_frame(&mut self) {
-        mem::swap(&mut self.previous, &mut self.current);
-        self.current.clear();
+        debug_assert!(self.used <= self.entries.len());
+        if self.used != self.entries.len() {
+            let epoch = self.epoch;
+            self.entries.retain(|_, entry| entry.stamp & !CANDIDATE_ID == epoch);
+            let target = self.entries.len().max(32);
+            if self.entries.capacity() > target.saturating_mul(4) {
+                self.entries.shrink_to(target);
+            }
+        }
+        self.used = 0;
+        self.epoch = self.epoch.checked_add(1)
+            .filter(|epoch| *epoch < CANDIDATE_ID).expect("global id epoch exhausted");
     }
 
-    /// Keep the committed cache when BMCBL abandons a speculative draw.
+    /// Roll back candidate-only paths without dropping committed paths
+    /// that were not reached by the abandoned traversal.
     pub(crate) fn abort_frame(&mut self) {
-        self.current.clear();
+        if self.used == 0 { return; }
+        let epoch = self.epoch;
+        self.entries.retain(|_, entry| {
+            if entry.stamp == (epoch | CANDIDATE_ID) { return false; }
+            if entry.stamp == epoch { entry.stamp = epoch - 1; }
+            true
+        });
+        self.used = 0;
     }
 }
 
@@ -642,16 +675,46 @@ mod global_element_id_hash_tests {
     }
 
     #[test]
+    fn global_id_cache_repeated_abort_and_partial_commit_preserve_only_live_paths() {
+        let mut a = ElementIdStack::default();
+        a.push(ElementId::from("a"));
+        let mut b = ElementIdStack::default();
+        b.push(ElementId::from("b"));
+        let mut c = ElementIdStack::default();
+        c.push(ElementId::from("c"));
+        let mut cache = GlobalIdCache::default();
+        let committed_a = cache.get(&a);
+        let committed_b = cache.get(&b);
+        cache.finish_frame();
+        for _ in 0..3 {
+            assert!(Arc::ptr_eq(&committed_a.0, &cache.get(&a).0));
+            let abandoned = cache.get(&c);
+            let weak = Arc::downgrade(&abandoned.0);
+            drop(abandoned);
+            cache.abort_frame();
+            assert!(weak.upgrade().is_none());
+            assert_eq!(cache.entries.len(), 2);
+        }
+        assert!(Arc::ptr_eq(&committed_b.0, &cache.get(&b).0));
+        cache.finish_frame();
+        assert_eq!(cache.entries.len(), 1);
+        assert!(!Arc::ptr_eq(&committed_a.0, &cache.get(&a).0));
+    }
+
+    #[test]
     fn global_id_cache_rejects_colliding_paths() {
         let mut stack = ElementIdStack::default();
         stack.push(ElementId::from("row"));
         let mut cache = GlobalIdCache::default();
         let forged = GlobalElementId(Arc::from([ElementId::from("cell")]), stack.hash());
-        cache.current.insert(stack.hash(), forged.clone());
+        cache.entries.insert(stack.hash(), GlobalIdEntry {
+            path: Arc::clone(&forged.0), stamp: cache.epoch | CANDIDATE_ID,
+        });
+        cache.used = 1;
         assert_eq!(cache.get(&stack).0.as_ref(), stack.as_slice());
         cache.finish_frame();
-        cache.previous.insert(stack.hash(), forged);
         assert_eq!(cache.get(&stack).0.as_ref(), stack.as_slice());
+        assert!(Arc::ptr_eq(&cache.entries[&stack.hash()].path, &forged.0));
     }
 
     #[test]
