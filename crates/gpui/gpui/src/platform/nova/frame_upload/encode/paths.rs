@@ -126,7 +126,7 @@ impl FrameUpload {
             self.path_rasterization_encode_scratch
                 .reserve(encoded_bytes);
         }
-        for vertex in &path.vertices {
+        for vertex in path.vertices.iter() {
             write_path_rasterization_vertex(
                 &mut self.path_rasterization_encode_scratch,
                 vertex,

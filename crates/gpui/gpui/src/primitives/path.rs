@@ -6,7 +6,7 @@ use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 use std::{
     fmt::Debug,
     ops::{Add, Sub},
-    sync::atomic::{AtomicUsize, Ordering::SeqCst},
+    sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}},
 };
 #[cfg(any(test, feature = "bench-support"))]
 use std::sync::LazyLock;
@@ -161,7 +161,9 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub(crate) animation_id: Option<SceneAnimationId>,
     pub(crate) bounds: Bounds<P>,
     pub(crate) content_mask: ContentMask<P>,
-    pub(crate) vertices: Vec<PathVertex<P>>,
+    // Operation replay and the sorted Path stream share the same immutable
+    // triangle payload. Geometry edits detach only when another owner exists.
+    pub(crate) vertices: Arc<Vec<PathVertex<P>>>,
     pub(crate) color: Background,
     start: Point<P>,
     current: Point<P>,
@@ -179,7 +181,7 @@ impl Path<Pixels> {
             geometry_generation: PathGeometryGeneration::default(),
             order: DrawOrder::default(),
             animation_id: None,
-            vertices: Vec::new(),
+            vertices: Arc::default(),
             start,
             current: start,
             bounds: Bounds {
@@ -205,7 +207,7 @@ impl Path<Pixels> {
             // Rasterizers consume the path-level mask. The per-vertex field is only a tiny legacy
             // marker retained for internal struct-literal compatibility, so scaling vertices now
             // copies only xy/st data instead of duplicating a large ContentMask for every vertex.
-            vertices: self
+            vertices: Arc::new(self
                 .vertices
                 .iter()
                 .map(|vertex| PathVertex {
@@ -213,7 +215,7 @@ impl Path<Pixels> {
                     st_position: vertex.st_position,
                     content_mask: vertex.content_mask,
                 })
-                .collect(),
+                .collect()),
             start: self.start.map(|start| start.scale(factor)),
             current: self.current.scale(factor),
             contour_count: self.contour_count,
@@ -306,7 +308,7 @@ impl Path<Pixels> {
             animation_id: self.animation_id,
             bounds,
             content_mask,
-            vertices: transform_vertices(&self.vertices, device_scale, visual_scale, translation),
+            vertices: Arc::new(transform_vertices(&self.vertices, device_scale, visual_scale, translation)),
             start: transform_point(self.start, device_scale, visual_scale, translation),
             current: transform_point(self.current, device_scale, visual_scale, translation),
             contour_count: self.contour_count,
@@ -373,17 +375,18 @@ impl Path<Pixels> {
                 size: Default::default(),
             });
 
-        self.vertices.push(PathVertex {
+        let vertices = Arc::make_mut(&mut self.vertices);
+        vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
             content_mask: 0,
         });
-        self.vertices.push(PathVertex {
+        vertices.push(PathVertex {
             xy_position: xy.1,
             st_position: st.1,
             content_mask: 0,
         });
-        self.vertices.push(PathVertex {
+        vertices.push(PathVertex {
             xy_position: xy.2,
             st_position: st.2,
             content_mask: 0,
@@ -425,7 +428,7 @@ impl Path<ScaledPixels> {
             },
             corner_radii: self.content_mask.corner_radii.map(|value| *value * scale),
         };
-        for vertex in &mut self.vertices {
+        for vertex in Arc::make_mut(&mut self.vertices) {
             vertex.xy_position = vertex.xy_position * scale + translation;
         }
         self.start = self.start * scale + translation;
@@ -438,6 +441,29 @@ impl Path<ScaledPixels> {
 mod tests {
     use super::*;
     use crate::px;
+
+    #[test]
+    fn cloned_path_shares_geometry_until_a_geometry_edit() {
+        let mut path = Path::new(point(px(0.), px(0.)));
+        let triangle = (point(px(0.), px(0.)), point(px(4.), px(0.)), point(px(0.), px(4.)));
+        let st = (point(0., 0.), point(1., 0.), point(0., 1.));
+        path.push_triangle(triangle, st);
+        let original = path.clone();
+        assert!(Arc::ptr_eq(&path.vertices, &original.vertices));
+        path.push_triangle(triangle, st);
+        assert_eq!(original.vertices.len(), 3);
+        assert_eq!(path.vertices.len(), 6);
+        assert!(!Arc::ptr_eq(&path.vertices, &original.vertices));
+
+        let scaled = original.scale(1.);
+        let mut retained = scaled.clone();
+        assert!(Arc::ptr_eq(&scaled.vertices, &retained.vertices));
+        retained.order = 9;
+        assert!(Arc::ptr_eq(&scaled.vertices, &retained.vertices));
+        let moved = retained.transform_uniform(1., point(ScaledPixels(2.), ScaledPixels(3.)));
+        assert!(!Arc::ptr_eq(&scaled.vertices, &moved.vertices));
+        assert_eq!(scaled.vertices[0].xy_position, point(ScaledPixels(0.), ScaledPixels(0.)));
+    }
 
     #[test]
     fn bulk_transform_matches_scalar_path() {
@@ -471,7 +497,7 @@ mod tests {
         assert_eq!(selected_vertices, scalar_vertices);
         let transformed =
             path.paint_scale_transform(1.25, 0.875, point(ScaledPixels(4.0), ScaledPixels(-3.0)));
-        assert_eq!(transformed.vertices, scalar_vertices);
+        assert_eq!(transformed.vertices.as_slice(), scalar_vertices.as_slice());
     }
 }
 
