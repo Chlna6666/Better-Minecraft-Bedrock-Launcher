@@ -43,12 +43,19 @@ fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec
     if usize::try_from(last.checked_sub(first)?.checked_add(1)?).ok()? > MAX_TILES {
         return None;
     }
-    let extent = Extent2d::new((right - left) as u32, height as u32).ok()?;
     let mut result = Vec::with_capacity((last - first + 1) as usize);
     for row in first..=last {
-        let y = row.checked_mul(height)?;
+        let grid_y = row.checked_mul(height)?;
+        let grid_end = grid_y.checked_add(height)?;
+        // Row-backed captures own only visible pixels. Clip the two edge
+        // strips exactly; full interior strips retain their stable grid key.
+        // Overscan captures still demand the entire strip be available.
+        let (y, end) = if layer.has_visible_row_source() {
+            (grid_y.max(content_top), grid_end.min(content_bottom))
+        } else { (grid_y, grid_end) };
+        let extent = Extent2d::new((right - left) as u32, (end - y) as u32).ok()?;
         let rect = [i64::from(content_left), i64::from(y),
-            i64::from(content_left) + i64::from(extent.width()), i64::from(y) + i64::from(height)];
+            i64::from(content_left) + i64::from(extent.width()), i64::from(end)];
         let (_, source_origin) = layer.raster_source_for_tile(rect)?;
         result.push(Request {
             key: RasterTileKey { layer: layer.id, x: content_left, y: row },
@@ -56,7 +63,7 @@ fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec
             source_origin,
             bounds: crate::bounds(
                 crate::point(ScaledPixels(left as f32), ScaledPixels(y.checked_add(dy)? as f32)),
-                crate::size(ScaledPixels(extent.width() as f32), ScaledPixels(height as f32))),
+                crate::size(ScaledPixels(extent.width() as f32), ScaledPixels(extent.height() as f32))),
         });
     }
     Some(result)
@@ -68,7 +75,7 @@ fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec
 pub(super) struct Resources {
     buffers: Vec<BufferId>,
     bindings: Vec<BindGroupId>,
-    depth: Option<(TextureId, TextureViewId)>,
+    depths: Vec<(TextureId, TextureViewId)>,
 }
 
 impl Resources {
@@ -104,7 +111,7 @@ impl Resources {
                 log::debug!("scroll raster buffer retirement failed: {error}");
             }
         }
-        if let Some((texture, view)) = self.depth {
+        for (texture, view) in self.depths {
             destroy_depth_target(device, texture, view, "scroll raster");
         }
     }
@@ -350,6 +357,7 @@ impl CompositeSlot {
 struct RasterPass {
     write: RasterTileWrite,
     raster: RasterTile,
+    depth: TextureViewId,
     commands: Vec<RenderCommand>,
 }
 
@@ -596,7 +604,7 @@ impl NovaRenderer {
                 if streams.runs.is_empty() { return Ok(false); }
                 let source_buffers = streams.upload(device, &mut resources, original,
                     &pack_text_raster_params(&self.rendering_parameters), None)?;
-                resources.depth = Some(create_depth_target(device, "scroll raster", request.raster.extent)?);
+                let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
                 for (request, read) in requests.iter().zip(&reads) {
                     if read.is_some() { continue; }
                     let raster = RasterTile {
@@ -608,10 +616,16 @@ impl NovaRenderer {
                     let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
                     let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
                     let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied)?;
+                    let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
+                        let target = create_depth_target(device, "scroll raster", raster.extent)?;
+                        resources.depths.push(target);
+                        depth_views.push((raster.extent, target.1));
+                        target.1
+                    };
                     let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
                         return Ok(false);
                     };
-                    passes.push(RasterPass { write, raster, commands });
+                    passes.push(RasterPass { write, raster, depth, commands });
                 }
                 Ok(true)
             })();
@@ -624,7 +638,7 @@ impl NovaRenderer {
             let descriptors: Vec<_> = passes.iter().zip(&views).map(|(pass, view)| RenderPassCommands {
                 color_attachments: std::slice::from_ref(view), render_pass: self.render_pass,
                 commands: &pass.commands, color_load_op: LoadOp::Clear(clear_color()), clear_region: None,
-                depth_attachment: Some(DepthAttachment { target: resources.depth.unwrap().1,
+                depth_attachment: Some(DepthAttachment { target: pass.depth,
                     depth_load_op: LoadOp::Clear(1.), stencil_load_op: None }),
                 viewport: Some(pass.raster.viewport()), resolve_target: None,
             }).collect();
@@ -656,9 +670,9 @@ impl NovaRenderer {
         if self.scroll_composite_slots.len() <= slot {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
-        let composite_slot = &mut self.scroll_composite_slots[slot];
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Vec<RenderCommand>> {
+            let composite_slot = &mut self.scroll_composite_slots[slot];
             let mut bytes = Vec::with_capacity(requests.len() * PACKED_POLY_SPRITE_BYTES);
             for request in requests {
                 write_polychrome_sprite(&mut bytes, &PolychromeSprite {

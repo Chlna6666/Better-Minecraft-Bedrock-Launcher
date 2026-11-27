@@ -91,9 +91,45 @@ impl LayerContent {
         Some(Self {
             operations: Arc::clone(operations),
             parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
-            raster: Some(ContentRaster { source_origin, coverage, quad_only }),
+            raster: Some(ContentRaster { source_origin, coverage, quad_only, visible_rows: false }),
             raster_atlas_tiles: Arc::clone(atlas_tiles),
         })
+    }
+
+    /// Lists already publish immutable row operation spans. Promote that
+    /// exact visible capture without inventing overscan or copying its pages.
+    fn from_visible_rows(scene: &Scene, range: Range<usize>, rows: &[LayerPart],
+        viewport: ContentMask<ScaledPixels>, translation: Option<[i32; 2]>) -> Option<Self> {
+        let origin = translation?;
+        if rows.is_empty() || viewport.corner_radii != Default::default()
+            || !scene.paint_operations.range_is_replayable(range.clone())
+            || origin.iter().any(|&value| value.unsigned_abs() > 1_048_576)
+        { return None; }
+        let mut content = Self::capture(scene, range, rows)?;
+        let mut ids = FxHashSet::default();
+        let mut quad_only = true;
+        for op in content.operations.iter() {
+            if !static_scroll_raster_operation(op, viewport.bounds) { return None; }
+            match op {
+                PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => {
+                    ids.insert((s.tile.texture_id, s.tile.tile_id.0));
+                    quad_only = false;
+                }
+                PaintOperation::Primitive(Primitive::PolychromeSprite(s)) => {
+                    ids.insert((s.tile.texture_id, s.tile.tile_id.0));
+                    quad_only = false;
+                }
+                PaintOperation::Primitive(Primitive::Quad(_)) => {}
+                PaintOperation::Primitive(_) => quad_only = false,
+                _ => {}
+            }
+        }
+        content.raster = Some(ContentRaster {
+            source_origin: origin, coverage: LayerFrame::coverage(viewport, translation),
+            quad_only, visible_rows: true,
+        });
+        content.raster_atlas_tiles = ids.into_iter().collect::<Vec<_>>().into();
+        Some(content)
     }
 
     // GPUI Fast inherits a tile only when its ordered contributing paint
@@ -193,6 +229,7 @@ struct ContentRaster {
     source_origin: [i32; 2],
     coverage: Bounds<ScaledPixels>,
     quad_only: bool,
+    visible_rows: bool,
 }
 
 impl ContentRaster {
@@ -394,6 +431,10 @@ impl LayerFrame {
         Some((self.source_viewport.bounds, self.translation?))
     }
 
+    pub(crate) fn has_visible_row_source(&self) -> bool {
+        self.content.raster.is_some_and(|raster| raster.visible_rows)
+    }
+
     pub(crate) fn raster_atlas_tiles(&self) -> &[(crate::AtlasTextureId, u32)] {
         &self.content.raster_atlas_tiles
     }
@@ -418,14 +459,14 @@ impl LayerFrame {
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {
         // Overscan residency is keyed in stable content space. A same-generation
         // tile is valid only within the immutable source's certified coverage.
-        if self.content.raster.is_some() {
-            if generation != self.generation || !scale.is_finite() || scale <= 0.
-                || self.viewport.scale(scale) != self.source_viewport
-            {
+        if let Some(raster) = self.content.raster {
+            if !scale.is_finite() || scale <= 0. || self.viewport.scale(scale) != self.source_viewport {
                 return None;
             }
             self.raster_source_for_tile(rect)?;
-            return Some(generation);
+            if !raster.visible_rows {
+                return (generation == self.generation).then_some(generation);
+            }
         }
         if generation == self.generation {
             return Some(generation);
@@ -600,7 +641,10 @@ impl SceneLayers {
                      .and_then(|(operations, coverage, delta, quad_only, atlas_tiles)| LayerContent::from_scroll(
                         operations, coverage, delta, record.translation, record.source_viewport, quad_only, atlas_tiles,
                     ))
-            } else { None };
+            } else {
+                LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
+                    record.source_viewport, record.translation)
+            };
             let static_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
@@ -629,9 +673,11 @@ impl SceneLayers {
                     // has not yet consumed it.
                     (previous.id, previous.generation, content, previous.damage, previous.previous_coverage)
                 } else if let Some(next) = previous.generation.checked_add(1) {
-                    let (damage, coverage) = if content.raster.is_some() || previous.content.raster.is_some() {
-                        (LayerDamage::Full, None)
-                    } else { previous.transition(record, &content) };
+                    let visible_pair = content.raster.is_some_and(|raster| raster.visible_rows)
+                        && previous.content.raster.is_some_and(|raster| raster.visible_rows);
+                    let (damage, coverage) = if visible_pair || (content.raster.is_none() && previous.content.raster.is_none()) {
+                        previous.transition(record, &content)
+                    } else { (LayerDamage::Full, None) };
                     (previous.id, next, Arc::new(content), damage, coverage)
                 } else {
                     (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
