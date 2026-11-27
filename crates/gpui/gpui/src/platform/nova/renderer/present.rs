@@ -985,33 +985,15 @@ impl NovaRenderer {
         let atlas_content_generation = atlas_upload.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let text_raster = self.retained_upload.text_raster_token();
-        self.raster_tiles.begin_frame();
         let residency_paint = logical_paint.unwrap_or(&packet.paint);
-        let tile_context = self.scroll_tile_context(residency_paint.geometry.scale_factor);
+        self.reconcile_scroll_residency(residency_paint);
         if self.raster_tiles.bytes() != 0 {
-            if self.raster_tile_context != Some(tile_context) {
-                self.raster_tiles.invalidate_all();
-            }
-            let layers: FxHashMap<_, _> = residency_paint.layers.frames.iter()
-                .map(|layer| (layer.id, layer)).collect();
-            let scale = residency_paint.geometry.scale_factor;
-            self.raster_tiles.reconcile_tiles(|key, generation, raster| {
-                let layer = layers.get(&key.layer)?;
-                let x = i64::from(raster.origin.x);
-                let y = i64::from(raster.origin.y);
-                layer.adopt_tile(generation, [
-                    x, y,
-                    x + i64::from(raster.extent.width()),
-                    y + i64::from(raster.extent.height()),
-                ], scale)
-            });
             if self.submitted_frames % 120 == 0 {
                 if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, Some(120)) {
                     log::debug!("failed to trim idle scroll tiles: {error}");
                 }
             }
         }
-        self.raster_tile_context = Some(tile_context);
         let text_raster_changed = self.submitted_text_raster != text_raster;
         if text_raster_changed {
             // Shader context can change cached glyph pixels even when the

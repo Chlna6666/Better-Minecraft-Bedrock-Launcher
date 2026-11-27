@@ -351,15 +351,15 @@ fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::
 pub(super) struct OutsideRoot {
     source: crate::scene::Operations,
     source_ends: Vec<usize>,
-    atlas_epoch: Option<[u64; 3]>,
+    atlas_epoch: Option<[u64; 4]>,
     streams: StaticStreams,
     boundaries: Vec<usize>,
     extensions: Vec<crate::PaintRendererExtension>,
 }
 
-fn outside_atlas_epoch(renderer: &NovaRenderer) -> [u64; 3] {
+fn outside_atlas_epoch(renderer: &NovaRenderer) -> [u64; 4] {
     [renderer.atlas.placement_generation(), renderer.atlas.texture_set_generation(),
-        renderer.atlas.scroll_content_generation()]
+        renderer.atlas.scroll_content_generation(), renderer.atlas.scroll_damage_generation()]
 }
 
 /// Translate run boundaries to command boundaries once. An extension may
@@ -683,7 +683,42 @@ impl NovaRenderer {
     /// alone do not invalidate pixels already rasterized into a tile.
     pub(super) fn scroll_tile_context(&self, scale: f32) -> (u64, Option<retained_upload::StaticStreamToken>, u32) {
         let text = pack_text_raster_params(&self.rendering_parameters);
-        (self.atlas.scroll_content_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)), scale.to_bits())
+        (self.atlas.scroll_damage_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)), scale.to_bits())
+    }
+
+    /// Reconcile the original logical Paint in both presentation paths.
+    /// Newly allocated Atlas glyphs must not evict unrelated cached pixels.
+    /// A same-ID refresh invalidates only layers that sample that identity.
+    pub(super) fn reconcile_scroll_residency(&mut self, paint: &crate::window::Paint) {
+        let scale = paint.geometry.scale_factor;
+        let context = self.scroll_tile_context(scale);
+        self.raster_tiles.begin_frame();
+        if self.raster_tiles.bytes() != 0 {
+            let dirty = match self.raster_tile_context {
+                Some(previous) if previous.1 == context.1 && previous.2 == context.2 => {
+                    self.atlas.scroll_damage_since(previous.0, context.0)
+                }
+                _ => None,
+            };
+            if let Some(dirty) = dirty {
+                // Filter once per source, not once per tile. Unrelated layers
+                // still adopt exact geometric generation transitions.
+                let layers: FxHashMap<_, _> = paint.layers.frames.iter()
+                    .filter(|layer| dirty.is_empty() || !layer.raster_atlas_tiles().iter()
+                        .any(|(_, id)| dirty.contains(id)))
+                    .map(|layer| (layer.id, layer)).collect();
+                self.raster_tiles.reconcile_tiles(|key, generation, raster| {
+                    let layer = layers.get(&key.layer)?;
+                    let x = i64::from(raster.origin.x);
+                    let y = i64::from(raster.origin.y);
+                    layer.adopt_tile(generation, [x, y, x + i64::from(raster.extent.width()),
+                        y + i64::from(raster.extent.height())], scale)
+                });
+            } else {
+                self.raster_tiles.invalidate_all();
+            }
+        }
+        self.raster_tile_context = Some(context);
     }
 
     pub(super) fn try_scroll_raster_present(&mut self, packet: &mut PresentationPacket) -> Result<Option<bool>> {
@@ -749,23 +784,7 @@ impl NovaRenderer {
         if packet.dirty_region.is_full() && self.rendering_parameters.refresh_monitor_parameters() {
             self.retained_upload.invalidate_encode_key();
         }
-        let context = self.scroll_tile_context(packet.paint.geometry.scale_factor);
-        if self.raster_tile_context != Some(context) {
-            self.raster_tiles.invalidate_all();
-            self.raster_tile_context = Some(context);
-        }
-        self.raster_tiles.begin_frame();
-        // Row promotion can expose dozens of independent source IDs.
-        // Reconcile cache entries in O(tiles + layers), not a nested scan.
-        let layers: FxHashMap<_, _> = packet.paint.layers.frames.iter()
-            .map(|layer| (layer.id, layer)).collect();
-        self.raster_tiles.reconcile_tiles(|key, generation, raster| {
-            let layer = layers.get(&key.layer)?;
-            let x = i64::from(raster.origin.x);
-            let y = i64::from(raster.origin.y);
-            layer.adopt_tile(generation, [x, y, x + i64::from(raster.extent.width()),
-                y + i64::from(raster.extent.height())], packet.paint.geometry.scale_factor)
-        });
+        self.reconcile_scroll_residency(&packet.paint);
         let result = match &mut *lock_backend(&backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => self.scroll_raster_present(device, &plans, &packet.paint.scene, slot, packet.frame_time),

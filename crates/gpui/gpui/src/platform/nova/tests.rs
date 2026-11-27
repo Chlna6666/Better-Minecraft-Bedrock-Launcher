@@ -121,18 +121,23 @@ fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels()
         grayscale_antialiasing: true, is_emoji: false, is_cjk: false,
     });
     let before = atlas.scroll_content_generation();
+    let damage_before = atlas.scroll_damage_generation();
     let build = |coverage| {
         Ok(Some((size(DevicePixels(4), DevicePixels(4)), Cow::Owned(vec![coverage; 16]))))
     };
     let tile = atlas.ensure_tile_with(key.clone(), &mut || build(64)).unwrap().unwrap();
     let ids = [(tile.texture_id, tile.tile_id.0)];
     assert_ne!(atlas.scroll_content_generation(), before);
+    assert_eq!(atlas.scroll_damage_generation(), damage_before, "new glyphs never invalidate existing raster pixels");
     assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "queued upload is not resident");
     atlas.clear_pending_uploads_for_test();
     assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
     let before_refresh = atlas.scroll_content_generation();
     assert_eq!(atlas.refresh_tile_with(&key, &mut || build(255)).unwrap(), Some(tile));
     assert_ne!(atlas.scroll_content_generation(), before_refresh, "same logical ID can change pixels");
+    let damage_after = atlas.scroll_damage_generation();
+    assert_eq!(atlas.scroll_damage_since(damage_before, damage_after).unwrap(),
+        [tile.tile_id.0].into_iter().collect());
     assert!(atlas.ready_scroll_glyphs(&ids).is_none());
     atlas.clear_pending_uploads_for_test();
 
@@ -143,6 +148,11 @@ fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels()
     assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
     atlas.apply_pending_removals();
     assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "retired glyph must not be sampled");
+    assert_eq!(atlas.scroll_damage_since(damage_after, atlas.scroll_damage_generation()).unwrap(),
+        [tile.tile_id.0].into_iter().collect());
+    let before_reset = atlas.scroll_damage_generation();
+    atlas.trim(crate::GpuiMemoryTrimLevel::Aggressive);
+    assert!(atlas.scroll_damage_since(before_reset, atlas.scroll_damage_generation()).is_none());
 }
 
 #[test]

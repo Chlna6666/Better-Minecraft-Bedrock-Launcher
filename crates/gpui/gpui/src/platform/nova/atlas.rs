@@ -57,6 +57,7 @@ pub(super) struct NovaAtlas {
     texture_set_generation: AtomicU64,
     placement_generation: AtomicU64,
     content_generation: AtomicU64,
+    scroll_damage_generation: AtomicU64,
     /// Lock-free mirror of whether [`NovaAtlasState::pending_removals`] is non-empty.
     pending_removals_flag: AtomicBool,
 }
@@ -81,6 +82,10 @@ pub(super) struct NovaAtlasState {
     texture_set_generation: u64,
     /// Monotonic counter bumped after every successfully encoded tile upload.
     pub(super) content_generation: u64,
+    // Only mutations of existing logical identities affect already
+    // rasterized pixels. New glyphs and physical relocation do not.
+    scroll_damage_generation: u64,
+    scroll_damage: std::collections::VecDeque<(u64, u32)>,
 }
 
 impl Default for NovaAtlasState {
@@ -101,6 +106,8 @@ impl Default for NovaAtlasState {
             pending_uploads: Vec::new(),
             texture_set_generation: 0,
             content_generation: 0,
+            scroll_damage_generation: 0,
+            scroll_damage: Default::default(),
         }
     }
 }
@@ -167,6 +174,7 @@ impl NovaAtlas {
             texture_set_generation: AtomicU64::new(state.texture_set_generation),
             placement_generation: AtomicU64::new(state.placement_generation),
             content_generation: AtomicU64::new(state.content_generation),
+            scroll_damage_generation: AtomicU64::new(state.scroll_damage_generation),
             pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
             state: Mutex::new(state),
         }
@@ -181,6 +189,8 @@ impl NovaAtlas {
             .store(state.placement_generation, AtomicOrdering::Release);
         self.content_generation
             .store(state.content_generation, AtomicOrdering::Release);
+        self.scroll_damage_generation
+            .store(state.scroll_damage_generation, AtomicOrdering::Release);
         self.pending_removals_flag
             .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
     }
@@ -271,6 +281,7 @@ impl NovaAtlas {
             GpuiMemoryTrimLevel::Aggressive => {
                 let previous_generation = state.texture_set_generation;
                 let previous_content_generation = state.content_generation;
+                let previous_scroll_damage_generation = state.scroll_damage_generation;
                 let next_tile_id = state.next_tile_id;
                 let placement_generation = state.placement_generation;
                 *state = NovaAtlasState {
@@ -279,6 +290,8 @@ impl NovaAtlas {
                 };
                 state.initialize_fallback_tiles();
                 state.placement_generation = placement_generation.wrapping_add(1);
+                // No per-identity proof survives a destructive reset.
+                state.scroll_damage_generation = previous_scroll_damage_generation.wrapping_add(1);
                 // Keep the generation monotonic across the reset so a renderer that synced
                 // before the reset can never observe a stale-but-equal value.
                 state.texture_set_generation = previous_generation
@@ -312,6 +325,29 @@ impl NovaAtlas {
     /// Use the existing atlas publication boundary; resident hits need no lock.
     pub(super) fn scroll_content_generation(&self) -> u64 {
         self.content_generation.load(AtomicOrdering::Acquire)
+    }
+
+    pub(super) fn scroll_damage_generation(&self) -> u64 {
+        self.scroll_damage_generation.load(AtomicOrdering::Acquire)
+    }
+
+    /// Return exact changed/removed logical tile IDs for the requested
+    /// epoch interval. Missing history or a destructive reset returns None
+    /// and requires conservative invalidation of all raster textures.
+    pub(super) fn scroll_damage_since(&self, previous: u64, current: u64) -> Option<FxHashSet<u32>> {
+        if previous == current { return Some(FxHashSet::default()); }
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        if previous > current || current > state.scroll_damage_generation { return None; }
+        let mut cursor = previous;
+        let mut dirty = FxHashSet::default();
+        for &(generation, id) in &state.scroll_damage {
+            if generation <= previous { continue; }
+            if generation > current { break; }
+            if cursor.checked_add(1) != Some(generation) { return None; }
+            dirty.insert(id);
+            cursor = generation;
+        }
+        (cursor == current).then_some(dirty)
     }
 
     /// Snapshot only requested logical glyph placements. A miss never
@@ -489,6 +525,7 @@ impl PlatformAtlas for NovaAtlas {
                     bytes.as_ref(),
                     tile.padding,
                 ) {
+                    state.record_scroll_damage(tile.tile_id);
                     self.publish_state_flags(&state);
                     return Ok(Some(tile));
                 }
@@ -902,12 +939,22 @@ impl NovaAtlasState {
         }
     }
 
+    fn record_scroll_damage(&mut self, id: crate::TileId) {
+        const HISTORY_LIMIT: usize = 512;
+        self.scroll_damage_generation = self.scroll_damage_generation.wrapping_add(1);
+        if self.scroll_damage.len() == HISTORY_LIMIT {
+            self.scroll_damage.pop_front();
+        }
+        self.scroll_damage.push_back((self.scroll_damage_generation, id.0));
+    }
+
     fn deallocate_tile(&mut self, tile: AtlasTile) {
         if self.is_fallback_tile(tile) {
             return;
         }
         self.relocated_tiles.remove(&tile.tile_id);
         if let Some((placement, allocation)) = self.placements.remove(&tile.tile_id) {
+            self.record_scroll_damage(tile.tile_id);
             self.deallocate_texture_allocation(placement.texture_id, allocation);
         }
     }
