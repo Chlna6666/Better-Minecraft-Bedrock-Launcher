@@ -249,3 +249,55 @@ fn versioned_uniform_list_rebuilds_only_changed_rows_after_owner_notify(cx: &mut
         assert_eq!(retained, geometry(window));
     });
 }
+
+
+#[gpui::test]
+fn independent_uniform_list_rebuilds_only_notified_model_row(cx: &mut TestAppContext) {
+    use crate::{AppContext, Entity, uniform_list_each};
+    struct Model(bool);
+    struct IndependentRows {
+        models: Vec<Entity<Model>>,
+        calls: Rc<RefCell<Vec<usize>>>,
+    }
+    impl Render for IndependentRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let models = self.models.clone();
+            let calls = self.calls.clone();
+            uniform_list_each("independent-rows", models.len(), move |index, _, cx| {
+                calls.borrow_mut().push(index);
+                crate::div().w_full().h(px(24.)).bg(
+                    if models[index].read(cx).0 { crate::red() } else { crate::blue() }
+                )
+            })
+            .with_item_height(px(24.))
+            .w(px(240.)).h(px(120.))
+        }
+    }
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let (view, cx) = cx.add_window_view(|_, cx| IndependentRows {
+        models: (0..100).map(|_| cx.new(|_| Model(false))).collect(),
+        calls: calls.clone(),
+    });
+    cx.run_until_parked();
+    // Prime the retained row capture through a scoped owner update.
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    calls.borrow_mut().clear();
+    view.update(cx, |view, cx| {
+        view.models[2].update(cx, |model, cx| {
+            model.0 = true;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(&*calls.borrow(), &[2]);
+    cx.update(|window, app| {
+        let geometry = |window: &Window| window.rendered_frame.scene().quads.iter()
+            .map(|quad| (quad.bounds, quad.content_mask, quad.background))
+            .collect::<Vec<_>>();
+        let retained = geometry(window);
+        window.refresh();
+        window.draw(app).clear();
+        assert_eq!(retained, geometry(window));
+    });
+}

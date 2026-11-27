@@ -46,12 +46,18 @@ pub(super) fn prepaint(
             row += 1;
             continue;
         }
-        let next = reused[row - range.start..]
-            .iter()
-            .position(|&reused| reused)
-            .map_or(range.end, |distance| row + distance);
+        let next = if render.independent() {
+            // The independent API has no cross-row build reads. Capture
+            // each missing row separately without changing batch semantics.
+            row + 1
+        } else {
+            reused[row - range.start..]
+                .iter()
+                .position(|&reused| reused)
+                .map_or(range.end, |distance| row + distance)
+        };
         let read_start = cx.entities.dependency_read_index();
-        let items = render(row..next, window, cx);
+        let items = render.render_range(row..next, window, cx);
         let shared_reads = cx.entities.row_reads_since(read_start);
         window.with_content_mask(Some(content_mask), |window| {
             for (mut item, index) in items.into_iter().zip(row..next) {

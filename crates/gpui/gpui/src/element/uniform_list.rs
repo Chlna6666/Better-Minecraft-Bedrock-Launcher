@@ -37,22 +37,43 @@ pub fn uniform_list<R>(
 where
     R: IntoElement,
 {
-    let id = id.into();
-    let mut base_style = StyleRefinement::default();
-    base_style.overflow.y = Some(Overflow::Scroll);
-
     let render_range = move |range: Range<usize>, window: &mut Window, cx: &mut App| {
         f(range, window, cx)
             .into_iter()
             .map(|component| component.into_any_element())
             .collect()
     };
+    uniform_list_with_renderer(id.into(), item_count, RenderItems::Batch(Box::new(render_range)))
+}
 
+/// A uniform list with an independent renderer for each logical row.
+/// Unlike the range-based renderer, build dependencies can be attributed to
+/// one row without guessing which item used a shared read. Ordinary Entity
+/// and Global notifications can invalidate these rows without row revisions.
+/// Untracked captures still obey the owning view's normal Notify contract.
+#[track_caller]
+pub fn uniform_list_each<R>(
+    id: impl Into<ElementId>,
+    item_count: usize,
+    f: impl 'static + Fn(usize, &mut Window, &mut App) -> R,
+) -> UniformList
+where
+    R: IntoElement,
+{
+    let render_row = move |index, window: &mut Window, cx: &mut App| {
+        f(index, window, cx).into_any_element()
+    };
+    uniform_list_with_renderer(id.into(), item_count, RenderItems::Each(Box::new(render_row)))
+}
+
+fn uniform_list_with_renderer(id: ElementId, item_count: usize, render_items: RenderItems) -> UniformList {
+    let mut base_style = StyleRefinement::default();
+    base_style.overflow.y = Some(Overflow::Scroll);
     UniformList {
         item_count,
         item_to_measure_index: 0,
         fixed_item_height: None,
-        render_items: Box::new(render_range),
+        render_items,
         row_revision: None,
         decorations: Vec::new(),
         interactivity: Interactivity {
@@ -71,7 +92,7 @@ pub struct UniformList {
     item_count: usize,
     item_to_measure_index: usize,
     fixed_item_height: Option<Pixels>,
-    render_items: Box<RenderItems>,
+    render_items: RenderItems,
     row_revision: Option<RowRevision>,
     pub(super) decorations: Vec<Box<dyn UniformListDecoration>>,
     pub(super) interactivity: Interactivity,
@@ -80,7 +101,26 @@ pub struct UniformList {
     pub(super) horizontal_sizing_behavior: ListHorizontalSizingBehavior,
 }
 
-type RenderItems = dyn Fn(Range<usize>, &mut Window, &mut App) -> SmallVec<[AnyElement; 64]>;
+type RenderBatch = dyn Fn(Range<usize>, &mut Window, &mut App) -> SmallVec<[AnyElement; 64]>;
+type RenderRow = dyn Fn(usize, &mut Window, &mut App) -> AnyElement;
+
+enum RenderItems {
+    Batch(Box<RenderBatch>),
+    Each(Box<RenderRow>),
+}
+
+impl RenderItems {
+    fn render_range(&self, range: Range<usize>, window: &mut Window, cx: &mut App) -> SmallVec<[AnyElement; 64]> {
+        match self {
+            Self::Batch(render) => render(range, window, cx),
+            Self::Each(render) => range.map(|index| render(index, window, cx)).collect(),
+        }
+    }
+
+    fn independent(&self) -> bool {
+        matches!(self, Self::Each(_))
+    }
+}
 
 /// Frame state used by the [UniformList].
 pub struct UniformListLayout {
@@ -360,7 +400,7 @@ impl Element for UniformList {
                         );
                         if retain_rows && !y_flipped {
                             retention::prepaint(
-                                self.render_items.as_ref(),
+                                &self.render_items,
                                 self.row_revision.clone(),
                                 self.item_count,
                                 frame_state,
@@ -379,11 +419,11 @@ impl Element for UniformList {
                         let items = if y_flipped {
                             let flipped_range = self.item_count.saturating_sub(visible_range.end)
                                 ..self.item_count.saturating_sub(visible_range.start);
-                            let mut items = (self.render_items)(flipped_range, window, cx);
+                            let mut items = self.render_items.render_range(flipped_range, window, cx);
                             items.reverse();
                             items
                         } else {
-                            (self.render_items)(visible_range.clone(), window, cx)
+                            self.render_items.render_range(visible_range.clone(), window, cx)
                         };
                         window.with_content_mask(Some(content_mask), |window| {
                             for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
@@ -494,7 +534,7 @@ impl UniformList {
 
         let item_ix = cmp::min(self.item_to_measure_index, self.item_count - 1);
         window.measure_uniform_row(global_id, item_ix, self.item_count, cx, |window, cx| {
-            let mut items = (self.render_items)(item_ix..item_ix + 1, window, cx);
+            let mut items = self.render_items.render_range(item_ix..item_ix + 1, window, cx);
             let Some(mut item) = items.pop() else {
                 return (Size::default(), false);
             };

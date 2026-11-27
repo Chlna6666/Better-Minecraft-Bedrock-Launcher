@@ -5,7 +5,7 @@
 use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::{ScrollPaint, ScrollPaintTarget}};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
-    ScrollCapture, Size, StateRead, StateReadValidation, RenderDependencies, Window,
+    ScrollCapture, Size, StateRead, StateReadValidation, StateMutationCursor, RenderDependencies, Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -18,6 +18,7 @@ type RowKey = (u64, usize);
 enum RowDependencyKey {
     Entity(crate::EntityId),
     Global(TypeId, Option<bool>),
+    State(usize),
 }
 
 // A typical dependency is read by only one or two rows. High fan-out
@@ -102,6 +103,9 @@ struct RowNotificationRouting {
     dirty: FxHashSet<RowKey>,
     cursor: Option<u64>,
     overflow: bool,
+    state_cursor: Option<StateMutationCursor>,
+    state_generation: Option<u64>,
+    state_dirty: FxHashSet<RowKey>,
 }
 
 impl RowNotificationRouting {
@@ -146,10 +150,8 @@ impl RowNotificationRouting {
     }
 
     fn update(&mut self, row: RowKey, old: Option<&RenderDependencies>, new: Option<&RenderDependencies>) {
-        if matches!((old, new), (Some(a), Some(b)) if a.same_routes(b)) {
-            return;
-        }
-        self.update_keys(row,
+        if !matches!((old, new), (Some(a), Some(b)) if a.same_routes(b)) {
+            self.update_keys(row,
             old.map_or(&[][..], |reads| reads.entities.as_ref()),
             new.map_or(&[][..], |reads| reads.entities.as_ref()),
             RowDependencyKey::Entity);
@@ -157,6 +159,82 @@ impl RowNotificationRouting {
             old.map_or(&[][..], |reads| reads.globals.as_ref()),
             new.map_or(&[][..], |reads| reads.globals.as_ref()),
             |(global, exists)| RowDependencyKey::Global(global, exists));
+        }
+        let old_states = old.map_or(&[][..], |reads| reads.states.as_ref());
+        let new_states = new.map_or(&[][..], |reads| reads.states.as_ref());
+        // State reads preserve first-observation order, not identity order.
+        // Equal identity sequences require no edge changes, even if versions
+        // changed. For reordered or changed sets, sort only identity scratch.
+        if !std::ptr::eq(old_states, new_states)
+            && !(old_states.len() == new_states.len()
+                && old_states.iter().zip(new_states).all(|(a, b)| a.id() == b.id()))
+        {
+            let mut before: SmallVec<[usize; 8]> = old_states.iter().map(StateRead::id).collect();
+            let mut after: SmallVec<[usize; 8]> = new_states.iter().map(StateRead::id).collect();
+            before.sort_unstable();
+            after.sort_unstable();
+            before.dedup();
+            after.dedup();
+            self.update_keys(row, &before, &after, RowDependencyKey::State);
+        }
+    }
+
+    fn mark_state(&mut self, identity: usize) {
+        if let Some(readers) = self.edges.get(&RowDependencyKey::State(identity)) {
+            let dirty = &mut self.state_dirty;
+            readers.visit(|row| { dirty.insert(row); });
+        }
+    }
+
+    fn refresh_state_proof(&mut self, rows: &FxHashMap<RowKey, RowRecord>, generation: u64) {
+        self.state_dirty.clear();
+        for (&key, row) in rows {
+            if !row.prepaint.validation.unchanged(&row.prepaint.reads.states) {
+                self.state_dirty.insert(key);
+            }
+        }
+        self.state_cursor = Some(StateMutationCursor::current());
+        self.state_generation = Some(generation);
+    }
+
+    fn state_unchanged(
+        &mut self, rows: &FxHashMap<RowKey, RowRecord>, key: RowKey,
+        row: &RowRecord, invalidator: &WindowInvalidator,
+    ) -> bool {
+        if row.prepaint.reads.states.is_empty() {
+            return true;
+        }
+        if rows.len() < Self::MIN_ROWS {
+            return row.prepaint.validation.unchanged(&row.prepaint.reads.states);
+        }
+        if self.cursor.is_none() {
+            self.build(rows, invalidator.row_notification_epoch());
+        }
+        let generation = crate::state_generation();
+        if self.state_generation != Some(generation) {
+            let next = self.state_cursor.and_then(|cursor| {
+                cursor.visit_since((rows.len() / 2).max(16), |identity| self.mark_state(identity))
+            });
+            if let Some(next) = next {
+                self.state_cursor = Some(next);
+                self.state_generation = Some(generation);
+            } else {
+                // Initial observation, overflow or dense mutation: certify
+                // every row before advancing the shared state cursor.
+                self.refresh_state_proof(rows, generation);
+            }
+        }
+        if !self.state_dirty.contains(&key) {
+            return true;
+        }
+        // A mutation may predate a newly captured snapshot, or match an
+        // identity whose version was already observed. Verify only hits.
+        if row.prepaint.validation.unchanged(&row.prepaint.reads.states) {
+            self.state_dirty.remove(&key);
+            true
+        } else {
+            false
+        }
     }
 
     fn route(
@@ -203,6 +281,9 @@ impl RowNotificationRouting {
 
     fn build(&mut self, rows: &FxHashMap<RowKey, RowRecord>, now: u64) {
         self.edges.clear();
+        self.state_cursor = None;
+        self.state_generation = None;
+        self.state_dirty.clear();
         for (&key, row) in rows {
             self.update(key, None, Some(&row.prepaint.reads));
         }
@@ -246,21 +327,27 @@ impl RowNotificationRouting {
 
     fn reconcile(
         &mut self, old: &FxHashMap<RowKey, RowRecord>,
-        new: &FxHashMap<RowKey, RowRecord>, now: u64,
+        new: &FxHashMap<RowKey, RowRecord>, changed: &[RowKey], oldest: u64,
     ) {
         for (&key, row) in old {
-            self.update(key, Some(&row.prepaint.reads),
-                new.get(&key).map(|next| &next.prepaint.reads));
-        }
-        let mut oldest = now;
-        for (&key, row) in new {
-            if !old.contains_key(&key) {
-                self.update(key, None, Some(&row.prepaint.reads));
+            if !new.contains_key(&key) {
+                self.update(key, Some(&row.prepaint.reads), None);
+                self.state_dirty.remove(&key);
             }
-            if Self::has_reads(&row.prepaint.reads)
-                && now.wrapping_sub(row.notification_epoch) > now.wrapping_sub(oldest)
+        }
+        // The candidate records actual dependency changes as rows are
+        // published. Only retirement still requires the old row traversal.
+        for &key in changed {
+            let Some(row) = new.get(&key) else { continue; };
+            let previous = old.get(&key);
+            self.update(key, previous.map(|row| &row.prepaint.reads), Some(&row.prepaint.reads));
+            if self.state_cursor.is_some()
+                && !previous.is_some_and(|old| Rc::ptr_eq(&old.prepaint.reads.states, &row.prepaint.reads.states))
             {
-                oldest = row.notification_epoch;
+                self.state_dirty.remove(&key);
+                if !row.prepaint.validation.unchanged(&row.prepaint.reads.states) {
+                    self.state_dirty.insert(key);
+                }
             }
         }
         self.reset_cursor(oldest);
@@ -268,8 +355,12 @@ impl RowNotificationRouting {
         if self.edges.capacity() > target.saturating_mul(4) {
             self.edges.shrink_to(target);
         }
-        if self.dirty.capacity() > new.len().max(Self::MIN_ROWS).saturating_mul(4) {
-            self.dirty.shrink_to(new.len().max(Self::MIN_ROWS));
+        let row_target = new.len().max(Self::MIN_ROWS);
+        if self.dirty.capacity() > row_target.saturating_mul(4) {
+            self.dirty.shrink_to(row_target);
+        }
+        if self.state_dirty.capacity() > row_target.saturating_mul(4) {
+            self.state_dirty.shrink_to(row_target);
         }
     }
 }
@@ -278,6 +369,8 @@ impl RowNotificationRouting {
 pub(super) struct ScrollRows {
     rows: FxHashMap<RowKey, RowRecord>,
     notification_routing: RefCell<RowNotificationRouting>,
+    changed_rows: Vec<RowKey>,
+    oldest_notification_epoch: Option<u64>,
     measurements: FxHashMap<GlobalElementId, (u64, Rc<RowMeasurement>)>,
     pub(super) enabled: bool,
     blocked: bool,
@@ -293,6 +386,8 @@ impl ScrollRows {
     pub(super) fn clear(&mut self) {
         self.rows.clear();
         *self.notification_routing.get_mut() = Default::default();
+        self.changed_rows.clear();
+        self.oldest_notification_epoch = None;
         self.measurements.clear();
         self.enabled = false;
         self.blocked = false;
@@ -306,7 +401,8 @@ impl ScrollRows {
         }
         let mut routing = std::mem::take(previous.notification_routing.get_mut());
         if routing.cursor.is_some() {
-            routing.reconcile(&previous.rows, &self.rows, now);
+            routing.reconcile(&previous.rows, &self.rows, &self.changed_rows,
+                self.oldest_notification_epoch.unwrap_or(now));
             *self.notification_routing.get_mut() = routing;
         }
     }
@@ -315,6 +411,9 @@ impl ScrollRows {
         let target = current.rows.len().max(32);
         if self.rows.capacity() > target.saturating_mul(4) {
             self.rows.shrink_to(target);
+        }
+        if self.changed_rows.capacity() > target.saturating_mul(4) {
+            self.changed_rows.shrink_to(target);
         }
         let target = current.measurements.len().max(4);
         if self.measurements.capacity() > target * 4 {
@@ -346,6 +445,7 @@ pub(crate) struct RowPlan {
     revision: u64,
     notification_epoch: u64,
     placement_only: bool,
+    allow_reuse: bool,
     row_revision: Option<RowRevision>,
     context: Rc<ListContext>,
     // Rows captured by one plan share exactly one immutable context.
@@ -559,7 +659,22 @@ impl Window {
         cx: &App,
     ) -> Option<RowPlan> {
         let versioned = row_revision.is_some();
-        let (owner, revision, placement_only) = self.row_replay_admission(versioned)?;
+        if !self.scroll_row_replay_is_enabled() || self.force_view_cache_refresh {
+            return None;
+        }
+        let admitted = self.row_replay_admission(versioned);
+        let allow_reuse = admitted.is_some();
+        // A scoped content draw that cannot reuse old rows may still
+        // capture freshly built rows for the next notification.
+        let (owner, revision, placement_only) = match admitted {
+            Some(admission) => admission,
+            None => {
+                let owner = self.rendered_entity_stack.last().copied()?;
+                let (revision, placement_only) = self.invalidator.row_replay_revision()?;
+                if placement_only { return None; }
+                (owner, revision, false)
+            }
+        };
         let viewport = self.visual_content_mask();
         if self.visual_scale() != 1.
             || self.content_mask() != viewport
@@ -587,6 +702,7 @@ impl Window {
             revision,
             notification_epoch: self.invalidator.row_notification_epoch(),
             placement_only,
+            allow_reuse,
             row_revision,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
@@ -608,6 +724,7 @@ impl Window {
         row: usize,
         origin: Point<Pixels>,
     ) -> bool {
+        if !plan.allow_reuse { return false; }
         let key = (plan.key, row);
         let rows = &self.rendered_frame.scroll_rows;
         let Some(record) = rows.rows.get(&key) else {
@@ -616,9 +733,16 @@ impl Window {
         if (plan.placement_only && record.revision != plan.revision)
             || !plan.matches_context(&record.context)
             || record.prepaint.row_revision != plan.row_revision(row)
-            || !rows.notification_routing.borrow_mut().unchanged(&rows.rows, key, record, &self.invalidator)
         {
             return false;
+        }
+        {
+            let mut routing = rows.notification_routing.borrow_mut();
+            if !routing.unchanged(&rows.rows, key, record, &self.invalidator)
+                || !routing.state_unchanged(&rows.rows, key, record, &self.invalidator)
+            {
+                return false;
+            }
         }
         // Scoped records are only borrowed from the previous committed
         // frame, after the entire owner path was certified. A carried row
@@ -636,7 +760,6 @@ impl Window {
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = hitbox_range(&record.prepaint);
         record.content.covers(viewport, delta)
-            && record.prepaint.validation.unchanged(&record.prepaint.reads.states)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
             && (plan.hover_held || !self.hits_scroll_row(&self.rendered_frame.hitboxes, hitboxes, logical_delta))
@@ -789,8 +912,28 @@ impl Window {
         paint: Range<PaintIndex>,
         content: Arc<ScrollPaint>,
     ) {
-        self.next_frame.scroll_rows.rows.insert(
-            (plan.key, row),
+        let key = (plan.key, row);
+        let previous = &self.rendered_frame.scroll_rows;
+        let next = &mut self.next_frame.scroll_rows;
+        if previous.rows.len() >= RowNotificationRouting::MIN_ROWS
+            && !previous.rows.get(&key).is_some_and(|old| {
+                old.prepaint.reads.same_routes(&prepaint.reads)
+                    && Rc::ptr_eq(&old.prepaint.reads.states, &prepaint.reads.states)
+            })
+        {
+            next.changed_rows.push(key);
+        }
+        if RowNotificationRouting::has_reads(&prepaint.reads) {
+            let now = self.invalidator.row_notification_epoch();
+            let epoch = plan.notification_epoch;
+            if next.oldest_notification_epoch.is_none_or(|old| {
+                now.wrapping_sub(epoch) > now.wrapping_sub(old)
+            }) {
+                next.oldest_notification_epoch = Some(epoch);
+            }
+        }
+        next.rows.insert(
+            key,
             RowRecord {
                 revision: plan.revision,
                 notification_epoch: plan.notification_epoch,
@@ -815,6 +958,43 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn state_identity_routes_share_edges_across_versions_and_retire() {
+        let state = crate::StateVersion::default();
+        let other = crate::StateVersion::placement();
+        let a = (1, 0);
+        let b = (1, 1);
+        let first = RenderDependencies {
+            states: Rc::from([StateRead::new(&state), StateRead::new(&other)]),
+            ..Default::default()
+        };
+        let second = RenderDependencies {
+            states: Rc::from([StateRead::new(&state)]),
+            ..Default::default()
+        };
+        let mut routing = RowNotificationRouting::default();
+        routing.update(a, None, Some(&first));
+        routing.update(b, None, Some(&second));
+        let cursor = StateMutationCursor::current();
+        state.bump();
+        cursor.visit_since(16, |identity| routing.mark_state(identity)).unwrap();
+        assert_eq!(routing.state_dirty, FxHashSet::from_iter([a, b]));
+        let refreshed = RenderDependencies {
+            states: Rc::from([StateRead::new(&other), StateRead::new(&state)]),
+            ..Default::default()
+        };
+        routing.update(a, Some(&first), Some(&refreshed));
+        assert_eq!(routing.edges[&RowDependencyKey::State(first.states[0].id())].len(), 2);
+        routing.update(b, Some(&second), None);
+        routing.state_dirty.clear();
+        let cursor = StateMutationCursor::current();
+        drop(other);
+        cursor.visit_since(16, |identity| routing.mark_state(identity)).unwrap();
+        assert_eq!(routing.state_dirty, FxHashSet::from_iter([a]));
+        routing.update(a, Some(&refreshed), None);
+        assert!(routing.edges.is_empty());
+    }
 
     #[test]
     fn shared_row_readers_promote_and_retire_without_duplicates() {
