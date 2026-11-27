@@ -59,12 +59,13 @@ impl Paint {
         if !self.layers.frames.iter().any(|layer| layer.root_static_span() == Some(&range)) {
             return None;
         }
-        let scene = self.scene.with_scroll_placement(index, placement)?;
+        let scene = self.scene.with_scroll_placement(index, placement.clone())?;
         let retention = Arc::new(self.retained_paint.placement_variant(&self.scene, &scene)?);
         let mut result = Self::new(scene, retention, self.geometry);
-        result.layers = SceneLayers::capture_against(
-            &result.scene, Some((&self.scene, &self.layers)), window_opaque,
-        );
+        result.layers = self.layers.single_scroll_placement(index, &placement, window_opaque)
+            .unwrap_or_else(|| SceneLayers::capture_against(
+                &result.scene, Some((&self.scene, &self.layers)), window_opaque,
+            ));
         if !result.layers.frames.iter().any(|layer| layer.root_static_span() == Some(&range)) {
             return None;
         }

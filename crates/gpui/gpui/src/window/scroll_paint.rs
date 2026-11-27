@@ -561,6 +561,14 @@ mod tests {
         publication.layers = crate::window::SceneLayers::capture(&publication.scene, None, true);
         let publication = Arc::new(publication);
         let next = publication.with_scroll_placement(1, moved.clone(), true).unwrap();
+        let direct = publication.layers.single_scroll_placement(1, &moved, true)
+            .expect("sole certified marker inherits its layer proof");
+        let rebuilt = crate::window::SceneLayers::capture(&next.scene, Some(&publication.layers), true);
+        assert_eq!(direct.frames[0].root_static_raster(), rebuilt.frames[0].root_static_raster());
+        assert_eq!(direct.frames[0].id, rebuilt.frames[0].id);
+        assert_eq!(direct.frames[0].generation, rebuilt.frames[0].generation);
+        assert!(Arc::ptr_eq(&direct.frames[0].content, &rebuilt.frames[0].content));
+        assert!(publication.layers.single_scroll_placement(0, &moved, true).is_none());
         assert_ne!(next.scene.revision, publication.scene.revision);
         assert_eq!(next.scene.len(), publication.scene.len());
         assert!(std::ptr::eq(&next.scene.quads[0], &publication.scene.quads[0]));

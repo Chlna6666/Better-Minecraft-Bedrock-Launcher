@@ -211,6 +211,7 @@ pub(in crate::window) fn static_scroll_raster_operation(
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct LayerFrame {
     /// Raster identity, stable while the capture and its underlay are valid.
     pub(crate) id: u64,
@@ -604,6 +605,51 @@ impl SceneLayers {
     pub(crate) fn capture(scene: &Scene, previous: Option<&Self>, window_opaque: bool) -> Self {
         Self::capture_layers(scene, previous, window_opaque, ordered_static_root(scene),
             !scene.paint_operations.has_layer_scopes())
+    }
+
+    /// The caller has certified that precisely one marker's translation
+    /// changed, with identical source, visual bounds and operation order.
+    /// A sole qualified layer has no sibling identity or underlay changes.
+    /// Inherit its root proof instead of scanning the root or allocating
+    /// capture identity tables. More complex roots keep the general path.
+    pub(in crate::window) fn single_scroll_placement(
+        &self,
+        index: usize,
+        placement: &crate::window::scroll_paint::ScrollPlacement,
+        window_opaque: bool,
+    ) -> Option<Self> {
+        if !self.ordered || self.frames.len() != 1 {
+            return None;
+        }
+        let old = &self.frames[0];
+        let geometry = placement.native_geometry();
+        let viewport = placement.viewport();
+        if old.root_static_span() != Some(&(index..index + 1))
+            || old.source_id != geometry.id
+            || old.generation != geometry.generation
+            || old.source_viewport != viewport
+            || old.scale != geometry.scale
+            || (placement.has_lcd_glyphs() && (!window_opaque || old.background.is_none()))
+        {
+            return None;
+        }
+        let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
+        let translation = [
+            geometry.source_origin[0].checked_add(delta.x.0 as i32)?,
+            geometry.source_origin[1].checked_add(delta.y.0 as i32)?,
+        ];
+        let content = LayerContent::from_scroll(
+            operations, coverage, delta, translation, viewport, atlas_tiles, Some(&old.content),
+        )?;
+        if !Arc::ptr_eq(&content, &old.content) {
+            return None;
+        }
+        let mut frame = old.clone();
+        frame.translation = translation;
+        // Match the ordinary capture's same-generation adoption policy.
+        frame.damage = LayerDamage::Full;
+        frame.previous_coverage = None;
+        Some(Self { frames: vec![frame], ordered: true, flat_root: self.flat_root })
     }
 
     pub(in crate::window) fn capture_against(
