@@ -62,12 +62,40 @@ impl HitboxStore {
     }
 
     pub(crate) fn push(&mut self, hitbox: Hitbox) {
+        self.pack_sparse_tail();
+        self.push_pending(hitbox);
+    }
+
+    #[inline]
+    fn push_pending(&mut self, hitbox: Hitbox) {
         self.pending.push(hitbox);
         self.len += 1;
-        if self.pending.len() == PAGE_LEN { self.freeze(); }
+        if self.pending.len() == PAGE_LEN { self.seal_pending(); }
+    }
+
+    // Keep the last borrowed fragment provisional. Adjacent row replays
+    // can extend it to a dense run before it ever needs materialization.
+    // Only a noncontiguous append or publication closes that opportunity.
+    fn pack_sparse_tail(&mut self) {
+        if !self.pending.is_empty() { return; }
+        let Some(last) = self.spans.last() else { return; };
+        if last.len * 4 >= last.owner.len() { return; }
+        let span = self.spans.pop().unwrap();
+        self.pending.extend(span.owner[span.start..span.start + span.len].iter().map(|hitbox| {
+            let mut hitbox = hitbox.clone();
+            hitbox.bounds = span.translation.bounds(hitbox.bounds);
+            hitbox
+        }));
+        // These are existing logical records, not newly appended ones.
+        debug_assert!(self.pending.len() < PAGE_LEN);
     }
 
     pub(in crate::window) fn freeze(&mut self) {
+        self.pack_sparse_tail();
+        self.seal_pending();
+    }
+
+    fn seal_pending(&mut self) {
         if self.pending.is_empty() { return; }
         let owner = Rc::new(std::mem::take(&mut self.pending));
         self.spans.push(Span {
@@ -135,26 +163,30 @@ impl HitboxStore {
             let adjacent = self.pending.is_empty() && self.spans.last().is_some_and(|last|
                 Rc::ptr_eq(&last.owner, &span.owner) && last.start + last.len == start
                     && last.translation == translation);
-            // A small fragment shouldn't pin a mostly dead page. Materialize
-            // bounded fragments in the regular pending page, not a new owner.
-            if !adjacent && len * 4 < span.owner.len() {
-                for hitbox in &span.owner[start..start + len] {
-                    let mut hitbox = hitbox.clone();
-                    hitbox.bounds = translation.bounds(hitbox.bounds);
-                    self.push(hitbox);
-                }
-                continue;
-            }
-            self.freeze();
-            self.len += len;
             if adjacent {
+                self.len += len;
                 let last = self.spans.last_mut().unwrap();
                 last.len += len;
                 last.end = self.len;
-            } else {
-                self.spans.push(Span { owner: span.owner.clone(), start, len,
-                    end: self.len, translation });
+                continue;
             }
+
+            self.pack_sparse_tail();
+            // Pack isolated sparse fragments together, but leave the first
+            // fragment of a possible contiguous run borrowed. No whole-log
+            // compaction pass is needed at frame publication.
+            if !self.pending.is_empty() && len * 4 < span.owner.len() {
+                for hitbox in &span.owner[start..start + len] {
+                    let mut hitbox = hitbox.clone();
+                    hitbox.bounds = translation.bounds(hitbox.bounds);
+                    self.push_pending(hitbox);
+                }
+                continue;
+            }
+            self.seal_pending();
+            self.len += len;
+            self.spans.push(Span { owner: span.owner.clone(), start, len,
+                end: self.len, translation });
         }
         let pending_start = source.len - source.pending.len();
         let translation = Translation::default().shifted(delta);
@@ -247,6 +279,23 @@ mod tests {
         source.clear();
         target.clear();
         assert_eq!(second.iter().rev().next().unwrap().bounds.origin.y, px(PAGE_LEN as f32 + 2.));
+    }
+
+    #[test]
+    fn consecutive_single_row_replays_coalesce_before_materializing() {
+        let mut source = HitboxStore::default();
+        for index in 0..PAGE_LEN { source.push(hitbox(index)); }
+        source.freeze();
+        let mut target = HitboxStore::default();
+        let delta = point(px(0.), px(5.));
+        for index in 0..PAGE_LEN {
+            target.share(&source, index..index + 1, delta);
+            assert_eq!(target.len(), index + 1);
+        }
+        target.freeze();
+        assert_eq!(target.spans.len(), 1);
+        assert!(Rc::ptr_eq(&source.spans[0].owner, &target.spans[0].owner));
+        assert_eq!(target.iter().last().unwrap().bounds.origin.y, px(PAGE_LEN as f32 + 4.));
     }
 
     #[test]
