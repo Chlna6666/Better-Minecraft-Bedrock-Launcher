@@ -165,11 +165,13 @@ fn projection_arena_layout(limits: gfx_core::BufferBindingLimits, records: usize
 }
 
 impl ProjectionArena {
-    fn new<D: ResourceDevice>(device: &mut D, resources: &mut Resources, records: usize) -> Result<Self> {
+    fn new<D: ResourceDevice>(device: &mut D, storage: &mut ProjectionStorage, records: usize) -> Result<Self> {
         let Some((stride, capacity)) = projection_arena_layout(device.buffer_binding_limits(), records) else {
             return Ok(Self { buffer: None, stride: 0, capacity: 0, bytes: Vec::new() });
         };
-        let buffer = resources.allocate_buffer(device, capacity, BufferUsage::UNIFORM)?;
+        // The selected physical frame slot has no outstanding reader or
+        // producer. Every earlier projection descriptor has retired.
+        let buffer = storage.ensure(device, capacity)?;
         Ok(Self { buffer: Some(buffer), stride, capacity, bytes: Vec::with_capacity(capacity) })
     }
 
@@ -192,6 +194,35 @@ impl ProjectionArena {
             device.write_buffer(buffer, 0, &self.bytes)?;
         }
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ProjectionStorage {
+    buffer: Option<BufferId>,
+    capacity: usize,
+}
+
+impl ProjectionStorage {
+    fn ensure<D: ResourceDevice>(&mut self, device: &mut D, required: usize) -> Result<BufferId> {
+        if let Some(buffer) = self.buffer && self.capacity >= required { return Ok(buffer); }
+        let capacity = required.next_power_of_two();
+        // Create before releasing the old buffer so a failed allocation
+        // leaves the previous slot usable.
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("resident scroll projection arena".into()),
+            size: capacity as u64, usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::CpuToGpu,
+        })?;
+        if let Some(old) = self.buffer {
+            if let Err(error) = device.destroy_buffer(old) {
+                let _ = device.destroy_buffer(buffer);
+                return Err(error.into());
+            }
+        }
+        self.buffer = Some(buffer);
+        self.capacity = capacity;
+        Ok(buffer)
     }
 }
 
@@ -569,6 +600,7 @@ pub(super) struct CompositeSlot {
     tile_slots: StableSlots<RasterTileKey>,
     placements: Option<BufferId>,
     placement_bytes: Vec<u8>,
+    projection: ProjectionStorage,
     outside: OutsideGpuStreams,
     commands: Option<ResidentCompositeCommands>,
     // Dedicated immutable animation sentinel; never bind a growable normal
@@ -583,13 +615,13 @@ struct ResidentCompositeCommands {
     root: std::sync::Weak<OutsideRoot>,
     pipeline: RenderPipelineId,
     tiles: Vec<(u32, BindGroupId)>,
-    boundaries: Vec<usize>,
+    boundaries: Vec<(usize, usize)>,
     commands: Arc<[RenderCommand]>,
 }
 
 impl ResidentCompositeCommands {
     fn matches(&self, root: &Arc<OutsideRoot>, pipeline: RenderPipelineId,
-        tiles: &[(u32, BindGroupId)], boundaries: &[usize]) -> bool {
+        tiles: &[(u32, BindGroupId)], boundaries: &[(usize, usize)]) -> bool {
         std::ptr::eq(self.root.as_ptr(), Arc::as_ptr(root))
             && self.pipeline == pipeline && self.tiles == tiles && self.boundaries == boundaries
     }
@@ -811,7 +843,7 @@ impl CompositeSlot {
             log::debug!("scroll outside binding retirement failed: {error}");
             return;
         }
-        for buffer in [self.global, self.sprites, self.static_animation, self.placements].into_iter()
+        for buffer in [self.global, self.sprites, self.static_animation, self.placements, self.projection.buffer].into_iter()
             .chain(self.outside.handles()).flatten() {
             if let Err(error) = device.destroy_buffer(buffer) {
                 log::debug!("scroll composite slot retirement failed: {error}");
@@ -1119,11 +1151,14 @@ impl NovaRenderer {
         }).collect();
         let misses = reads.iter().filter(|read| read.is_none()).count();
         let mut new_writer = None;
+        if self.scroll_composite_slots.len() <= slot {
+            self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
+        }
         if misses != 0 {
             let mut resources = Resources::default();
             let mut passes = Vec::<RasterPass>::with_capacity(misses);
             let prepare = (|| -> Result<bool> {
-                let mut projection = ProjectionArena::new(device, &mut resources, misses * 2)?;
+                let mut projection = ProjectionArena::new(device, &mut self.scroll_composite_slots[slot].projection, misses * 2)?;
                 let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
                 let mut clear_bindings = FxHashMap::<(u32, u32), BindGroupId>::default();
                 let paged = shared_raster_pages(device, self.backend_info.kind().ok());
@@ -1332,9 +1367,6 @@ impl NovaRenderer {
         self.prepare_renderer_extensions_on(&outside.extensions, &mut extension_steps, frame_time, device)?;
         let boundaries = expanded_boundaries(&outside.streams.runs, &outside.boundaries, &extension_steps)
             .context("invalid mixed root command boundaries")?;
-        if self.scroll_composite_slots.len() <= slot {
-            self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
-        }
         let mut resources = Resources::default();
         let prepare = (|| -> Result<Arc<[RenderCommand]>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
@@ -1424,8 +1456,15 @@ impl NovaRenderer {
             }
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
             let cacheable = outside.extensions.is_empty() && outside.streams.commands_resident();
+            // The same flattened instances may be partitioned differently
+            // around root runs. Include both root and tile span ends.
+            let mut end = 0;
+            let command_boundaries: Vec<_> = plans.iter().zip(&boundaries).map(|(plan, &boundary)| {
+                end += plan.requests.len();
+                (boundary, end)
+            }).collect();
             if unchanged && cacheable && let Some(cached) = &composite_slot.commands
-                && cached.matches(&outside, pipeline, &tiles, &boundaries) {
+                && cached.matches(&outside, pipeline, &tiles, &command_boundaries) {
                 return Ok(Arc::clone(&cached.commands));
             }
             composite_slot.commands = None;
@@ -1463,7 +1502,7 @@ impl NovaRenderer {
             if cacheable {
                 self.scroll_composite_slots[slot].commands = Some(ResidentCompositeCommands {
                     root: Arc::downgrade(&outside), pipeline, tiles,
-                    boundaries: boundaries.clone(), commands: Arc::clone(&commands),
+                    boundaries: command_boundaries, commands: Arc::clone(&commands),
                 });
             }
             Ok(commands)
@@ -1558,13 +1597,14 @@ mod tests {
         let b = BindGroupId::from_parts(2, 1);
         let pipeline = RenderPipelineId::from_parts(1, 1);
         let cached = ResidentCompositeCommands { root: Arc::downgrade(&root), pipeline,
-            tiles: vec![(0, a), (2, b)], boundaries: vec![1, 2],
+            tiles: vec![(0, a), (2, b)], boundaries: vec![(1, 1), (2, 2)],
             commands: Vec::<RenderCommand>::new().into() };
-        assert!(cached.matches(&root, pipeline, &[(0, a), (2, b)], &[1, 2]));
-        assert!(!cached.matches(&root, pipeline, &[(2, b), (0, a)], &[1, 2]));
-        assert!(!cached.matches(&root, pipeline, &[(0, b), (2, b)], &[1, 2]));
-        assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[0, 2]));
-        assert!(!cached.matches(&root, RenderPipelineId::from_parts(2, 1), &[(0, a), (2, b)], &[1, 2]));
+        assert!(cached.matches(&root, pipeline, &[(0, a), (2, b)], &[(1, 1), (2, 2)]));
+        assert!(!cached.matches(&root, pipeline, &[(2, b), (0, a)], &[(1, 1), (2, 2)]));
+        assert!(!cached.matches(&root, pipeline, &[(0, b), (2, b)], &[(1, 1), (2, 2)]));
+        assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[(0, 1), (2, 2)]));
+        assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[(1, 2), (2, 2)]));
+        assert!(!cached.matches(&root, RenderPipelineId::from_parts(2, 1), &[(0, a), (2, b)], &[(1, 1), (2, 2)]));
     }
 
     #[test]
