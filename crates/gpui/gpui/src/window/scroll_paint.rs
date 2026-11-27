@@ -537,6 +537,40 @@ mod tests {
     }
 
     #[test]
+    fn changed_native_marker_keeps_both_ordinary_replay_ranges_and_batches() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds: Bounds::new(point(px(0.), px(16.)), size(px(40.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let first = source.native_placement(viewport, 1., Point::default()).unwrap();
+        let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let quad = |y| Quad {
+            bounds: Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.),
+            content_mask: viewport.scale(1.), ..Default::default()
+        };
+        let mut old = Painter::for_frame();
+        old.insert_primitive(quad(0.));
+        assert!(old.push_deferred_scroll(first));
+        old.insert_primitive(quad(32.));
+        old.finish();
+        let mut current = Painter::for_frame();
+        assert!(current.replay_with_ordering(0..1, &old.scene, [], Some(&old)));
+        assert!(current.push_deferred_scroll(moved));
+        assert!(current.replay_with_ordering(2..3, &old.scene, [], Some(&old)));
+        assert_eq!(current.paint_operations.storage_identity(0), old.paint_operations.storage_identity(0));
+        assert_eq!(current.paint_operations.storage_identity(2), old.paint_operations.storage_identity(2));
+        assert!(!current.finish_against(&old.scene));
+        assert_ne!(current.revision, old.revision);
+        assert!(std::ptr::eq(&current.quads[0], &old.quads[0]));
+        assert!(std::ptr::eq(&current.quads[1], &old.quads[1]));
+        assert_eq!(current.paint_operations.placement_storage_matches(&old.paint_operations), Some(false));
+    }
+
+    #[test]
     fn placement_only_variant_preserves_ordinary_pages_without_requalifying_payload() {
         let coverage = Bounds::new(point(crate::px(0.), crate::px(-64.)),
             crate::size(crate::px(40.), crate::px(192.))).scale(1.);
@@ -571,7 +605,7 @@ mod tests {
         let mut unrelated = Operations::default();
         unrelated.share(&static_ops, 0..64);
         unrelated.push(crate::scene::PaintOperation::DeferredScroll(next));
-        // Mixed marker/payload owner is deliberately not a storage proof.
+        // A rebuilt ordinary payload is deliberately not a storage proof.
         unrelated.push(crate::scene::PaintOperation::Primitive(Primitive::Quad(crate::Quad::default())));
         unrelated.share(&static_ops, 65..128);
         unrelated.finish();

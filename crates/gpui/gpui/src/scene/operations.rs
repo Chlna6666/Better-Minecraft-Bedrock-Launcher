@@ -243,9 +243,26 @@ impl Operations {
     }
 
     pub(crate) fn push(&mut self, operation: PaintOperation) {
+        let change = ScopeChange::of(operation.as_ref());
+        // Seal a marker-only run before the first ordinary append. A long
+        // sequence of adjacent scroll rows still uses one marker page.
+        if change != ScopeChange::DeferredScroll
+            && !self.pending.is_empty() && self.pending.is_scroll_only()
+        {
+            self.finish();
+        }
         self.len += 1;
-        self.record_boundary(self.len, ScopeChange::of(operation.as_ref()));
+        self.record_boundary(self.len, change);
         self.pending.push(operation);
+    }
+
+    /// Caller has published any pending typed draw payloads. Keep mutable
+    /// placements separate from immutable ordinary drawing allocations.
+    pub(super) fn push_scroll_placement(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) {
+        if !self.pending.is_empty() && !self.pending.is_scroll_only() {
+            self.finish();
+        }
+        self.push(PaintOperation::DeferredScroll(placement));
     }
     pub(crate) fn clear(&mut self) {
         self.pending.clear();

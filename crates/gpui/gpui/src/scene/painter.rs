@@ -134,8 +134,12 @@ impl Painter {
             return false;
         }
         self.scene.revision = 0;
-        self.retained_prefix_invalid = true;
-        self.scene.paint_operations.push(PaintOperation::DeferredScroll(placement));
+        self.flush_draw_payloads();
+        // Native placements do not insert a leaf into the ordinary
+        // BoundsTree. Later ordinary replay can still prove its exact
+        // prefix against the previous logical marker domain. Composition
+        // ordering is certified independently at Paint publication.
+        self.scene.paint_operations.push_scroll_placement(placement);
         true
     }
 

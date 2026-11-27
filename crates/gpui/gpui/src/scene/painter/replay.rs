@@ -243,8 +243,10 @@ impl Painter {
                     // UI retention carries the one-operation placement.
                     // The ordinary owner reconstruction deliberately has
                     // no previous UI Painter and expands it instead.
-                    self.retained_prefix_invalid = true;
                     if previous_painter.is_none() || !self.retain_deferred_scroll(placement.clone()) {
+                        // Eager expansion DOES insert ordinary geometry and
+                        // can change every following draw-order assignment.
+                        self.retained_prefix_invalid = true;
                         placement.replay(self);
                     }
                 }
@@ -650,6 +652,12 @@ fn ordering_operations_match(current: PaintOperationRef<'_>, previous: PaintOper
         (PaintOperationRef::Primitive(current), PaintOperationRef::Primitive(previous)) => {
             current.order() == previous.order()
                 && Painter::ordering_bounds(current) == Painter::ordering_bounds(previous)
+        }
+        (PaintOperationRef::DeferredScroll(current), PaintOperationRef::DeferredScroll(previous)) => {
+            // Both operations reserve the same logical slot, with no
+            // ordinary BoundsTree leaf. Translation is not an input to
+            // ordinary DrawOrder; a changed source remains conservative.
+            current.same_source_placement_domain(previous)
         }
         (PaintOperationRef::StartLayer(current), PaintOperationRef::StartLayer(previous)) => {
             current == previous
