@@ -529,6 +529,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     let mut second_physical = None;
     let mut composite_buffers = None;
     let mut composite_binding = None;
+    let mut outside_binding = None;
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
     let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
     let second_key = RasterTileKey { layer: paint.layers.frames[1].id, x: 0, y: 0 };
@@ -549,6 +550,9 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, handles, "free slot reuses physical composite buffers");
         }
         composite_buffers = Some(handles);
+        let root_binding = renderer.scroll_composite_slots[0].outside_quad_binding().expect("resident outside quad binding");
+        if let Some(previous) = outside_binding { assert_eq!(previous, root_binding); }
+        outside_binding = Some(root_binding);
         let read = renderer.raster_tiles.lookup_ordered(key, 1, tile, Format::Bgra8Unorm, |_| false)
             .expect("completed tile sampling lease");
         let binding = device!(renderer, device, {

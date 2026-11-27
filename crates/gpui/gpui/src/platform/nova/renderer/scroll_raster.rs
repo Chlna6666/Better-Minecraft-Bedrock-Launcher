@@ -246,7 +246,8 @@ impl StaticStreams {
 
     fn commands<D: ResourceDevice>(&self, renderer: &NovaRenderer, device: &mut D,
         resources: &mut Resources, buffers: FrameResourceBuffers, blend: BlendPipelines,
-        extension_steps: &[Vec<RenderCommand>]) -> Result<Vec<RenderCommand>> {
+        extension_steps: &[Vec<RenderCommand>],
+        mut resident: Option<&mut FxHashMap<SourceKind, BindGroupId>>) -> Result<Vec<RenderCommand>> {
         let mut bindings = FxHashMap::default();
         let mut commands = Vec::with_capacity(self.runs.len());
         for run in &self.runs {
@@ -265,7 +266,17 @@ impl StaticStreams {
                 SourceKind::Poly(_) => blend.poly_sprites,
                 SourceKind::Extension => unreachable!("extension run was expanded"),
             };
-            let group = if let Some(&group) = bindings.get(&run.kind) { group } else {
+            // Only private, bounded physical streams may own a resident
+            // descriptor. Atlas-backed views have an independent retirement
+            // lifecycle and keep the existing fence-owned transient path.
+            let retain = match run.kind {
+                SourceKind::Quad => self.quads.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+                SourceKind::Shadow => self.shadows.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+                SourceKind::Underline => self.underlines.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+                _ => false,
+            };
+            let cached = if retain { resident.as_ref().and_then(|map| map.get(&run.kind)).copied() } else { None };
+            let group = if let Some(group) = cached.or_else(|| bindings.get(&run.kind).copied()) { group } else {
                 let (layout, entries) = match run.kind {
                     SourceKind::Quad => (renderer.quad_bind_group_layout, quad_resource_bindings(&buffers)),
                     SourceKind::Shadow => (renderer.shadow_bind_group_layout, shadow_resource_bindings(&buffers)),
@@ -286,9 +297,17 @@ impl StaticStreams {
                         poly_atlas_resource_bindings(buffers, renderer.gpu_atlas_textures[&id].texture_view, renderer.atlas_sampler)),
                     SourceKind::Extension => unreachable!("extension run has no static binding"),
                 };
-                let group = resources.binding(device, layout, entries)?;
-                bindings.insert(run.kind, group);
-                group
+                if retain && let Some(map) = resident.as_mut() {
+                    let group = device.create_bind_group(&BindGroupDescriptor {
+                        label: Some("resident scroll outside binding".into()), layout, entries,
+                    })?;
+                    map.insert(run.kind, group);
+                    group
+                } else {
+                    let group = resources.binding(device, layout, entries)?;
+                    bindings.insert(run.kind, group);
+                    group
+                }
             };
             commands.push(RenderCommand::Draw(DrawCommand {
                 pipeline, bind_groups: bind_group_list([group]), vertex_count: 4,
@@ -513,6 +532,7 @@ impl OutsideBuffer {
 #[derive(Default)]
 struct OutsideGpuStreams {
     root: std::sync::Weak<OutsideRoot>,
+    bindings: FxHashMap<SourceKind, BindGroupId>,
     quads: OutsideBuffer,
     shadows: OutsideBuffer,
     underlines: OutsideBuffer,
@@ -523,6 +543,15 @@ struct OutsideGpuStreams {
 }
 
 impl OutsideGpuStreams {
+    fn retire_bindings<D: ResourceDevice>(&mut self, device: &mut D) -> Result<()> {
+        // Called only for a free physical frame slot, before buffer growth.
+        while let Some((&kind, &id)) = self.bindings.iter().next() {
+            device.destroy_bind_group(id)?;
+            self.bindings.remove(&kind);
+        }
+        Ok(())
+    }
+
     fn handles(&self) -> [Option<BufferId>; 6] {
         [self.quads.buffer, self.shadows.buffer, self.underlines.buffer,
             self.mono.buffer, self.poly.buffer, self.text]
@@ -548,6 +577,11 @@ fn changed_record_ranges(previous: &[u8], next: &[u8], stride: usize) -> Vec<std
 }
 
 impl CompositeSlot {
+    #[cfg(all(test, target_os = "windows"))]
+    pub(super) fn outside_quad_binding(&self) -> Option<BindGroupId> {
+        self.outside.bindings.get(&SourceKind::Quad).copied()
+    }
+
     #[cfg(all(test, target_os = "windows"))]
     pub(super) fn handles(&self) -> [Option<BufferId>; 3] {
         [self.global, self.sprites, self.outside.quads.buffer]
@@ -593,7 +627,12 @@ impl CompositeSlot {
         Ok(id)
     }
 
-    fn destroy<D: ResourceDevice>(self, device: &mut D) {
+    fn destroy<D: ResourceDevice>(mut self, device: &mut D) {
+        if let Err(error) = self.outside.retire_bindings(device) {
+            // Do not destroy buffers while a descriptor could still own them.
+            log::debug!("scroll outside binding retirement failed: {error}");
+            return;
+        }
         for buffer in [self.global, self.sprites, self.static_animation].into_iter()
             .chain(self.outside.handles()).flatten() {
             if let Err(error) = device.destroy_buffer(buffer) {
@@ -928,7 +967,7 @@ impl NovaRenderer {
                             true, [raster.origin.x as f32, raster.origin.y as f32]);
                         let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
                         let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[])?;
+                        let commands = streams.commands(self, device, &mut resources, buffers, self.pipelines.premultiplied, &[], None)?;
                         let depth = if let Some((_, view)) = depth_views.iter().find(|(extent, _)| *extent == raster.extent) { *view } else {
                             let target = create_depth_target(device, "scroll raster", raster.extent)?;
                             resources.depths.push(target);
@@ -1024,13 +1063,19 @@ impl NovaRenderer {
             };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
+            if !unchanged {
+                composite_slot.outside.retire_bindings(device)?;
+            }
             // A failed write must never certify the next use of this slot.
             composite_slot.outside.root = std::sync::Weak::new();
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
                 &pack_text_raster_params(&self.rendering_parameters), Some((&mut composite_slot.outside, unchanged)))?;
             composite_slot.outside.root = Arc::downgrade(&outside);
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
-            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, &extension_steps)?;
+            let mut resident = std::mem::take(&mut composite_slot.outside.bindings);
+            let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, &extension_steps, Some(&mut resident));
+            self.scroll_composite_slots[slot].outside.bindings = resident;
+            let root_commands = root_commands?;
             let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
             let mut root = root_commands.into_iter();
             let mut root_offset = 0;
