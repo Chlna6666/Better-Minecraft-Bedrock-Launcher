@@ -374,19 +374,29 @@ fn verify_direct_present(backend: RendererBackend) {
     let quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
         background: crate::rgb(0x00ff00).into(), ..Default::default() };
     let mut painter = crate::scene::Painter::default();
+    // Background and foreground overlap the promoted fragment. The native
+    // consumer must preserve both surrounding draws, not flatten the root
+    // to only the resident texture.
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0xff0000).into(), ..Default::default() });
     painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0x0000ff).into(), ..Default::default() });
     painter.finish();
     let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
-        crate::window::PaintGeometry { layout_extent: Some((64, 64)), ..Default::default() });
+        crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
     let mut source = crate::scene::Operations::default();
     source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(quad)));
     paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
+    paint.layers.certify_fixture_root(&paint.scene, 1..2);
+    assert_eq!(paint.layers.frames[0].root_quad_outside(), Some(&[0..1, 2..3]));
     let paint = std::sync::Arc::new(paint);
     let packet = || crate::PresentationPacket::new(paint.clone(), [], [], Instant::now(),
         crate::DirtyRegion::full(bounds), crate::BackdropBlurDamagePlan::default(),
         crate::PartialPresentMode::FullRedraw);
     let encode_generation = renderer.frame_upload.encode_generation;
     let mut physical = None;
+    let mut composite_buffers = None;
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
     let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
     for _ in 0..2 {
@@ -400,6 +410,12 @@ fn verify_direct_present(backend: RendererBackend) {
         renderer.wait_pending_submissions().expect("scroll native completion");
         assert_eq!(renderer.frame_upload.encode_generation, encode_generation, "must bypass Scene packing");
         assert!(renderer.scroll_raster_resources.is_empty(), "all transient bindings retired");
+        let handles = renderer.scroll_composite_slots[0].handles();
+        assert!(handles.iter().all(Option::is_some));
+        if let Some(previous) = composite_buffers {
+            assert_eq!(previous, handles, "free slot reuses physical composite buffers");
+        }
+        composite_buffers = Some(handles);
         let texture = renderer.raster_tiles.lookup(key, 1, tile, Format::Bgra8Unorm)
             .expect("published native scroll texture");
         assert_eq!(renderer.raster_tiles.bytes(), 64 * 64 * 4);

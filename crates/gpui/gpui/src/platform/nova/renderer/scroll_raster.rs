@@ -154,6 +154,11 @@ pub(super) struct CompositeSlot {
 const RETAINED_OUTSIDE_QUADS: usize = 256;
 
 impl CompositeSlot {
+    #[cfg(all(test, target_os = "windows"))]
+    pub(super) fn handles(&self) -> [Option<BufferId>; 3] {
+        [self.global, self.sprites, self.outside]
+    }
+
     fn write<D: ResourceDevice>(device: &mut D, buffer: &mut Option<BufferId>,
         bytes: &[u8], capacity: usize, usage: BufferUsage) -> Result<BufferId> {
         debug_assert!(bytes.len() <= capacity);

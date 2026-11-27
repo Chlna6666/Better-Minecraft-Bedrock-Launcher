@@ -623,6 +623,39 @@ mod tests {
     use crate::{Bounds, Quad, ScaledPixels, point, size, scene::Painter};
 
     #[test]
+    fn ordered_quad_root_retains_both_outside_spans() {
+        let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(64.), ScaledPixels(64.)));
+        let mut painter = Painter::default();
+        for color in [0xff0000, 0x00ff00, 0x0000ff] {
+            painter.insert_primitive(Quad {
+                bounds, content_mask: ContentMask::new(bounds),
+                background: crate::rgb(color).into(), ..Default::default()
+            });
+        }
+        painter.finish();
+        let scene = painter.into_scene();
+        assert!(ordered_static_quad_root(&scene));
+        assert_eq!(quad_outside_ranges(&scene, 1..2), Some([0..1, 2..3]));
+        assert_eq!(quad_outside_ranges(&scene, 0..3), Some([0..0, 0..0]));
+        assert!(quad_outside_ranges(&scene, 3..4).is_none());
+    }
+
+    #[test]
+    fn root_order_inversion_rejects_flattened_composition() {
+        let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(64.), ScaledPixels(64.)));
+        let mut scene = Scene::default();
+        for order in [1, 3, 2] {
+            scene.paint_operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                order, bounds, content_mask: ContentMask::new(bounds), ..Default::default()
+            })));
+        }
+        scene.paint_operations.finish();
+        assert!(!ordered_static_quad_root(&scene));
+    }
+
+    #[test]
     fn overscan_source_maps_signed_content_tiles_without_viewport_projection() {
         let source = ContentRaster {
             source_origin: [0, -128],
