@@ -158,6 +158,60 @@ impl LayerContent {
         }
     }
 
+    // Native captures use a common content anchor but can paint at
+    // different window origins. Compare the ordered records after moving
+    // old geometry into the new capture coordinate system; rectangular
+    // capture masks can differ outside the common content coverage.
+    fn native_damage_from(&self, previous: &Self) -> LayerDamage {
+        let (Some(current), Some(old)) = (self.raster, previous.raster) else { return LayerDamage::Full; };
+        if self.parts != previous.parts || self.operations.len() != previous.operations.len() {
+            return LayerDamage::Full;
+        }
+        let current_origin = translation_point(current.source_origin);
+        let old_origin = translation_point(old.source_origin);
+        let delta = current_origin - old_origin;
+        let current_mask = ContentMask::new(translated_bounds(current.coverage, current_origin));
+        let old_mask = ContentMask::new(translated_bounds(old.coverage, old_origin));
+        let mut damage = None;
+        for (current_op, old_op) in self.operations.iter().zip(previous.operations.iter()) {
+            match (current_op, old_op) {
+                (PaintOperation::StartLayer(a), PaintOperation::StartLayer(b))
+                    if *a == translated_bounds(*b, delta) => {}
+                (PaintOperation::EndLayer, PaintOperation::EndLayer) => {}
+                (PaintOperation::Primitive(a), PaintOperation::Primitive(b)) => {
+                    let (Some(a_bounds), Some(b_bounds)) = (static_raster_bounds(a), static_raster_bounds(b))
+                        else { return LayerDamage::Full; };
+                    if *a.content_mask() != current_mask || *b.content_mask() != old_mask {
+                        return LayerDamage::Full;
+                    }
+                    macro_rules! equal {
+                        ($a:ident, $b:ident) => {{
+                            let mut moved = *$b;
+                            moved.bounds = translated_bounds(moved.bounds, delta);
+                            moved.content_mask = current_mask;
+                            *$a == moved
+                        }};
+                    }
+                    let equal = match (a, b) {
+                        (Primitive::Quad(a), Primitive::Quad(b)) => equal!(a, b),
+                        (Primitive::Shadow(a), Primitive::Shadow(b)) => equal!(a, b),
+                        (Primitive::Underline(a), Primitive::Underline(b)) => equal!(a, b),
+                        (Primitive::MonochromeSprite(a), Primitive::MonochromeSprite(b)) => equal!(a, b),
+                        (Primitive::PolychromeSprite(a), Primitive::PolychromeSprite(b)) => equal!(a, b),
+                        _ => return LayerDamage::Full,
+                    };
+                    if !equal {
+                        let changed = translated_bounds(a_bounds, Point::default() - current_origin)
+                            .union(&translated_bounds(b_bounds, Point::default() - old_origin));
+                        union_visual(&mut damage, changed);
+                    }
+                }
+                _ => return LayerDamage::Full,
+            }
+        }
+        damage.map_or(LayerDamage::Clean, LayerDamage::Bounds)
+    }
+
     /// Compare only the pixels that both viewport captures actually own.
     /// Rows entering or leaving the viewport can change the operation count
     /// without changing a single contributing primitive in this intersection.
@@ -432,7 +486,8 @@ impl LayerFrame {
     }
 
     pub(crate) fn native_row_raster(&self) -> Option<Bounds<ScaledPixels>> {
-        self.placement.as_ref()?.native_geometry()?.row_bounds
+        let geometry = self.placement.as_ref()?.native_geometry()?;
+        Some(translated_bounds(geometry.row_bounds?, Point::default() - translation_point(geometry.source_origin)))
     }
 
     pub(crate) fn has_visible_row_source(&self) -> bool {
@@ -867,9 +922,10 @@ impl SceneLayers {
             if !seen.insert(geometry.id) { return Self::default(); }
             let source_viewport = placement.viewport();
             let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
-            let translation = Some([delta.x.0 as i32, delta.y.0 as i32]);
-            // Capture coordinates == tile content coordinates (origin 0).
-            // Only a compatible same-origin recapture inherits this identity.
+            let translation = Some([geometry.source_origin[0] + delta.x.0 as i32,
+                geometry.source_origin[1] + delta.y.0 as i32]);
+            // Native source origins are relative to the first capture of
+            // this identity; tile keys remain in stable content space.
             let previous = old.get(&geometry.id).copied();
             let content = if let Some(previous) = previous
                 && previous.source_viewport == source_viewport
@@ -886,9 +942,14 @@ impl SceneLayers {
             let (damage, previous_coverage) = if let Some(previous) = previous
                 && previous.generation.checked_add(1) == Some(geometry.generation)
                 && previous.source_viewport == source_viewport
-                && previous.content.raster == content.raster
+                && let (Some(current), Some(old)) = (content.raster, previous.content.raster)
             {
-                (content.damage_from(&previous.content), content.raster.map(|raster| raster.coverage))
+                let common = current.coverage.intersect(&old.coverage);
+                if common.is_empty() {
+                    (LayerDamage::Full, None)
+                } else {
+                    (content.native_damage_from(&previous.content), Some(common))
+                }
             } else { (LayerDamage::Full, None) };
             frames.push(LayerFrame {
                 layout_key: None, id: geometry.id, generation: geometry.generation,

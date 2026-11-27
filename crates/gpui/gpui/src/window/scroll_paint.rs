@@ -22,6 +22,8 @@ pub(in crate::window) struct ScrollPaint {
     // Allocated only for a source actually published as a native layer.
     native_id: std::sync::OnceLock<u64>,
     native_generation: u64,
+    // Logical origin at the first publication of this source identity.
+    native_anchor: Point<Pixels>,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
@@ -89,7 +91,7 @@ impl Window {
         let operations = self.next_frame.painter.end_scroll_capture();
         let scale = self.scale_factor();
         let mut content = ScrollPaint::new(origin, capture.scale(scale).bounds, operations);
-        let inherited = previous.is_some_and(|previous| content.inherit_native_identity(previous));
+        let inherited = previous.is_some_and(|previous| content.inherit_native_identity(previous, scale));
         let content = Arc::new(content);
         // Keep an existing native publication alive through a compatible
         // recapture. First-time rows still follow the ordinary admission path.
@@ -164,17 +166,18 @@ impl ScrollPaint {
             row_raster_bounds,
             native_id: std::sync::OnceLock::new(),
             native_generation: 1,
+            native_anchor: origin,
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
         }
     }
 
-    /// Only reuse a content-space identity when the original capture
-    /// coordinate system is identical. Moving/reflowing recaptures start
-    /// a new source; geometric adoption then remains unambiguous.
-    fn inherit_native_identity(&mut self, previous: &Self) -> bool {
-        if !self.static_order || !previous.static_order || self.origin != previous.origin
-            || self.coverage != previous.coverage
+    /// Keep the original content-space anchor across integral recaptures.
+    /// LayerFrame proves damage and common coverage before adopting pixels.
+    fn inherit_native_identity(&mut self, previous: &Self, scale: f32) -> bool {
+        let offset = self.origin.scale(scale) - previous.native_anchor.scale(scale);
+        if !self.static_order || !previous.static_order || !scale.is_finite() || scale <= 0.
+            || [offset.x.0, offset.y.0].into_iter().any(|v| !v.is_finite() || v.fract() != 0. || v.abs() > 1_048_576.)
         {
             return false;
         }
@@ -182,6 +185,7 @@ impl ScrollPaint {
             else { return false; };
         if self.native_id.set(id).is_err() { return false; }
         self.native_generation = generation;
+        self.native_anchor = previous.native_anchor;
         true
     }
 
@@ -265,8 +269,15 @@ impl ScrollPaint {
             return None;
         }
         let mut placement = self.placement(viewport.scale(scale), delta)?;
+        let offset = self.origin.scale(scale) - self.native_anchor.scale(scale);
+        let translation = offset + delta;
+        if [offset.x.0, offset.y.0, translation.x.0, translation.y.0].into_iter()
+            .any(|v| !v.is_finite() || v.fract() != 0. || v.abs() > 1_048_576.) {
+            return None;
+        }
         let id = *self.native_id.get_or_init(super::frame::next_layer_id);
-        placement.native = Some(NativeScrollGeometry { id, generation: self.native_generation, viewport, scale, row_bounds: None });
+        placement.native = Some(NativeScrollGeometry { id, generation: self.native_generation, viewport, scale,
+            source_origin: [offset.x.0 as i32, offset.y.0 as i32], row_bounds: None });
         Some(placement)
     }
 
@@ -338,6 +349,7 @@ pub(in crate::window) struct NativeScrollGeometry {
     pub(in crate::window) generation: u64,
     pub(in crate::window) viewport: ContentMask<Pixels>,
     pub(in crate::window) scale: f32,
+    pub(in crate::window) source_origin: [i32; 2],
     pub(in crate::window) row_bounds: Option<Bounds<ScaledPixels>>,
 }
 
@@ -566,7 +578,7 @@ mod tests {
         let first = publish(&original);
         let old = crate::window::SceneLayers::capture_native(&first, None);
         let mut refreshed = capture(0x00ff00);
-        assert!(refreshed.inherit_native_identity(&original));
+        assert!(refreshed.inherit_native_identity(&original, 1.));
         let new = publish(&Arc::new(refreshed));
         let layers = crate::window::SceneLayers::capture_native(&new, Some(&old));
         let layer = &layers.frames[0];
@@ -576,8 +588,43 @@ mod tests {
         assert_eq!(layer.adopt_tile(1, [0, 32, 40, 64], 1.), None);
         assert_eq!(layer.adopt_tile(0, [0, 0, 40, 32], 1.), None);
         let mut relocated = capture(0x0000ff);
-        relocated.origin = point(px(0.), px(1.));
-        assert!(!relocated.inherit_native_identity(&original));
+        relocated.origin = point(px(0.), px(0.5));
+        assert!(!relocated.inherit_native_identity(&original, 1.));
+    }
+
+    #[test]
+    fn native_recapture_inherits_translated_content_in_common_coverage() {
+        let rect = |y, height| Bounds::new(point(px(0.), px(y)), size(px(40.), px(height))).scale(1.);
+        let coverage = rect(-64., 192.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let capture = |offset, color| {
+            let mut ops = Operations::default();
+            for (y, rgb) in [(8., 0x123456), (48., color)] {
+                ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                    bounds: rect(y + offset, 8.), content_mask: ContentMask::new(coverage),
+                    background: crate::rgb(rgb).into(), ..Default::default()
+                })));
+            }
+            ScrollPaint::new(point(px(0.), px(offset)), coverage, ops)
+        };
+        let publish = |source: &Arc<ScrollPaint>| {
+            let mut painter = Painter::default();
+            assert!(painter.push_deferred_scroll(source.native_placement(viewport, 1., Point::default()).unwrap()));
+            painter.finish();
+            painter.into_scene()
+        };
+        let original = Arc::new(capture(0., 0x0000ff));
+        let old = crate::window::SceneLayers::capture_native(&publish(&original), None);
+        let mut next = capture(16., 0x00ff00);
+        assert!(next.inherit_native_identity(&original, 1.));
+        let layers = crate::window::SceneLayers::capture_native(&publish(&Arc::new(next)), Some(&old));
+        let layer = &layers.frames[0];
+        assert_eq!(layer.id, old.frames[0].id);
+        assert_eq!(layer.root_static_raster(), Some((viewport.scale(1.).bounds, [0, 16])));
+        assert_eq!(layer.raster_source_for_tile([0, 0, 40, 32]).unwrap().1, [0, 16]);
+        assert_eq!(layer.adopt_tile(1, [0, 0, 40, 32], 1.), Some(2));
+        assert_eq!(layer.adopt_tile(1, [0, 32, 40, 64], 1.), None);
+        assert_eq!(layer.adopt_tile(1, [0, 96, 40, 128], 1.), None);
     }
 
     #[test]
