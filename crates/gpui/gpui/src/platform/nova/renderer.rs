@@ -1464,6 +1464,11 @@ impl NovaRenderer {
                 log::debug!("failed to trim native scroll tiles: {error}");
             }
         }
+        if submissions_drained {
+            // The cache owns composite descriptors that reference these
+            // buffers. Its views must retire before slot buffers can go.
+            self.destroy_scroll_composite_slots();
+        }
         if matches!(
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive

@@ -204,32 +204,41 @@ impl StaticStreams {
     }
 
     fn upload<D: ResourceDevice>(&self, device: &mut D, resources: &mut Resources,
-        mut buffers: FrameResourceBuffers, text: &[u8], quad_slot: Option<&mut Option<BufferId>>) -> Result<FrameResourceBuffers> {
+        mut buffers: FrameResourceBuffers, text: &[u8], mut retained: Option<(&mut OutsideGpuStreams, bool)>) -> Result<FrameResourceBuffers> {
+        // The same stream ABI serves raster misses and the retained root.
+        // Only the root has a completed presentation slot that owns buffers.
+        macro_rules! upload {
+            ($field:ident, $bytes:expr, $usage:expr) => {
+                if let Some((slot, unchanged)) = retained.as_mut() {
+                    slot.$field.upload(device, resources, $bytes, $usage, *unchanged)?
+                } else {
+                    resources.buffer(device, $bytes, $usage)?
+                }
+            };
+        }
         if !self.quads.is_empty() {
-            let count = self.quads.len() / PACKED_QUAD_BYTES;
-            if let Some(slot) = quad_slot.filter(|_| count <= RETAINED_OUTSIDE_QUADS) {
-                buffers.quad_buffer = CompositeSlot::write(device, slot, &self.quads,
-                    RETAINED_OUTSIDE_QUADS * PACKED_QUAD_BYTES, BufferUsage::STORAGE)?;
-                buffers.quad_capacity = RETAINED_OUTSIDE_QUADS;
-            } else {
-                buffers.quad_buffer = resources.buffer(device, &self.quads, BufferUsage::STORAGE)?;
-                buffers.quad_capacity = count;
-            }
+            buffers.quad_buffer = upload!(quads, &self.quads, BufferUsage::STORAGE);
+            buffers.quad_capacity = self.quads.len() / PACKED_QUAD_BYTES;
         }
         if !self.shadows.is_empty() {
-            buffers.shadow_buffer = resources.buffer(device, &self.shadows, BufferUsage::STORAGE)?;
+            buffers.shadow_buffer = upload!(shadows, &self.shadows, BufferUsage::STORAGE);
             buffers.shadow_capacity = self.shadows.len() / PACKED_SHADOW_BYTES;
         }
         if !self.underlines.is_empty() {
-            buffers.underline_buffer = resources.buffer(device, &self.underlines, BufferUsage::STORAGE)?;
+            buffers.underline_buffer = upload!(underlines, &self.underlines, BufferUsage::STORAGE);
         }
         if !self.mono.is_empty() {
-            buffers.mono_sprite_buffer = resources.buffer(device, &self.mono, BufferUsage::STORAGE)?;
+            buffers.mono_sprite_buffer = upload!(mono, &self.mono, BufferUsage::STORAGE);
             buffers.mono_sprite_capacity = self.mono.len() / PACKED_MONO_SPRITE_BYTES;
-            buffers.text_raster_buffer = resources.buffer(device, text, BufferUsage::UNIFORM)?;
+            buffers.text_raster_buffer = if let Some((slot, _)) = retained.as_mut() {
+                CompositeSlot::write_changed(device, &mut slot.text, &mut slot.text_bytes,
+                    text, text.len(), text.len(), BufferUsage::UNIFORM)?
+            } else {
+                resources.buffer(device, text, BufferUsage::UNIFORM)?
+            };
         }
         if !self.poly.is_empty() {
-            buffers.poly_sprite_buffer = resources.buffer(device, &self.poly, BufferUsage::STORAGE)?;
+            buffers.poly_sprite_buffer = upload!(poly, &self.poly, BufferUsage::STORAGE);
             buffers.poly_sprite_capacity = self.poly.len() / PACKED_POLY_SPRITE_BYTES;
         }
         Ok(buffers)
@@ -457,18 +466,91 @@ impl OutsideRoot {
 pub(super) struct CompositeSlot {
     global: Option<BufferId>,
     sprites: Option<BufferId>,
-    outside: Option<BufferId>,
+    global_bytes: Vec<u8>,
+    sprite_bytes: Vec<u8>,
+    outside: OutsideGpuStreams,
     // Dedicated immutable animation sentinel; never bind a growable normal
     // renderer animation buffer into a resident tile descriptor.
     static_animation: Option<BufferId>,
 }
 
-const RETAINED_OUTSIDE_QUADS: usize = 256;
+// Limit physical retention independently of Scene size. Large streams
+// use the existing fence-owned transient path, not unbounded slot growth.
+const RETAINED_OUTSIDE_STREAM_BYTES: usize = 256 * 1024;
+
+#[derive(Default)]
+struct OutsideBuffer {
+    buffer: Option<BufferId>,
+    capacity: usize,
+}
+
+impl OutsideBuffer {
+    fn upload<D: ResourceDevice>(&mut self, device: &mut D, resources: &mut Resources,
+        bytes: &[u8], usage: BufferUsage, unchanged: bool) -> Result<BufferId> {
+        if bytes.len() > RETAINED_OUTSIDE_STREAM_BYTES {
+            return resources.buffer(device, bytes, usage);
+        }
+        if self.capacity < bytes.len() {
+            // This slot is free and its transient descriptors have already
+            // retired; replacing its private buffer cannot race a reader.
+            if let Some(old) = self.buffer {
+                device.destroy_buffer(old)?;
+                self.buffer = None;
+                self.capacity = 0;
+            }
+        }
+        if let Some(buffer) = self.buffer {
+            if !unchanged { device.write_buffer(buffer, 0, bytes)?; }
+            return Ok(buffer);
+        }
+        let capacity = bytes.len().next_power_of_two();
+        let buffer = CompositeSlot::write(device, &mut self.buffer, bytes, capacity, usage)?;
+        self.capacity = capacity;
+        Ok(buffer)
+    }
+}
+
+#[derive(Default)]
+struct OutsideGpuStreams {
+    root: std::sync::Weak<OutsideRoot>,
+    quads: OutsideBuffer,
+    shadows: OutsideBuffer,
+    underlines: OutsideBuffer,
+    mono: OutsideBuffer,
+    poly: OutsideBuffer,
+    text: Option<BufferId>,
+    text_bytes: Vec<u8>,
+}
+
+impl OutsideGpuStreams {
+    fn handles(&self) -> [Option<BufferId>; 6] {
+        [self.quads.buffer, self.shadows.buffer, self.underlines.buffer,
+            self.mono.buffer, self.poly.buffer, self.text]
+    }
+}
+
+/// Compare complete ABI records and merge adjacent changed intervals.
+/// A shorter active stream never needs its unreachable tail cleared.
+fn changed_record_ranges(previous: &[u8], next: &[u8], stride: usize) -> Vec<std::ops::Range<usize>> {
+    debug_assert!(stride != 0 && next.len() % stride == 0);
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for (index, record) in next.chunks_exact(stride).enumerate() {
+        let start = index * stride;
+        let end = start + stride;
+        if previous.get(start..end) == Some(record) { continue; }
+        if let Some(last) = ranges.last_mut() && last.end == start {
+            last.end = end;
+        } else {
+            ranges.push(start..end);
+        }
+    }
+    ranges
+}
 
 impl CompositeSlot {
     #[cfg(all(test, target_os = "windows"))]
     pub(super) fn handles(&self) -> [Option<BufferId>; 3] {
-        [self.global, self.sprites, self.outside]
+        [self.global, self.sprites, self.outside.quads.buffer]
     }
 
     fn write<D: ResourceDevice>(device: &mut D, buffer: &mut Option<BufferId>,
@@ -489,8 +571,31 @@ impl CompositeSlot {
         Ok(id)
     }
 
+    fn write_changed<D: ResourceDevice>(device: &mut D, buffer: &mut Option<BufferId>,
+        previous: &mut Vec<u8>, bytes: &[u8], capacity: usize, stride: usize, usage: BufferUsage) -> Result<BufferId> {
+        if buffer.is_none() {
+            previous.clear();
+            let id = Self::write(device, buffer, bytes, capacity, usage)?;
+            previous.extend_from_slice(bytes);
+            return Ok(id);
+        }
+        let id = buffer.expect("resident composite buffer");
+        let ranges = changed_record_ranges(previous, bytes, stride);
+        for range in ranges {
+            if let Err(error) = device.write_buffer(id, range.start as u64, &bytes[range]) {
+                // Partial native writes are not a valid comparison baseline.
+                previous.clear();
+                return Err(error.into());
+            }
+        }
+        previous.clear();
+        previous.extend_from_slice(bytes);
+        Ok(id)
+    }
+
     fn destroy<D: ResourceDevice>(self, device: &mut D) {
-        for buffer in [self.global, self.sprites, self.outside, self.static_animation].into_iter().flatten() {
+        for buffer in [self.global, self.sprites, self.static_animation].into_iter()
+            .chain(self.outside.handles()).flatten() {
             if let Err(error) = device.destroy_buffer(buffer) {
                 log::debug!("scroll composite slot retirement failed: {error}");
             }
@@ -879,10 +984,11 @@ impl NovaRenderer {
             }
             let premultiplied = self.surface_alpha.outputs_premultiplied_alpha();
             let globals = pack_global_params(self.active_size, premultiplied, [0., 0.]);
-            let global_buffer = CompositeSlot::write(device, &mut composite_slot.global,
-                &globals, GLOBAL_UPLOAD_BYTES, BufferUsage::UNIFORM)?;
-            let poly_sprite_buffer = CompositeSlot::write(device, &mut composite_slot.sprites,
-                &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
+            let global_buffer = CompositeSlot::write_changed(device, &mut composite_slot.global,
+                &mut composite_slot.global_bytes, &globals, GLOBAL_UPLOAD_BYTES, globals.len(), BufferUsage::UNIFORM)?;
+            let poly_sprite_buffer = CompositeSlot::write_changed(device, &mut composite_slot.sprites,
+                &mut composite_slot.sprite_bytes, &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES,
+                PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
             let animation_value_buffer = if let Some(buffer) = composite_slot.static_animation {
                 buffer
             } else {
@@ -894,8 +1000,12 @@ impl NovaRenderer {
                 animation_value_buffer, animation_value_capacity: 1, ..original
             };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
+            let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
+            // A failed write must never certify the next use of this slot.
+            composite_slot.outside.root = std::sync::Weak::new();
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
-                &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
+                &pack_text_raster_params(&self.rendering_parameters), Some((&mut composite_slot.outside, unchanged)))?;
+            composite_slot.outside.root = Arc::downgrade(&outside);
             let blend = if premultiplied { self.pipelines.premultiplied } else { self.pipelines.alpha };
             let root_commands = outside.streams.commands(self, device, &mut resources, root_buffers, blend, &extension_steps)?;
             let mut commands = Vec::with_capacity(root_commands.len() + reads.len());
@@ -1094,6 +1204,16 @@ mod tests {
         assert_eq!(row.bounds.bottom(), ScaledPixels(26.));
         assert_eq!(layer.root_static_raster().unwrap().0, viewport.scale(1.).bounds);
         assert_eq!(layer.adopt_tile(1, [6, 22, 110, 58], 1.), Some(1));
+    }
+
+    #[test]
+    fn composite_upload_merges_only_changed_record_intervals() {
+        let previous = [1, 1, 2, 2, 3, 3, 4, 4];
+        assert!(changed_record_ranges(&previous, &previous, 2).is_empty());
+        assert_eq!(changed_record_ranges(&previous, &[1, 1, 9, 9, 8, 8, 4, 4], 2), vec![2..6]);
+        assert_eq!(changed_record_ranges(&previous, &[0, 0, 2, 2, 0, 0, 4, 4], 2), vec![0..2, 4..6]);
+        assert_eq!(changed_record_ranges(&previous[..4], &previous, 2), vec![4..8]);
+        assert!(changed_record_ranges(&previous, &previous[..4], 2).is_empty());
     }
 
     #[test]
