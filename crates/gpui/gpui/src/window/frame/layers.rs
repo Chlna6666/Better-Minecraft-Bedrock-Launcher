@@ -736,7 +736,7 @@ impl SceneLayers {
             .then(|| static_root_span(scene, range)).flatten();
     }
 
-    fn capture_native(scene: &Scene, previous: Option<&Self>) -> Self {
+    pub(crate) fn capture_native(scene: &Scene, previous: Option<&Self>) -> Self {
         if !ordered_static_root(scene) { return Self::default(); }
         let mut seen = FxHashSet::default();
         let old: FxHashMap<_, _> = previous.into_iter().flat_map(|layers| &layers.frames)
@@ -781,7 +781,7 @@ impl SceneLayers {
         Self { frames }
     }
 
-    pub(super) fn capture(
+    pub(in crate::window) fn capture(
         scene: &Scene,
         records: &[LayerRecord],
         scroll_views: &crate::window::scroll_views::ScrollViews,

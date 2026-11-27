@@ -322,6 +322,13 @@ impl ScrollPlacement {
     }
 }
 
+#[cfg(all(test, target_os = "windows", any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl")))]
+pub(crate) fn native_scroll_fixture(operations: Operations, coverage: Bounds<ScaledPixels>,
+    viewport: ContentMask<Pixels>) -> ScrollPlacement {
+    Arc::new(ScrollPaint::new(Point::default(), coverage, operations))
+        .native_placement(viewport, 1., Point::default()).expect("certified native scroll source")
+}
+
 fn moved(bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels>) -> Bounds<ScaledPixels> {
     Bounds::new(bounds.origin + delta, bounds.size)
 }
@@ -493,6 +500,23 @@ mod tests {
         assert_eq!(next.frames[0].id, layers.frames[0].id);
         assert_eq!(next.frames[0].generation, layers.frames[0].generation);
         assert!(Arc::ptr_eq(&next.frames[0].content, &layers.frames[0].content));
+        // Repeated instances must not share one cache identity in the same
+        // frame. Both remain recoverable by ordinary Painter expansion.
+        let mut duplicate = Painter::default();
+        assert!(duplicate.push_deferred_scroll(placement.clone()));
+        assert!(duplicate.push_deferred_scroll(placement.clone()));
+        duplicate.finish();
+        assert!(crate::window::SceneLayers::capture_native(&duplicate.scene, None).frames.is_empty());
+        let mut nested = Painter::default();
+        nested.push_layer(viewport.bounds);
+        nested.replay_with_ordering(1..2, &scene, std::iter::empty(), Some(&moved));
+        nested.pop_layer();
+        nested.finish();
+        assert_eq!(nested.len(), 3);
+        assert!(nested.paint_operations.has_deferred_scroll());
+        assert!(crate::window::SceneLayers::capture_native(&nested.scene, None).frames.is_empty());
+        let nested_paint = crate::window::Paint::new(nested.into_scene(), Arc::default(), Default::default());
+        assert!(!nested_paint.owner_fallback().unwrap().unwrap().scene.paint_operations.has_deferred_scroll());
         assert_eq!(scene.bounds_for_range(1..2), Some(viewport.bounds));
         let mut shared = Operations::default();
         shared.share(&scene.paint_operations, 1..2);

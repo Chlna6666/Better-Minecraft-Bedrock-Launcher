@@ -331,36 +331,44 @@ fn verify(backend: RendererBackend) {
 #[cfg(feature = "nova-gfx-dx12")]
 #[ignore = "requires Windows hardware D3D12 and a native presentable window"]
 fn dx12_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaDx12, false);
-    verify_direct_present(RendererBackend::NovaDx12, true);
+    for native in [false, true] {
+        verify_direct_present(RendererBackend::NovaDx12, false, native);
+        verify_direct_present(RendererBackend::NovaDx12, true, native);
+    }
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-vulkan")]
 #[ignore = "requires Windows hardware Vulkan and a native presentable window"]
 fn vulkan_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaVulkan, false);
-    verify_direct_present(RendererBackend::NovaVulkan, true);
+    for native in [false, true] {
+        verify_direct_present(RendererBackend::NovaVulkan, false, native);
+        verify_direct_present(RendererBackend::NovaVulkan, true, native);
+    }
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
 #[ignore = "requires Windows hardware D3D11 and a native presentable window"]
 fn dx11_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaDx11, false);
-    verify_direct_present(RendererBackend::NovaDx11, true);
+    for native in [false, true] {
+        verify_direct_present(RendererBackend::NovaDx11, false, native);
+        verify_direct_present(RendererBackend::NovaDx11, true, native);
+    }
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-opengl")]
 #[ignore = "requires Windows OpenGL 4.5 and a native presentable window"]
 fn opengl_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaOpenGl, false);
-    verify_direct_present(RendererBackend::NovaOpenGl, true);
+    for native in [false, true] {
+        verify_direct_present(RendererBackend::NovaOpenGl, false, native);
+        verify_direct_present(RendererBackend::NovaOpenGl, true, native);
+    }
 }
 
 #[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
-fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
+fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: bool) {
     let window = native_window::Window::renderer_fixture();
     window.resize(64, 64);
     let mut renderer = NovaRenderer::with_atlas(
@@ -403,40 +411,55 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
             transformation: crate::TransformationMatrix::unit(),
         })
     } else { None };
-    let mut painter = crate::scene::Painter::default();
-    // Background and foreground overlap the promoted fragment. The native
-    // consumer must preserve both surrounding draws, not flatten the root
-    // to only the resident texture.
-    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
-        background: crate::rgb(0xff0000).into(), ..Default::default() });
-    painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
-    if let Some(glyph) = glyph {
-        painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
-    }
-    // Keep an ordinary root interval between two independent promoted layers.
-    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
-        background: crate::rgb(0x800000).into(), ..Default::default() });
-    let second_quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
-        background: crate::rgb(0x0000ff).into(), ..Default::default() };
-    painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..second_quad });
-    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
-        background: crate::rgb(0x808080).into(), ..Default::default() });
-    painter.finish();
-    let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
-        crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
     let mut source = crate::scene::Operations::default();
     source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(quad)));
     if let Some(glyph) = glyph {
         source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::MonochromeSprite(glyph)));
     }
-    paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
-    let end = if with_glyph { 3 } else { 2 };
-    paint.layers.certify_fixture_root(&paint.scene, 1..end);
-    assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..end)));
+    let second_quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
+        background: crate::rgb(0x0000ff).into(), ..Default::default() };
     let mut second_source = crate::scene::Operations::default();
     second_source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(second_quad)));
-    paint.layers.raster_fixture(second_source, coverage, viewport, [0, 0]);
-    paint.layers.certify_fixture_root(&paint.scene, end+1..end+2);
+    let mut painter = crate::scene::Painter::default();
+    // Background and foreground overlap both promoted fragments.
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0xff0000).into(), ..Default::default() });
+    if native {
+        assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
+            std::mem::take(&mut source), coverage, viewport)));
+    } else {
+        painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
+        if let Some(glyph) = glyph {
+            painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
+        }
+    }
+    // Keep an ordinary root interval between two independent promoted layers.
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0x800000).into(), ..Default::default() });
+    if native {
+        assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
+            std::mem::take(&mut second_source), coverage, viewport)));
+    } else {
+        painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..second_quad });
+    }
+    painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
+        background: crate::rgb(0x808080).into(), ..Default::default() });
+    painter.finish();
+    let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
+        crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
+    let end = if with_glyph && !native { 3 } else { 2 };
+    if native {
+        assert_eq!(paint.scene.len(), 5);
+        assert_eq!(paint.scene.quads.len(), 3);
+        assert!(paint.scene.monochrome_sprites.is_empty());
+        paint.layers = crate::window::SceneLayers::capture_native(&paint.scene, None);
+    } else {
+        paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
+        paint.layers.certify_fixture_root(&paint.scene, 1..end);
+        paint.layers.raster_fixture(second_source, coverage, viewport, [0, 0]);
+        paint.layers.certify_fixture_root(&paint.scene, end+1..end+2);
+    }
+    assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..end)));
     assert_eq!(paint.layers.frames[1].root_static_span(), Some(&(end+1..end+2)));
     let mut protected = FxHashSet::default();
     paint.layers.collect_atlas_tile_ids_into(&mut protected);

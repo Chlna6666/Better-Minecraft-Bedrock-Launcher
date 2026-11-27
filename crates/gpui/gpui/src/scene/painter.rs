@@ -96,7 +96,17 @@ impl Painter {
     /// composition or reconstructs the ordinary Scene. Do not import
     /// native ordering proofs from across this boundary.
     pub(crate) fn push_deferred_scroll(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) -> bool {
-        if self.scroll_capture.is_some() || !self.blur_captures.is_empty() || !self.layer_stack.is_empty() {
+        if !self.layer_stack.is_empty() {
+            return false;
+        }
+        self.retain_deferred_scroll(placement)
+    }
+
+    /// A retained view may be replayed in an ordinary scope after a
+    /// structural edit. Keep its logical indices intact; the root proof
+    /// rejects nested placements and the owner rebuilds their DrawOrder.
+    fn retain_deferred_scroll(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) -> bool {
+        if self.scroll_capture.is_some() || !self.blur_captures.is_empty() {
             return false;
         }
         self.scene.revision = 0;

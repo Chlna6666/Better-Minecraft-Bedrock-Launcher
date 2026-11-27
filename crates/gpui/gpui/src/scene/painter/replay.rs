@@ -305,7 +305,7 @@ impl Painter {
                     // The ordinary owner reconstruction deliberately has
                     // no previous UI Painter and expands it instead.
                     self.retained_prefix_invalid = true;
-                    if previous_painter.is_none() || !self.push_deferred_scroll(placement.clone()) {
+                    if previous_painter.is_none() || !self.retain_deferred_scroll(placement.clone()) {
                         placement.replay(self);
                     }
                 }
