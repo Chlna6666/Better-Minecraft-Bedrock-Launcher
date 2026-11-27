@@ -135,11 +135,15 @@ impl Window {
         }
         self.checked_scroll_generation = Some(generation);
         let mut scrolled = smallvec::SmallVec::<[EntityId; 4]>::new();
-        for source in &self.rendered_frame.mounted_scroll_sources {
-            if source.read.status() == StateReadStatus::Changed && !scrolled.contains(&source.owner) {
-                scrolled.push(source.owner);
-            }
-        }
+        self.mounted_scroll_validation.poll(
+            self.rendered_frame.mounted_scroll_sources.iter()
+                .map(|source| (source.owner, &source.read)),
+            |owner, status| {
+                if status == StateReadStatus::Changed && !scrolled.contains(&owner) {
+                    scrolled.push(owner);
+                }
+            },
+        );
         self.invalidator.invalidate_scroll_views(scrolled);
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         if self.invalidator.changed_state_owners(&mut changed) {

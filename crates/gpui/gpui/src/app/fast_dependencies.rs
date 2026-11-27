@@ -540,6 +540,7 @@ impl Drop for StateVersion {
 enum ValidatedEpoch {
     #[default]
     Unchecked,
+    Empty,
     Content(u64),
     Placement(u64),
     Mixed(u64),
@@ -549,6 +550,7 @@ impl ValidatedEpoch {
     fn matches(self, epochs: StateEpochs) -> bool {
         match self {
             Self::Unchecked => false,
+            Self::Empty => true,
             Self::Content(epoch) => epoch == epochs.content,
             Self::Placement(epoch) => epoch == epochs.placement,
             Self::Mixed(epoch) => epoch == epochs.all(),
@@ -562,6 +564,47 @@ impl ValidatedEpoch {
 pub(crate) struct StateReadValidation(Cell<ValidatedEpoch>);
 
 impl StateReadValidation {
+    fn certify(&self, epochs: StateEpochs, content: bool, placement: bool) {
+        self.0.set(match (content, placement) {
+            (true, true) => ValidatedEpoch::Mixed(epochs.all()),
+            (true, false) => ValidatedEpoch::Content(epochs.content),
+            (false, true) => ValidatedEpoch::Placement(epochs.placement),
+            (false, false) => ValidatedEpoch::Empty,
+        });
+    }
+
+    /// Visit every changed/dead read exactly once on a cache miss. A clean
+    /// immutable snapshot can skip the entire iterator on an epoch hit.
+    /// The caller must reset this proof whenever the snapshot is replaced.
+    pub(crate) fn poll<'a, T>(
+        &self,
+        reads: impl IntoIterator<Item = (T, &'a StateRead)>,
+        mut invalid: impl FnMut(T, StateReadStatus),
+    ) {
+        let epochs = STATE_EPOCHS.with(Cell::get);
+        if self.0.get().matches(epochs) {
+            return;
+        }
+        let mut content = false;
+        let mut placement = false;
+        let mut clean = true;
+        for (key, read) in reads {
+            match read.checked_domain() {
+                Ok(StateDomain::Content) => content = true,
+                Ok(StateDomain::Placement) => placement = true,
+                Err(status) => {
+                    clean = false;
+                    invalid(key, status);
+                }
+            }
+        }
+        if clean {
+            self.certify(epochs, content, placement);
+        } else {
+            self.0.set(ValidatedEpoch::Unchecked);
+        }
+    }
+
     pub(crate) fn unchanged(&self, reads: &[StateRead]) -> bool {
         if reads.is_empty() {
             return true;
@@ -573,21 +616,16 @@ impl StateReadValidation {
         let mut content = false;
         let mut placement = false;
         for read in reads {
-            match read.unchanged_domain() {
-                Some(StateDomain::Content) => content = true,
-                Some(StateDomain::Placement) => placement = true,
-                None => {
+            match read.checked_domain() {
+                Ok(StateDomain::Content) => content = true,
+                Ok(StateDomain::Placement) => placement = true,
+                Err(_) => {
                     self.0.set(ValidatedEpoch::Unchecked);
                     return false;
                 }
             }
         }
-        self.0.set(match (content, placement) {
-            (true, true) => ValidatedEpoch::Mixed(epochs.all()),
-            (true, false) => ValidatedEpoch::Content(epochs.content),
-            (false, true) => ValidatedEpoch::Placement(epochs.placement),
-            (false, false) => ValidatedEpoch::Unchecked,
-        });
+        self.certify(epochs, content, placement);
         true
     }
 }
@@ -620,16 +658,19 @@ impl StateRead {
         self.state.as_ptr() == Rc::as_ptr(&version.0)
     }
 
-    fn unchanged_domain(&self) -> Option<StateDomain> {
-        let state = self.state.upgrade()?;
-        (state.value.get() == self.at).then_some(state.domain)
+    fn checked_domain(&self) -> Result<StateDomain, StateReadStatus> {
+        let state = self.state.upgrade().ok_or(StateReadStatus::Dead)?;
+        if state.value.get() == self.at {
+            Ok(state.domain)
+        } else {
+            Err(StateReadStatus::Changed)
+        }
     }
 
     pub(crate) fn status(&self) -> StateReadStatus {
-        match self.state.upgrade() {
-            Some(state) if state.value.get() == self.at => StateReadStatus::Unchanged,
-            Some(_) => StateReadStatus::Changed,
-            None => StateReadStatus::Dead,
+        match self.checked_domain() {
+            Ok(_) => StateReadStatus::Unchanged,
+            Err(status) => status,
         }
     }
 }
@@ -761,6 +802,34 @@ mod state_dedup_tests {
         state.bump();
         assert!(!validation.unchanged(&reads));
         assert_eq!(validation.0.get(), ValidatedEpoch::Unchecked);
+    }
+
+    #[test]
+    fn polling_skips_clean_domains_and_reports_all_invalid_reads() {
+        let a = StateVersion::default();
+        let b = StateVersion::placement();
+        let c = StateVersion::default();
+        let reads = [StateRead::new(&a), StateRead::new(&b), StateRead::new(&c)];
+        let proof = StateReadValidation::default();
+        let mut invalid = Vec::new();
+        proof.poll(reads.iter().enumerate(), |i, status| invalid.push((i, status)));
+        assert!(invalid.is_empty());
+        // An epoch hit must not even consume the supplied iterator.
+        proof.poll(reads.iter().enumerate().inspect(|_| panic!("clean proof must skip")), |_, _| unreachable!());
+        a.bump();
+        drop(c);
+        proof.poll(reads.iter().enumerate(), |i, status| invalid.push((i, status)));
+        assert_eq!(invalid, [(0, StateReadStatus::Changed), (2, StateReadStatus::Dead)]);
+
+        let proof = StateReadValidation::default();
+        let reads = [StateRead::new(&b)];
+        proof.poll(reads.iter().enumerate(), |_, _| unreachable!());
+        a.bump();
+        proof.poll(reads.iter().enumerate().inspect(|_| panic!("unread domain changed")), |_, _| unreachable!());
+        b.bump();
+        invalid.clear();
+        proof.poll(reads.iter().enumerate(), |i, status| invalid.push((i, status)));
+        assert_eq!(invalid, [(0, StateReadStatus::Changed)]);
     }
 
     #[test]

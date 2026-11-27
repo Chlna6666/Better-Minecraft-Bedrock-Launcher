@@ -422,6 +422,8 @@ impl Window {
         self.frame_can_degrade = false;
         self.draw_deadline = None;
         self.checked_scroll_generation = Some(crate::state_generation());
+        // Acknowledging the transaction replaces mounted read snapshots.
+        self.mounted_scroll_validation = Default::default();
         self.last_generation_stats = super::state::FrameGenerationStats::default();
         self.last_generation_stats.scene = self.rendered_frame.scene().frame_metrics();
         self.last_generation_stats.frame_retained_capacity = self.rendered_frame.retained_capacity();

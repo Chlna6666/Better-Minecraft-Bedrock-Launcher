@@ -108,6 +108,7 @@ impl Window {
 /// scratch for publication, not an additional owner index.
 struct CommittedReads {
     reads: crate::RenderDependencies,
+    state_validation: crate::StateReadValidation,
     route: Option<EntityId>,
     keep: bool,
 }
@@ -314,12 +315,16 @@ impl WindowInvalidator {
                     reads.merge_replayed(&entry.reads);
                 }
                 changed |= !entry.reads.same_routes(&reads);
+                if !Rc::ptr_eq(&entry.reads.states, &reads.states) {
+                    entry.state_validation = Default::default();
+                }
                 entry.reads = reads;
                 entry.keep = true;
             } else {
                 changed |= !reads.entities.is_empty() || !reads.globals.is_empty();
                 inner.view_reads.insert(owner, CommittedReads {
                     reads,
+                    state_validation: Default::default(),
                     route: owner.filter(|owner| has_route(*owner)),
                     keep: true,
                 });
@@ -362,15 +367,20 @@ impl WindowInvalidator {
         let mut inner = self.inner.borrow_mut();
         let mut unscoped = false;
         for entry in inner.view_reads.values_mut() {
+            if entry.reads.states.is_empty() {
+                continue;
+            }
             let mut has_change = false;
-            let mut has_dead = false;
-            for read in entry.reads.states.iter() {
-                match read.status() {
+            // Dead reads are uncommon. Store only their indices inline,
+            // avoiding a second Weak upgrade when retiring them.
+            let mut dead = SmallVec::<[usize; 4]>::new();
+            entry.state_validation.poll(entry.reads.states.iter().enumerate(), |index, status| {
+                match status {
                     crate::StateReadStatus::Changed => has_change = true,
-                    crate::StateReadStatus::Dead => has_dead = true,
+                    crate::StateReadStatus::Dead => dead.push(index),
                     crate::StateReadStatus::Unchanged => {}
                 }
-            }
+            });
             if has_change {
                 match entry.route {
                     Some(owner) if !changed.contains(&owner) => changed.push(owner),
@@ -378,11 +388,19 @@ impl WindowInvalidator {
                     None => unscoped = true,
                 }
             }
-            if has_dead {
-                entry.reads.states = entry.reads.states.iter()
-                    .filter(|read| read.status() != crate::StateReadStatus::Dead)
-                    .cloned()
+            if !dead.is_empty() {
+                let mut dead = dead.into_iter().peekable();
+                entry.reads.states = entry.reads.states.iter().enumerate()
+                    .filter_map(|(index, read)| {
+                        if dead.peek() == Some(&index) {
+                            dead.next();
+                            None
+                        } else {
+                            Some(read.clone())
+                        }
+                    })
                     .collect();
+                entry.state_validation = Default::default();
             }
         }
         unscoped
@@ -999,6 +1017,36 @@ mod view_invalidation_tests {
         assert!(!invalidator.changed_state_owners(&mut changed));
         unscoped.bump();
         assert!(invalidator.changed_state_owners(&mut changed));
+        assert_eq!(changed.as_slice(), &[owner]);
+    }
+
+    #[test]
+    fn owner_state_validation_rechecks_replaced_snapshots_and_preserves_routes() {
+        let invalidator = WindowInvalidator::new();
+        let content = crate::StateVersion::default();
+        let placement = crate::StateVersion::placement();
+        let owner = EntityId::from(1);
+        let mut log = crate::AppDependencies::default();
+        let mut publish = |state: &crate::StateVersion| {
+            let recording = log.begin_state_reads();
+            log.set_owner(Some(owner));
+            state.read();
+            drop(recording);
+            invalidator.commit_frame_dependencies(
+                &mut log, &mut FxHashSet::default(), &FxHashSet::default(),
+                |_| true, |_| true,
+            );
+        };
+        publish(&content);
+        let mut changed = SmallVec::new();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        placement.bump();
+        assert!(!invalidator.changed_state_owners(&mut changed));
+        assert!(changed.is_empty());
+        // Replace a previously certified snapshot without bumping content.
+        publish(&placement);
+        placement.bump();
+        assert!(!invalidator.changed_state_owners(&mut changed));
         assert_eq!(changed.as_slice(), &[owner]);
     }
 

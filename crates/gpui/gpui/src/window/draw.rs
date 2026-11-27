@@ -453,6 +453,7 @@ impl Window {
         self.record_entities_accessed(cx);
         self.commit_input_reads();
         self.checked_scroll_generation = None;
+        self.mounted_scroll_validation = Default::default();
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
