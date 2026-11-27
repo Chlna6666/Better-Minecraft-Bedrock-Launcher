@@ -150,7 +150,7 @@ pub(super) struct StaticStreamToken {
 }
 
 impl StaticStreamToken {
-    fn from_bytes(bytes: &[u8]) -> Self {
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
         Self {
             content: BufferContentToken::from_bytes(bytes),
             animation_topology: BufferContentToken::default(),

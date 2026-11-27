@@ -186,6 +186,12 @@ impl CompositeSlot {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SourceRun {
+    Quad(u32, u32),
+    Mono(AtlasTextureId, u32, u32),
+}
+
 struct RasterPass {
     write: RasterTileWrite,
     raster: RasterTile,
@@ -286,6 +292,19 @@ impl NovaRenderer {
             self.submission_retry_pending = true;
             return Ok(Some(false));
         };
+        // Use the exact same text raster ABI as ordinary Scene encoding.
+        // Changing monitor parameters must invalidate cached glyph coverage.
+        #[cfg(target_os = "windows")]
+        if packet.dirty_region.is_full() && self.rendering_parameters.refresh_monitor_parameters() {
+            self.retained_upload.invalidate_encode_key();
+        }
+        let text = pack_text_raster_params(self.rendering_parameters);
+        let context = (self.atlas.placement_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)),
+            packet.paint.geometry.scale_factor.to_bits());
+        if self.raster_tile_context != Some(context) {
+            self.raster_tiles.invalidate_all();
+            self.raster_tile_context = Some(context);
+        }
         self.raster_tiles.begin_frame();
         self.raster_tiles.reconcile_tiles(|key, generation, raster| {
             let layer = packet.paint.layers.frames.iter().find(|layer| layer.id == key.layer)?;
@@ -367,22 +386,67 @@ impl NovaRenderer {
                 let (operations, _) = layer.raster_source_for_tile([x, y,
                     x + i64::from(request.raster.extent.width()), y + i64::from(request.raster.extent.height())])
                     .context("missing immutable scroll source")?;
-                // Compile in original painter order once for this miss batch.
-                // A hit never accesses these pages or the visible Scene.
-                let mut bytes = Vec::new();
+                // Use the existing native Painter ordering for the immutable
+                // source, including equal-order type/atlas sorting. Only a miss
+                // builds this temporary stream; no persistent CPU Scene cache.
+                let placements = if layer.raster_atlas_tiles().is_empty() {
+                    FxHashMap::default()
+                } else {
+                    let Some(placements) = self.atlas.ready_scroll_glyphs(layer.raster_atlas_tiles()) else {
+                        return Ok(false);
+                    };
+                    placements
+                };
+                let mut painter = crate::scene::Painter::default();
                 for operation in operations.iter() {
                     match operation {
-                        PaintOperation::Primitive(Primitive::Quad(quad)) => {
-                            if bytes.len() / PACKED_QUAD_BYTES >= MAX_QUADS { return Ok(false); }
-                            write_quad(&mut bytes, quad);
+                        PaintOperation::Primitive(Primitive::Quad(quad)) => painter.insert_primitive(*quad),
+                        PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
+                            let Some(tile) = placements.get(&sprite.tile.tile_id) else { return Ok(false); };
+                            let mut sprite = *sprite;
+                            sprite.tile = *tile;
+                            if !self.gpu_atlas_textures.contains_key(&tile.texture_id) { return Ok(false); }
+                            painter.insert_primitive(sprite);
                         }
-                        PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+                        PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
+                        PaintOperation::EndLayer => painter.pop_layer(),
                         _ => return Ok(false),
                     }
                 }
-                if bytes.is_empty() { return Ok(false); }
-                let quad_buffer = resources.buffer(device, &bytes, BufferUsage::STORAGE)?;
-                let count = bytes.len() / PACKED_QUAD_BYTES;
+                painter.finish();
+                let source = painter.into_scene();
+                let mut quads = Vec::new();
+                let mut mono = Vec::new();
+                let mut runs = Vec::new();
+                for batch in source.batches() {
+                    match batch {
+                        crate::scene::PrimitiveBatch::Quads { quads: batch, .. } => {
+                            let first = quads.len() / PACKED_QUAD_BYTES;
+                            if first.saturating_add(batch.len()) > MAX_QUADS { return Ok(false); }
+                            for quad in batch { write_quad(&mut quads, quad); }
+                            runs.push(SourceRun::Quad(first as u32, batch.len() as u32));
+                        }
+                        crate::scene::PrimitiveBatch::MonochromeSprites { texture_id, sprites, .. } => {
+                            let first = mono.len() / PACKED_MONO_SPRITE_BYTES;
+                            if first.saturating_add(sprites.len()) > MAX_QUADS { return Ok(false); }
+                            for sprite in sprites { write_monochrome_sprite(&mut mono, sprite); }
+                            runs.push(SourceRun::Mono(texture_id, first as u32, sprites.len() as u32));
+                        }
+                        _ => return Ok(false),
+                    }
+                }
+                if runs.is_empty() { return Ok(false); }
+                let mut source_buffers = original;
+                if !quads.is_empty() {
+                    source_buffers.quad_buffer = resources.buffer(device, &quads, BufferUsage::STORAGE)?;
+                    source_buffers.quad_capacity = quads.len() / PACKED_QUAD_BYTES;
+                }
+                if !mono.is_empty() {
+                    source_buffers.mono_sprite_buffer = resources.buffer(device, &mono, BufferUsage::STORAGE)?;
+                    source_buffers.mono_sprite_capacity = mono.len() / PACKED_MONO_SPRITE_BYTES;
+                    source_buffers.text_raster_buffer = resources.buffer(device,
+                        &pack_text_raster_params(self.rendering_parameters), BufferUsage::UNIFORM)?;
+                }
                 resources.depth = Some(create_depth_target(device, "scroll raster", request.raster.extent)?);
                 for (request, read) in requests.iter().zip(&reads) {
                     if read.is_some() { continue; }
@@ -393,17 +457,41 @@ impl NovaRenderer {
                     let globals = pack_global_params(DrawableSize { width: raster.extent.width(), height: raster.extent.height() },
                         true, [raster.origin.x as f32, raster.origin.y as f32]);
                     let global_buffer = resources.buffer(device, &globals, BufferUsage::UNIFORM)?;
-                    let buffers = FrameResourceBuffers { global_buffer, quad_buffer, quad_capacity: count, ..original };
-                    let group = create_quad_bind_group(device, "scroll raster", self.quad_bind_group_layout, &buffers)?;
-                    resources.bindings.push(group);
+                    let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
+                    let mut quad_binding = None;
+                    let mut mono_bindings = FxHashMap::default();
+                    let mut commands = Vec::with_capacity(runs.len());
+                    for run in &runs {
+                        let (pipeline, group, first_instance, instance_count) = match *run {
+                            SourceRun::Quad(first, count) => {
+                                let group = if let Some(group) = quad_binding { group } else {
+                                    let group = create_quad_bind_group(device, "scroll raster", self.quad_bind_group_layout, &buffers)?;
+                                    resources.bindings.push(group);
+                                    quad_binding = Some(group);
+                                    group
+                                };
+                                (self.pipelines.premultiplied.quads, group, first, count)
+                            }
+                            SourceRun::Mono(texture, first, count) => {
+                                let group = if let Some(&group) = mono_bindings.get(&texture) { group } else {
+                                    let view = self.gpu_atlas_textures[&texture].texture_view;
+                                    let group = resources.binding(device, self.mono_sprite_bind_group_layout,
+                                        mono_atlas_resource_bindings(buffers, view, self.atlas_sampler))?;
+                                    mono_bindings.insert(texture, group);
+                                    group
+                                };
+                                (self.pipelines.premultiplied.mono_sprites, group, first, count)
+                            }
+                        };
+                        commands.push(RenderCommand::Draw(DrawCommand {
+                            pipeline, bind_groups: bind_group_list([group]), vertex_count: 4,
+                            first_vertex: 0, instance_count, first_instance, scissor: None,
+                        }));
+                    }
                     let Some(write) = self.raster_tiles.prepare(device, request.key, layer.generation, request.raster, format)? else {
                         return Ok(false);
                     };
-                    passes.push(RasterPass { write, raster, commands: vec![RenderCommand::Draw(DrawCommand {
-                        pipeline: self.pipelines.premultiplied.quads,
-                        bind_groups: bind_group_list([group]), vertex_count: 4, first_vertex: 0,
-                        instance_count: count as u32, first_instance: 0, scissor: None,
-                    })] });
+                    passes.push(RasterPass { write, raster, commands });
                 }
                 Ok(true)
             })();

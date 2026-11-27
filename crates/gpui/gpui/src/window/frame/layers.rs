@@ -296,7 +296,7 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
         Primitive::PolychromeSprite(sprite) if sprite.sampling != 2 => {}
         Primitive::MonochromeSprite(sprite)
             if sprite.transformation == TransformationMatrix::unit()
-                && sprite.tile.texture_id.kind != crate::AtlasTextureKind::Subpixel => {}
+                && sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome => {}
         _ => return None,
     }
     // Include the antialiased boundary; never claim a clean neighbor from
@@ -389,8 +389,9 @@ impl LayerFrame {
     /// A static quad root may contain ordinary drawing around this layer.
     /// The certified outside ranges retain their original paint order.
     pub(crate) fn root_quad_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
-        (self.quad_root_outside.is_some() && self.content.raster?.quad_only)
-            .then_some((self.source_viewport.bounds, self.translation?))
+        self.content.raster?;
+        self.quad_root_outside.as_ref()?;
+        Some((self.source_viewport.bounds, self.translation?))
     }
 
     pub(crate) fn raster_atlas_tiles(&self) -> &[(crate::AtlasTextureId, u32)] {
@@ -469,11 +470,15 @@ fn ordered_static_quad_root(scene: &Scene) -> bool {
     let mut previous = None;
     for operation in scene.paint_operations.iter() {
         match operation {
-            PaintOperation::Primitive(primitive @ Primitive::Quad(_)) => {
-                let order = primitive.order();
-                if primitive.animation_id().is_some() || previous.is_some_and(|last| last > order)
-                    || static_raster_bounds(primitive).is_none()
-                {
+            PaintOperation::Primitive(primitive) => {
+                let order = match primitive {
+                    Primitive::Quad(_) => (primitive.order(), 0, 0, 0),
+                    Primitive::MonochromeSprite(sprite)
+                        if sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome =>
+                        (primitive.order(), 1, sprite.tile.texture_id.index, sprite.sampling() as u32),
+                    _ => return false,
+                };
+                if previous.is_some_and(|last| last > order) || static_raster_bounds(primitive).is_none() {
                     return false;
                 }
                 previous = Some(order);
@@ -490,7 +495,13 @@ fn quad_outside_ranges(scene: &Scene, range: Range<usize>) -> Option<[Range<usiz
     let mut outside = [0..range.start, range.end..scene.len()];
     // Empty scopes do not need a native draw or an owner-side scan.
     for span in &mut outside {
-        if scene.paint_operations.range(span.clone()).iter().all(|operation|
+        let operations = scene.paint_operations.range(span.clone());
+        if !operations.iter().all(|operation| matches!(operation,
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::Primitive(Primitive::Quad(_))))
+        {
+            return None;
+        }
+        if operations.iter().all(|operation|
             matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer))
         {
             *span = 0..0;
@@ -590,7 +601,8 @@ impl SceneLayers {
                         operations, coverage, delta, record.translation, record.source_viewport, quad_only, atlas_tiles,
                     ))
             } else { None };
-            let quad_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some_and(|raster| raster.quad_only))
+            let quad_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some())
+                && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_quad_root.get_or_insert_with(|| ordered_static_quad_root(scene))
             {
                 quad_outside_ranges(scene, range.clone())
