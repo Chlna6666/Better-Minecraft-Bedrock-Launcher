@@ -329,8 +329,10 @@ pub(crate) struct LayerFrame {
     /// Stable within one mounted lifetime; not a transient HitboxId.
     pub(crate) id: u64,
     pub(crate) generation: u64,
-    /// True only when all root drawing outside this fragment is scope bookkeeping.
-    whole_root: bool,
+    /// Original root operation ranges before and after the promoted fragment.
+    /// A verified static painter-order root can be split without reading the
+    /// promoted operations on the GPU owner.
+    quad_root_outside: Option<[Range<usize>; 2]>,
     damage: LayerDamage,
     /// Certified coverage shared with the immediately previous generation,
     /// in stable content-space device pixels.
@@ -380,11 +382,15 @@ impl LayerFrame {
         (damage, Some(common))
     }
 
-    /// Initial direct compositor admission. No root primitive can be omitted
-    /// and no glyph/atlas dependency is hidden from the normal renderer.
+    /// A static quad root may contain ordinary drawing around this layer.
+    /// The certified outside ranges retain their original paint order.
     pub(crate) fn root_quad_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
-        (self.whole_root && self.content.raster?.quad_only)
+        (self.quad_root_outside.is_some() && self.content.raster?.quad_only)
             .then_some((self.source_viewport.bounds, self.translation?))
+    }
+
+    pub(crate) fn root_quad_outside(&self) -> Option<&[Range<usize>; 2]> {
+        self.quad_root_outside.as_ref()
     }
 
     /// Borrow the original capture, along with the signed projection origin
@@ -442,6 +448,49 @@ impl LayerFrame {
     }
 }
 
+// A raw paint-order split is valid only if the native quad stream has
+// that same order. Scope markers themselves draw nothing, but inherited
+// DrawOrder can reorder nested layers. Reject inversions rather than
+// guessing which overlapping primitives can safely commute.
+fn ordered_static_quad_root(scene: &Scene) -> bool {
+    if !scene.animation_values.is_empty() || !scene.renderer_extensions.is_empty()
+        || !scene.blurs.is_empty() || !scene.backdrop_blurs.is_empty()
+    {
+        return false;
+    }
+    let mut previous = None;
+    for operation in scene.paint_operations.iter() {
+        match operation {
+            PaintOperation::Primitive(primitive @ Primitive::Quad(_)) => {
+                let order = primitive.order();
+                if primitive.animation_id().is_some() || previous.is_some_and(|last| last > order)
+                    || static_raster_bounds(primitive).is_none()
+                {
+                    return false;
+                }
+                previous = Some(order);
+            }
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn quad_outside_ranges(scene: &Scene, range: Range<usize>) -> Option<[Range<usize>; 2]> {
+    if range.is_empty() || range.end > scene.len() { return None; }
+    let mut outside = [0..range.start, range.end..scene.len()];
+    // Empty scopes do not need a native draw or an owner-side scan.
+    for span in &mut outside {
+        if scene.paint_operations.range(span.clone()).iter().all(|operation|
+            matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer))
+        {
+            *span = 0..0;
+        }
+    }
+    Some(outside)
+}
+
 #[derive(Default)]
 pub(crate) struct SceneLayers {
     pub(crate) frames: Vec<LayerFrame>,
@@ -469,12 +518,18 @@ impl SceneLayers {
         assert!(Arc::ptr_eq(&operations, &content.operations));
         self.frames.push(LayerFrame {
             layout_key: 1, id: 1, generation: 1,
-            whole_root: true,
+            quad_root_outside: Some([0..0, 0..0]),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
             viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
             content: Arc::new(content),
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
+        self.frames[0].quad_root_outside = ordered_static_quad_root(scene)
+            .then(|| quad_outside_ranges(scene, range)).flatten();
     }
 
     pub(super) fn capture(
@@ -501,6 +556,8 @@ impl SceneLayers {
             .map(|layer| (layer.layout_key, layer))
             .collect();
         let mut frames = Vec::new();
+        // Evaluate at most once per published root, regardless of candidate count.
+        let mut ordered_quad_root = None;
         for record in records {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
@@ -513,12 +570,11 @@ impl SceneLayers {
                         operations, coverage, delta, record.translation, record.source_viewport, quad_only,
                     ))
             } else { None };
-            let whole_root = direct.as_ref().is_some_and(|content| content.raster.is_some_and(|raster| raster.quad_only))
-                && scene.animation_values.is_empty()
-                && [0..range.start, range.end..scene.len()].into_iter().all(|outside| {
-                    scene.paint_operations.get_range(outside).is_some_and(|operations| operations.iter().all(|operation|
-                        matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer)))
-                });
+            let quad_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some_and(|raster| raster.quad_only))
+                && *ordered_quad_root.get_or_insert_with(|| ordered_static_quad_root(scene))
+            {
+                quad_outside_ranges(scene, range.clone())
+            } else { None };
             let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
             let (id, generation, content, damage, previous_coverage) = if let Some(previous) = previous {
@@ -552,7 +608,7 @@ impl SceneLayers {
                 (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, whole_root, damage, previous_coverage,
+                layout_key: key, id, generation, quad_root_outside, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
             });
@@ -612,7 +668,7 @@ mod tests {
         ));
         let frame = LayerFrame {
             layout_key: 1, id: 1, generation: 4,
-            whole_root: false,
+            quad_root_outside: None,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),
                 size(ScaledPixels(10.), ScaledPixels(10.)),

@@ -1,5 +1,5 @@
 //! Native direct scroll rasterization. The initial admission covers a whole
-//! static quad root; normal Scene packing remains the fallback for mixed roots.
+//! ordered static quad roots, with ordinary quads before/after a promoted layer.
 //! Only a cache miss reads the immutable operation pages. All texture writes
 //! and sampling are ordered on the backend's primary graphics queue.
 use super::*;
@@ -110,6 +110,37 @@ impl Resources {
     }
 }
 
+// Only the original root prefix/suffix are read here. No projected layer
+// primitive is touched on a hit. The proof lives on the published LayerFrame;
+// this temporary upload is not a retained CPU scene or coordination cache.
+struct OutsideQuads {
+    bytes: Vec<u8>,
+    prefix: u32,
+    suffix: u32,
+}
+
+impl OutsideQuads {
+    fn pack(layer: &crate::window::LayerFrame, scene: &crate::Scene) -> Option<Self> {
+        let ranges = layer.root_quad_outside()?;
+        let mut bytes = Vec::new();
+        let mut counts = [0_u32; 2];
+        for (range, count) in ranges.iter().zip(&mut counts) {
+            for operation in scene.paint_operations.get_range(range.clone())?.iter() {
+                match operation {
+                    PaintOperation::Primitive(Primitive::Quad(quad)) => {
+                        if bytes.len() / PACKED_QUAD_BYTES >= MAX_QUADS { return None; }
+                        write_quad(&mut bytes, quad);
+                        *count += 1;
+                    }
+                    PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+                    _ => return None,
+                }
+            }
+        }
+        Some(Self { bytes, prefix: counts[0], suffix: counts[1] })
+    }
+}
+
 struct RasterPass {
     write: RasterTileWrite,
     raster: RasterTile,
@@ -194,15 +225,15 @@ impl NovaRenderer {
         });
         let result = match &mut *lock_backend(&backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            NovaBackend::Dx11(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
             #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
-            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            NovaBackend::Dx12(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            NovaBackend::Metal(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
             #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
-            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            NovaBackend::Vulkan(device) => self.scroll_raster_present(device, layer, &packet.paint.scene, &requests, slot),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
         };
@@ -238,8 +269,9 @@ impl NovaRenderer {
     }
 
     fn scroll_raster_present<D: ResourceDevice + PresentationDevice + SurfaceDevice>(
-        &mut self, device: &mut D, layer: &crate::window::LayerFrame, requests: &[Request], slot: usize,
+        &mut self, device: &mut D, layer: &crate::window::LayerFrame, scene: &crate::Scene, requests: &[Request], slot: usize,
     ) -> Result<Option<bool>> {
+        let Some(outside) = OutsideQuads::pack(layer, scene) else { return Ok(None); };
         let format = self.surface_format;
         let original = self.frame_resources[slot].buffers;
         if self.submitted_frames % 120 == 0 {
@@ -361,12 +393,32 @@ impl NovaRenderer {
             let poly_sprite_buffer = resources.buffer(device, &bytes, BufferUsage::STORAGE)?;
             let buffers = FrameResourceBuffers { global_buffer, poly_sprite_buffer, poly_sprite_capacity: requests.len(), ..original };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
-            reads.iter().enumerate().map(|(index, read)| {
+            let mut commands = Vec::with_capacity(reads.len() + 2);
+            let outside_draw = if outside.bytes.is_empty() { None } else {
+                let quad_buffer = resources.buffer(device, &outside.bytes, BufferUsage::STORAGE)?;
+                let quad_capacity = (outside.prefix + outside.suffix) as usize;
+                let root_buffers = FrameResourceBuffers { quad_buffer, quad_capacity, ..buffers };
+                let group = create_quad_bind_group(device, "scroll root outside", self.quad_bind_group_layout, &root_buffers)?;
+                resources.bindings.push(group);
+                let pipeline = if premultiplied { self.pipelines.premultiplied.quads } else { self.pipelines.alpha.quads };
+                Some((pipeline, group))
+            };
+            let outside_command = |first_instance, instance_count| {
+                let (pipeline, group) = outside_draw?;
+                (instance_count != 0).then(|| RenderCommand::Draw(DrawCommand {
+                    pipeline, bind_groups: bind_group_list([group]), vertex_count: 4, first_vertex: 0,
+                    instance_count, first_instance, scissor: None,
+                }))
+            };
+            commands.extend(outside_command(0, outside.prefix));
+            for (index, read) in reads.iter().enumerate() {
                 let group = resources.binding(device, self.poly_sprite_bind_group_layout,
                     poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler))?;
-                Ok(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
-                    vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: index as u32, scissor: None }))
-            }).collect()
+                commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
+                    vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: index as u32, scissor: None }));
+            }
+            commands.extend(outside_command(outside.prefix, outside.suffix));
+            Ok(commands)
         })();
         let commands = match prepare {
             Ok(commands) => commands,
@@ -377,8 +429,8 @@ impl NovaRenderer {
             resources.destroy(device);
             return Err(error.into());
         }
-        // Full native Present with only resident texture draws; no root
-        // Scene encoding, root color refresh or ordinary primitive draw.
+        // Preserve root prefix -> resident tiles -> root suffix. The
+        // promoted fragment is never encoded or drawn on this path.
         let outcome = match device.render_and_present_tracked(&PresentFrameDescriptor {
             swapchain: self.swapchain, render_pass: self.render_pass, commands: &commands,
             color_load_op: LoadOp::Clear(clear_color()), depth_attachment: Some(self.depth_attachment()),
@@ -414,8 +466,8 @@ impl NovaRenderer {
             for read in reads { self.raster_tiles.quarantine_reader(read); }
             anyhow::bail!("scroll present returned no native reader fence");
         }
-        log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={}",
-            requests.len(), misses, requests.len() - misses);
+        log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={} outside_quads={}",
+            requests.len(), misses, requests.len() - misses, outside.prefix + outside.suffix);
         Ok(Some(outcome.was_presented()))
     }
 }
