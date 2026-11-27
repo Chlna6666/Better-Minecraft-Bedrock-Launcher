@@ -13,13 +13,13 @@ use anyhow::{Context as _, Ok, Result};
 use collections::HashMap;
 use cosmic_text::{
     Attrs, AttrsList, CacheKey, CacheKeyFlags, Ellipsize, Family, Font as CosmicTextFont,
-    FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine, SwashCache,
+    FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine,
     SwashContent, SwashImage,
     fontdb::{Query, Source, Stretch, Style as FontDbStyle, Weight},
 };
 
 use crate::diagnostics::text::{self, TextBackend, TextOperation};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
@@ -27,12 +27,14 @@ use std::{
     borrow::Cow,
     collections::{
         HashSet,
-        hash_map::{DefaultHasher, Entry},
+        hash_map::DefaultHasher,
     },
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::Arc,
 };
+use swash::scale::{Render, ScaleContext, Source as RasterSource, StrikeWith};
+use swash::zeno::{Angle, Format, Transform, Vector};
 use unicode_segmentation::UnicodeSegmentation;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -43,7 +45,10 @@ use windows::Win32::{
 };
 
 #[doc(hidden)]
-pub struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
+pub struct CosmicTextSystem {
+    state: RwLock<CosmicTextSystemState>,
+    raster: Mutex<RasterState>,
+}
 
 #[cfg(target_os = "linux")]
 struct PreparedLinuxSystemFonts {
@@ -105,7 +110,7 @@ struct SystemFallbackFace {
 
 struct CosmicTextSystemState {
     font_system: FontSystem,
-    raster: RasterState,
+    raster_generation: u64,
     platform_font_family: SharedString,
     system_fonts_loaded: bool,
     system_coverage_fallback_face: Option<SystemFallbackFace>,
@@ -128,7 +133,8 @@ const PENDING_GLYPH_LIMIT: usize = 256;
 const PENDING_GLYPH_BYTES: usize = 2 * 1024 * 1024;
 
 struct RasterState {
-    swash: SwashCache,
+    generation: u64,
+    context: ScaleContext,
     pending: HashMap<CacheKey, SwashImage>,
     pending_bytes: usize,
     stable_frames: HashMap<StableVerticalFrameKey, Bounds<DevicePixels>>,
@@ -137,7 +143,8 @@ struct RasterState {
 impl RasterState {
     fn new() -> Self {
         Self {
-            swash: SwashCache::new(),
+            generation: 0,
+            context: ScaleContext::new(),
             pending: HashMap::default(),
             pending_bytes: 0,
             stable_frames: HashMap::default(),
@@ -165,27 +172,132 @@ impl RasterState {
         self.pending.insert(key, image);
     }
 
-    fn image(&mut self, font_system: &mut FontSystem, key: CacheKey) -> Option<SwashImage> {
+    fn image(&mut self, font: &CosmicTextFont, key: CacheKey) -> Option<SwashImage> {
         self.take(key)
-            .or_else(|| self.swash.get_image_uncached(font_system, key))
+            .or_else(|| render_glyph(&mut self.context, font, key))
     }
 
     fn bounds(
         &mut self,
-        font_system: &mut FontSystem,
+        font: &CosmicTextFont,
         key: CacheKey,
         retain_image: bool,
     ) -> Option<Bounds<DevicePixels>> {
         if let Some(image) = self.pending.get(&key) {
             return Some(swash_image_bounds(image));
         }
-        let image = self.swash.get_image_uncached(font_system, key)?;
+        let image = render_glyph(&mut self.context, font, key)?;
         let bounds = swash_image_bounds(&image);
         if retain_image && bounds.size.width.0 > 0 && bounds.size.height.0 > 0 {
             self.remember(key, image);
         }
         Some(bounds)
     }
+}
+
+// Keep the raster algorithm aligned with cosmic-text 0.19.0 swash.rs
+// (MIT OR Apache-2.0). Font lookup is already resolved by the registry.
+fn render_glyph(
+    context: &mut ScaleContext,
+    font: &CosmicTextFont,
+    key: CacheKey,
+) -> Option<SwashImage> {
+    let face = font.as_swash();
+    let weight_tag = swash::Tag::from_be_bytes(*b"wght");
+    let mut builder = context
+        .builder(face)
+        .size(f32::from_bits(key.font_size_bits))
+        .hint(!key.flags.contains(CacheKeyFlags::DISABLE_HINTING));
+    if let Some(axis) = face.variations().find_by_tag(weight_tag) {
+        let weight = f32::from(key.font_weight.0).clamp(axis.min_value(), axis.max_value());
+        builder = builder.normalized_coords(
+            face.variations().normalized_coords([(weight_tag, weight)]),
+        );
+    }
+    let mut scaler = builder.build();
+    let (mut x, mut y) = (key.x_bin.as_float(), key.y_bin.as_float());
+    if key.flags.contains(CacheKeyFlags::PIXEL_FONT) {
+        x = x.round();
+        y = y.round();
+    }
+    let transform = key.flags.contains(CacheKeyFlags::FAKE_ITALIC).then(|| {
+        Transform::skew(Angle::from_degrees(14.0), Angle::from_degrees(0.0))
+    });
+    Render::new(&[
+        RasterSource::ColorOutline(0),
+        RasterSource::ColorBitmap(StrikeWith::BestFit),
+        RasterSource::Outline,
+    ])
+    .format(Format::Alpha)
+    .offset(Vector::new(x, y))
+    .transform(transform)
+    .render(&mut scaler, key.glyph_id)
+}
+
+impl RasterState {
+    fn stable_vertical_frame(
+        &mut self,
+        font: &RasterFont,
+        params: &RenderGlyphParams,
+    ) -> StableVerticalRasterFrame {
+        let key = StableVerticalFrameKey {
+            font_id: params.font_id,
+            font_size_bits: params.font_size.0.to_bits(),
+            scale_factor_bits: params.scale_factor.to_bits(),
+        };
+        let bounds = if let Some(bounds) = self.stable_frames.get(&key).copied() {
+            bounds
+        } else {
+            let face = font.font.as_swash();
+            let metrics = face.metrics(&[]);
+            let scale = params.font_size.0 * params.scale_factor / metrics.units_per_em as f32;
+            let top = (metrics.ascent * scale).ceil() as i32;
+            let bottom = (metrics.descent * scale).floor() as i32;
+            let mut bounds = Bounds {
+                origin: point(DevicePixels(0), DevicePixels(-top)),
+                size: size(DevicePixels(0), DevicePixels((top - bottom).max(1))),
+            };
+            for sample in STABLE_VERTICAL_FRAME_SAMPLE_CHARS {
+                let glyph_id = face.charmap().map(*sample);
+                if glyph_id != 0 {
+                    let sample_key = CacheKey { glyph_id, ..font.key };
+                    if let Some(sample_bounds) = self.bounds(&font.font, sample_key, false) {
+                        bounds = union_stable_vertical_frame_bounds(sample_bounds, bounds);
+                    }
+                }
+            }
+            self.stable_frames.insert(key, bounds);
+            bounds
+        };
+        StableVerticalRasterFrame {
+            origin_y: bounds.origin.y,
+            height: bounds.size.height,
+        }
+    }
+
+    fn raster_bounds(
+        &mut self,
+        font: &RasterFont,
+        params: &RenderGlyphParams,
+    ) -> Result<Bounds<DevicePixels>> {
+        let Some(bounds) = self.bounds(&font.font, font.key, true) else {
+            return Ok(Bounds::default());
+        };
+        if params.is_cjk && !params.is_emoji {
+            Ok(apply_stable_vertical_frame(
+                bounds,
+                self.stable_vertical_frame(font, params),
+            ))
+        } else {
+            Ok(bounds)
+        }
+    }
+}
+
+struct RasterFont {
+    font: Arc<CosmicTextFont>,
+    key: CacheKey,
+    generation: u64,
 }
 
 struct LoadedFont {
@@ -243,7 +355,7 @@ impl CosmicTextSystem {
         work: impl FnOnce(&mut CosmicTextSystemState) -> R,
     ) -> R {
         let started = std::time::Instant::now();
-        let mut state = self.0.write();
+        let mut state = self.state.write();
         let acquired = std::time::Instant::now();
         let result = work(&mut state);
         let completed = std::time::Instant::now();
@@ -257,6 +369,39 @@ impl CosmicTextSystem {
         result
     }
 
+    fn with_raster<R>(
+        &self,
+        operation: TextOperation,
+        params: &RenderGlyphParams,
+        work: impl FnOnce(&mut RasterState, &RasterFont) -> R,
+    ) -> R {
+        let started = std::time::Instant::now();
+        let font = self.state.read().raster_font(params);
+        let mut raster = self.raster.lock();
+        let acquired = std::time::Instant::now();
+        let result = if font.generation < raster.generation {
+            // A previously captured font can finish, but cannot populate
+            // the newer generation's handoff or stable-frame cache.
+            drop(raster);
+            work(&mut RasterState::new(), &font)
+        } else {
+            if font.generation != raster.generation {
+                *raster = RasterState::new();
+                raster.generation = font.generation;
+            }
+            let result = work(&mut raster, &font);
+            drop(raster);
+            result
+        };
+        text::record(
+            TextBackend::Cosmic,
+            operation,
+            acquired.duration_since(started),
+            acquired.elapsed(),
+        );
+        result
+    }
+
     #[doc(hidden)]
     pub fn new() -> Self {
         let (mut font_system, system_fonts_loaded) = minimal_startup_font_system();
@@ -265,21 +410,24 @@ impl CosmicTextSystem {
             .db_mut()
             .set_sans_serif_family(platform_font_family.to_string());
 
-        Self(RwLock::new(CosmicTextSystemState {
-            font_system,
-            platform_font_family,
-            raster: RasterState::new(),
-            system_fonts_loaded,
-            system_coverage_fallback_face: None,
-            system_coverage_fallback_computed: false,
-            coverage_best_fallback_logged: false,
-            scratch: ShapeBuffer::default(),
-            loaded_fonts: Vec::new(),
-            font_ids_by_family_cache: HashMap::default(),
-            loaded_font_paths: HashSet::default(),
-            loaded_embedded_font_hashes: HashSet::default(),
-            missing_glyph_sink: None,
-        }))
+        Self {
+            state: RwLock::new(CosmicTextSystemState {
+                font_system,
+                platform_font_family,
+                raster_generation: 0,
+                system_fonts_loaded,
+                system_coverage_fallback_face: None,
+                system_coverage_fallback_computed: false,
+                coverage_best_fallback_logged: false,
+                scratch: ShapeBuffer::default(),
+                loaded_fonts: Vec::new(),
+                font_ids_by_family_cache: HashMap::default(),
+                loaded_font_paths: HashSet::default(),
+                loaded_embedded_font_hashes: HashSet::default(),
+                missing_glyph_sink: None,
+            }),
+            raster: Mutex::new(RasterState::new()),
+        }
     }
 }
 
@@ -291,15 +439,15 @@ impl Default for CosmicTextSystem {
 
 impl PlatformTextSystem for CosmicTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        self.0.write().add_fonts(fonts)
+        self.state.write().add_fonts(fonts)
     }
 
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()> {
-        self.0.write().add_font_paths(paths)
+        self.state.write().add_font_paths(paths)
     }
 
     fn set_missing_glyph_sink(&self, sink: Option<Arc<dyn MissingGlyphSink>>) {
-        self.0.write().missing_glyph_sink = sink;
+        self.state.write().missing_glyph_sink = sink;
     }
 
     fn prepare_system_fonts(&self) {
@@ -310,7 +458,7 @@ impl PlatformTextSystem for CosmicTextSystem {
     fn publish_prepared_system_fonts(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            return self.0.write().publish_prepared_linux_system_fonts();
+            return self.state.write().publish_prepared_linux_system_fonts();
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -320,16 +468,16 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn set_application_font_family(&self, family: SharedString) {
-        self.0.write().set_application_font_family(family);
+        self.state.write().set_application_font_family(family);
     }
 
     fn platform_font_family(&self) -> SharedString {
-        self.0.read().platform_font_family.clone()
+        self.state.read().platform_font_family.clone()
     }
 
     fn all_font_names(&self) -> Vec<String> {
         let mut result = self
-            .0
+            .state
             .read()
             .font_system
             .db()
@@ -353,7 +501,7 @@ impl PlatformTextSystem for CosmicTextSystem {
         // Release the read guard before taking the write lock on a miss;
         // the family cache may have been invalidated in the meantime.
         {
-            let state = self.0.read();
+            let state = self.state.read();
             if let Some(candidates) = state.font_ids_by_family_cache.get(&key) {
                 let database_id = state.select_database_id(candidates, font)?;
                 if let Some(id) = state.find_font_id(database_id, &font.features) {
@@ -361,7 +509,7 @@ impl PlatformTextSystem for CosmicTextSystem {
                 }
             }
         }
-        let mut state = self.0.write();
+        let mut state = self.state.write();
         let candidates = if let Some(font_ids) = state.font_ids_by_family_cache.get(&key) {
             font_ids.clone()
         } else {
@@ -382,7 +530,7 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn prewarm_fonts(&self, font_ids: &[FontId]) {
         #[cfg(target_os = "linux")]
-        self.0.write().prewarm_fonts(font_ids);
+        self.state.write().prewarm_fonts(font_ids);
 
         #[cfg(not(target_os = "linux"))]
         let _ = font_ids;
@@ -390,7 +538,7 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
         let metrics = self
-            .0
+            .state
             .read()
             .loaded_font(font_id)
             .font
@@ -415,7 +563,7 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>> {
-        let lock = self.0.read();
+        let lock = self.state.read();
         let glyph_metrics = lock.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
         let glyph_id = glyph_id.0 as u16;
         // todo(linux): Compute this correctly
@@ -430,16 +578,16 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
-        self.0.read().advance(font_id, glyph_id)
+        self.state.read().advance(font_id, glyph_id)
     }
 
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
-        self.0.read().glyph_for_char(font_id, ch)
+        self.state.read().glyph_for_char(font_id, ch)
     }
 
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        self.with_state(TextOperation::RasterBounds, |state| {
-            state.raster_bounds(params)
+        self.with_raster(TextOperation::RasterBounds, params, |raster, font| {
+            raster.raster_bounds(font, params)
         })
     }
 
@@ -454,10 +602,9 @@ impl PlatformTextSystem for CosmicTextSystem {
         // Transfer pending pixels out of the raster state before conversion.
         // Channel conversion, mask expansion and stable-frame padding have
         // no font-state dependency.
-        let image = self.with_state(TextOperation::Rasterize, |state| {
-            state.glyph_image(params).with_context(|| {
-                let font = &state.loaded_fonts[params.font_id.0].font;
-                format!("no image for {params:?} in font {font:?}")
+        let image = self.with_raster(TextOperation::Rasterize, params, |raster, font| {
+            raster.image(&font.font, font.key).with_context(|| {
+                format!("no image for {params:?} in font {:?}", font.font)
             })
         })?;
         rasterize_owned_image(image, params, raster_bounds)
@@ -563,7 +710,7 @@ impl CosmicTextSystemState {
 
         if changed {
             self.font_ids_by_family_cache.clear();
-            self.raster = RasterState::new();
+            self.raster_generation += 1;
             self.system_coverage_fallback_face = None;
             self.system_coverage_fallback_computed = false;
             self.coverage_best_fallback_logged = false;
@@ -640,7 +787,7 @@ impl CosmicTextSystemState {
             .db_mut()
             .set_sans_serif_family(resolved_family.to_string());
         self.font_ids_by_family_cache.clear();
-        self.raster = RasterState::new();
+        self.raster_generation += 1;
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -833,7 +980,7 @@ impl CosmicTextSystemState {
             self.loaded_embedded_font_hashes.insert(font_hash);
         }
         self.font_ids_by_family_cache.clear();
-        self.raster = RasterState::new();
+        self.raster_generation += 1;
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -853,7 +1000,7 @@ impl CosmicTextSystemState {
             self.loaded_font_paths.insert(path);
         }
         self.font_ids_by_family_cache.clear();
-        self.raster = RasterState::new();
+        self.raster_generation += 1;
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
@@ -1134,89 +1281,11 @@ impl CosmicTextSystemState {
         .0
     }
 
-    fn glyph_image(&mut self, params: &RenderGlyphParams) -> Option<SwashImage> {
-        let cache_key = self.glyph_cache_key(params);
-        self.raster.image(&mut self.font_system, cache_key)
-    }
-
-    fn glyph_image_bounds(
-        &mut self,
-        params: &RenderGlyphParams,
-        retain_image: bool,
-    ) -> Option<Bounds<DevicePixels>> {
-        let key = self.glyph_cache_key(params);
-        self.raster.bounds(&mut self.font_system, key, retain_image)
-    }
-
-    fn stable_vertical_raster_frame(
-        &mut self,
-        params: &RenderGlyphParams,
-    ) -> StableVerticalRasterFrame {
-        let key = StableVerticalFrameKey {
-            font_id: params.font_id,
-            font_size_bits: params.font_size.0.to_bits(),
-            scale_factor_bits: params.scale_factor.to_bits(),
-        };
-        if let Some(bounds) = self.raster.stable_frames.get(&key).copied() {
-            return StableVerticalRasterFrame {
-                origin_y: bounds.origin.y,
-                height: bounds.size.height,
-            };
-        }
-
-        let metrics = self
-            .loaded_font(params.font_id)
-            .font
-            .as_swash()
-            .metrics(&[]);
-        let scale = params.font_size.0 * params.scale_factor / metrics.units_per_em as f32;
-        let top = (metrics.ascent * scale).ceil() as i32;
-        let bottom = (metrics.descent * scale).floor() as i32;
-        let height = (top - bottom).max(1);
-        let mut bounds = Bounds {
-            origin: point(DevicePixels(0), DevicePixels(-top)),
-            size: size(DevicePixels(0), DevicePixels(height)),
-        };
-
-        for sample in STABLE_VERTICAL_FRAME_SAMPLE_CHARS {
-            if let Some(glyph_id) = self.glyph_for_char(params.font_id, *sample) {
-                let mut sample_params = params.clone();
-                sample_params.glyph_id = glyph_id;
-                sample_params.is_cjk = false;
-                sample_params.is_emoji = false;
-                if let Some(sample_bounds) = self.glyph_image_bounds(&sample_params, false) {
-                    bounds = union_stable_vertical_frame_bounds(sample_bounds, bounds);
-                }
-            }
-        }
-
-        match self.raster.stable_frames.entry(key) {
-            Entry::Occupied(entry) => {
-                let bounds = *entry.get();
-                StableVerticalRasterFrame {
-                    origin_y: bounds.origin.y,
-                    height: bounds.size.height,
-                }
-            }
-            Entry::Vacant(entry) => {
-                let bounds = *entry.insert(bounds);
-                StableVerticalRasterFrame {
-                    origin_y: bounds.origin.y,
-                    height: bounds.size.height,
-                }
-            }
-        }
-    }
-
-    fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        let Some(glyph_bounds) = self.glyph_image_bounds(params, true) else {
-            return Ok(Bounds::default());
-        };
-        if params.is_cjk && !params.is_emoji {
-            let frame = self.stable_vertical_raster_frame(params);
-            Ok(apply_stable_vertical_frame(glyph_bounds, frame))
-        } else {
-            Ok(glyph_bounds)
+    fn raster_font(&self, params: &RenderGlyphParams) -> RasterFont {
+        RasterFont {
+            font: self.loaded_font(params.font_id).font.clone(),
+            key: self.glyph_cache_key(params),
+            generation: self.raster_generation,
         }
     }
 
@@ -2581,7 +2650,7 @@ mod linux_tests {
     #[test]
     fn active_desktop_font_precedes_fontconfig_default() {
         let text_system = CosmicTextSystem::new();
-        let mut state = text_system.0.write();
+        let mut state = text_system.state.write();
         state.ensure_system_fonts_loaded();
         let Some(expected_family) = linux_desktop_font_family(&state.font_system) else {
             return;
@@ -2593,7 +2662,7 @@ mod linux_tests {
     #[test]
     fn custom_font_does_not_replace_system_default_mapping() {
         let text_system = CosmicTextSystem::new();
-        let mut state = text_system.0.write();
+        let mut state = text_system.state.write();
         state.ensure_system_fonts_loaded();
         let expected_system_family = resolved_platform_font_name(&state.font_system);
 
@@ -2612,7 +2681,7 @@ mod tests {
     use crate::{FontWeight, Point, RenderGlyphParams, font, px};
 
     fn use_segoe_ui_as_platform_font(text_system: &CosmicTextSystem) {
-        let mut state = text_system.0.write();
+        let mut state = text_system.state.write();
         state.platform_font_family = "Segoe UI".into();
         state.font_system.db_mut().set_sans_serif_family("Segoe UI");
         state.font_ids_by_family_cache.clear();
@@ -3044,7 +3113,7 @@ mod tests {
             .font_id(&font("Microsoft YaHei UI"))
             .expect("fallback font loads");
 
-        let state = text_system.0.read();
+        let state = text_system.state.read();
         let loaded = state.loaded_font(primary_id);
         if loaded.font.as_swash().charmap().map('图') != 0 {
             return;
@@ -3066,7 +3135,7 @@ mod tests {
             .font_id(&font(".SystemUIFont"))
             .expect("platform UI font loads");
 
-        let state = text_system.0.read();
+        let state = text_system.state.read();
         if state
             .loaded_font(primary_id)
             .font
@@ -3104,7 +3173,7 @@ mod tests {
             .font_id(&font("Segoe UI"))
             .expect("primary font loads");
         if text_system
-            .0
+            .state
             .read()
             .loaded_font(primary_id)
             .font
@@ -3116,7 +3185,7 @@ mod tests {
             return;
         }
         assert!(
-            !text_system.0.read().system_fonts_loaded,
+            !text_system.state.read().system_fonts_loaded,
             "minimal startup should not eagerly scan all system fonts"
         );
 
@@ -3129,7 +3198,7 @@ mod tests {
             }],
         );
 
-        let state = text_system.0.read();
+        let state = text_system.state.read();
         assert!(
             !state.system_fonts_loaded,
             "targeted fallback should not scan the complete system font catalog"
@@ -3184,7 +3253,7 @@ mod tests {
         );
 
         assert!(
-            !text_system.0.read().system_fonts_loaded,
+            !text_system.state.read().system_fonts_loaded,
             "ASCII layout should preserve lazy system font loading"
         );
     }
@@ -3195,7 +3264,7 @@ mod tests {
         let primary_id = text_system
             .font_id(&font("Segoe UI"))
             .expect("primary font loads");
-        let state = text_system.0.read();
+        let state = text_system.state.read();
         let loaded = state.loaded_font(primary_id);
 
         assert!(
@@ -3280,15 +3349,22 @@ mod tests {
             is_emoji: false,
             is_cjk: glyph.is_cjk,
         };
-        let mut state = text_system.0.write();
-        let image = state.glyph_image(&params).expect("glyph image");
-        let exact_bounds = Bounds {
-            origin: point(image.placement.left.into(), (-image.placement.top).into()),
-            size: size(image.placement.width.into(), image.placement.height.into()),
-        };
+        let mut state = text_system.state.write();
+        let key = state.glyph_cache_key(&params);
+        let image = cosmic_text::SwashCache::new()
+            .get_image_uncached(&mut state.font_system, key)
+            .expect("reference glyph image");
+        drop(state);
+        let exact_bounds = swash_image_bounds(&image);
+        let actual = text_system.with_raster(TextOperation::Rasterize, &params, |raster, font| {
+            raster.image(&font.font, font.key).expect("direct glyph image")
+        });
+        assert_eq!(actual.content, image.content);
+        assert_eq!(swash_image_bounds(&actual), exact_bounds);
+        assert_eq!(actual.data, image.data);
 
         assert_eq!(
-            state.raster_bounds(&params).expect("glyph raster bounds"),
+            text_system.glyph_raster_bounds(&params).expect("glyph raster bounds"),
             exact_bounds
         );
     }
@@ -3305,7 +3381,7 @@ mod tests {
             })
             .map(|row| row.calls)
             .sum::<u64>();
-        let guard = text_system.0.write();
+        let guard = text_system.state.write();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (completed_tx, completed_rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
@@ -3321,7 +3397,7 @@ mod tests {
                 .recv()
                 .expect("worker completes after lock release");
         });
-        assert!(text_system.0.try_write().is_some());
+        assert!(text_system.state.try_write().is_some());
         let row = crate::diagnostics::text::snapshot()
             .into_iter()
             .find(|row| row.backend == TextBackend::Cosmic && row.operation == TextOperation::Shape)
