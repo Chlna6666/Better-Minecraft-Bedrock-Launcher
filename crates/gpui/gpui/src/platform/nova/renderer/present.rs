@@ -911,11 +911,7 @@ impl NovaRenderer {
             // a removal after that Scene was built but before this submission starts, so never
             // deallocate a tile that the Scene about to be encoded still samples.
             let mut live_scene_tiles = FxHashSet::default();
-            packet
-                .paint
-                .scene
-                .collect_atlas_tile_ids_into(&mut live_scene_tiles);
-            packet.paint.layers.collect_atlas_tile_ids_into(&mut live_scene_tiles);
+            packet.paint.collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self.atlas.has_retirable_pending_removals(&live_scene_tiles) {
                 self.wait_pending_submissions()?;
                 self.atlas.apply_pending_removals_except(&live_scene_tiles);

@@ -470,8 +470,7 @@ impl NovaRenderer {
         // run of direct presentations. Only scan dependencies when removals exist.
         if self.atlas.has_pending_removals() {
             let mut live = FxHashSet::default();
-            packet.paint.scene.collect_atlas_tile_ids_into(&mut live);
-            packet.paint.layers.collect_atlas_tile_ids_into(&mut live);
+            packet.paint.collect_atlas_tile_ids_into(&mut live);
             if self.atlas.has_retirable_pending_removals(&live) { return Ok(None); }
         }
         let backend = Arc::clone(&self.backend);

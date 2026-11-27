@@ -691,59 +691,90 @@ impl NovaRenderer {
         if let Some(presented) = self.try_scroll_raster_present(packet)? {
             return Ok(presented);
         }
-        let backdrop_blur_quality = self.backdrop_blur_quality(packet);
-        let upload = {
-            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::PackScene);
-            self.pack_scene(
-                &packet.paint.scene,
-                &packet.paint.retained_paint,
-                packet.presentation_animation_values.as_slice(),
-                drawable_size,
-                backdrop_blur_quality,
-            )
-        };
-        self.reconcile_gpu_layer_animation_damage(packet);
-        // A native full Present is not a full Filter Source invalidation.
-        // Track both independently to catch regressions in ClipReveal/Root.
-        log::trace!(
-            target: "gpui::diagnostics",
-            "GPUI surface damage gate: source=active frame={} window_id={} scene_revision={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
-            self.submitted_frames.saturating_add(1),
-            packet.window_id,
-            packet.paint.scene.revision,
-            self.live_resize_active,
-            self.swapchain_warmup_frames,
-            self.frame_upload.root_color.is_some(),
-            self.frame_upload.element_blur_inputs.len(),
-            packet.sampled_active_presentation_animation,
-            packet.presentation_animation_timelines.len(),
-            packet.dirty_region.is_full(),
-            packet.dirty_region.area(),
-            packet.force_full_backdrop_blur_refresh,
-        );
-        if requires_full_drawable_damage(self.live_resize_active, self.swapchain_warmup_frames != 0)
-        {
+        self.draw_packed_frame(packet, drawable_size, presentation_timing, "active")
+    }
+
+    /// Both Nova presentation entry points use the same ordinary renderer.
+    /// A logical deferred root is expanded only after tile presentation
+    /// declines it. Never replace the authoritative publication on a retry.
+    fn draw_packed_frame(
+        &mut self,
+        packet: &mut PresentationPacket,
+        drawable_size: DrawableSize,
+        presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
+        source: &'static str,
+    ) -> Result<bool> {
+        let original = if let Some(materialized) = packet.paint.owner_fallback()? {
+            let original = std::mem::replace(&mut packet.paint, materialized);
+            // Native indices and order are new. Do not reuse partial-damage
+            // or filter-source proofs from the logical operation stream.
             force_full_drawable_damage(packet, self.active_size);
+            packet.force_full_backdrop_blur_refresh = true;
             self.observe_presentation_packet(packet);
+            Some(original)
+        } else {
+            None
+        };
+        let result = (|| {
+            let backdrop_blur_quality = self.backdrop_blur_quality(packet);
+            let upload = {
+                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::PackScene);
+                self.pack_scene(
+                    &packet.paint.scene,
+                    &packet.paint.retained_paint,
+                    packet.presentation_animation_values.as_slice(),
+                    drawable_size,
+                    backdrop_blur_quality,
+                )
+            };
+            self.reconcile_gpu_layer_animation_damage(packet);
+            // A native full Present is not a full Filter Source invalidation.
+            // Track both independently to catch regressions in ClipReveal/Root.
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI surface damage gate: source={} frame={} window_id={} scene_revision={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
+                source,
+                self.submitted_frames.saturating_add(1),
+                packet.window_id,
+                packet.paint.scene.revision,
+                self.live_resize_active,
+                self.swapchain_warmup_frames,
+                self.frame_upload.root_color.is_some(),
+                self.frame_upload.element_blur_inputs.len(),
+                packet.sampled_active_presentation_animation,
+                packet.presentation_animation_timelines.len(),
+                packet.dirty_region.is_full(),
+                packet.dirty_region.area(),
+                packet.force_full_backdrop_blur_refresh,
+            );
+            if requires_full_drawable_damage(self.live_resize_active, self.swapchain_warmup_frames != 0)
+            {
+                force_full_drawable_damage(packet, self.active_size);
+                self.observe_presentation_packet(packet);
+            }
+            if !self.frame_submission_is_ready(&packet.paint)? {
+                return Ok(false);
+            }
+            self.ensure_path_mask_target_for_frame()?;
+            let extension_started = Instant::now();
+            {
+                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
+                self.prepare_renderer_extensions(packet.frame_time)?;
+            }
+            if let Some(timing) = presentation_timing.as_mut() {
+                timing.renderer_extension_prepare = extension_started.elapsed();
+            }
+            self.refresh_backdrop_blur_cache(backdrop_blur_quality);
+            if !self.frame_upload.backdrop_blurs.is_empty() {
+                self.ensure_backdrop_blur_targets()?;
+            }
+            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
+            self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
+        })();
+        if let Some(original) = original {
+            packet.paint = original;
         }
-        if !self.frame_submission_is_ready(&packet.paint)? {
-            return Ok(false);
-        }
-        self.ensure_path_mask_target_for_frame()?;
-        let extension_started = Instant::now();
-        {
-            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
-            self.prepare_renderer_extensions(packet.frame_time)?;
-        }
-        if let Some(timing) = presentation_timing.as_mut() {
-            timing.renderer_extension_prepare = extension_started.elapsed();
-        }
-        self.refresh_backdrop_blur_cache(backdrop_blur_quality);
-        if !self.frame_upload.backdrop_blurs.is_empty() {
-            self.ensure_backdrop_blur_targets()?;
-        }
-        let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
-        self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
+        result
     }
 
     fn ensure_path_mask_target_for_frame(&mut self) -> Result<()> {
@@ -1209,59 +1240,11 @@ impl NovaRenderer {
             if let Some(presented) = self.try_scroll_raster_present(&mut packet)? {
                 return Ok(presented);
             }
-            let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
-            let upload = {
-                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::PackScene);
-                self.pack_scene(
-                    &packet.paint.scene,
-                    &packet.paint.retained_paint,
-                    packet.presentation_animation_values.as_slice(),
-                    drawable_size,
-                    backdrop_blur_quality,
-                )
-            };
-            self.reconcile_gpu_layer_animation_damage(&mut packet);
-            log::trace!(
-                target: "gpui::diagnostics",
-                "GPUI surface damage gate: source=direct frame={} window_id={} scene_revision={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
-                self.submitted_frames.saturating_add(1),
-                packet.window_id,
-                packet.paint.scene.revision,
-                self.live_resize_active,
-                self.swapchain_warmup_frames,
-                self.frame_upload.root_color.is_some(),
-                self.frame_upload.element_blur_inputs.len(),
-                packet.sampled_active_presentation_animation,
-                packet.presentation_animation_timelines.len(),
-                packet.dirty_region.is_full(),
-                packet.dirty_region.area(),
-                packet.force_full_backdrop_blur_refresh,
-            );
-            if requires_full_drawable_damage(
-                self.live_resize_active,
-                self.swapchain_warmup_frames != 0,
-            ) {
-                force_full_drawable_damage(&mut packet, self.active_size);
-                self.observe_presentation_packet(&packet);
-            }
-            if !self.frame_submission_is_ready(&packet.paint)? {
-                return Ok(false);
-            }
-            self.ensure_path_mask_target_for_frame()?;
-            {
-                let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
-                self.prepare_renderer_extensions(packet.frame_time)?;
-            }
-            self.refresh_backdrop_blur_cache(backdrop_blur_quality);
-            if !self.frame_upload.backdrop_blurs.is_empty() {
-                self.ensure_backdrop_blur_targets()?;
-            }
-            let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
-            self.draw_present(
-                upload,
+            self.draw_packed_frame(
                 &mut packet,
-                backdrop_blur_quality,
+                drawable_size,
                 &mut presentation_timing,
+                "direct",
             )
         })();
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);

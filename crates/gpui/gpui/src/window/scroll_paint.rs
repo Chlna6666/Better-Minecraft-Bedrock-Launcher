@@ -435,7 +435,11 @@ mod tests {
         shared.clear();
         assert!(!shared.has_deferred_scroll());
         let paint = crate::window::Paint::new(scene, Arc::default(), Default::default());
-        let recovered = paint.materialize_static_root().expect("native deferred fallback");
+        let recovered = paint.owner_fallback().unwrap().expect("native deferred fallback");
+        let retry = paint.owner_fallback().unwrap().expect("same generation");
+        assert!(Arc::ptr_eq(&recovered, &retry));
+        assert!(paint.scene.paint_operations.has_deferred_scroll());
+        assert!(recovered.owner_fallback().unwrap().is_none());
         let mut eager = Painter::default();
         eager.insert_primitive(outside(0.));
         placement.replay(&mut eager);

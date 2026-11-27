@@ -147,8 +147,7 @@ impl Window {
             frame.scroll_rows.collect_atlas_tile_ids_into(live);
         }
         for paint in self.presentation_state.committed_paints() {
-            paint.scene.collect_polychrome_tile_ids_into(live);
-            paint.layers.collect_atlas_tile_ids_into(live);
+            paint.collect_atlas_tile_ids_into(live);
         }
     }
 
