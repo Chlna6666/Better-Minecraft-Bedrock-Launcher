@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Application, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
+    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, Keystroke,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Utf16Selection, Window, WindowBounds,
@@ -678,7 +678,7 @@ impl Render for InputExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(300.0), px(300.0)), cx);
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, None),

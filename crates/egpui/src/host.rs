@@ -122,9 +122,9 @@ impl ApplicationHost {
     pub fn new(config: HostConfig) -> Result<Self, HostError> {
         let runtime = ApplicationRuntime::new(config.runtime)?;
         let application = if config.headless {
-            Application::headless()
+            gpui_platform::headless()
         } else {
-            Application::new()
+            gpui_platform::application()
         };
 
         Ok(Self {

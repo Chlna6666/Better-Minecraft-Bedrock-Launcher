@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, BoundedImageCache, BoundedImageCacheConfig, Bounds, ClickEvent, Context,
+    App, BoundedImageCache, BoundedImageCacheConfig, Bounds, ClickEvent, Context,
     ElementId, Entity, ImageCache, ImageCacheProvider, KeyBinding, Menu, MenuItem, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, hash, image_cache, img,
     prelude::*, px, rgb, size,
@@ -231,7 +231,7 @@ actions!(image, [Quit]);
 fn main() {
     env_logger::init();
 
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         cx.set_http_client(Arc::new(gpui::http_client::BlockedHttpClient::new()));
 
         cx.activate(true);

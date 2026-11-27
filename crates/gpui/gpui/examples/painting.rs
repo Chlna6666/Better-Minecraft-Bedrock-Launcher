@@ -445,7 +445,7 @@ impl Render for PaintingViewer {
 }
 
 fn main() {
-    Application::new().run(|cx| {
+    gpui_platform::application().run(|cx| {
         cx.open_window(
             WindowOptions {
                 focus: true,

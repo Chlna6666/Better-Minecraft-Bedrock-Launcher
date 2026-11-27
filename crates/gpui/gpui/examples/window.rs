@@ -241,7 +241,7 @@ impl Render for WindowDemo {
 actions!(window, [Quit]);
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
 
         cx.open_window(

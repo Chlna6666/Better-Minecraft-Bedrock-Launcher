@@ -1,7 +1,7 @@
 //! Renders a div with deep children hierarchy. This example is useful to exemplify that Zed can
 //! handle deep hierarchies (even though it cannot just yet!).
 use gpui::{
-    App, Application, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     size,
 };
 
@@ -33,7 +33,7 @@ fn main() {
                 .and_then(|depth| depth.parse().ok())
         })
         .unwrap_or(50);
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(300.0), px(300.0)), cx);
         cx.open_window(
             WindowOptions {

@@ -1,7 +1,7 @@
 //! Opens a native GPUI window and draws a lit 3D scene through the Nova scene-view extension.
 
 use gpui::{
-    App, Application, Bounds, Context, RendererBackend, RendererFallback, RendererOptions, Timer,
+    App, Bounds, Context, RendererBackend, RendererFallback, RendererOptions, Timer,
     Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_3d::{
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let observed = Arc::new(AtomicBool::new(false));
     let observed_by_window = observed.clone();
     let initial_presents = gpui::diagnostics::performance_metrics::snapshot().direct_present_count;
-    Application::with_renderer_options(RendererOptions {
+    gpui_platform::application_with_renderer_options(RendererOptions {
         backend,
         fallback: RendererFallback::Disabled,
         ..Default::default()

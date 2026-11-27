@@ -14,7 +14,7 @@ use std::{
 };
 
 use gpui::{
-    Animation, AnimationExt as _, AnimationGroup, App, Application, Bounds, Context, Point,
+    Animation, AnimationExt as _, AnimationGroup, App, Bounds, Context, Point,
     RendererBackend, RendererOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     rgb, size,
 };
@@ -175,7 +175,7 @@ fn main() {
         backend,
         ..Default::default()
     };
-    Application::with_renderer_options(options).run(move |cx: &mut App| {
+    gpui_platform::application_with_renderer_options(options).run(move |cx: &mut App| {
             let view = cx.new(|_| BlockView {
                 block_next_render: false,
                 block_probe: Some(block_probe),

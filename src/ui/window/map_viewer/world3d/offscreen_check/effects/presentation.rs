@@ -1,7 +1,7 @@
 //! Presents the fixed world fixture through a real Windows GPU Owner.
 use super::{Camera, Duration, Extent2d, Instant, SceneView, Vec3, percentile};
 use gpui::{
-    App, Application, Bounds, Context, FrameClock, GpuPowerPreference, RendererBackend,
+    App, Bounds, Context, FrameClock, GpuPowerPreference, RendererBackend,
     RendererFallback, RendererOptions, Timer, Window, WindowBounds, WindowOptions, div, prelude::*,
     px, size,
 };
@@ -39,7 +39,7 @@ pub(super) fn profile(view: SceneView, camera: Camera, extent: Extent2d) {
     }));
     let observed = Arc::new(AtomicBool::new(false));
     let window_observed = observed.clone();
-    Application::with_renderer_options(RendererOptions {
+    gpui_platform::application_with_renderer_options(RendererOptions {
         backend: RendererBackend::NovaDx11,
         fallback: RendererFallback::Disabled,
         power_preference: GpuPowerPreference::HighPerformance,

@@ -47,13 +47,12 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
-egpui -> gpui
+  -> egpui, gpui_platform, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
+egpui -> gpui_platform + gpui
 gpui_3d -> gpui + gfx-core
 gpui -> gfx-core + selected gfx-<backend>
-gpui (Windows) -> gpui_windows
-gpui (Linux / FreeBSD) -> gpui_linux
-gpui (macOS) -> gpui_macos
+gpui_platform -> gpui + target(gpui_windows | gpui_linux | gpui_macos)
+gpui_windows / gpui_linux / gpui_macos -> gpui
 bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui_3d (without gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
@@ -105,9 +104,10 @@ loss and in-flight resource reuse need failure paths.
 | Crate | Responsibility | Constraint |
 | --- | --- | --- |
 | `gpui` | Windows, entity state, declarative elements, layout, input, text, scene, presentation | Generic UI core; no BMCBL business logic |
-| `gpui_windows` | Win32 display clocks, native dialogs and driver messages | Provides native wake events. GPUI owns windows and Nova presentation |
-| `gpui_linux` | Wayland/X11 session detection and XDG desktop settings subscriptions | GPUI owns the window event loop |
-| `gpui_macos` | CoreVideo display clock and libdispatch bindings | GPUI owns AppKit windows and Nova presentation |
+| `gpui_platform` | Native application composition | Selects the desktop provider and injects it into GPUI |
+| `gpui_windows` | Win32 windows, input, DirectWrite and display clock | Owns Win32 resources and supplies native frame wakes |
+| `gpui_linux` | Wayland, X11 and headless event loops, windows and XDG desktop settings | Owns Wayland and X11 event loops |
+| `gpui_macos` | AppKit windows, input, CoreVideo and libdispatch | Owns AppKit and connects the Metal layer to presentation |
 | `gpui_3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Scene preparation and extension resources only; presentation belongs to gpui/nova |
 | `gpui_tokio` | GPUI/Tokio task integration | No runtime handles in UI state |
 | `gpui_hooks` / `gpui_hooks_macros` | Hooks and their macros | UI state reuse only |

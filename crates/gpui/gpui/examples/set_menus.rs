@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Context, Menu, MenuItem, SystemMenuType, Window, WindowOptions, actions, div,
+    App, Context, Menu, MenuItem, SystemMenuType, Window, WindowOptions, actions, div,
     prelude::*, rgb,
 };
 
@@ -20,7 +20,7 @@ impl Render for SetMenus {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         // Bring the menu bar to the foreground (so you can see the menu bar)
         cx.activate(true);
         // Register the `quit` function so it can be referenced by the `MenuItem::action` in the menu bar

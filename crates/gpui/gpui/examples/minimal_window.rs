@@ -1,7 +1,7 @@
 mod startup_report;
 
 use gpui::{
-    App, Application, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     rgb, size,
 };
 use std::time::Duration;
@@ -29,7 +29,7 @@ fn main() {
         .trim_backtraces(Some(20))
         .build();
 
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(320.0), px(200.0)), cx);
         if let Err(error) = cx.open_window(
             WindowOptions {

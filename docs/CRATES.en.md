@@ -17,9 +17,10 @@ is added or removed, update this table and `[workspace].members` in the root `Ca
 | Crate | Path | Responsibility | Status | Docs |
 | --- | --- | --- | --- | --- |
 | `gpui` | `crates/gpui/gpui` | Windows, entities, elements, layout, input, text, scene, presentation | Active, pre-1.0 | [README](../crates/gpui/gpui/README.md) |
-| `gpui_windows` | `crates/gpui/gpui_windows` | Windows display clocks, native dialogs and driver messages | Internal | [README](../crates/gpui/gpui_windows/README.md) |
-| `gpui_linux` | `crates/gpui/gpui_linux` | Desktop session detection and XDG desktop settings | Internal | [README](../crates/gpui/gpui_linux/README.md) |
-| `gpui_macos` | `crates/gpui/gpui_macos` | CoreVideo display clock and libdispatch | Internal | [README](../crates/gpui/gpui_macos/README.md) |
+| `gpui_platform` | `crates/gpui/gpui_platform` | Native application composition | Internal | [README](../crates/gpui/gpui_platform/README.md) |
+| `gpui_windows` | `crates/gpui/gpui_windows` | Win32 windows, input, DirectWrite and display clock | Internal | [README](../crates/gpui/gpui_windows/README.md) |
+| `gpui_linux` | `crates/gpui/gpui_linux` | Wayland, X11 and headless event loops, windows and XDG desktop settings | Internal | [README](../crates/gpui/gpui_linux/README.md) |
+| `gpui_macos` | `crates/gpui/gpui_macos` | AppKit windows, input, CoreVideo and libdispatch | Internal | [README](../crates/gpui/gpui_macos/README.md) |
 | `gpui_3d` | `crates/gpui/gpui_3d` | 3D scenes, cameras, materials, animation, queries, glTF, offscreen and scene views | Active, pre-1.0 | [README](../crates/gpui/gpui_3d/README.md) |
 | `gpui_tokio` | `crates/gpui/gpui_tokio` | GPUI/Tokio task integration | Active | [README](../crates/gpui/gpui_tokio/README.md) |
 | `gpui_hooks` | `crates/gpui/gpui_hooks` | GPUI hooks and state reuse | Active | [README](../crates/gpui/gpui_hooks/README.md) |

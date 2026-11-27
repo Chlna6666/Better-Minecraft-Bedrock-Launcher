@@ -1,7 +1,7 @@
 use super::{ThemeState, World3dEditorInit, World3dEditorView, World3dWorldKey, window_options};
 use bedrock_world::{ChunkPos, Dimension};
 use gpui::{
-    AppContext as _, Application, FrameClock, GpuPowerPreference, RendererBackend,
+    AppContext as _, FrameClock, GpuPowerPreference, RendererBackend,
     RendererFallback, RendererOptions, Timer, Window,
     diagnostics::gpu_owner::{GpuOwnerJobOutcome, metrics_snapshot, samples_since},
 };
@@ -135,7 +135,7 @@ fn streaming_editor_presents_while_moving() {
     };
     let measured = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&measured);
-    Application::with_renderer_options(RendererOptions {
+    gpui_platform::application_with_renderer_options(RendererOptions {
         backend: RendererBackend::NovaDx11,
         fallback: RendererFallback::Disabled,
         power_preference: GpuPowerPreference::HighPerformance,

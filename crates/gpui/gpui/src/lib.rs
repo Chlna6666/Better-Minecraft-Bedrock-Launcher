@@ -23,7 +23,8 @@ mod gestures;
 mod hot_reload;
 mod layout;
 mod paint;
-mod platform;
+/// Interfaces used by native GPUI platform providers.
+pub mod platform;
 mod render_pipeline;
 pub(crate) use paint::BackdropBlurDamagePlan;
 pub(crate) use window::retained::{PreparedRetainedQuadChunk, RetainedChunkId};
@@ -33,6 +34,8 @@ pub use primitives::*;
 mod style;
 mod text_system;
 mod window;
+#[doc(hidden)]
+pub use window::element_work;
 
 /// APIs used only by GPUI's Criterion benchmark targets.
 #[cfg(feature = "bench-support")]

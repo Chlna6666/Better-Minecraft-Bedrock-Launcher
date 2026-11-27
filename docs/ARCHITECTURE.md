@@ -46,14 +46,13 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
-egpui -> gpui
+  -> egpui, gpui_platform, gpui, gpui_3d, bedrock-*, bmcbl-plugin-runtime
+egpui -> gpui_platform + gpui
 gpui_3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
 gpui_3d (feature: gpui-sidecar) -> gpui + gfx-core  # 默认启用，可 --no-default-features 禁用
 gpui -> gfx-core + 所选 gfx-<backend>
-gpui (Windows) -> gpui_windows
-gpui (Linux / FreeBSD) -> gpui_linux
-gpui (macOS) -> gpui_macos
+gpui_platform -> gpui + target(gpui_windows | gpui_linux | gpui_macos)
+gpui_windows / gpui_linux / gpui_macos -> gpui
 bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui_3d (无 gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
@@ -115,9 +114,10 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 | crate | 职责 | 关键约束 |
 | --- | --- | --- |
 | `gpui` | 窗口、实体状态、声明式元素、布局、输入、文本、场景与呈现调度 | 通用 UI 核心，不含 BMCBL 业务；渲染后端通过 nova-gfx |
-| `gpui_windows` | Win32 显示时钟、原生对话框与驱动消息 | 提供原生唤醒事件。GPUI 管理窗口与 Nova 呈现 |
-| `gpui_linux` | Wayland/X11 会话检测与 XDG 桌面设置订阅 | GPUI 管理窗口事件循环 |
-| `gpui_macos` | CoreVideo 显示时钟与 libdispatch 接口 | GPUI 管理 AppKit 窗口与 Nova 呈现 |
+| `gpui_platform` | 原生应用组装 | 选择桌面平台实现并注入 GPUI |
+| `gpui_windows` | Win32 窗口、输入、DirectWrite 和显示时钟 | 拥有 Win32 资源，提供原生帧唤醒 |
+| `gpui_linux` | Wayland、X11 和无窗口事件循环，以及窗口与 XDG 桌面设置 | 拥有 Linux/FreeBSD 窗口事件循环 |
+| `gpui_macos` | AppKit 窗口、输入、CoreVideo 和 libdispatch | 拥有 AppKit 资源并将 Metal layer 接入呈现 |
 | `gpui_3d` | 游戏级 3D 引擎：Scene、GPU Resident、剔除、构网、Graphics/Compute 工作图、DrawIndirect、离屏输出及 GPUI 可选侧载 | 3D 原生 Pass 编码及调度归 3D 引擎；窗口/Swapchain 由 UI/应用拥有 |
 | `gpui_tokio` | GPUI 与 Tokio 任务集成 | 不把 Tokio 句柄泄漏进 UI 状态 |
 | `gpui_hooks` / `gpui_hooks_macros` | GPUI hooks 与宏 | 只封装 UI 状态复用模式 |

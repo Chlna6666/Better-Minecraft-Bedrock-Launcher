@@ -10,7 +10,7 @@ use std::{
 use gpui::diagnostics::{gpu_owner, performance_metrics, process_memory, text};
 use gpui::diagnostics::performance_metrics::PerformanceMetricsSnapshot;
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, Entity,
+    App, AssetSource, Bounds, Context, Entity,
     PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, ScrollHandle,
     SharedString, Window, WindowBounds, WindowOptions, div, hsla, img,
     prelude::*, px, rgb, size,
@@ -686,7 +686,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..RendererOptions::default()
     };
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
-    Application::with_renderer_options(options)
+    gpui_platform::application_with_renderer_options(options)
         .with_assets(Assets { examples })
         .run(move |cx: &mut App| open_lab_window(config, cx));
     Ok(())

@@ -8,7 +8,7 @@ use std::{
 };
 
 use gpui::{
-    App, Application, Bounds, Context, ImagePixelFormat, RenderImage, RendererBackend,
+    App, Bounds, Context, ImagePixelFormat, RenderImage, RendererBackend,
     RendererFallback, RendererOptions, Timer, Window, WindowBounds, WindowOptions, div, img,
     prelude::*, px, rgb, size,
 };
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("renderer_path=nova-gfx");
     println!("startup_time_ms={}", started_at.elapsed().as_millis());
 
-    Application::with_renderer_options(RendererOptions {
+    gpui_platform::application_with_renderer_options(RendererOptions {
         backend,
         fallback: RendererFallback::Disabled,
         ..Default::default()

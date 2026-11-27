@@ -1,12 +1,15 @@
 mod app_menu;
-mod atlas;
+#[doc(hidden)]
+pub mod atlas;
 mod bootstrap;
 mod clipboard;
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 mod cosmic_text_system;
 mod display;
-mod foreground_tasks;
-mod frame;
+#[doc(hidden)]
+pub mod foreground_tasks;
+#[doc(hidden)]
+pub mod frame;
 mod gpu;
 mod input_handler;
 mod interaction;
@@ -14,9 +17,10 @@ mod keyboard;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod presentation_owner;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
-pub(crate) mod render_owner;
-mod traits;
-mod winit;
+#[doc(hidden)]
+pub mod render_owner;
+#[doc(hidden)]
+pub mod traits;
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -72,61 +76,53 @@ pub(crate) fn advance_text_rasterization_generation() {
     target_os = "linux",
     target_os = "freebsd"
 ))]
-mod nova;
+#[doc(hidden)]
+pub mod nova;
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-mod linux;
 
-#[cfg(target_os = "macos")]
-mod mac;
+#[cfg(all(target_os = "macos", not(feature = "macos-blade"), not(feature = "nova-gfx-metal")))]
+#[doc(hidden)]
+pub mod metal;
 
 #[cfg(all(target_os = "macos", feature = "macos-blade"))]
-mod blade;
+#[doc(hidden)]
+pub mod blade;
 
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod test;
 
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(target_os = "windows")]
-pub(crate) use windows::WindowsPlatform;
 
 pub use app_menu::*;
-pub(crate) use atlas::*;
+pub use atlas::*;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) use bootstrap::TestDispatcher;
-pub(crate) use bootstrap::current_platform;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub use bootstrap::guess_compositor;
 #[cfg(target_os = "windows")]
 pub use bootstrap::windows_manifest_path;
-pub use bootstrap::{background_executor, enumerate_gpu_adapters};
+pub use bootstrap::enumerate_gpu_adapters;
 pub use clipboard::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
-pub(crate) use cosmic_text_system::*;
+#[doc(hidden)]
+pub use cosmic_text_system::CosmicTextSystem;
 pub use display::*;
-pub(crate) use foreground_tasks::*;
-pub(crate) use frame::*;
+pub use foreground_tasks::*;
+pub use frame::*;
 pub use gpu::*;
 pub use input_handler::*;
 pub use interaction::*;
 pub use keyboard::*;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) use linux::*;
-#[cfg(target_os = "macos")]
-pub(crate) use mac::*;
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
     target_os = "linux",
     target_os = "freebsd"
 ))]
+pub use nova::{NovaRenderer, NovaRendererAtlas};
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd"))]
 pub(crate) use nova::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) use presentation_owner::OwnedNovaRenderer;
+#[doc(hidden)]
+pub use presentation_owner::OwnedNovaRenderer;
 pub use semantic_version::SemanticVersion;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) use test::*;
 pub use traits::*;
-#[cfg(target_os = "windows")]
-pub(crate) use windows::*;

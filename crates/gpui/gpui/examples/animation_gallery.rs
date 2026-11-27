@@ -19,7 +19,7 @@ use std::{
 };
 
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, RendererBackend, RendererOptions, SharedString,
+    App, AssetSource, Bounds, Context, RendererBackend, RendererOptions, SharedString,
     Timer, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, div,
     prelude::*, px, rgb, size,
 };
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..RendererOptions::default()
     };
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
-    Application::with_renderer_options(options)
+    gpui_platform::application_with_renderer_options(options)
         .with_assets(ExampleAssets { examples })
         .run(move |cx| open_lab(cx, config));
     Ok(())

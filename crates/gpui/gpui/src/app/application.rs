@@ -6,8 +6,7 @@ use http_client::{HttpClient, Url};
 
 use crate::{
     AssetSource, BackgroundExecutor, FontFallbacks, ForegroundExecutor, ImagePipelineConfig,
-    RendererBackend, RendererOptions, SharedString, SvgRenderer, TextSystem, current_platform,
-    record_renderer_backend,
+    Platform, SharedString, SvgRenderer, TextSystem,
 };
 
 use super::{App, AppCell};
@@ -129,43 +128,12 @@ pub(super) fn load_default_font_config(
 /// Represents an application before it is fully launched. Once your app is
 /// configured, you'll start the app with `App::run`.
 impl Application {
-    /// Builds an app with the given asset source.
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self::with_renderer_options(RendererOptions::default())
-    }
-
-    /// Builds an app with the requested renderer options in a single platform
-    /// initialization pass.
-    pub fn with_renderer_options(options: RendererOptions) -> Self {
+    /// Creates an application with a platform provider owned by its composition root.
+    pub fn with_platform(platform: Rc<dyn Platform>) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         log::info!("GPUI was compiled in test mode");
 
-        let options = options.resolve();
-        record_renderer_backend(options.backend);
-        Self(App::new_app(
-            current_platform(false, options),
-            Arc::new(()),
-            Arc::new(NullHttpClient),
-        ))
-    }
-
-    /// Builds an app with the requested renderer backend in a single platform
-    /// initialization pass.
-    pub fn with_renderer_backend(backend: RendererBackend) -> Self {
-        Self::with_renderer_options(RendererOptions::with_backend(backend))
-    }
-
-    /// Build an app in headless mode. This prevents opening windows,
-    /// but makes it possible to run an application in an context like
-    /// SSH, where GUI applications are not allowed.
-    pub fn headless() -> Self {
-        record_renderer_backend(RendererBackend::Auto);
-        Self(App::new_app(
-            current_platform(true, RendererOptions::default()),
-            Arc::new(()),
-            Arc::new(NullHttpClient),
-        ))
+        Self(App::new_app(platform, Arc::new(()), Arc::new(NullHttpClient)))
     }
 
     /// Sets the application-wide default font family and registers any provided font sources.
@@ -267,7 +235,7 @@ impl Application {
             on_finish_launching(cx);
         }));
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
-        crate::platform::render_owner::shutdown();
+        crate::platform::render_owner::shutdown(|| platform.service_driver_messages());
     }
 
     /// Register a handler to be invoked when the platform instructs the application

@@ -16,7 +16,7 @@ use crate::{
     scene, trace, Config,
 };
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, FrameClock, KeyDownEvent, MouseButton,
+    App, Bounds, Context, FocusHandle, FrameClock, KeyDownEvent, MouseButton,
     RendererBackend, RendererFallback, RendererOptions, ScrollDelta, Timer, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size,
 };
@@ -171,7 +171,7 @@ pub(crate) fn run(config: &Config) -> Result<std::process::ExitCode, Box<dyn Err
     let height = config.height;
     let fps_cap = config.fps_cap;
 
-    Application::with_renderer_options(RendererOptions {
+    gpui_platform::application_with_renderer_options(RendererOptions {
         backend,
         fallback: RendererFallback::Disabled,
         ..Default::default()

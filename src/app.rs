@@ -141,7 +141,7 @@ async fn gpu_adapter_name_from_config(
     }
 
     let adapters = match crate::tasks::runtime::blocking::run_io(move || {
-        gpui::enumerate_gpu_adapters(renderer_backend)
+        gpui_platform::enumerate_gpu_adapters(renderer_backend)
     })
     .await
     {
@@ -354,7 +354,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     };
 
     // Native events and GPUI run on the HWND-owning thread. RenderOwner is independent.
-    Application::with_renderer_options(renderer_options)
+    gpui_platform::application_with_renderer_options(renderer_options)
         .with_image_pipeline_config(image_pipeline)
         .with_platform_default_font(default_font)
         .with_assets(crate::assets::asset_source::AppAssets)

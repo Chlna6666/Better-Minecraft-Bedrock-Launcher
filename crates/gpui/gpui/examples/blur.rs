@@ -5,7 +5,7 @@
 //! background blur samples earlier drawing, while filter blur includes children.
 
 use gpui::{
-    App, Application, Bounds, BoxShadow, Context, Div, RendererBackend, RendererOptions, Window,
+    App, Bounds, BoxShadow, Context, Div, RendererBackend, RendererOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, px, rgb, rgba,
     size,
 };
@@ -186,7 +186,7 @@ fn main() -> anyhow::Result<()> {
             _ => anyhow::bail!("Unknown argument: {argument}"),
         };
     }
-    Application::with_renderer_options(renderer).run(|cx: &mut App| {
+    gpui_platform::application_with_renderer_options(renderer).run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1080.0), px(900.0)), cx);
         if let Err(error) = cx.open_window(
             WindowOptions {

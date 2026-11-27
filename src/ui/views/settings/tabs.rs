@@ -25,7 +25,7 @@ pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mu
             let backend = renderer_backend
                 .parse::<gpui::RendererBackend>()
                 .unwrap_or_default();
-            gpui::enumerate_gpu_adapters(backend)
+            gpui_platform::enumerate_gpu_adapters(backend)
                 .into_iter()
                 .map(|adapter| SharedString::from(adapter.name))
                 .collect::<Vec<_>>()

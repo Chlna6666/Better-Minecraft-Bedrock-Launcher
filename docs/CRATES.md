@@ -17,9 +17,10 @@
 | crate | 路径 | 职责 | 状态 | 文档 |
 | --- | --- | --- | --- | --- |
 | `gpui` | `crates/gpui/gpui` | 窗口、实体、元素、布局、输入、文本、场景、呈现 | 活跃，pre-1.0 | [README](../crates/gpui/gpui/README.md) |
-| `gpui_windows` | `crates/gpui/gpui_windows` | Windows 显示时钟、原生对话框和驱动消息 | 内部 | [README](../crates/gpui/gpui_windows/README.md) |
-| `gpui_linux` | `crates/gpui/gpui_linux` | 桌面会话检测与 XDG 桌面设置 | 内部 | [README](../crates/gpui/gpui_linux/README.md) |
-| `gpui_macos` | `crates/gpui/gpui_macos` | CoreVideo 显示时钟与 libdispatch | 内部 | [README](../crates/gpui/gpui_macos/README.md) |
+| `gpui_platform` | `crates/gpui/gpui_platform` | 原生应用组装 | 内部 | [README](../crates/gpui/gpui_platform/README.md) |
+| `gpui_windows` | `crates/gpui/gpui_windows` | Win32 窗口、输入、DirectWrite 和显示时钟 | 内部 | [README](../crates/gpui/gpui_windows/README.md) |
+| `gpui_linux` | `crates/gpui/gpui_linux` | Wayland、X11 和无窗口事件循环，以及窗口与 XDG 桌面设置 | 内部 | [README](../crates/gpui/gpui_linux/README.md) |
+| `gpui_macos` | `crates/gpui/gpui_macos` | AppKit 窗口、输入、CoreVideo 和 libdispatch | 内部 | [README](../crates/gpui/gpui_macos/README.md) |
 | `gpui_3d` | `crates/gpui/gpui_3d` | 游戏级 3D 场景/材质/光照、GPU Resident/构网/剔除/DrawIndirect、无 GPUI 的原生离屏提交核心及可选 Sidecar 适配 | 活跃，pre-1.0 | [README](../crates/gpui/gpui_3d/README.md) |
 | `gpui_tokio` | `crates/gpui/gpui_tokio` | GPUI/Tokio 任务集成 | 活跃 | [README](../crates/gpui/gpui_tokio/README.md) |
 | `gpui_hooks` | `crates/gpui/gpui_hooks` | GPUI hooks 与状态复用 | 活跃 | [README](../crates/gpui/gpui_hooks/README.md) |
