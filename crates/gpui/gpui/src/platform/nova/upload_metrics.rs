@@ -7,6 +7,7 @@ pub(super) fn upload_pending_atlas<D>(
     batch: frame_upload::queue::AtlasUpload<'_>,
     device: &mut D,
     gpu_textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
+    scroll_slots: &mut [super::renderer::scroll_raster::CompositeSlot],
     backend_name: &str,
     descriptor: &AtlasResourceDescriptor,
 ) -> Result<AtlasUploadStats>
@@ -26,6 +27,13 @@ where
         .collect();
 
     for info in missing_pages {
+        // A snapshot can discover a page replacement after the ordinary
+        // synchronization step. Retire its scroll descriptors here too.
+        if gpu_textures.contains_key(&info.id) {
+            for slot in scroll_slots.iter_mut() {
+                slot.retire_atlas_bindings(device, info.id)?;
+            }
+        }
         let new_texture = create_atlas_texture_resources(
             device,
             backend_name,

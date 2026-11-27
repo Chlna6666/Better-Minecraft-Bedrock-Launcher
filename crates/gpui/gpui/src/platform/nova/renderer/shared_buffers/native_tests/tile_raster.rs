@@ -446,7 +446,8 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         let atlas = renderer.atlas.clone();
         device!(renderer, device, {
             upload_pending_atlas(frame_upload::queue::AtlasUpload::new(&atlas), device,
-                &mut renderer.gpu_atlas_textures, "scroll glyph fixture", &descriptor)
+                &mut renderer.gpu_atlas_textures, &mut renderer.scroll_composite_slots,
+                "scroll glyph fixture", &descriptor)
                 .expect("glyph upload");
         });
         Some(crate::MonochromeSprite {
@@ -503,15 +504,20 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     }
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
         background: crate::rgb(0x808080).into(), ..Default::default() });
+    // Keep the same glyph in the ordinary root as well as the raster
+    // source: the root descriptor must now survive direct presentations.
+    if let Some(glyph) = glyph {
+        painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
+    }
     painter.finish();
     let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
         crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
     let end = if with_glyph && !native { 3 } else { 2 };
     if native {
-        assert_eq!(paint.scene.len(), 5);
+        assert_eq!(paint.scene.len(), 5 + usize::from(with_glyph));
         assert_eq!(paint.scene.quads.len(), if with_extension { 2 } else { 3 });
         assert_eq!(paint.scene.renderer_extensions.len(), usize::from(with_extension));
-        assert!(paint.scene.monochrome_sprites.is_empty());
+        assert_eq!(paint.scene.monochrome_sprites.len(), usize::from(with_glyph));
         paint.layers = crate::window::SceneLayers::capture_native(&paint.scene, None);
     } else {
         paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
@@ -546,6 +552,14 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             // Repaint exactly one cell after both previous reader fences
             // complete. The adjacent page cell must keep its own pixels.
             renderer.raster_tiles.invalidate_layer(key.layer);
+            if let Some(glyph) = glyph {
+                device!(renderer, device, {
+                    renderer.scroll_composite_slots[0]
+                        .retire_atlas_bindings(device, glyph.tile.texture_id)
+                        .expect("retire root atlas descriptor");
+                });
+                assert!(renderer.scroll_composite_slots[0].resident_command_list().is_none());
+            }
         }
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while renderer.presentation_readiness(None, Some((64, 64))).expect("scroll readiness") != PresentReadiness::Ready
@@ -570,8 +584,9 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         } else {
             let commands = commands.expect("static root and resident tiles own a command list");
             if let Some(previous) = &composite_commands {
-                assert!(std::sync::Arc::ptr_eq(previous, &commands),
-                    "unchanged native command dependencies must reuse the published list");
+                assert_eq!(std::sync::Arc::ptr_eq(previous, &commands),
+                    !(with_glyph && iteration == 2),
+                    "reuse unchanged commands, but rebuild after atlas descriptor retirement");
             }
             composite_commands = Some(commands);
         }

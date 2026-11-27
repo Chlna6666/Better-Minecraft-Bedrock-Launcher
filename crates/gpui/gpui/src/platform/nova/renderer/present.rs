@@ -1463,6 +1463,7 @@ impl NovaRenderer {
                         atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
+                        &mut self.scroll_composite_slots,
                         backend_label,
                         &atlas_resource_descriptor,
                     )?;
@@ -1609,6 +1610,7 @@ impl NovaRenderer {
                         atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
+                        &mut self.scroll_composite_slots,
                         backend_label,
                         &atlas_resource_descriptor,
                     )?;
@@ -1755,6 +1757,7 @@ impl NovaRenderer {
                         atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
+                        &mut self.scroll_composite_slots,
                         backend_label,
                         &atlas_resource_descriptor,
                     )?;
@@ -1894,6 +1897,7 @@ impl NovaRenderer {
                         atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
+                        &mut self.scroll_composite_slots,
                         backend_label,
                         &atlas_resource_descriptor,
                     )?;
@@ -1997,6 +2001,7 @@ impl NovaRenderer {
                         atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
+                        &mut self.scroll_composite_slots,
                         backend_label,
                         &atlas_resource_descriptor,
                     )?;

@@ -46,6 +46,7 @@ pub(super) fn verify_atlas_compaction<D>(
         sync_gpu_atlas_textures(
             &atlas,
             &mut textures,
+            &mut [],
             device,
             "compact hardware gate",
             descriptor(),
@@ -55,6 +56,7 @@ pub(super) fn verify_atlas_compaction<D>(
             frame_upload::queue::AtlasUpload::new(&atlas),
             device,
             &mut textures,
+            &mut [],
             "compact hardware gate",
             &descriptor(),
         )
@@ -114,6 +116,7 @@ pub(super) fn verify_atlas_compaction<D>(
         sync_gpu_atlas_textures(
             &atlas,
             &mut textures,
+            &mut [],
             device,
             "compact hardware gate",
             descriptor(),

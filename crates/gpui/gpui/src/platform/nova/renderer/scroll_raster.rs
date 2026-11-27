@@ -270,13 +270,20 @@ struct StaticStreams {
 }
 
 impl StaticStreams {
+    fn binding_resident(&self, kind: SourceKind) -> bool {
+        let bytes = match kind {
+            SourceKind::Quad => self.quads.len(),
+            SourceKind::Shadow => self.shadows.len(),
+            SourceKind::Underline => self.underlines.len(),
+            SourceKind::Mono(_) => self.mono.len(),
+            SourceKind::Poly(_) => self.poly.len(),
+            SourceKind::Extension => return false,
+        };
+        bytes <= RETAINED_OUTSIDE_STREAM_BYTES
+    }
+
     fn commands_resident(&self) -> bool {
-        self.runs.iter().all(|run| match run.kind {
-            SourceKind::Quad => self.quads.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-            SourceKind::Shadow => self.shadows.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-            SourceKind::Underline => self.underlines.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-            _ => false,
-        })
+        self.runs.iter().all(|run| self.binding_resident(run.kind))
     }
 
     fn push(&mut self, primitive: &Primitive, split: bool) -> Option<()> {
@@ -373,15 +380,9 @@ impl StaticStreams {
                 SourceKind::Poly(_) => blend.poly_sprites,
                 SourceKind::Extension => unreachable!("extension run was expanded"),
             };
-            // Only private, bounded physical streams may own a resident
-            // descriptor. Atlas-backed views have an independent retirement
-            // lifecycle and keep the existing fence-owned transient path.
-            let retain = match run.kind {
-                SourceKind::Quad => self.quads.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-                SourceKind::Shadow => self.shadows.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-                SourceKind::Underline => self.underlines.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
-                _ => false,
-            };
+            // Bounded private streams own the descriptor. Atlas replacement
+            // explicitly retires every slot's descriptors before its view.
+            let retain = self.binding_resident(run.kind);
             let cached = if retain { resident.as_ref().and_then(|map| map.get(&run.kind)).copied() } else { None };
             let group = if let Some(group) = cached.or_else(|| bindings.get(&run.kind).copied()) { group } else {
                 let (layout, mut entries) = match run.kind {
@@ -590,7 +591,7 @@ impl OutsideRoot {
 /// A free slot proves that all prior readers (and its writer) have retired.
 /// Do not overwrite the normal renderer's cross-slot shared static streams.
 #[derive(Default)]
-pub(super) struct CompositeSlot {
+pub(in crate::platform::nova) struct CompositeSlot {
     global: Option<BufferId>,
     sprites: Option<BufferId>,
     global_bytes: Vec<u8>,
@@ -609,8 +610,7 @@ pub(super) struct CompositeSlot {
 }
 
 // Retain only commands whose complete native dependencies are resident.
-// Atlas-backed root runs and dynamic extensions remain fence-owned
-// transients; their command lists must be prepared on every frame.
+// Dynamic extensions and oversized streams remain fence-owned transients.
 struct ResidentCompositeCommands {
     root: std::sync::Weak<OutsideRoot>,
     pipeline: RenderPipelineId,
@@ -786,6 +786,22 @@ fn changed_record_ranges(previous: &[u8], next: &[u8], stride: usize) -> Vec<std
 }
 
 impl CompositeSlot {
+    /// Retire only the descriptors sampling the physical page being removed
+    /// or replaced. Like ordinary Atlas descriptors, accepted native work
+    /// remains owned by the backend's submission retirement mechanism.
+    pub(in crate::platform::nova) fn retire_atlas_bindings<D: ResourceDevice>(
+        &mut self, device: &mut D, atlas: AtlasTextureId,
+    ) -> Result<()> {
+        for kind in [SourceKind::Mono(atlas), SourceKind::Poly(atlas)] {
+            if let Some(&group) = self.outside.bindings.get(&kind) {
+                self.commands = None;
+                device.destroy_bind_group(group)?;
+                self.outside.bindings.remove(&kind);
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(all(test, target_os = "windows"))]
     pub(super) fn outside_quad_binding(&self) -> Option<BindGroupId> {
         self.outside.bindings.get(&SourceKind::Quad).copied()
@@ -1475,6 +1491,15 @@ impl NovaRenderer {
             }).collect();
             if unchanged && cacheable && let Some(cached) = &composite_slot.commands
                 && cached.matches(&outside, pipeline, &tiles, &command_boundaries) {
+                // Text raster parameters can change without replacing the
+                // immutable root or its descriptors. Refresh the private
+                // uniform before reusing the resident command list.
+                if !outside.streams.mono.is_empty() {
+                    let text = pack_text_raster_params(&self.rendering_parameters);
+                    CompositeSlot::write_changed(device, &mut composite_slot.outside.text,
+                        &mut composite_slot.outside.text_bytes, &text, text.len(),
+                        text.len(), BufferUsage::UNIFORM)?;
+                }
                 return Ok(Arc::clone(&cached.commands));
             }
             composite_slot.commands = None;

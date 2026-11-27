@@ -16,7 +16,7 @@ mod extensions;
 mod filters;
 mod frame_graph;
 mod root_color;
-mod scroll_raster;
+pub(super) mod scroll_raster;
 #[cfg(target_os = "windows")]
 use drawable::native_windows_hwnd;
 use drawable::resolve_initial_drawable_size;
@@ -2097,6 +2097,7 @@ impl NovaRenderer {
             NovaBackend::OpenGl(device) => sync_gpu_atlas_textures(
                 &self.atlas,
                 &mut self.gpu_atlas_textures,
+                &mut self.scroll_composite_slots,
                 device,
                 "gpui nova opengl",
                 descriptor,
@@ -2105,6 +2106,7 @@ impl NovaRenderer {
             NovaBackend::Dx11(device) => sync_gpu_atlas_textures(
                 &self.atlas,
                 &mut self.gpu_atlas_textures,
+                &mut self.scroll_composite_slots,
                 device,
                 "gpui nova dx11",
                 descriptor,
@@ -2113,6 +2115,7 @@ impl NovaRenderer {
             NovaBackend::Dx12(device) => sync_gpu_atlas_textures(
                 &self.atlas,
                 &mut self.gpu_atlas_textures,
+                &mut self.scroll_composite_slots,
                 device,
                 "gpui nova dx12",
                 descriptor,
@@ -2121,6 +2124,7 @@ impl NovaRenderer {
             NovaBackend::Metal(device) => sync_gpu_atlas_textures(
                 &self.atlas,
                 &mut self.gpu_atlas_textures,
+                &mut self.scroll_composite_slots,
                 device,
                 "gpui nova metal",
                 descriptor,
@@ -2132,6 +2136,7 @@ impl NovaRenderer {
             NovaBackend::Vulkan(device) => sync_gpu_atlas_textures(
                 &self.atlas,
                 &mut self.gpu_atlas_textures,
+                &mut self.scroll_composite_slots,
                 device,
                 "gpui nova vulkan",
                 descriptor,

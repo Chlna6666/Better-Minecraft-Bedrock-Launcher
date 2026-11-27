@@ -95,6 +95,7 @@ pub(super) fn destroy_gpu_atlas_texture<D>(
 pub(super) fn sync_gpu_atlas_textures<D>(
     atlas: &NovaAtlas,
     gpu_textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
+    scroll_slots: &mut [super::renderer::scroll_raster::CompositeSlot],
     device: &mut D,
     backend_name: &str,
     descriptor: AtlasResourceDescriptor,
@@ -139,6 +140,24 @@ where
         pending_textures.push((texture_info.id, gpu_texture));
     }
 
+    // Destroy all dependent descriptors before removing or replacing the
+    // native page. Newly allocated pages do not invalidate other slots.
+    let retirement = (|| -> Result<()> {
+        for id in stale_ids.iter().copied().chain(
+            pending_textures.iter().map(|(id, _)| *id).filter(|id| gpu_textures.contains_key(id)),
+        ) {
+            for slot in scroll_slots.iter_mut() {
+                slot.retire_atlas_bindings(device, id)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = retirement {
+        for (id, texture) in pending_textures {
+            destroy_gpu_atlas_texture(device, texture, backend_name, id);
+        }
+        return Err(error);
+    }
     for stale_id in stale_ids {
         if let Some(texture) = gpu_textures.remove(&stale_id) {
             destroy_gpu_atlas_texture(device, texture, backend_name, stale_id);
