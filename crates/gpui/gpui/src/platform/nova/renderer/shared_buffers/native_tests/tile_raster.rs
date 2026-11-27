@@ -331,32 +331,36 @@ fn verify(backend: RendererBackend) {
 #[cfg(feature = "nova-gfx-dx12")]
 #[ignore = "requires Windows hardware D3D12 and a native presentable window"]
 fn dx12_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaDx12);
+    verify_direct_present(RendererBackend::NovaDx12, false);
+    verify_direct_present(RendererBackend::NovaDx12, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-vulkan")]
 #[ignore = "requires Windows hardware Vulkan and a native presentable window"]
 fn vulkan_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaVulkan);
+    verify_direct_present(RendererBackend::NovaVulkan, false);
+    verify_direct_present(RendererBackend::NovaVulkan, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
 #[ignore = "requires Windows hardware D3D11 and a native presentable window"]
 fn dx11_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaDx11);
+    verify_direct_present(RendererBackend::NovaDx11, false);
+    verify_direct_present(RendererBackend::NovaDx11, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-opengl")]
 #[ignore = "requires Windows OpenGL 4.5 and a native presentable window"]
 fn opengl_scroll_raster_present_skips_scene_pack() {
-    verify_direct_present(RendererBackend::NovaOpenGl);
+    verify_direct_present(RendererBackend::NovaOpenGl, false);
+    verify_direct_present(RendererBackend::NovaOpenGl, true);
 }
 
 #[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
-fn verify_direct_present(backend: RendererBackend) {
+fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
     let window = native_window::Window::renderer_fixture();
     window.resize(64, 64);
     let mut renderer = NovaRenderer::with_atlas(
@@ -373,6 +377,32 @@ fn verify_direct_present(backend: RendererBackend) {
     );
     let quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
         background: crate::rgb(0x00ff00).into(), ..Default::default() };
+    let glyph = if with_glyph {
+        use crate::{AtlasKey, FontId, GlyphId, RenderGlyphParams};
+        let key = AtlasKey::Glyph(RenderGlyphParams {
+            font_id: FontId(1), glyph_id: GlyphId(2), font_size: crate::px(14.),
+            subpixel_variant: crate::point(0, 0), scale_factor: 1.,
+            grayscale_antialiasing: true, is_emoji: false, is_cjk: false,
+        });
+        let tile = renderer.atlas.ensure_tile_with(key, &mut || {
+            Ok(Some((crate::size(DevicePixels(64), DevicePixels(64)),
+                std::borrow::Cow::Owned(vec![255; 64 * 64]))))
+        }).expect("glyph allocation").expect("glyph identity");
+        renderer.sync_atlas_textures_for_current_backend().expect("atlas pages");
+        let descriptor = renderer.atlas_resource_descriptor();
+        let atlas = renderer.atlas.clone();
+        device!(renderer, device, {
+            upload_pending_atlas(frame_upload::queue::AtlasUpload::new(&atlas), device,
+                &mut renderer.gpu_atlas_textures, "scroll glyph fixture", &descriptor)
+                .expect("glyph upload");
+        });
+        Some(crate::MonochromeSprite {
+            order: 0, pad: 0, animation_id: None, bounds,
+            content_mask: crate::ContentMask::new(coverage),
+            color: crate::rgb(0xffffff), tile,
+            transformation: crate::TransformationMatrix::unit(),
+        })
+    } else { None };
     let mut painter = crate::scene::Painter::default();
     // Background and foreground overlap the promoted fragment. The native
     // consumer must preserve both surrounding draws, not flatten the root
@@ -380,6 +410,9 @@ fn verify_direct_present(backend: RendererBackend) {
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
         background: crate::rgb(0xff0000).into(), ..Default::default() });
     painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
+    if let Some(glyph) = glyph {
+        painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
+    }
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
         background: crate::rgb(0x0000ff).into(), ..Default::default() });
     painter.finish();
@@ -387,9 +420,18 @@ fn verify_direct_present(backend: RendererBackend) {
         crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
     let mut source = crate::scene::Operations::default();
     source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::Quad(quad)));
+    if let Some(glyph) = glyph {
+        source.push(crate::scene::PaintOperation::Primitive(crate::scene::Primitive::MonochromeSprite(glyph)));
+    }
     paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
-    paint.layers.certify_fixture_root(&paint.scene, 1..2);
-    assert_eq!(paint.layers.frames[0].root_quad_outside(), Some(&[0..1, 2..3]));
+    let end = if with_glyph { 3 } else { 2 };
+    paint.layers.certify_fixture_root(&paint.scene, 1..end);
+    assert_eq!(paint.layers.frames[0].root_quad_outside(), Some(&[0..1, end..end+1]));
+    let mut protected = FxHashSet::default();
+    paint.layers.collect_atlas_tile_ids_into(&mut protected);
+    if let Some(glyph) = glyph {
+        assert!(protected.contains(&(glyph.tile.texture_id, glyph.tile.tile_id.0)));
+    }
     let paint = std::sync::Arc::new(paint);
     let packet = || crate::PresentationPacket::new(paint.clone(), [], [], Instant::now(),
         crate::DirtyRegion::full(bounds), crate::BackdropBlurDamagePlan::default(),
@@ -423,7 +465,8 @@ fn verify_direct_present(backend: RendererBackend) {
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
         physical = Some(texture);
-        super::pixels(&renderer, texture.texture, [0, 255, 0, 255]);
+        super::pixels(&renderer, texture.texture,
+            if with_glyph { [255, 255, 255, 255] } else { [0, 255, 0, 255] });
     }
     renderer.destroy();
 }

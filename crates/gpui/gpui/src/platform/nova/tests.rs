@@ -112,6 +112,40 @@ fn auto_vsync_selects_compositor_paced_dxgi_and_fifo_elsewhere() {
 }
 
 #[test]
+fn scroll_glyph_identity_survives_queued_removal_and_rejects_unuploaded_pixels() {
+    let atlas = NovaAtlas::new();
+    atlas.clear_pending_uploads_for_test();
+    let key = AtlasKey::Glyph(RenderGlyphParams {
+        font_id: FontId(1), glyph_id: GlyphId(2), font_size: px(14.0),
+        subpixel_variant: Point { x: 0, y: 0 }, scale_factor: 1.0,
+        grayscale_antialiasing: true, is_emoji: false, is_cjk: false,
+    });
+    let before = atlas.scroll_content_generation();
+    let build = |coverage| {
+        Ok(Some((size(DevicePixels(4), DevicePixels(4)), Cow::Owned(vec![coverage; 16]))))
+    };
+    let tile = atlas.ensure_tile_with(key.clone(), &mut || build(64)).unwrap().unwrap();
+    let ids = [(tile.texture_id, tile.tile_id.0)];
+    assert_ne!(atlas.scroll_content_generation(), before);
+    assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "queued upload is not resident");
+    atlas.clear_pending_uploads_for_test();
+    assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
+    let before_refresh = atlas.scroll_content_generation();
+    assert_eq!(atlas.refresh_tile_with(&key, &mut || build(255)).unwrap(), Some(tile));
+    assert_ne!(atlas.scroll_content_generation(), before_refresh, "same logical ID can change pixels");
+    assert!(atlas.ready_scroll_glyphs(&ids).is_none());
+    atlas.clear_pending_uploads_for_test();
+
+    atlas.remove(&key);
+    let live = ids.into_iter().collect();
+    assert!(!atlas.has_retirable_pending_removals(&live));
+    atlas.apply_pending_removals_except(&live);
+    assert_eq!(atlas.ready_scroll_glyphs(&ids).unwrap()[&tile.tile_id], tile);
+    atlas.apply_pending_removals();
+    assert!(atlas.ready_scroll_glyphs(&ids).is_none(), "retired glyph must not be sampled");
+}
+
+#[test]
 fn glyph_atlas_insert_update_remove() {
     let atlas = NovaAtlas::new();
     atlas.clear_pending_uploads_for_test();

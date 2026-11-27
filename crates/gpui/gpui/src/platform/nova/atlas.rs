@@ -56,6 +56,7 @@ pub(super) struct NovaAtlas {
     /// texture sync (mutex + allocations) when nothing changed.
     texture_set_generation: AtomicU64,
     placement_generation: AtomicU64,
+    content_generation: AtomicU64,
     /// Lock-free mirror of whether [`NovaAtlasState::pending_removals`] is non-empty.
     pending_removals_flag: AtomicBool,
 }
@@ -165,6 +166,7 @@ impl NovaAtlas {
             build_entries: Mutex::new(FxHashMap::default()),
             texture_set_generation: AtomicU64::new(state.texture_set_generation),
             placement_generation: AtomicU64::new(state.placement_generation),
+            content_generation: AtomicU64::new(state.content_generation),
             pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
             state: Mutex::new(state),
         }
@@ -177,6 +179,8 @@ impl NovaAtlas {
             .store(state.texture_set_generation, AtomicOrdering::Release);
         self.placement_generation
             .store(state.placement_generation, AtomicOrdering::Release);
+        self.content_generation
+            .store(state.content_generation, AtomicOrdering::Release);
         self.pending_removals_flag
             .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
     }
@@ -304,16 +308,15 @@ impl NovaAtlas {
             .collect()
     }
 
+    /// Same-ID refreshes change glyph pixels without changing placement.
+    /// Use the existing atlas publication boundary; resident hits need no lock.
+    pub(super) fn scroll_content_generation(&self) -> u64 {
+        self.content_generation.load(AtomicOrdering::Acquire)
+    }
+
     /// Snapshot only requested logical glyph placements. A miss never
     /// samples an evicted allocation or a page whose upload is still queued.
     /// The ordinary atlas upload path can make the next presentation eligible.
-    pub(super) fn scroll_content_generation(&self) -> u64 {
-        // Same-ID refreshes can change glyph pixels without relocation.
-        // Match the normal renderer's atlas-content generation, not the
-        // placement generation. A lock is required for this exact snapshot.
-        self.state.lock().expect("nova atlas lock poisoned").content_generation
-    }
-
     pub(super) fn ready_scroll_glyphs(&self, ids: &[(AtlasTextureId, u32)]) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
         let state = self.state.lock().expect("nova atlas lock poisoned");
         if !state.pending_uploads.is_empty() { return None; }
