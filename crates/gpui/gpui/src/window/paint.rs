@@ -793,14 +793,25 @@ impl Window {
         text: &Arc<TextSystem>,
         executor: &BackgroundExecutor,
     ) -> Result<()> {
+        let mut bounds = SmallVec::<[Option<Bounds<DevicePixels>>; 32]>::from_elem(None, requests.len());
+        text.cached_raster_bounds_batch(requests.iter().map(|request| &request.params), &mut bounds);
+        let keys: SmallVec<[Option<&RenderGlyphParams>; 32]> = requests.iter().zip(&bounds)
+            .map(|(request, bounds)| {
+                match *bounds {
+                    Some(bounds) if glyph_visible(request.baseline, bounds, context) => Some(&request.params),
+                    _ => None,
+                }
+            }).collect();
+        let mut tiles = SmallVec::<[Option<AtlasTile>; 32]>::from_elem(None, requests.len());
+        self.sprite_atlas.lookup_glyphs(&keys, &mut tiles);
         let mut ready = SmallVec::<[Option<PreparedGlyph>; 32]>::from_elem(None, requests.len());
         let mut misses = Vec::<GlyphBatchMiss>::new();
         for (index, request) in requests.iter().enumerate() {
-            if let Some(bounds) = text.cached_raster_bounds(&request.params) {
-                if !glyph_visible(request.baseline, bounds, context) {
+            if let Some(bounds) = bounds[index] {
+                if keys[index].is_none() {
                     continue;
                 }
-                if let Some(tile) = self.sprite_atlas.lookup_glyph(&request.params) {
+                if let Some(tile) = tiles[index] {
                     ready[index] = Some((bounds, tile));
                     continue;
                 }

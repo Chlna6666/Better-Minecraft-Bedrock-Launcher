@@ -785,11 +785,16 @@ impl TextSystem {
         }
     }
 
-    pub(crate) fn cached_raster_bounds(
+    pub(crate) fn cached_raster_bounds_batch<'a>(
         &self,
-        params: &RenderGlyphParams,
-    ) -> Option<Bounds<DevicePixels>> {
-        self.raster_bounds.read().get(params)
+        params: impl ExactSizeIterator<Item = &'a RenderGlyphParams>,
+        output: &mut [Option<Bounds<DevicePixels>>],
+    ) {
+        assert_eq!(params.len(), output.len());
+        let cache = self.raster_bounds.read();
+        for (params, bounds) in params.zip(output) {
+            *bounds = cache.get(params);
+        }
     }
 
     /// Get the rasterized size and location of a specific, rendered glyph.

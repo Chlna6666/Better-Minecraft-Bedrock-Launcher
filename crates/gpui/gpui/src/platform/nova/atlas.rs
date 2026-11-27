@@ -709,9 +709,20 @@ impl PlatformAtlas for NovaAtlas {
         true
     }
 
-    fn lookup_glyph(&self, params: &RenderGlyphParams) -> Option<AtlasTile> {
+    fn lookup_glyphs(
+        &self,
+        params: &[Option<&RenderGlyphParams>],
+        output: &mut [Option<AtlasTile>],
+    ) {
+        assert_eq!(params.len(), output.len());
+        if params.iter().all(Option::is_none) {
+            output.fill(None);
+            return;
+        }
         let state = self.state.lock().expect("nova atlas lock poisoned");
-        state.tiles.get(&AtlasKey::Glyph(params.clone())).copied()
+        for (params, tile) in params.iter().zip(output) {
+            *tile = params.and_then(|params| state.tiles.get(&AtlasKey::Glyph(params.clone())).copied());
+        }
     }
 
     fn clear_glyphs(&self) {
@@ -1236,6 +1247,11 @@ mod tests {
             anyhow::bail!("resident glyph must not rebuild")
         }).expect("resident batch");
         assert_eq!(tiles, repeated);
+        let keys = [Some(&params[3]), None, Some(&params[0]), Some(&params[3])];
+        let mut looked_up = [None; 4];
+        atlas.lookup_glyphs(&keys, &mut looked_up);
+        assert_eq!(looked_up, [tiles[3], None, tiles[0], tiles[3]]);
+        assert_eq!(atlas.pending_upload_count_for_test(), 4);
     }
 
     #[test]

@@ -118,9 +118,15 @@ pub trait PlatformAtlas: Send + Sync {
         false
     }
 
-    /// Looks up an already resident glyph without invoking a builder.
-    fn lookup_glyph(&self, _params: &RenderGlyphParams) -> Option<AtlasTile> {
-        None
+    /// Looks up resident glyphs in request order, without invoking a builder.
+    /// A missing input slot must produce a missing output slot.
+    fn lookup_glyphs(
+        &self,
+        params: &[Option<&RenderGlyphParams>],
+        output: &mut [Option<AtlasTile>],
+    ) {
+        assert_eq!(params.len(), output.len());
+        output.fill(None);
     }
 
     fn clear_glyphs(&self);
