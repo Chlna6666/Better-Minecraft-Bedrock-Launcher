@@ -172,6 +172,12 @@ impl ListState {
         if !replacements.is_empty() {
             state.items = replace_item_runs(&state.items, &mut replacements);
         }
+        // A one-off bulk content mutation must not permanently retain
+        // scratch proportional to the full data set.
+        let scratch_target = state.item_layouts_scratch.capacity().max(64);
+        if replacements.capacity() > scratch_target.saturating_mul(4) {
+            replacements.shrink_to(scratch_target);
+        }
         state.measured_items_scratch = replacements;
         state.measuring_behavior.reset();
         state.items_version.bump();
@@ -449,6 +455,10 @@ impl StateInner {
                     }
                 }
                 self.items = replace_item_runs(&self.items, &mut replacements);
+                let scratch_target = self.item_layouts_scratch.capacity().max(64);
+                if replacements.capacity() > scratch_target.saturating_mul(4) {
+                    replacements.shrink_to(scratch_target);
+                }
                 self.measured_items_scratch = replacements;
             }
         }

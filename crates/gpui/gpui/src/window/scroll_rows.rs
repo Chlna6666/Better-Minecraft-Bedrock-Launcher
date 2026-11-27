@@ -8,7 +8,7 @@ use crate::{
     ScrollCapture, Size, StateRead, StateReadStatus, Window,
 };
 use collections::FxHashMap;
-use std::{collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
@@ -62,6 +62,9 @@ pub(crate) struct RowPlan {
     key: u64,
     revision: u64,
     context: Rc<ListContext>,
+    // Rows captured by one plan share exactly one immutable context.
+    // Compare its inherited style and list identity once per source group.
+    previous_context: RefCell<Option<(Rc<ListContext>, bool)>>,
     hover_held: bool,
     // Both list implementations prepaint and paint rows in the same order.
     // The transient records therefore need no per-frame hash table.
@@ -69,6 +72,21 @@ pub(crate) struct RowPlan {
 }
 
 impl RowPlan {
+    fn matches_context(&self, previous: &Rc<ListContext>) -> bool {
+        if Rc::ptr_eq(&self.context, previous) {
+            return true;
+        }
+        let mut cached = self.previous_context.borrow_mut();
+        if let Some((owner, matches)) = &*cached
+            && Rc::ptr_eq(owner, previous)
+        {
+            return *matches;
+        }
+        let matches = *self.context == **previous;
+        *cached = Some((Rc::clone(previous), matches));
+        matches
+    }
+
     pub(crate) fn record_prepaint(&mut self, row: usize, prepaint: RowPrepaint) {
         debug_assert!(self.prepainted.back().is_none_or(|(previous, _)| *previous < row));
         self.prepainted.push_back((row, prepaint));
@@ -216,6 +234,7 @@ impl Window {
             revision,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
+            previous_context: RefCell::new(None),
             context: Rc::new(ListContext {
                 identity,
                 item_count,
@@ -234,6 +253,9 @@ impl Window {
         let Some(record) = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row)) else {
             return false;
         };
+        if record.revision != plan.revision || !plan.matches_context(&record.context) {
+            return false;
+        }
         let scale = self.scale_factor();
         let viewport = plan
             .context
@@ -246,9 +268,7 @@ impl Window {
         };
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = hitbox_range(&record.prepaint);
-        record.revision == plan.revision
-            && *record.context == *plan.context
-            && record.content.covers(viewport, delta)
+        record.content.covers(viewport, delta)
             && record
                 .prepaint
                 .reads

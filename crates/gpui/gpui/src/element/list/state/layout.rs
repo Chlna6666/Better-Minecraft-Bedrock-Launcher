@@ -1,7 +1,7 @@
 use crate::{
     App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size,
 };
-use sum_tree::Bias;
+use sum_tree::{Bias, SumTree};
 use crate::window::scroll_rows::{RowListIdentity, RowPlan, RowPrepaint};
 
 use super::{ListItem, StateInner, replace_item_runs};
@@ -51,6 +51,28 @@ impl StateInner {
             AvailableSpace::Definite(available_width),
             AvailableSpace::MinContent,
         );
+        let summary = self.items.summary();
+        if summary.unrendered_count >= summary.count.div_ceil(2) {
+            // Initial eager measurement is usually dense. Feed the native
+            // tree builder directly instead of retaining one scratch record
+            // for every row of a potentially very large list.
+            let mut measured_count = 0;
+            let next = SumTree::from_iter(self.items.iter().enumerate().map(|(ix, item)| {
+                let size = item.size().unwrap_or_else(|| {
+                    measured_count += 1;
+                    with_item_retained_key(window, ix, |window| {
+                        let mut element = render_item(ix, window, cx);
+                        element.layout_as_root(available_item_space, window, cx)
+                    })
+                });
+                ListItem::Measured { size, focus_handle: item.focus_handle() }
+            }), ());
+            self.items = next;
+            self.version.bump_if(measured_count != 0);
+            window.record_list_measured_items(measured_count);
+            return;
+        }
+
         let mut measured_items = std::mem::take(&mut self.measured_items_scratch);
         measured_items.clear();
         {
