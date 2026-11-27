@@ -5,6 +5,7 @@
 
 use crate::EntityId;
 use collections::FxHashSet;
+use smallvec::SmallVec;
 #[cfg(test)]
 use collections::FxHashMap;
 use std::{any::TypeId, cell::{Cell, RefCell}, ops::Range, rc::{Rc, Weak}};
@@ -54,7 +55,10 @@ impl<T: Eq + std::hash::Hash + Copy> Interned<T> {
 
 /// Sorts `items` and removes repeats.
 pub(crate) fn sort_unique<T: Ord>(items: &mut Vec<T>) {
-    items.sort_unstable();
+    // Sorted runs (including equal adjacent values) need no sort.
+    if !items.windows(2).all(|pair| pair[0] <= pair[1]) {
+        items.sort_unstable();
+    }
     items.dedup();
 }
 
@@ -75,24 +79,92 @@ fn intern_range<T: Ord + Copy + std::hash::Hash>(
     interner.get(scratch)
 }
 
+// Ignore empty ranges: an owner may have many recording boundaries but
+// only one nonempty range for a particular dependency kind.
+fn intern_ranges<T: Ord + Copy + std::hash::Hash>(
+    interner: &mut Interned<T>,
+    scratch: &mut Vec<T>,
+    log: &[T],
+    ranges: impl Iterator<Item = Range<usize>>,
+) -> Rc<[T]> {
+    let mut nonempty = ranges.filter(|range| !range.is_empty());
+    let Some(first) = nonempty.next() else {
+        return interner.get(&[]);
+    };
+    let Some(second) = nonempty.next() else {
+        return intern_range(interner, scratch, &log[first]);
+    };
+    scratch.clear();
+    scratch.extend_from_slice(&log[first]);
+    scratch.extend_from_slice(&log[second]);
+    for range in nonempty {
+        scratch.extend_from_slice(&log[range]);
+    }
+    sort_unique(scratch);
+    interner.get(scratch)
+}
+
 /// The union of two sorted lists without repeats, itself sorted and without
 /// repeats. When one holds all of the other, which is the usual case — a
 /// view's paint reads what its prepaint read — it is shared, not copied.
 pub(crate) fn merge_sorted<T: Ord + Copy>(a: &Rc<[T]>, b: &Rc<[T]>) -> Rc<[T]> {
     fn contains_all<T: Ord>(all: &[T], some: &[T]) -> bool {
+        if some.is_empty() {
+            return true;
+        }
+        if all.len() < some.len()
+            || all.first() > some.first()
+            || all.last() < some.last()
+        {
+            return false;
+        }
+        if all.len() == some.len() {
+            return all == some;
+        }
         let mut rest = all;
-        some.iter().all(|item| match rest.binary_search(item) {
-            Ok(index) => {
-                rest = &rest[index + 1..];
-                true
+        if all.len() / some.len() >= 8 {
+            // Sparse probes should not walk the intervening large gaps.
+            return some.iter().all(|item| match rest.binary_search(item) {
+                Ok(index) => {
+                    rest = &rest[index + 1..];
+                    true
+                }
+                Err(_) => false,
+            });
+        }
+        // Similarly sized sets use one sequential pass instead of a binary
+        // search for every item. Each element is visited at most once.
+        for item in some {
+            while let Some((head, tail)) = rest.split_first() {
+                match head.cmp(item) {
+                    std::cmp::Ordering::Less => rest = tail,
+                    std::cmp::Ordering::Equal => {
+                        rest = tail;
+                        break;
+                    }
+                    std::cmp::Ordering::Greater => return false,
+                }
             }
-            Err(_) => false,
-        })
+            // A match at the last element is valid only for the last probe.
+            if rest.is_empty() {
+                return some.last() == Some(item);
+            }
+        }
+        true
     }
-    if b.is_empty() || Rc::ptr_eq(a, b) || contains_all(a, b) {
+    if b.is_empty() || Rc::ptr_eq(a, b) {
         return a.clone();
     }
-    if a.is_empty() || contains_all(b, a) {
+    if a.is_empty() {
+        return b.clone();
+    }
+    // Only the larger set can contain the smaller one. Avoid two subset
+    // probes and retain the left allocation for equal sets.
+    if a.len() >= b.len() {
+        if contains_all(a, b) {
+            return a.clone();
+        }
+    } else if contains_all(b, a) {
         return b.clone();
     }
     let mut merged = Vec::with_capacity(a.len() + b.len());
@@ -132,7 +204,6 @@ pub(crate) struct AppDependencies {
     ranges: Vec<LogRanges>,
     scratch_entities: Vec<EntityId>,
     scratch_globals: Vec<(TypeId, Option<bool>)>,
-    scratch_states: Vec<StateRead>,
     interned_entities: Interned<EntityId>,
     interned_globals: Interned<(TypeId, Option<bool>)>,
     no_states: Option<Rc<[StateRead]>>,
@@ -263,28 +334,32 @@ impl AppDependencies {
                 });
                 continue;
             }
-            self.scratch_entities.clear();
-            self.scratch_globals.clear();
-            self.scratch_states.clear();
-            for range in group {
-                self.scratch_entities.extend_from_slice(&self.entity_log[range.entities.clone()]);
-                self.scratch_globals.extend_from_slice(&self.global_log[range.globals.clone()]);
-                self.scratch_states.extend_from_slice(&states_log[range.states.clone()]);
-            }
-            sort_unique(&mut self.scratch_entities);
-            sort_unique(&mut self.scratch_globals);
+            let mut state_ranges = group.iter().map(|range| &states_log[range.states.clone()])
+                .filter(|reads| !reads.is_empty());
+            let states = match (state_ranges.next(), state_ranges.next()) {
+                (None, _) => no_states.clone(),
+                (Some(first), None) => unique_states(first),
+                (Some(first), Some(second)) => unique_state_iter(
+                    first.iter().chain(second).chain(state_ranges.flatten()),
+                ),
+            };
             publish(group[0].owner, RenderDependencies {
-                entities: self.interned_entities.get(&self.scratch_entities),
-                globals: self.interned_globals.get(&self.scratch_globals),
-                states: if self.scratch_states.is_empty() {
-                    no_states.clone()
-                } else {
-                    unique_states(&self.scratch_states)
-                },
+                entities: intern_ranges(
+                    &mut self.interned_entities,
+                    &mut self.scratch_entities,
+                    &self.entity_log,
+                    group.iter().map(|range| range.entities.clone()),
+                ),
+                globals: intern_ranges(
+                    &mut self.interned_globals,
+                    &mut self.scratch_globals,
+                    &self.global_log,
+                    group.iter().map(|range| range.globals.clone()),
+                ),
+                states,
             });
         }
         drop(states_log);
-        self.scratch_states.clear();
         self.clear();
     }
 
@@ -438,6 +513,33 @@ pub(crate) fn merge_state_reads(
     earlier.iter().chain(new_reads).cloned().collect()
 }
 
+// Deduplicate borrowed reads across disjoint ranges before cloning any
+// Weak pointer. The hash table grows with unique states, not raw log size.
+fn unique_state_iter<'a>(states: impl IntoIterator<Item = &'a StateRead>) -> Rc<[StateRead]> {
+    let mut unique: SmallVec<[&StateRead; 8]> = SmallVec::new();
+    let mut seen: Option<FxHashSet<usize>> = None;
+    for state in states {
+        let id = state.id();
+        if let Some(seen) = &mut seen {
+            if !seen.insert(id) {
+                continue;
+            }
+        } else {
+            if unique.iter().any(|old| old.id() == id) {
+                continue;
+            }
+            if unique.len() == 8 {
+                let mut identities: FxHashSet<usize> =
+                    unique.iter().map(|old| old.id()).collect();
+                identities.insert(id);
+                seen = Some(identities);
+            }
+        }
+        unique.push(state);
+    }
+    unique.into_iter().cloned().collect()
+}
+
 /// The first read of each state, in order, as in Fast's unique_states.
 fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
     // A single scroll handle is common; avoid allocating a hash table for it.
@@ -455,8 +557,7 @@ fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
             .map(|(_, state)| state.clone())
             .collect();
     }
-    let mut seen = FxHashSet::with_capacity_and_hasher(states.len(), Default::default());
-    states.iter().filter(|state| seen.insert(state.id())).cloned().collect()
+    unique_state_iter(states)
 }
 
 /// Shares the existing frame log with code that reads state without an App.
@@ -478,6 +579,55 @@ impl Drop for StateReadRecording {
 #[cfg(test)]
 mod state_dedup_tests {
     use super::*;
+
+    #[test]
+    fn sorted_union_matches_reference_and_shares_subsets() {
+        for mask_a in 0..64_u32 {
+            for mask_b in 0..64_u32 {
+                let a: Rc<[u32]> = (0..6).filter(|i| mask_a & (1 << i) != 0).collect();
+                let b: Rc<[u32]> = (0..6).filter(|i| mask_b & (1 << i) != 0).collect();
+                let expected: Vec<_> = (0..6).filter(|i| (mask_a | mask_b) & (1 << i) != 0).collect();
+                let union = merge_sorted(&a, &b);
+                assert_eq!(&*union, expected.as_slice());
+                if mask_b & !mask_a == 0 {
+                    assert!(Rc::ptr_eq(&union, &a));
+                } else if mask_a & !mask_b == 0 {
+                    assert!(Rc::ptr_eq(&union, &b));
+                }
+            }
+        }
+        let dense: Rc<[u32]> = (0..1024).collect();
+        let sparse: Rc<[u32]> = Rc::from([3, 511, 1023]);
+        assert!(Rc::ptr_eq(&merge_sorted(&dense, &sparse), &dense));
+        let missing: Rc<[u32]> = Rc::from([511, 1024]);
+        assert_eq!(merge_sorted(&dense, &missing).len(), 1025);
+    }
+
+    #[test]
+    fn disjoint_dependency_ranges_skip_empty_and_share_existing_lists() {
+        let mut interner = Interned::default();
+        let mut scratch = vec![99_u32];
+        let log = [1, 3, 7, 2, 3];
+        let one = intern_ranges(&mut interner, &mut scratch, &log, [0..0, 0..2, 2..2].into_iter());
+        assert_eq!(&*one, &[1, 3]);
+        assert_eq!(scratch, [99]);
+        let union = intern_ranges(&mut interner, &mut scratch, &log, [0..2, 3..5].into_iter());
+        assert_eq!(&*union, &[1, 2, 3]);
+        let ordered = interner.get(&[1, 2, 3]);
+        assert!(Rc::ptr_eq(&union, &ordered));
+    }
+
+    #[test]
+    fn disjoint_state_reads_keep_earliest_versions_and_promote_by_unique_count() {
+        let states: Vec<_> = (0..12).map(|_| StateVersion::default()).collect();
+        let first: Vec<_> = states[..9].iter().map(StateRead::new).collect();
+        states[0].bump();
+        let second: Vec<_> = states.iter().map(StateRead::new).collect();
+        let merged = unique_state_iter(first.iter().chain(second.iter()).chain(second.iter()));
+        assert_eq!(merged.len(), states.len());
+        assert_eq!(merged[0].status(), StateReadStatus::Changed);
+        assert!(merged.iter().zip(&states).all(|(read, state)| read.belongs_to(state)));
+    }
 
     #[test]
     fn contiguous_dependency_ranges_intern_without_scratch_copy() {

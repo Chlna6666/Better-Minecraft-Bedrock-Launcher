@@ -557,8 +557,18 @@ impl TaffyLayoutEngine {
             let stale_styles = &mut self.stale_style_fingerprints;
             let robbed_parents = &mut self.robbed_parents;
             let layout_changes = &mut self.layout_changes;
+            let origins = &mut self.unrounded_layout_origins;
+            let bounds = &mut self.absolute_layout_bounds;
+            let stack = &mut self.layout_bounds_scratch_space;
             self.persistent_nodes.retain(|_, node| {
                 if node.offscreen {
+                    // Memory pressure may detach a surviving child just like
+                    // normal retirement. Invalidate before removing the node.
+                    Self::invalidate_origin_subtree(taffy, origins, bounds, stack, node.id);
+                    if let Some(parent) = taffy.parent(node.id.into()) {
+                        robbed_parents.insert(parent.into());
+                        taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
+                    }
                     contexts.remove(node_key(node.id.into()));
                     taffy.remove(node.id.into()).expect(EXPECT_MESSAGE);
                     root_constraints.remove(&node.id);
@@ -1933,6 +1943,31 @@ mod tests {
         );
         assert!(engine.absolute_layout_bounds.get(&first).is_none());
         assert!(engine.absolute_layout_bounds.get(&second).is_some());
+    }
+
+    #[test]
+    fn pressure_retirement_invalidates_detached_child_not_clean_sibling() {
+        let mut engine = TaffyLayoutEngine::new();
+        let leaf_key = owner(&row_id(1));
+        let branch_key = owner(&row_id(2));
+        let sibling_key = owner(&row_id(3));
+        let root_key = owner(&list_id());
+        let leaf = engine.request_layout(Some(leaf_key), true, Style::default(), crate::px(16.), 1., &[]);
+        let branch = engine.request_layout(Some(branch_key), true, Style::default(), crate::px(16.), 1., &[leaf]);
+        let sibling = engine.request_layout(Some(sibling_key), true, Style::default(), crate::px(16.), 1., &[]);
+        let root = engine.request_layout(Some(root_key), false, Style::default(), crate::px(16.), 1., &[branch, sibling]);
+        engine.layout_bounds(leaf, 1.);
+        let sibling_bounds = engine.layout_bounds(sibling, 1.);
+        engine.persistent_nodes.get_mut(&branch_key).unwrap().offscreen = true;
+
+        engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
+
+        assert!(!engine.persistent_nodes.contains_key(&branch_key));
+        assert!(engine.persistent_nodes.contains_key(&leaf_key));
+        assert!(engine.unrounded_layout_origins.get(&leaf).is_none());
+        assert!(engine.absolute_layout_bounds.get(&leaf).is_none());
+        assert_eq!(engine.absolute_layout_bounds.get(&sibling), Some(&sibling_bounds));
+        assert!(engine.robbed_parents.contains(&root));
     }
 
     #[test]
