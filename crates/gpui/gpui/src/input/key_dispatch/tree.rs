@@ -23,6 +23,9 @@ pub(crate) struct DispatchTree {
     nodes: NodeStore,
     // Dense topology is independent of immutable listener/context payload.
     parents: Vec<u32>,
+    // Only nodes that actually own a focus or view route. Ordered by
+    // logical node index, independent of immutable payload page placement.
+    route_nodes: Vec<u32>,
     pub(super) focusable_node_ids: FxHashMap<FocusId, DispatchNodeId>,
     pub(super) view_node_ids: FxHashMap<EntityId, DispatchNodeId>,
     pub(super) keymap: Rc<RefCell<Keymap>>,
@@ -54,6 +57,7 @@ struct NodeSpan {
 
 impl NodeSpan {
     fn begin(&self) -> usize { self.end - self.len }
+    #[cfg(test)]
     fn slice(&self, range: Range<usize>) -> &[DispatchNode] {
         let start = self.start + range.start.max(self.begin()) - self.begin();
         let end = self.start + range.end.min(self.end) - self.begin();
@@ -92,6 +96,7 @@ impl NodeStore {
         &self.spans[start..end.max(start)]
     }
 
+    #[cfg(test)]
     fn slices(&self, range: Range<usize>) -> impl Iterator<Item = &[DispatchNode]> {
         assert!(range.start <= range.end && range.end <= self.len);
         let pending_start = self.len - self.pending.len();
@@ -101,6 +106,7 @@ impl NodeStore {
             .filter(|slice| !slice.is_empty())
     }
 
+    #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = &DispatchNode> {
         self.slices(0..self.len).flatten()
     }
@@ -251,6 +257,7 @@ impl DispatchTree {
             view_stack: Vec::new(),
             nodes: NodeStore::default(),
             parents: Vec::new(),
+            route_nodes: Vec::new(),
             focusable_node_ids: FxHashMap::default(),
             view_node_ids: FxHashMap::default(),
             keymap,
@@ -264,6 +271,7 @@ impl DispatchTree {
         self.view_stack.clear();
         self.nodes.clear();
         self.parents.clear();
+        self.route_nodes.clear();
         self.focusable_node_ids.clear();
         self.view_node_ids.clear();
     }
@@ -274,6 +282,7 @@ impl DispatchTree {
             + self.view_stack.capacity()
             + self.nodes.capacity()
             + self.parents.capacity()
+            + self.route_nodes.capacity()
             + self.focusable_node_ids.capacity()
             + self.view_node_ids.capacity()
     }
@@ -292,6 +301,7 @@ impl DispatchTree {
         trim_vec!(context_stack);
         trim_vec!(view_stack);
         trim_vec!(parents);
+        trim_vec!(route_nodes);
         self.nodes.trim_for_reuse(&current.nodes);
 
         let focusable_target = Self::MIN_RETAINED_CAPACITY.max(current.focusable_node_ids.len());
@@ -317,6 +327,7 @@ impl DispatchTree {
             .shrink_to(floor.max(self.context_stack.len()));
         self.view_stack.shrink_to(floor.max(self.view_stack.len()));
         self.parents.shrink_to(floor.max(self.parents.len()));
+        self.route_nodes.shrink_to(floor.max(self.route_nodes.len()));
         self.nodes.trim(aggressive);
         self.focusable_node_ids
             .shrink_to(floor.max(self.focusable_node_ids.len()));
@@ -381,16 +392,32 @@ impl DispatchTree {
         self.context_stack.push(context);
     }
 
+    fn record_route_node(&mut self, node_id: DispatchNodeId) {
+        let slot = node_id.0 as u32;
+        if self.route_nodes.last().is_none_or(|&last| last < slot) {
+            self.route_nodes.push(slot);
+        } else if let Err(index) = self.route_nodes.binary_search(&slot) {
+            // Deferred prepaint may activate an earlier node.
+            self.route_nodes.insert(index, slot);
+        }
+    }
+
     pub fn set_focus_id(&mut self, focus_id: FocusId) {
         let node_id = *self.node_stack.last().unwrap();
-        self.nodes.get_mut(node_id.0).focus_id = Some(focus_id);
+        let node = self.nodes.get_mut(node_id.0);
+        let new_route = node.focus_id.is_none() && node.view_id.is_none();
+        node.focus_id = Some(focus_id);
+        if new_route { self.record_route_node(node_id); }
         self.focusable_node_ids.insert(focus_id, node_id);
     }
 
     pub fn set_view_id(&mut self, view_id: EntityId) {
         if self.view_stack.last().copied() != Some(view_id) {
             let node_id = *self.node_stack.last().unwrap();
-            self.nodes.get_mut(node_id.0).view_id = Some(view_id);
+            let node = self.nodes.get_mut(node_id.0);
+            let new_route = node.focus_id.is_none() && node.view_id.is_none();
+            node.view_id = Some(view_id);
+            if new_route { self.record_route_node(node_id); }
             self.view_node_ids.insert(view_id, node_id);
             self.view_stack.push(view_id);
         }
@@ -465,8 +492,8 @@ impl DispatchTree {
         assert!(new_range.end <= NO_PARENT as usize, "dispatch node index overflow");
         self.parents.reserve(old_range.len());
         // Parent indices are the only mandatory per-node replay work.
-        // Iterate the compact topology, then inspect route metadata in
-        // contiguous slices without cloning listener or context payloads.
+        // Iterate the compact topology; route restoration below visits
+        // only nodes with actual Focus/View metadata.
         for (offset, &encoded) in source.parents[old_range.clone()].iter().enumerate() {
             let id = DispatchNodeId(start + offset);
             let parent = match decode_parent(encoded) {
@@ -479,8 +506,13 @@ impl DispatchTree {
             debug_assert!(parent.is_none_or(|parent| parent.0 < id.0));
             self.parents.push(encode_parent(parent));
         }
-        for (offset, node) in source.nodes.slices(old_range.clone()).flatten().enumerate() {
-            let id = DispatchNodeId(start + offset);
+        let first_route = source.route_nodes.partition_point(|&id| (id as usize) < old_range.start);
+        let routes = source.route_nodes[first_route..].iter()
+            .copied().take_while(|&id| (id as usize) < old_range.end);
+        for old_id in routes {
+            let id = DispatchNodeId(start + old_id as usize - old_range.start);
+            let node = source.node(DispatchNodeId(old_id as usize));
+            self.route_nodes.push(id.0 as u32);
             if let Some(focus_id) = node.focus_id {
                 self.focusable_node_ids.insert(focus_id, id);
                 contains_focus |= Some(focus_id) == focus;
@@ -508,24 +540,28 @@ impl DispatchTree {
         while self.active_node_id().is_some_and(|node| node.0 >= index) {
             self.pop_node();
         }
-        let restore_focus = self.nodes.slices(index..self.nodes.len()).flatten().any(|node| node.focus_id.is_some());
-        let restore_views = self.nodes.slices(index..self.nodes.len()).flatten().any(|node| node.view_id.is_some());
+        let first_removed = self.route_nodes.partition_point(|&id| (id as usize) < index);
+        let mut restore_focus = false;
+        let mut restore_views = false;
+        for &id in &self.route_nodes[first_removed..] {
+            let node = &self.nodes[id as usize];
+            restore_focus |= node.focus_id.is_some();
+            restore_views |= node.view_id.is_some();
+        }
+        self.route_nodes.truncate(first_removed);
         self.nodes.truncate(index);
         self.parents.truncate(index);
         // Removed nodes may shadow earlier occurrences of the same ID.
-        if restore_focus {
-            self.focusable_node_ids.clear();
-            for (index, node) in self.nodes.iter().enumerate() {
-                if let Some(id) = node.focus_id {
-                    self.focusable_node_ids.insert(id, DispatchNodeId(index));
+        if restore_focus { self.focusable_node_ids.clear(); }
+        if restore_views { self.view_node_ids.clear(); }
+        if restore_focus || restore_views {
+            for &index in &self.route_nodes {
+                let node = &self.nodes[index as usize];
+                if restore_focus && let Some(id) = node.focus_id {
+                    self.focusable_node_ids.insert(id, DispatchNodeId(index as usize));
                 }
-            }
-        }
-        if restore_views {
-            self.view_node_ids.clear();
-            for (index, node) in self.nodes.iter().enumerate() {
-                if let Some(id) = node.view_id {
-                    self.view_node_ids.insert(id, DispatchNodeId(index));
+                if restore_views && let Some(id) = node.view_id {
+                    self.view_node_ids.insert(id, DispatchNodeId(index as usize));
                 }
             }
         }
@@ -752,5 +788,55 @@ mod node_page_tests {
         target.share(&source, NODE_PAGE_LEN..NODE_PAGE_LEN + 1);
         assert_eq!(target.pending.len(), 2);
         assert!(source.spans.iter().all(|span| Rc::strong_count(&span.owner) == 1));
+    }
+}
+
+
+#[cfg(test)]
+mod sparse_route_tests {
+    use super::*;
+
+    #[test]
+    fn replay_relocates_sparse_routes_and_truncate_restores_shadowed_ids() {
+        let keymap = Rc::new(RefCell::new(Keymap::default()));
+        let actions = Rc::new(ActionRegistry::default());
+        let mut source = DispatchTree::new(keymap.clone(), actions.clone());
+        let owner = EntityId::from(42_u64);
+        source.push_node();
+        source.set_view_id(owner);
+        for _ in 0..256 {
+            source.push_node();
+            source.pop_node();
+        }
+        source.pop_node();
+        let last = source.push_node();
+        source.set_view_id(owner);
+        source.pop_node();
+        source.freeze();
+        assert_eq!(source.route_nodes, vec![0, last.0 as u32]);
+        let mut target = DispatchTree::new(keymap, actions);
+        target.push_node();
+        target.replay_segment(0..source.len(), &source, None, |_| Some(DispatchNodeId(0)));
+        assert_eq!(target.route_nodes, vec![1, last.0 as u32 + 1]);
+        assert_eq!(target.view_node_ids.get(&owner), Some(&DispatchNodeId(last.0 + 1)));
+        target.truncate(last.0 + 1);
+        assert_eq!(target.view_node_ids.get(&owner), Some(&DispatchNodeId(1)));
+        assert_eq!(target.route_nodes, vec![1]);
+    }
+
+    #[test]
+    fn deferred_registration_inserts_route_in_logical_order() {
+        let mut tree = DispatchTree::new(
+            Rc::new(RefCell::new(Keymap::default())), Rc::new(ActionRegistry::default()));
+        let root = tree.push_node();
+        let first = tree.push_node();
+        tree.pop_node();
+        tree.push_node();
+        tree.set_view_id(EntityId::from(8_u64));
+        tree.pop_node();
+        tree.set_active_node(first);
+        tree.set_view_id(EntityId::from(7_u64));
+        tree.set_active_node(root);
+        assert_eq!(tree.route_nodes, vec![1, 2]);
     }
 }
