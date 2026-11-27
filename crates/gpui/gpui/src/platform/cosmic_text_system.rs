@@ -278,7 +278,6 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn font_id(&self, font: &Font) -> Result<FontId> {
-        let mut state = self.0.write();
         let key = FontKey::new(
             font.family.clone(),
             font.features.clone(),
@@ -286,6 +285,19 @@ impl PlatformTextSystem for CosmicTextSystem {
             true,
             FontSourceSelection::Any,
         );
+        // A cached family and already registered face require no mutation.
+        // Release the read guard before taking the write lock on a miss;
+        // the family cache may have been invalidated in the meantime.
+        {
+            let state = self.0.read();
+            if let Some(candidates) = state.font_ids_by_family_cache.get(&key) {
+                let database_id = state.select_database_id(candidates, font)?;
+                if let Some(id) = state.find_font_id(database_id, &font.features) {
+                    return Ok(id);
+                }
+            }
+        }
+        let mut state = self.0.write();
         let candidates = if let Some(font_ids) = state.font_ids_by_family_cache.get(&key) {
             font_ids.clone()
         } else {
@@ -300,7 +312,8 @@ impl PlatformTextSystem for CosmicTextSystem {
             font_ids
         };
 
-        state.select_font_id(&candidates, font)
+        let database_id = state.select_database_id(&candidates, font)?;
+        state.font_id_for_database_id(database_id, &font.features)
     }
 
     fn prewarm_fonts(&self, font_ids: &[FontId]) {
@@ -387,9 +400,13 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
-        self.with_state(TextOperation::Shape, |state| {
+        let (layout, report) = self.with_state(TextOperation::Shape, |state| {
             state.layout_line(text, font_size, runs)
-        })
+        });
+        if let Some((sink, missing_glyphs)) = report {
+            sink.report(missing_glyphs);
+        }
+        layout
     }
 }
 
@@ -939,7 +956,11 @@ impl CosmicTextSystemState {
             .map(|(index, _)| FontId(index))
     }
 
-    fn select_font_id(&mut self, candidates: &[FontId], font: &Font) -> Result<FontId> {
+    fn select_database_id(
+        &self,
+        candidates: &[FontId],
+        font: &Font,
+    ) -> Result<cosmic_text::fontdb::ID> {
         let selection_weight = font.weight.into();
         let names = [Family::Name(font.family.as_ref())];
         let query = Query {
@@ -955,7 +976,7 @@ impl CosmicTextSystemState {
                 .copied()
                 .any(|font_id| self.loaded_font(font_id).font.id() == database_id)
         {
-            return self.font_id_for_database_id(database_id, &font.features);
+            return Ok(database_id);
         }
 
         let closest = candidates
@@ -970,8 +991,20 @@ impl CosmicTextSystemState {
             })
             .context("requested font family contains no font matching the other parameters")?;
 
-        let database_id = self.loaded_font(closest).font.id();
-        self.font_id_for_database_id(database_id, &font.features)
+        Ok(self.loaded_font(closest).font.id())
+    }
+
+    fn find_font_id(
+        &self,
+        database_id: cosmic_text::fontdb::ID,
+        features: &FontFeatures,
+    ) -> Option<FontId> {
+        self.loaded_fonts
+            .iter()
+            .position(|loaded_font| {
+                loaded_font.font.id() == database_id && loaded_font.source_features == *features
+            })
+            .map(FontId)
     }
 
     fn font_id_for_database_id(
@@ -979,10 +1012,8 @@ impl CosmicTextSystemState {
         database_id: cosmic_text::fontdb::ID,
         features: &FontFeatures,
     ) -> Result<FontId> {
-        if let Some(index) = self.loaded_fonts.iter().position(|loaded_font| {
-            loaded_font.font.id() == database_id && loaded_font.source_features == *features
-        }) {
-            return Ok(FontId(index));
+        if let Some(id) = self.find_font_id(database_id, features) {
+            return Ok(id);
         }
 
         let Some(face) = self.font_system.db().face(database_id) else {
@@ -1173,7 +1204,12 @@ impl CosmicTextSystemState {
     }
 
     #[profiling::function]
-    fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
+    fn layout_line(
+        &mut self,
+        text: &str,
+        font_size: Pixels,
+        font_runs: &[FontRun],
+    ) -> (LineLayout, Option<(Arc<dyn MissingGlyphSink>, Vec<MissingGlyph>)>) {
         let mut attrs_list = AttrsList::new(&Attrs::new());
         let mut offs = 0;
         for run in font_runs {
@@ -1399,18 +1435,18 @@ impl CosmicTextSystemState {
             }
         }
 
-        if let Some((sink, missing_glyphs)) = self.missing_glyph_sink.as_ref().zip(missing_glyphs) {
-            sink.report(missing_glyphs);
-        }
-
-        LineLayout {
-            font_size,
-            width: layout.w.into(),
-            ascent: layout.max_ascent.into(),
-            descent: layout.max_descent.into(),
-            runs,
-            len: text.len(),
-        }
+        let report = self.missing_glyph_sink.clone().zip(missing_glyphs);
+        (
+            LineLayout {
+                font_size,
+                width: layout.w.into(),
+                ascent: layout.max_ascent.into(),
+                descent: layout.max_descent.into(),
+                runs,
+                len: text.len(),
+            },
+            report,
+        )
     }
 
     fn missing_glyphs(
