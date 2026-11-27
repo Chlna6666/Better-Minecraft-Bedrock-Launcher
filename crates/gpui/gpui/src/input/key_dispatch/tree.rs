@@ -474,22 +474,27 @@ impl DispatchTree {
             }
             cursor = gap.end;
         }
-        let mut excluded = gaps.iter().peekable();
-        for index in outer.clone() {
-            while excluded.peek().is_some_and(|(gap, _)| gap.end <= index) {
-                excluded.next();
-            }
-            if excluded.peek().is_some_and(|(gap, _)| gap.contains(&index)) {
-                continue;
-            }
-            let parent = self.parent(DispatchNodeId(index));
-            if parent != anchor && !parent.is_some_and(|parent| {
-                outer.contains(&parent.0) && parent.0 < index
-                    && !gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
+        // Validate only retained partitions. Most parent edges stay within
+        // the same partition and need neither a gap search nor a node lookup.
+        let mut start = outer.start;
+        for end_and_gap in gaps.iter().map(|(gap, _)| (gap.start, gap.end))
+            .chain(std::iter::once((outer.end, outer.end)))
+        {
+            let (end, next) = end_and_gap;
+            for (offset, &encoded) in self.parents[start..end].iter().enumerate() {
+                let index = start + offset;
+                let parent = decode_parent(encoded);
+                if parent == anchor { continue; }
+                let Some(parent) = parent else { return false; };
+                if parent.0 >= start && parent.0 < index { continue; }
+                if parent.0 < outer.start || parent.0 >= index
+                    || gaps.get(gaps.partition_point(|(gap, _)| gap.end <= parent.0))
                         .is_some_and(|(gap, _)| gap.contains(&parent.0))
-            }) {
-                return false;
+                {
+                    return false;
+                }
             }
+            start = next;
         }
         true
     }

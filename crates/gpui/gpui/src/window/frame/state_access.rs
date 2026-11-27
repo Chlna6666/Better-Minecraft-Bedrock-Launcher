@@ -62,6 +62,29 @@ impl StateAccessLog {
             .chain(tail.iter()).flatten()
     }
 
+    /// Search the clean complement of ordered, disjoint excluded spans.
+    /// Traverse contiguous key slices rather than resolving every logical
+    /// index through the page table (and searching gaps) independently.
+    pub(in crate::window) fn any_keys_outside(
+        &self, range: Range<usize>, excluded: &[Range<usize>],
+        mut predicate: impl FnMut(&Key) -> bool,
+    ) -> bool {
+        assert!(self.contains(range.clone()));
+        if range.is_empty() { return false; }
+        let mut cursor = range.start;
+        let first = excluded.partition_point(|gap| gap.end <= cursor);
+        for gap in &excluded[first..] {
+            if gap.start >= range.end { break; }
+            let clean_end = gap.start.min(range.end);
+            if cursor < clean_end && self.keys(cursor..clean_end).any(&mut predicate) {
+                return true;
+            }
+            cursor = cursor.max(gap.end);
+            if cursor >= range.end { return false; }
+        }
+        cursor < range.end && self.keys(cursor..range.end).any(predicate)
+    }
+
     pub(in crate::window) fn key(&self, index: usize) -> Option<&Key> {
         assert!(index < self.len);
         let pending_start = self.len - self.pending.len();
@@ -274,6 +297,26 @@ mod tests {
         assert_eq!(candidate.keys(110..115).cloned().collect::<Vec<_>>(), (20..25).map(key).collect::<Vec<_>>());
         source.clear();
         assert_eq!(candidate.key(114), Some(&key(24)));
+    }
+
+    #[test]
+    fn clean_complement_search_matches_per_index_reference() {
+        let mut source = StateAccessLog::default();
+        for i in 0..150 { source.push(Some(key(i % 37))); }
+        source.cancel(20..25);
+        source.cancel(65..90);
+        let excluded = [0..8, 10..22, 40..65, 90..100, 128..150];
+        for start in [0, 1, 8, 20, 63, 64, 90, 100, 149, 150] {
+            for end in [start, (start+1).min(150), 150] {
+                for needle in 0..37 {
+                    let expected = (start..end).any(|index| {
+                        !excluded.iter().any(|gap| gap.contains(&index))
+                            && source.key(index) == Some(&key(needle))
+                    });
+                    assert_eq!(source.any_keys_outside(start..end, &excluded, |value| *value == key(needle)), expected);
+                }
+            }
+        }
     }
 
     #[test]

@@ -277,17 +277,10 @@ impl Window {
         let in_gaps: FxHashSet<_> = dirty_state_spans.iter()
             .flat_map(|span| source_states.keys(span.clone()))
             .collect();
-        if !in_gaps.is_empty() {
-            for span in anchor.layout_state_range.iter() {
-                for index in span.clone() {
-                    if source_states.key(index).is_some_and(|state| in_gaps.contains(state))
-                        && !dirty_state_spans.get(dirty_state_spans.partition_point(|gap| gap.end <= index))
-                            .is_some_and(|gap| gap.contains(&index))
-                    {
-                        return None;
-                    }
-                }
-            }
+        if !in_gaps.is_empty() && anchor.layout_state_range.iter().any(|span| {
+            source_states.any_keys_outside(span.clone(), &dirty_state_spans, |state| in_gaps.contains(state))
+        }) {
+            return None;
         }
         let engine = self.layout_engine.as_mut()?;
         let start = engine.claim_log_len();
