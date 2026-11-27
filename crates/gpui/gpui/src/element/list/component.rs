@@ -4,12 +4,11 @@ use crate::{
     ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
-use sum_tree::SumTree;
 
 use super::{
     configuration::{ListSizingBehavior, RenderItemFn},
     layout::ListPrepaintLayout,
-    state::{ListItem, ListState},
+    state::ListState,
 };
 
 /// Construct a new list element
@@ -131,14 +130,7 @@ impl Element for List {
             .last_layout_bounds
             .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width)
         {
-            let new_items = SumTree::from_iter(
-                state.items.iter().map(|item| ListItem::Unmeasured {
-                    focus_handle: item.focus_handle(),
-                }),
-                (),
-            );
-            state.version.bump();
-            state.items = new_items;
+            state.invalidate_width_measurements();
         }
 
         let padding = style

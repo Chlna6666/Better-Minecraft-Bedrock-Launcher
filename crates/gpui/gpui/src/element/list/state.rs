@@ -43,6 +43,33 @@ pub(super) struct StateInner {
     item_layouts_scratch: VecDeque<ItemLayout>,
 }
 
+/// Apply sorted, unique row replacements without rebuilding unaffected
+/// native SumTree subtrees. The caller owns the scratch deque.
+fn replace_item_runs(
+    old: &SumTree<ListItem>,
+    replacements: &mut VecDeque<(usize, ListItem)>,
+) -> SumTree<ListItem> {
+    debug_assert!(!replacements.is_empty());
+    debug_assert!(replacements.iter().zip(replacements.iter().skip(1)).all(|(a, b)| a.0 < b.0));
+    let mut cursor = old.cursor::<Count>(());
+    let mut result = SumTree::default();
+    while let Some(&(start, _)) = replacements.front() {
+        result.append(cursor.slice(&Count(start), Bias::Right), ());
+        let mut end = start;
+        result.extend(std::iter::from_fn(|| {
+            if replacements.front().is_some_and(|(index, _)| *index == end) {
+                end += 1;
+                replacements.pop_front().map(|(_, item)| item)
+            } else {
+                None
+            }
+        }), ());
+        cursor.seek_forward(&Count(end), Bias::Right);
+    }
+    result.append(cursor.suffix(), ());
+    result
+}
+
 impl ListState {
     /// Construct a new list state, for storage on a view.
     ///
@@ -108,6 +135,47 @@ impl ListState {
     /// by `count` new items that must be recalculated.
     pub fn splice(&self, old_range: Range<usize>, count: usize) {
         self.splice_focusable(old_range, (0..count).map(|_| None))
+    }
+
+    /// Invalidate existing rows without changing their indices, focus handles
+    /// or logical scroll anchor. Ranges must be sorted, non-overlapping and
+    /// within the current item count. Empty ranges are ignored.
+    ///
+    /// Only measured rows in these ranges need new measurement records.
+    /// Render dependencies still use the ordinary content invalidation
+    /// rules; callers should notify the owning view when model data changes.
+    pub fn invalidate_items(&self, ranges: &[Range<usize>]) {
+        let mut state = self.0.borrow_mut();
+        let count = state.items.summary().count;
+        assert!(ranges.iter().all(|range| range.start <= range.end && range.end <= count));
+        assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        if ranges.iter().all(Range::is_empty) {
+            return;
+        }
+        let mut replacements = std::mem::take(&mut state.measured_items_scratch);
+        replacements.clear();
+        {
+            let mut cursor = state.items.cursor::<Count>(());
+            for range in ranges {
+                cursor.seek_forward(&Count(range.start), Bias::Right);
+                for index in range.clone() {
+                    let item = cursor.item().expect("validated list range");
+                    if item.size().is_some() {
+                        replacements.push_back((index, ListItem::Unmeasured {
+                            focus_handle: item.focus_handle(),
+                        }));
+                    }
+                    cursor.next();
+                }
+            }
+        }
+        if !replacements.is_empty() {
+            state.items = replace_item_runs(&state.items, &mut replacements);
+        }
+        state.measured_items_scratch = replacements;
+        state.measuring_behavior.reset();
+        state.items_version.bump();
+        state.version.bump();
     }
 
     /// Register with the list state that the items in `old_range` have been replaced
@@ -351,6 +419,42 @@ impl StateInner {
             }
         }
         None
+    }
+
+    /// Width changes invalidate previously measured heights, not the
+    /// unmeasured records of a virtual list. Skip unmeasured subtrees by
+    /// their native summary and splice only the measured ranges.
+    pub(super) fn invalidate_width_measurements(&mut self) {
+        let summary = self.items.summary();
+        let measured = summary.rendered_count;
+        let count = summary.count;
+        if measured != 0 {
+            if measured >= count.div_ceil(2) {
+                // Dense invalidation is cheaper as a single linear rebuild.
+                self.items = SumTree::from_iter(self.items.iter().map(|item| ListItem::Unmeasured {
+                    focus_handle: item.focus_handle(),
+                }), ());
+            } else {
+                let mut replacements = std::mem::take(&mut self.measured_items_scratch);
+                replacements.clear();
+                {
+                    let mut cursor = self.items.filter::<_, Count>((), |summary| summary.rendered_count != 0);
+                    cursor.next();
+                    while let Some(item) = cursor.item() {
+                        debug_assert!(item.size().is_some());
+                        replacements.push_back((cursor.start().0, ListItem::Unmeasured {
+                            focus_handle: item.focus_handle(),
+                        }));
+                        cursor.next();
+                    }
+                }
+                self.items = replace_item_runs(&self.items, &mut replacements);
+                self.measured_items_scratch = replacements;
+            }
+        }
+        // Preserve the previous width-change invalidation behavior even if
+        // the entire list was already unmeasured.
+        self.version.bump();
     }
 
     pub(super) fn recycle_item_layouts(&mut self, mut item_layouts: VecDeque<ItemLayout>) {

@@ -290,3 +290,56 @@ fn stable_list_scroll_preserves_measured_tree_and_updates_changed_rows(cx: &mut 
     assert_eq!(state.items.summary().count, 12);
     assert_eq!(state.items.summary().height, px(260.));
 }
+
+#[test]
+fn sparse_width_invalidation_preserves_unmeasured_subtrees() {
+    use super::{state::ListItem, tree::Count};
+    use crate::{ListAlignment, ListState, px, size};
+    use sum_tree::{Bias, SumTree};
+    let state = ListState::new(4096, ListAlignment::Top, px(0.));
+    let mut state = state.0.borrow_mut();
+    state.items = SumTree::from_iter((0..4096).map(|index| {
+        if index == 0 || index == 2000 {
+            ListItem::Measured { size: size(px(100.), px(20.)), focus_handle: None }
+        } else {
+            ListItem::Unmeasured { focus_handle: None }
+        }
+    }), ());
+    let previous = state.items.clone();
+    state.invalidate_width_measurements();
+    assert_eq!(state.items.summary().rendered_count, 0);
+    assert_eq!(state.items.summary().count, 4096);
+    let mut old = previous.cursor::<Count>(());
+    let mut new = state.items.cursor::<Count>(());
+    old.seek(&Count(3500), Bias::Right);
+    new.seek(&Count(3500), Bias::Right);
+    assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()));
+}
+
+#[test]
+fn disjoint_item_invalidation_keeps_scroll_anchor_and_other_measurements() {
+    use super::{state::ListItem, tree::Count};
+    use crate::{ListAlignment, ListOffset, ListState, px, size};
+    use sum_tree::{Bias, SumTree};
+    let list = ListState::new(4096, ListAlignment::Top, px(0.));
+    let top = ListOffset { item_ix: 100, offset_in_item: px(5.) };
+    {
+        let mut state = list.0.borrow_mut();
+        state.items = SumTree::from_iter((0..4096).map(|_| ListItem::Measured {
+            size: size(px(100.), px(20.)), focus_handle: None,
+        }), ());
+        state.logical_scroll_top = Some(top);
+    }
+    let previous = list.0.borrow().items.clone();
+    list.invalidate_items(&[10..12, 100..101]);
+    let state = list.0.borrow();
+    assert_eq!(state.logical_scroll_top, Some(top));
+    assert_eq!(state.items.summary().count, 4096);
+    assert_eq!(state.items.summary().rendered_count, 4093);
+    assert_eq!(state.items.summary().height, px(4093. * 20.));
+    let mut old = previous.cursor::<Count>(());
+    let mut new = state.items.cursor::<Count>(());
+    old.seek(&Count(3500), Bias::Right);
+    new.seek(&Count(3500), Bias::Right);
+    assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()));
+}

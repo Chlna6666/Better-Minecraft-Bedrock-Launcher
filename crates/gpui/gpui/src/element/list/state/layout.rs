@@ -1,10 +1,10 @@
 use crate::{
     App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size,
 };
-use sum_tree::{Bias, SumTree};
+use sum_tree::Bias;
 use crate::window::scroll_rows::{RowListIdentity, RowPlan, RowPrepaint};
 
-use super::{ListItem, StateInner};
+use super::{ListItem, StateInner, replace_item_runs};
 use crate::element::list::{
     configuration::{ListAlignment, ListMeasuringBehavior, ListOffset, RenderItemFn},
     layout::{ItemLayout, LayoutItemsResponse},
@@ -47,33 +47,36 @@ impl StateInner {
         if self.items.summary().unrendered_count == 0 {
             return;
         }
-        let cursor = self.items.cursor::<Count>(());
         let available_item_space = size(
             AvailableSpace::Definite(available_width),
             AvailableSpace::MinContent,
         );
-
-        let mut measured_items = Vec::default();
-        let mut measured_item_count = 0;
-
-        for (ix, item) in cursor.enumerate() {
-            let size = item.size().unwrap_or_else(|| {
-                measured_item_count += 1;
-                with_item_retained_key(window, ix, |window| {
+        let mut measured_items = std::mem::take(&mut self.measured_items_scratch);
+        measured_items.clear();
+        {
+            let mut cursor = self.items.filter::<_, Count>((), |summary| summary.unrendered_count != 0);
+            cursor.next();
+            while let Some(item) = cursor.item() {
+                let ix = cursor.start().0;
+                debug_assert!(item.size().is_none());
+                let size = with_item_retained_key(window, ix, |window| {
                     let mut element = render_item(ix, window, cx);
                     element.layout_as_root(available_item_space, window, cx)
-                })
-            });
-
-            measured_items.push(ListItem::Measured {
-                size,
-                focus_handle: item.focus_handle(),
-            });
+                });
+                measured_items.push_back((ix, ListItem::Measured {
+                    size,
+                    focus_handle: item.focus_handle(),
+                }));
+                cursor.next();
+            }
         }
-
+        let measured_item_count = measured_items.len();
         window.record_list_measured_items(measured_item_count);
-        self.version.bump_if(measured_item_count != 0);
-        self.items = SumTree::from_iter(measured_items, ());
+        if measured_item_count != 0 {
+            self.items = replace_item_runs(&self.items, &mut measured_items);
+            self.version.bump();
+        }
+        self.measured_items_scratch = measured_items;
     }
 
     pub(in crate::element::list) fn layout_items(
@@ -290,25 +293,7 @@ impl StateInner {
         // changed indices are already strictly increasing.
         let geometry_changed = !measured_items.is_empty();
         if geometry_changed {
-            debug_assert!(measured_items.iter().zip(measured_items.iter().skip(1))
-                .all(|(a, b)| a.0 < b.0));
-            let mut cursor = old_items.cursor::<Count>(());
-            let mut new_items = SumTree::default();
-            while let Some(&(start, _)) = measured_items.front() {
-                new_items.append(cursor.slice(&Count(start), Bias::Right), ());
-                let mut end = start;
-                new_items.extend(std::iter::from_fn(|| {
-                    if measured_items.front().is_some_and(|(index, _)| *index == end) {
-                        end += 1;
-                        measured_items.pop_front().map(|(_, item)| item)
-                    } else {
-                        None
-                    }
-                }), ());
-                cursor.seek_forward(&Count(end), Bias::Right);
-            }
-            new_items.append(cursor.suffix(), ());
-            self.items = new_items;
+            self.items = replace_item_runs(&old_items, &mut measured_items);
         }
         self.version.bump_if(geometry_changed || previous_top != self.logical_scroll_top);
         self.measured_items_scratch = measured_items;
