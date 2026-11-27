@@ -379,11 +379,20 @@ impl NovaRenderer {
         }
         // Full native Present with only resident texture draws; no root
         // Scene encoding, root color refresh or ordinary primitive draw.
-        let outcome = device.render_and_present_tracked(&PresentFrameDescriptor {
+        let outcome = match device.render_and_present_tracked(&PresentFrameDescriptor {
             swapchain: self.swapchain, render_pass: self.render_pass, commands: &commands,
             color_load_op: LoadOp::Clear(clear_color()), depth_attachment: Some(self.depth_attachment()),
             present_region: None,
-        })?;
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // DX11/GL may record native draws before Present or fence
+                // creation fails. No accepted reader ID means no retirement
+                // proof. Leave the views and transient bindings device-owned.
+                for read in reads { self.raster_tiles.quarantine_reader(read); }
+                return Err(error.into());
+            }
+        };
         if let Some(reader) = outcome.frame().and_then(|frame| frame.submission) {
             // A producer and its consumer occupy one presentation slot.
             // Keep the producer independently pollable as a predecessor;
@@ -402,6 +411,7 @@ impl NovaRenderer {
         } else if outcome.frame().is_none() {
             resources.destroy(device);
         } else {
+            for read in reads { self.raster_tiles.quarantine_reader(read); }
             anyhow::bail!("scroll present returned no native reader fence");
         }
         log::trace!(target: "gpui::diagnostics", "scroll raster present: tiles={} misses={} hits={}",

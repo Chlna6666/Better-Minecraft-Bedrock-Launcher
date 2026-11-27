@@ -44,7 +44,7 @@ impl RasterTileRead {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum State { Invalid, Reserved, Submitted(SubmissionId), Ready }
+enum State { Invalid, Reserved, Submitted(SubmissionId), Ready, Quarantined }
 
 /// Exclusive raster reservation. Dropping this does not establish completion.
 #[must_use]
@@ -73,7 +73,7 @@ struct Entry {
 }
 impl Entry {
     fn idle(&self) -> bool {
-        !matches!(self.state, State::Reserved | State::Submitted(_)) && self.readers.is_empty()
+        !matches!(self.state, State::Reserved | State::Submitted(_) | State::Quarantined) && self.readers.is_empty()
     }
     fn invalidate(&mut self) {
         self.stale = true;
@@ -311,6 +311,19 @@ impl RasterTileCache {
         Ok(())
     }
 
+    /// An error after native command recording may hide an accepted reader
+    /// fence. Never reuse or destroy this allocation on the basis of an
+    /// unrelated completion. Its native handles remain device-owned until
+    /// teardown; normal known-fence readers still use record_ordered_reader.
+    pub fn quarantine_reader(&mut self, read: RasterTileRead) {
+        if let Some(e) = self.entries.get_mut(&read.key)
+            .filter(|e| e.serial == read.serial && e.handles() == Some(read.texture))
+        {
+            e.stale = true;
+            e.state = State::Quarantined;
+        }
+    }
+
     /// Observe a real completed native fence. A queue wait is not completion.
     pub fn complete(&mut self, submission: SubmissionId) {
         for e in self.entries.values_mut() {
@@ -445,6 +458,19 @@ mod tests {
         c.complete(writer);
         assert!(c.entries[&key(0)].idle());
         assert!(c.lookup(key(0), 3, raster(), Format::Bgra8Unorm).is_none());
+    }
+
+    #[test]
+    fn unknown_reader_fence_never_allows_reclamation() {
+        let mut c = RasterTileCache::new(4096);
+        let writer = SubmissionId::from_parts(4, 1);
+        c.entries.insert(key(0), entry(3, State::Submitted(writer)));
+        let read = c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| true).unwrap();
+        c.quarantine_reader(read);
+        c.complete(writer);
+        c.invalidate_all();
+        assert!(!c.entries[&key(0)].idle());
+        assert!(c.lookup_ordered(key(0), 3, raster(), Format::Bgra8Unorm, |_| true).is_none());
     }
 
     #[test]
