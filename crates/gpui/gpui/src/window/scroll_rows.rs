@@ -336,7 +336,10 @@ impl Window {
         }
         let read_start = cx.entities.state_read_index();
         let start = self.paint_index();
-        let content = self.capture_scroll_paint(prepaint.origin, item, suppress_hover, cx);
+        let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
+            .map(|previous| Arc::clone(&previous.content));
+        let content = self.capture_scroll_paint(prepaint.origin, item, suppress_hover,
+            previous_source.as_deref(), true, cx);
         if suppress_hover {
             self.restore_scroll_row_after_wheel(cx);
         }

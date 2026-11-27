@@ -21,6 +21,7 @@ pub(in crate::window) struct ScrollPaint {
     row_raster_bounds: Option<Bounds<ScaledPixels>>,
     // Allocated only for a source actually published as a native layer.
     native_id: std::sync::OnceLock<u64>,
+    native_generation: u64,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
@@ -67,6 +68,8 @@ impl Window {
         origin: Point<Pixels>,
         item: &mut AnyElement,
         suppress_hover: bool,
+        previous: Option<&ScrollPaint>,
+        row: bool,
         cx: &mut App,
     ) -> Arc<ScrollPaint> {
         let viewport = self.visual_content_mask();
@@ -85,16 +88,19 @@ impl Window {
         self.content_mask_stack.pop();
         let operations = self.next_frame.painter.end_scroll_capture();
         let scale = self.scale_factor();
-        let content = Arc::new(ScrollPaint::new(
-            origin,
-            capture.scale(scale).bounds,
-            operations,
-        ));
-        content.replay(
-            &mut self.next_frame.painter,
-            viewport.scale(scale),
-            Point::default(),
-        );
+        let mut content = ScrollPaint::new(origin, capture.scale(scale).bounds, operations);
+        let inherited = previous.is_some_and(|previous| content.inherit_native_identity(previous));
+        let content = Arc::new(content);
+        // Keep an existing native publication alive through a compatible
+        // recapture. First-time rows still follow the ordinary admission path.
+        let deferred = inherited && self.platform_window.supports_deferred_scroll()
+            && self.scene_animation.is_none()
+            && (if row { content.native_row_placement(viewport, scale, Point::default()) }
+                else { content.native_placement(viewport, scale, Point::default()) })
+                .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
+        if !deferred {
+            content.replay(&mut self.next_frame.painter, viewport.scale(scale), Point::default());
+        }
         content
     }
 }
@@ -157,9 +163,26 @@ impl ScrollPaint {
             scoped_order,
             row_raster_bounds,
             native_id: std::sync::OnceLock::new(),
+            native_generation: 1,
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
         }
+    }
+
+    /// Only reuse a content-space identity when the original capture
+    /// coordinate system is identical. Moving/reflowing recaptures start
+    /// a new source; geometric adoption then remains unambiguous.
+    fn inherit_native_identity(&mut self, previous: &Self) -> bool {
+        if !self.static_order || !previous.static_order || self.origin != previous.origin
+            || self.coverage != previous.coverage
+        {
+            return false;
+        }
+        let (Some(&id), Some(generation)) = (previous.native_id.get(), previous.native_generation.checked_add(1))
+            else { return false; };
+        if self.native_id.set(id).is_err() { return false; }
+        self.native_generation = generation;
+        true
     }
 
     pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
@@ -243,7 +266,7 @@ impl ScrollPaint {
         }
         let mut placement = self.placement(viewport.scale(scale), delta)?;
         let id = *self.native_id.get_or_init(super::frame::next_layer_id);
-        placement.native = Some(NativeScrollGeometry { id, viewport, scale, row_bounds: None });
+        placement.native = Some(NativeScrollGeometry { id, generation: self.native_generation, viewport, scale, row_bounds: None });
         Some(placement)
     }
 
@@ -312,6 +335,7 @@ impl ScrollPaint {
 #[derive(Clone, Copy, PartialEq)]
 pub(in crate::window) struct NativeScrollGeometry {
     pub(in crate::window) id: u64,
+    pub(in crate::window) generation: u64,
     pub(in crate::window) viewport: ContentMask<Pixels>,
     pub(in crate::window) scale: f32,
     pub(in crate::window) row_bounds: Option<Bounds<ScaledPixels>>,

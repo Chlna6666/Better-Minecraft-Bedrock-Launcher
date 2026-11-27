@@ -298,7 +298,11 @@ impl Window {
             return;
         }
         let read_start = cx.entities.state_read_index();
-        let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover, cx);
+        let previous_source = self.rendered_frame.scroll_views.views.get(&capture.key)
+            .filter(|previous| previous.owner == owner && previous.viewport == capture.viewport)
+            .map(|previous| Arc::clone(&previous.source));
+        let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover,
+            previous_source.as_deref(), false, cx);
         if suppress_hover {
             self.schedule_scroll_hover_restore(cx);
         }

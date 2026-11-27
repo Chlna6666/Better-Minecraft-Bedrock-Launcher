@@ -509,8 +509,8 @@ impl LayerFrame {
                 return None;
             }
             self.raster_source_for_tile(rect)?;
-            if !raster.visible_rows {
-                return (generation == self.generation).then_some(generation);
+            if !raster.visible_rows && generation != self.generation && self.previous_coverage.is_none() {
+                return None;
             }
         }
         if generation == self.generation {
@@ -868,11 +868,12 @@ impl SceneLayers {
             let source_viewport = placement.viewport();
             let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
             let translation = Some([delta.x.0 as i32, delta.y.0 as i32]);
-            // The source lifetime is the generation. A recapture has a
-            // new ID, so a reused address cannot resurrect old GPU pixels.
             // Capture coordinates == tile content coordinates (origin 0).
-            let content = if let Some(previous) = old.get(&geometry.id)
+            // Only a compatible same-origin recapture inherits this identity.
+            let previous = old.get(&geometry.id).copied();
+            let content = if let Some(previous) = previous
                 && previous.source_viewport == source_viewport
+                && previous.generation == geometry.generation
                 && Arc::ptr_eq(&previous.content.operations, operations)
             {
                 Arc::clone(&previous.content)
@@ -882,12 +883,19 @@ impl SceneLayers {
                 ) else { return Self::default(); };
                 Arc::new(content)
             };
+            let (damage, previous_coverage) = if let Some(previous) = previous
+                && previous.generation.checked_add(1) == Some(geometry.generation)
+                && previous.source_viewport == source_viewport
+                && previous.content.raster == content.raster
+            {
+                (content.damage_from(&previous.content), content.raster.map(|raster| raster.coverage))
+            } else { (LayerDamage::Full, None) };
             frames.push(LayerFrame {
-                layout_key: None, id: geometry.id, generation: 1,
+                layout_key: None, id: geometry.id, generation: geometry.generation,
                 // Native markers are self-contained even inside a proven
                 // ordinary scope; the outside stream preserves its delimiters.
                 static_root_span: ordered.then_some(index..index + 1),
-                damage: LayerDamage::Full, previous_coverage: None,
+                damage, previous_coverage,
                 translation, source_viewport, viewport: geometry.viewport,
                 offset: LayerScrollPosition::Pixels(point(crate::px(delta.x.0 / geometry.scale), crate::px(delta.y.0 / geometry.scale))),
                 content, placement: Some(placement.clone()),
