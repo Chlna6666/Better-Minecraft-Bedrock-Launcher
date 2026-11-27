@@ -1179,6 +1179,34 @@ mod tests {
     }
 
     #[test]
+    fn atlas_damage_intersects_capture_space_not_composite_space() {
+        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(128.), crate::px(512.))));
+        let coverage = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(-512.)),
+            crate::size(ScaledPixels(128.), ScaledPixels(1536.)));
+        let glyph_bounds = crate::bounds(crate::point(ScaledPixels(8.), ScaledPixels(300.)),
+            crate::size(ScaledPixels(16.), ScaledPixels(20.)));
+        let tile = AtlasTile { texture_id: AtlasTextureId { index: 0, kind: AtlasTextureKind::Monochrome },
+            tile_id: crate::TileId(42), padding: 0,
+            bounds: crate::bounds(crate::point(DevicePixels(0), DevicePixels(0)),
+                crate::size(DevicePixels(16), DevicePixels(20))) };
+        let mut ops = crate::scene::Operations::default();
+        ops.push(PaintOperation::Primitive(Primitive::MonochromeSprite(crate::MonochromeSprite {
+            order: 0, pad: 0, animation_id: None, bounds: glyph_bounds,
+            content_mask: ContentMask::new(coverage), color: crate::rgb(0xffffff), tile,
+            transformation: crate::TransformationMatrix::unit(),
+        })));
+        let mut paint = crate::window::Paint::default();
+        paint.layers.raster_fixture(ops, coverage, viewport, [0, 64]);
+        let layer = &paint.layers.frames[0];
+        let dirty = [42].into_iter().collect();
+        assert!(!layer.raster_tile_uses_atlas_damage([0, -256, 128, 0], &dirty));
+        assert!(layer.raster_tile_uses_atlas_damage([0, 0, 128, 256], &dirty));
+        assert!(!layer.raster_tile_uses_atlas_damage([0, 256, 128, 512], &dirty));
+        assert!(!layer.raster_tile_uses_atlas_damage([0, 0, 128, 256], &[43].into_iter().collect()));
+    }
+
+    #[test]
     fn signed_tiles_use_stable_content_keys_and_original_capture_projection() {
         let paint = fixture([0, 64], -512., 1536.);
         let layer = &paint.layers.frames[0];

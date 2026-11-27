@@ -542,6 +542,45 @@ mod tests {
     }
 
     #[test]
+    fn native_recapture_adopts_only_undamaged_tiles_in_same_coordinates() {
+        let rect = |y, height| Bounds::new(point(px(0.), px(y)), size(px(40.), px(height))).scale(1.);
+        let coverage = rect(-64., 192.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let capture = |color| {
+            let mut ops = Operations::default();
+            for (y, rgb) in [(8., 0x123456), (48., color)] {
+                ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                    bounds: rect(y, 8.), content_mask: ContentMask::new(coverage),
+                    background: crate::rgb(rgb).into(), ..Default::default()
+                })));
+            }
+            ScrollPaint::new(Point::default(), coverage, ops)
+        };
+        let publish = |source: &Arc<ScrollPaint>| {
+            let mut painter = Painter::default();
+            assert!(painter.push_deferred_scroll(source.native_placement(viewport, 1., Point::default()).unwrap()));
+            painter.finish();
+            painter.into_scene()
+        };
+        let original = Arc::new(capture(0x0000ff));
+        let first = publish(&original);
+        let old = crate::window::SceneLayers::capture_native(&first, None);
+        let mut refreshed = capture(0x00ff00);
+        assert!(refreshed.inherit_native_identity(&original));
+        let new = publish(&Arc::new(refreshed));
+        let layers = crate::window::SceneLayers::capture_native(&new, Some(&old));
+        let layer = &layers.frames[0];
+        assert_eq!(layer.id, old.frames[0].id);
+        assert_eq!(layer.generation, 2);
+        assert_eq!(layer.adopt_tile(1, [0, 0, 40, 32], 1.), Some(2));
+        assert_eq!(layer.adopt_tile(1, [0, 32, 40, 64], 1.), None);
+        assert_eq!(layer.adopt_tile(0, [0, 0, 40, 32], 1.), None);
+        let mut relocated = capture(0x0000ff);
+        relocated.origin = point(px(0.), px(1.));
+        assert!(!relocated.inherit_native_identity(&original));
+    }
+
+    #[test]
     fn native_deferred_scroll_is_one_operation_and_rebuilds_ordinary_paint() {
         let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
