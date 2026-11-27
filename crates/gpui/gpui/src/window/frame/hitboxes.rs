@@ -27,8 +27,74 @@ impl Translation {
     }
 }
 
+// One conservative spatial summary per physical page, not per replay span.
+struct HitboxPage {
+    records: Vec<Hitbox>,
+    envelope: Option<PageEnvelope>,
+}
+
+struct PageEnvelope {
+    min: Point<Pixels>,
+    max_origin: Point<Pixels>,
+    max_size: crate::Size<Pixels>,
+}
+
+impl PageEnvelope {
+    fn new(records: &[Hitbox]) -> Option<Self> {
+        // Tiny pages are cheaper to scan than to index.
+        if records.len() < 16 {
+            return None;
+        }
+        let first = records.first()?.bounds;
+        let mut result = Self {
+            min: first.origin,
+            max_origin: first.origin,
+            max_size: first.size,
+        };
+        for hitbox in records {
+            let bounds = hitbox.bounds;
+            let mask = hitbox.content_mask.bounds;
+            if ![
+                bounds.origin.x.0, bounds.origin.y.0, bounds.size.width.0, bounds.size.height.0,
+                mask.origin.x.0, mask.origin.y.0, mask.size.width.0, mask.size.height.0,
+            ].iter().all(|value| value.is_finite())
+                || bounds.size.width.0 < 0.0 || bounds.size.height.0 < 0.0
+                || mask.size.width.0 < 0.0 || mask.size.height.0 < 0.0
+                || !mask.right().0.is_finite() || !mask.bottom().0.is_finite()
+            {
+                return None;
+            }
+            result.min.x.0 = result.min.x.0.min(bounds.origin.x.0);
+            result.min.y.0 = result.min.y.0.min(bounds.origin.y.0);
+            result.max_origin.x.0 = result.max_origin.x.0.max(bounds.origin.x.0);
+            result.max_origin.y.0 = result.max_origin.y.0.max(bounds.origin.y.0);
+            result.max_size.width.0 = result.max_size.width.0.max(bounds.size.width.0);
+            result.max_size.height.0 = result.max_size.height.0.max(bounds.size.height.0);
+        }
+        Some(result)
+    }
+
+    fn may_hit(&self, position: Point<Pixels>, translation: Translation) -> bool {
+        let low = translation.bounds(Bounds::new(self.min, self.max_size)).origin;
+        let high = translation.bounds(Bounds::new(self.max_origin, self.max_size)).bottom_right();
+        // The exact test intersects rectangles and reconstructs their width.
+        // Allow conservative floating-point roundoff at that final edge.
+        fn axis(value: f32, low: f32, high: f32) -> bool {
+            if !low.is_finite() || !high.is_finite() || !value.is_finite() {
+                return true;
+            }
+            let margin = f64::from(low.abs().max(high.abs()).max(1.0))
+                * f64::from(f32::EPSILON) * 8.0;
+            f64::from(value) >= f64::from(low) - margin
+                && f64::from(value) <= f64::from(high) + margin
+        }
+        axis(position.x.0, low.x.0, high.x.0)
+            && axis(position.y.0, low.y.0, high.y.0)
+    }
+}
+
 struct Span {
-    owner: Rc<Vec<Hitbox>>,
+    owner: Rc<HitboxPage>,
     start: usize,
     len: usize,
     end: usize,
@@ -40,7 +106,7 @@ impl Span {
     fn slice(&self, range: Range<usize>) -> &[Hitbox] {
         let start = self.start + range.start.max(self.begin()) - self.begin();
         let end = self.start + range.end.min(self.end) - self.begin();
-        &self.owner[start..end]
+        &self.owner.records[start..end]
     }
 }
 
@@ -79,9 +145,9 @@ impl HitboxStore {
     fn pack_sparse_tail(&mut self) {
         if !self.pending.is_empty() { return; }
         let Some(last) = self.spans.last() else { return; };
-        if last.len * 4 >= last.owner.len() { return; }
+        if last.len * 4 >= last.owner.records.len() { return; }
         let span = self.spans.pop().unwrap();
-        self.pending.extend(span.owner[span.start..span.start + span.len].iter().map(|hitbox| {
+        self.pending.extend(span.owner.records[span.start..span.start + span.len].iter().map(|hitbox| {
             let mut hitbox = hitbox.clone();
             hitbox.bounds = span.translation.bounds(hitbox.bounds);
             hitbox
@@ -97,9 +163,11 @@ impl HitboxStore {
 
     fn seal_pending(&mut self) {
         if self.pending.is_empty() { return; }
-        let owner = Rc::new(std::mem::take(&mut self.pending));
+        let records = std::mem::take(&mut self.pending);
+        let envelope = PageEnvelope::new(&records);
+        let owner = Rc::new(HitboxPage { records, envelope });
         self.spans.push(Span {
-            start: 0, len: owner.len(), end: self.len,
+            start: 0, len: owner.records.len(), end: self.len,
             owner, translation: Translation::default(),
         });
     }
@@ -120,6 +188,29 @@ impl HitboxStore {
         self.spans_in(&range).iter()
             .map(move |span| (span.slice(range.clone()), span.translation))
             .chain(std::iter::once((tail, Translation::default())))
+            .filter(|(slice, _)| !slice.is_empty())
+    }
+
+    /// Filter physical pages before projecting individual rectangles. Sparse
+    /// slices use the same page envelope; it can only admit extra candidates.
+    pub(in crate::window) fn candidate_slices(
+        &self,
+        range: Range<usize>,
+        position: Point<Pixels>,
+        delta: Point<Pixels>,
+    ) -> impl DoubleEndedIterator<Item = (&[Hitbox], Translation)> {
+        assert!(self.contains(&range));
+        let pending_start = self.len - self.pending.len();
+        let tail = &self.pending[range.start.saturating_sub(pending_start)
+            ..range.end.saturating_sub(pending_start)];
+        self.spans_in(&range).iter()
+            .filter_map(move |span| {
+                let translation = span.translation.shifted(delta);
+                span.owner.envelope.as_ref()
+                    .is_none_or(|envelope| envelope.may_hit(position, translation))
+                    .then(|| (span.slice(range.clone()), translation))
+            })
+            .chain(std::iter::once((tail, Translation::default().shifted(delta))))
             .filter(|(slice, _)| !slice.is_empty())
     }
 
@@ -156,8 +247,7 @@ impl HitboxStore {
     }
 
     pub(in crate::window) fn any_at(&self, range: Range<usize>, position: Point<Pixels>, delta: Point<Pixels>) -> bool {
-        self.slices(range).any(|(slice, translation)| {
-            let translation = translation.shifted(delta);
+        self.candidate_slices(range, position, delta).any(|(slice, translation)| {
             slice.iter().any(|hitbox| {
                 hitbox.content_mask.bounds.contains(&position)
                     && translation.bounds(hitbox.bounds).contains(&position)
@@ -189,8 +279,8 @@ impl HitboxStore {
             // Pack isolated sparse fragments together, but leave the first
             // fragment of a possible contiguous run borrowed. No whole-log
             // compaction pass is needed at frame publication.
-            if !self.pending.is_empty() && len * 4 < span.owner.len() {
-                for hitbox in &span.owner[start..start + len] {
+            if !self.pending.is_empty() && len * 4 < span.owner.records.len() {
+                for hitbox in &span.owner.records[start..start + len] {
                     let mut hitbox = hitbox.clone();
                     hitbox.bounds = translation.bounds(hitbox.bounds);
                     self.push_pending(hitbox);
@@ -259,11 +349,11 @@ impl HitboxStore {
     pub(in crate::window) fn clear(&mut self) {
         self.pending.clear();
         for span in self.spans.drain(..) {
-            if let Ok(mut owner) = Rc::try_unwrap(span.owner)
-                && owner.capacity() > self.pending.capacity()
+            if let Ok(owner) = Rc::try_unwrap(span.owner)
+                && owner.records.capacity() > self.pending.capacity()
             {
-                owner.clear();
-                self.pending = owner;
+                self.pending = owner.records;
+                self.pending.clear();
             }
         }
         self.len = 0;
@@ -295,6 +385,44 @@ mod tests {
             content_mask: ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(100.), px(1000.)))),
             behavior: HitboxBehavior::Normal,
         }
+    }
+
+    #[test]
+    fn candidate_pages_preserve_exact_hits_after_translation_and_splitting() {
+        let mut store = HitboxStore::default();
+        for index in 0..PAGE_LEN * 4 {
+            store.push(hitbox(index));
+        }
+        store.freeze();
+        store.translate_committed(17..PAGE_LEN * 3 + 5, point(px(2.25), px(-19.75)));
+        for y in -30..600 {
+            let position = point(px(5.), px(y as f32 + 0.25));
+            let expected: Vec<_> = store.slices(0..store.len()).flat_map(|(slice, translation)| {
+                slice.iter().filter(move |hitbox| {
+                    translation.bounds(hitbox.bounds).intersect(&hitbox.content_mask.bounds)
+                        .contains(&position)
+                }).map(|hitbox| hitbox.id)
+            }).collect();
+            let actual: Vec<_> = store.candidate_slices(0..store.len(), position, Point::default())
+                .flat_map(|(slice, translation)| {
+                    slice.iter().filter(move |hitbox| {
+                        translation.bounds(hitbox.bounds).intersect(&hitbox.content_mask.bounds)
+                            .contains(&position)
+                    }).map(|hitbox| hitbox.id)
+                }).collect();
+            assert_eq!(actual, expected);
+        }
+        let position = point(px(5.), px(450.));
+        let candidates: usize = store.candidate_slices(0..store.len(), position, Point::default())
+            .map(|(slice, _)| slice.len()).sum();
+        assert!(candidates < PAGE_LEN * 2, "unrelated pages should not be projected");
+    }
+
+    #[test]
+    fn invalid_geometry_disables_page_rejection() {
+        let mut records: Vec<_> = (0..PAGE_LEN).map(hitbox).collect();
+        records[4].bounds.origin.y = px(f32::NAN);
+        assert!(PageEnvelope::new(&records).is_none());
     }
 
     #[test]

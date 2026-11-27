@@ -583,7 +583,9 @@ impl Frame {
                     break;
                 }
             }
-            for (slice, translation) in self.hitboxes.slices(start..cursor).rev() {
+            for (slice, translation) in self.hitboxes
+                .candidate_slices(start..cursor, position, Point::default()).rev()
+            {
                 for hitbox in slice.iter().rev() {
                 let bounds = translation.bounds(hitbox.bounds).intersect(&hitbox.content_mask.bounds);
                 if bounds.contains(&position) {
