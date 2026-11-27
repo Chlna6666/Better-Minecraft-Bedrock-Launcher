@@ -199,6 +199,8 @@ struct LayoutStore<V> {
     free: Vec<usize>,
     previous: Vec<usize>,
     current: Vec<usize>,
+    // Unique slots touched this epoch, not the length of the replay log.
+    used_count: usize,
 }
 
 struct LayoutEntry<V> {
@@ -214,6 +216,7 @@ impl<V> Default for LayoutStore<V> {
             free: Vec::new(),
             previous: Vec::new(),
             current: Vec::new(),
+            used_count: 0,
         }
     }
 }
@@ -225,6 +228,7 @@ impl<V> LayoutStore<V> {
         let reused = entry.last_used != epoch;
         if reused {
             entry.last_used = epoch;
+            self.used_count += 1;
             self.current.push(id);
         }
         Some((Arc::clone(&entry.layout), reused))
@@ -233,6 +237,9 @@ impl<V> LayoutStore<V> {
     fn insert(&mut self, key: Arc<CacheKey>, layout: Arc<V>, epoch: u64) {
         let entry = LayoutEntry { layout, last_used: epoch };
         let id = if let Some(&id) = self.keys.get(&key) {
+            if self.slots[id].as_ref().expect("live text layout slot").last_used != epoch {
+                self.used_count += 1;
+            }
             self.slots[id] = Some(entry);
             id
         } else {
@@ -246,6 +253,7 @@ impl<V> LayoutStore<V> {
                 id
             };
             self.keys.insert(key, id);
+            self.used_count += 1;
             id
         };
         self.current.push(id);
@@ -264,25 +272,33 @@ impl<V> LayoutStore<V> {
             }
         }
         self.current.extend_from_slice(ids);
+        self.used_count += reused;
         reused
     }
 
     fn finish(&mut self, epoch: u64, mut retire: impl FnMut(&Arc<CacheKey>, Arc<V>)) {
-        let slots = &mut self.slots;
-        let free = &mut self.free;
-        self.keys.retain(|key, id| {
-            let id = *id;
-            let entry = slots[id].as_ref().expect("live text layout slot");
-            if entry.last_used == epoch || Arc::strong_count(&entry.layout) > 1 {
-                return true;
-            }
-            let entry = slots[id].take().expect("retiring text layout slot");
-            retire(key, entry.layout);
-            free.push(id);
-            false
-        });
+        debug_assert!(self.used_count <= self.keys.len());
+        // Every key was used: no unused slot can be retired. Unlike an
+        // access-log length check this also works for duplicate replays
+        // and truncated speculative access ranges.
+        if self.used_count != self.keys.len() {
+            let slots = &mut self.slots;
+            let free = &mut self.free;
+            self.keys.retain(|key, id| {
+                let id = *id;
+                let entry = slots[id].as_ref().expect("live text layout slot");
+                if entry.last_used == epoch || Arc::strong_count(&entry.layout) > 1 {
+                    return true;
+                }
+                let entry = slots[id].take().expect("retiring text layout slot");
+                retire(key, entry.layout);
+                free.push(id);
+                false
+            });
+        }
         mem::swap(&mut self.previous, &mut self.current);
         self.current.clear();
+        self.used_count = 0;
     }
 
     fn clear(&mut self) {
@@ -291,6 +307,7 @@ impl<V> LayoutStore<V> {
         self.free.clear();
         self.previous.clear();
         self.current.clear();
+        self.used_count = 0;
     }
 
     fn trim(&mut self, floor: usize, force: bool) {
@@ -1125,6 +1142,53 @@ mod tests {
         assert_eq!(recent.current.len(), 1);
         assert_eq!(recent.old.len(), 1);
         assert_eq!(recent.current_units, RECENT_SHAPE_UNITS);
+    }
+
+    #[test]
+    fn layout_store_retires_unused_slots_without_aliasing_replay_indices() {
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = |text: &'static str| Arc::new(CacheKey {
+            text: SharedString::from(text),
+            font_size: px(14.),
+            runs: SmallVec::new(),
+            wrap_width: None,
+            max_lines: None,
+            force_width: None,
+        });
+        let a = key("a");
+        let b = key("b");
+        let c = key("c");
+        store.insert(a.clone(), Arc::new(LineLayout::default()), 1);
+        store.insert(b.clone(), Arc::new(LineLayout::default()), 1);
+        let a_id = store.keys[&a];
+        let b_id = store.keys[&b];
+        assert_eq!(store.used_count, 2);
+        store.finish(1, |_, _| panic!("used layout must survive"));
+        assert_eq!(store.used_count, 0);
+        assert_eq!(store.replay(0..1, 2), 1);
+        assert_eq!(store.replay(0..1, 2), 0);
+        assert_eq!(store.used_count, 1);
+        let mut retired = 0;
+        store.finish(2, |key, _| {
+            assert_eq!(key, &b);
+            retired += 1;
+        });
+        assert_eq!(retired, 1);
+        assert_eq!(store.previous, vec![a_id, a_id]);
+        assert!(!store.keys.contains_key(&b));
+        store.insert(c.clone(), Arc::new(LineLayout::default()), 3);
+        assert_eq!(store.keys[&c], b_id);
+        assert_eq!(store.replay(0..2, 3), 1);
+        assert_eq!(store.used_count, 2);
+        // Speculative truncation removes records, not this epoch's cache
+        // ownership, exactly like the original per-frame maps.
+        store.current.truncate(1);
+        store.finish(3, |_, _| panic!("all keys touched"));
+        assert_eq!(store.previous, vec![b_id]);
+        assert_eq!(store.keys.len(), 2);
+        store.clear();
+        assert!(store.previous.is_empty());
+        assert_eq!(store.used_count, 0);
     }
 
     #[test]
