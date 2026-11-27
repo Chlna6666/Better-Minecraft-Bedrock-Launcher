@@ -416,8 +416,38 @@ impl NovaAtlasState {
     }
 
     pub(in crate::platform::nova) fn remove_pending_uploads(&mut self, texture_id: AtlasTextureId) {
-        self.pending_uploads
-            .retain(|upload| upload.texture_id != texture_id);
+        let mut retired_pages = FxHashSet::default();
+        self.pending_uploads.retain(|upload| {
+            if upload.texture_id == texture_id {
+                retired_pages.insert(upload.page);
+                false
+            } else {
+                true
+            }
+        });
+        if retired_pages.is_empty() {
+            return;
+        }
+
+        // An adopted glyph page can feed several atlas textures. Only retire
+        // pages with no remaining descriptors. Keep the physical page indices
+        // stable: an allocation transaction may still be publishing a page.
+        for upload in &self.pending_uploads {
+            retired_pages.remove(&upload.page);
+            if retired_pages.is_empty() {
+                return;
+            }
+        }
+        for page in retired_pages {
+            if self.upload_bytes.active == Some(page) {
+                self.upload_bytes.active = None;
+            }
+            if let Some(pixels) = self.upload_bytes.pages.get_mut(page) {
+                // The producer explicitly retired this texture; do not move
+                // these abandoned bytes into the global idle bitmap pool.
+                drop(std::mem::take(pixels));
+            }
+        }
     }
 
     pub(in crate::platform::nova) fn enqueue_tile_upload(
@@ -549,6 +579,34 @@ impl NovaAtlasState {
 #[cfg(test)]
 mod upload_texture_snapshot_tests {
     use super::*;
+
+    #[test]
+    fn retired_texture_releases_only_unreferenced_upload_pages() {
+        let mut state = NovaAtlasState::default();
+        let first = AtlasTextureId { index: 0, kind: AtlasTextureKind::Rgba };
+        let second = AtlasTextureId { index: 1, kind: AtlasTextureKind::Rgba };
+        let origin = crate::point(DevicePixels(1), DevicePixels(1));
+        let size = crate::size(DevicePixels(1), DevicePixels(1));
+        let shared = state.upload_bytes.adopt(vec![1; 72]);
+        let exclusive = state.upload_bytes.adopt(vec![2; 36]);
+        let survivor = state.upload_bytes.pages[shared].as_ptr();
+        assert!(state.enqueue_encoded_tile_upload(first, origin, size, shared, 0..36));
+        assert!(state.enqueue_encoded_tile_upload(second, origin, size, shared, 36..72));
+        assert!(state.enqueue_encoded_tile_upload(first, origin, size, exclusive, 0..36));
+        let before = state.upload_bytes.capacity();
+        let exclusive_capacity = state.upload_bytes.pages[exclusive].capacity();
+
+        state.remove_pending_uploads(first);
+        assert_eq!(state.pending_uploads.len(), 1);
+        assert_eq!(state.pending_uploads[0].page, shared);
+        assert_eq!(state.upload_bytes.pages[shared].as_ptr(), survivor);
+        assert_eq!(state.upload_bytes.pages[exclusive].capacity(), 0);
+        assert_eq!(state.upload_bytes.capacity(), before - exclusive_capacity);
+
+        state.remove_pending_uploads(second);
+        assert!(state.pending_uploads.is_empty());
+        assert_eq!(state.upload_bytes.capacity(), 0);
+    }
 
     #[test]
     fn atlas_source_dependencies_distinguish_tiles_on_same_page() {
