@@ -197,3 +197,55 @@ fn native_scroll_repositions_retained_hover_hitboxes(cx: &mut TestAppContext) {
         assert_eq!(quad.bounds.origin.y, px(48.).scale(window.scale_factor()));
     });
 }
+
+#[gpui::test]
+fn versioned_uniform_list_rebuilds_only_changed_rows_after_owner_notify(cx: &mut TestAppContext) {
+    struct VersionedRows {
+        revisions: Rc<RefCell<[u64; 100]>>,
+        calls: Rc<RefCell<Vec<std::ops::Range<usize>>>>,
+    }
+    impl Render for VersionedRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let values = self.revisions.clone();
+            let revisions = self.revisions.clone();
+            let calls = self.calls.clone();
+            uniform_list("versioned-rows", 100, move |range, _, _| {
+                calls.borrow_mut().push(range.clone());
+                range.map(|index| {
+                    crate::div().w_full().h(px(24.)).bg(
+                        if values.borrow()[index] == 0 { crate::blue() } else { crate::red() }
+                    )
+                }).collect()
+            })
+            .with_item_height(px(24.))
+            .with_row_revision(move |index| revisions.borrow()[index])
+            .w(px(240.)).h(px(120.))
+        }
+    }
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let (view, cx) = cx.add_window_view(|_, _| VersionedRows {
+        revisions: Rc::new(RefCell::new([0; 100])),
+        calls: calls.clone(),
+    });
+    cx.run_until_parked();
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    calls.borrow_mut().clear();
+    view.update(cx, |view, cx| {
+        view.revisions.borrow_mut()[2] += 1;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(&*calls.borrow(), &[2..3]);
+    cx.update(|window, app| {
+        let geometry = |window: &Window| {
+            window.rendered_frame.scene().quads.iter()
+                .map(|quad| (quad.bounds, quad.content_mask, quad.background))
+                .collect::<Vec<_>>()
+        };
+        let retained = geometry(window);
+        window.refresh();
+        window.draw(app).clear();
+        assert_eq!(retained, geometry(window));
+    });
+}

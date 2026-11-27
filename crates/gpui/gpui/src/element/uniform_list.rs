@@ -11,7 +11,7 @@ mod scroll;
 #[cfg(test)]
 mod tests;
 
-use crate::window::scroll_rows::RowPlan;
+use crate::window::scroll_rows::{RowPlan, RowRevision};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId,
     Hitbox, InspectorElementId, Interactivity, IntoElement, IsZero, LayoutId, ListSizingBehavior,
@@ -53,6 +53,7 @@ where
         item_to_measure_index: 0,
         fixed_item_height: None,
         render_items: Box::new(render_range),
+        row_revision: None,
         decorations: Vec::new(),
         interactivity: Interactivity {
             element_id: Some(id),
@@ -71,6 +72,7 @@ pub struct UniformList {
     item_to_measure_index: usize,
     fixed_item_height: Option<Pixels>,
     render_items: Box<RenderItems>,
+    row_revision: Option<RowRevision>,
     pub(super) decorations: Vec<Box<dyn UniformListDecoration>>,
     pub(super) interactivity: Interactivity,
     pub(super) scroll_handle: Option<UniformListScrollHandle>,
@@ -359,6 +361,7 @@ impl Element for UniformList {
                         if retain_rows && !y_flipped {
                             retention::prepaint(
                                 self.render_items.as_ref(),
+                                self.row_revision.clone(),
                                 self.item_count,
                                 frame_state,
                                 global_id,

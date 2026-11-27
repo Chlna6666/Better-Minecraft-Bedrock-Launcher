@@ -2,7 +2,7 @@ use crate::{
     App, AvailableSpace, Bounds, ContentMask, Edges, Pixels, Point, Window, px, size,
 };
 use sum_tree::{Bias, SumTree};
-use crate::window::scroll_rows::{RowListIdentity, RowPlan, RowPrepaint};
+use crate::window::scroll_rows::{RowListIdentity, RowPlan, RowPrepaint, RowRevision};
 
 use super::{ListItem, StateInner, replace_item_runs};
 use crate::element::list::{
@@ -363,6 +363,7 @@ impl StateInner {
         padding: Edges<Pixels>,
         autoscroll: bool,
         render_item: &mut RenderItemFn,
+        row_revision: Option<RowRevision>,
         window: &mut Window,
         cx: &mut App,
     ) -> Result<LayoutItemsResponse, ListOffset> {
@@ -379,10 +380,11 @@ impl StateInner {
                 && window.scroll_row_replay_is_enabled()
                 && !self.items.summary().has_focus_handles
             {
-                let identity = RowListIdentity::Variable(crate::StateRead::new(&self.items_version));
+                let version = if row_revision.is_some() { &self.structure_version } else { &self.items_version };
+                let identity = RowListIdentity::Variable(crate::StateRead::new(version));
                 let available_space = size(bounds.size.width.into(), AvailableSpace::MinContent);
                 window.with_content_mask(Some(mask), |window| {
-                    window.plan_scroll_rows(identity, self.items.summary().count, available_space, cx)
+                    window.plan_scroll_rows(identity, self.items.summary().count, available_space, row_revision, cx)
                 })
             } else {
                 None
@@ -426,6 +428,7 @@ impl StateInner {
                                         reads.iter().chain(prepaint_reads.iter()).cloned().collect()
                                     };
                                     plan.record_prepaint(item.index, RowPrepaint {
+                                        row_revision: plan.row_revision(item.index),
                                         origin: item_origin,
                                         records: start..window.prepaint_index(),
                                         reads,

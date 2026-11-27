@@ -5,6 +5,22 @@ use crate::{
 use super::{UniformList, UniformListDecoration, UniformListScrollHandle};
 
 impl UniformList {
+    /// Opt in to row-local content retention across notifications of the
+    /// list's own view. The revision must change whenever anything affecting
+    /// that index's rendered content, layout, or callbacks changes, including
+    /// untracked closure captures. Reordered/replaced rows must have different
+    /// revisions unless their entire observable row is identical.
+    ///
+    /// The function must be pure, cheap and stable throughout a draw.
+    /// Notify the owning view normally. Without this contract, ordinary
+    /// owner invalidation remains conservative. Global refreshes, changed
+    /// ancestor paths, input restrictions and changed inherited context
+    /// still use the normal fallback.
+    pub fn with_row_revision(mut self, revision: impl Fn(usize) -> u64 + 'static) -> Self {
+        self.row_revision = Some(std::rc::Rc::new(revision));
+        self
+    }
+
     /// Uses an explicitly known row height (including its vertical spacing).
     ///
     /// For an Auto-sized, FitList viewport this avoids rendering a sample row

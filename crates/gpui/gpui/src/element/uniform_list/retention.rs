@@ -1,9 +1,10 @@
 use super::*;
-use crate::window::scroll_rows::{RowListIdentity, RowPrepaint};
+use crate::window::scroll_rows::{RowListIdentity, RowPrepaint, RowRevision};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepaint(
     render: &RenderItems,
+    row_revision: Option<RowRevision>,
     item_count: usize,
     frame: &mut UniformListLayout,
     id: Option<&GlobalElementId>,
@@ -25,7 +26,7 @@ pub(super) fn prepaint(
     }
     let identity = RowListIdentity::Uniform(id.clone(), frame.item_size);
     let Some(mut plan) = window.with_content_mask(Some(content_mask), |window| {
-        window.plan_scroll_rows(identity, item_count, available_space, cx)
+        window.plan_scroll_rows(identity, item_count, available_space, row_revision, cx)
     }) else {
         return;
     };
@@ -70,6 +71,7 @@ pub(super) fn prepaint(
                         shared_reads.iter().chain(extra.iter()).cloned().collect()
                     };
                     let prepaint = RowPrepaint {
+                        row_revision: plan.row_revision(index),
                         origin,
                         records: start..window.prepaint_index(),
                         reads,

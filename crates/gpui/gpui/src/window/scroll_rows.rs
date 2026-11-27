@@ -44,9 +44,12 @@ impl ScrollRows {
     }
 }
 
+pub(crate) type RowRevision = Rc<dyn Fn(usize) -> u64>;
+
 #[derive(PartialEq)]
 struct ListContext {
     owner: crate::EntityId,
+    versioned: bool,
     identity: RowListIdentity,
     item_count: usize,
     available_space: Size<AvailableSpace>,
@@ -63,6 +66,7 @@ pub(crate) struct RowPlan {
     key: u64,
     revision: u64,
     placement_only: bool,
+    row_revision: Option<RowRevision>,
     context: Rc<ListContext>,
     // Rows captured by one plan share exactly one immutable context.
     // Compare its inherited style and list identity once per source group.
@@ -74,6 +78,10 @@ pub(crate) struct RowPlan {
 }
 
 impl RowPlan {
+    pub(crate) fn row_revision(&self, row: usize) -> u64 {
+        self.row_revision.as_ref().map_or(0, |revision| revision(row))
+    }
+
     fn matches_context(&self, previous: &Rc<ListContext>) -> bool {
         if Rc::ptr_eq(&self.context, previous) {
             return true;
@@ -110,6 +118,7 @@ impl RowPlan {
 }
 
 pub(crate) struct RowPrepaint {
+    pub(crate) row_revision: u64,
     pub(crate) origin: Point<Pixels>,
     pub(crate) records: Range<PrepaintStateIndex>,
     pub(crate) reads: Rc<[StateRead]>,
@@ -134,22 +143,25 @@ struct RowMeasurement {
 
 // Both the committed and current owner path must agree. A directly dirty
 // ancestor may have changed an otherwise untracked closure capture. A
-// dirty descendant also prevents reusing the parent's row render records.
+// dirty descendant also prevents implicit reuse of the parent's row records.
+// Versioned lists may certify their own directly dirty owner, never a
+// directly dirty ancestor or a changed owner path.
 fn clean_owner_path(
     owner: crate::EntityId,
     current: &[crate::EntityId],
     committed: impl Iterator<Item = crate::EntityId>,
     dirty: &FxHashSet<crate::EntityId>,
     direct: &FxHashSet<crate::EntityId>,
+    versioned: bool,
 ) -> bool {
     current.last() == Some(&owner)
-        && !dirty.contains(&owner)
-        && current.iter().all(|id| !direct.contains(id))
+        && (!dirty.contains(&owner) || (versioned && direct.contains(&owner)))
+        && current.iter().all(|id| (versioned && *id == owner) || !direct.contains(id))
         && committed.eq(current.iter().rev().copied())
 }
 
 impl Window {
-    fn row_replay_admission(&self) -> Option<(crate::EntityId, u64, bool)> {
+    fn row_replay_admission(&self, versioned: bool) -> Option<(crate::EntityId, u64, bool)> {
         if !self.scroll_row_replay_is_enabled() || self.force_view_cache_refresh {
             return None;
         }
@@ -162,7 +174,7 @@ impl Window {
                 || !clean_owner_path(
                     owner, &self.rendered_entity_stack,
                     self.rendered_frame.dispatch_tree.view_path_reversed(owner),
-                    &self.dirty_views, &self.direct_dirty_views,
+                    &self.dirty_views, &self.direct_dirty_views, versioned,
                 ))
         {
             return None;
@@ -189,7 +201,7 @@ impl Window {
         let Some(id) = id else {
             return measure(self, cx).0;
         };
-        let Some((owner, revision, placement_only)) = self.row_replay_admission() else {
+        let Some((owner, revision, placement_only)) = self.row_replay_admission(false) else {
             return measure(self, cx).0;
         };
         if let Some((previous_revision, previous)) = self.rendered_frame.scroll_rows.measurements.get(id)
@@ -243,9 +255,11 @@ impl Window {
         identity: RowListIdentity,
         item_count: usize,
         available_space: Size<AvailableSpace>,
+        row_revision: Option<RowRevision>,
         cx: &App,
     ) -> Option<RowPlan> {
-        let (owner, revision, placement_only) = self.row_replay_admission()?;
+        let versioned = row_revision.is_some();
+        let (owner, revision, placement_only) = self.row_replay_admission(versioned)?;
         let viewport = self.visual_content_mask();
         if self.visual_scale() != 1.
             || self.content_mask() != viewport
@@ -272,11 +286,13 @@ impl Window {
             key,
             revision,
             placement_only,
+            row_revision,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
             previous_context: RefCell::new(None),
             context: Rc::new(ListContext {
                 owner,
+                versioned,
                 identity,
                 item_count,
                 available_space,
@@ -296,6 +312,7 @@ impl Window {
         };
         if (plan.placement_only && record.revision != plan.revision)
             || !plan.matches_context(&record.context)
+            || record.prepaint.row_revision != plan.row_revision(row)
         {
             return false;
         }
@@ -334,6 +351,7 @@ impl Window {
         let record = &self.rendered_frame.scroll_rows.rows[&(plan.key, row)];
         let recorded = record.prepaint.records.clone();
         let reads = record.prepaint.reads.clone();
+        let row_revision = record.prepaint.row_revision;
         let start = self.prepaint_index();
         let delta = origin - record.prepaint.origin;
         if !hitbox_range(&record.prepaint).is_empty() {
@@ -346,6 +364,7 @@ impl Window {
         self.replay_prepaint_records(recorded, |_| parent);
         self.replayed_view_owners.insert(self.current_view());
         RowPrepaint {
+            row_revision,
             origin,
             records: start..self.prepaint_index(),
             reads,
@@ -506,14 +525,20 @@ mod scoped_row_tests {
         let path = [root, right];
         let mut dirty = FxHashSet::from_iter([root, left]);
         let mut direct = FxHashSet::from_iter([left]);
-        assert!(clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        assert!(clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct, false));
         direct.insert(root);
-        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct, false));
         direct.remove(&root);
         dirty.insert(right);
-        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct));
+        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct, false));
+        direct.insert(right);
+        assert!(clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct, true));
+        direct.insert(root);
+        assert!(!clean_owner_path(right, &path, [right, root].into_iter(), &dirty, &direct, true));
+        direct.remove(&root);
+        direct.remove(&right);
         dirty.remove(&right);
-        assert!(!clean_owner_path(right, &path, [right, left, root].into_iter(), &dirty, &direct));
-        assert!(!clean_owner_path(right, &path, std::iter::empty(), &dirty, &direct));
+        assert!(!clean_owner_path(right, &path, [right, left, root].into_iter(), &dirty, &direct, false));
+        assert!(!clean_owner_path(right, &path, std::iter::empty(), &dirty, &direct, false));
     }
 }

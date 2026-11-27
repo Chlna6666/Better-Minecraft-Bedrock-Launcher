@@ -4,6 +4,8 @@ use crate::{
     ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
+use std::rc::Rc;
+use crate::window::scroll_rows::RowRevision;
 
 use super::{
     configuration::{ListSizingBehavior, RenderItemFn},
@@ -19,6 +21,7 @@ pub fn list(
     List {
         state,
         render_item: Box::new(render_item),
+        row_revision: None,
         style: StyleRefinement::default(),
         sizing_behavior: ListSizingBehavior::default(),
     }
@@ -28,11 +31,29 @@ pub fn list(
 pub struct List {
     state: ListState,
     render_item: Box<RenderItemFn>,
+    row_revision: Option<RowRevision>,
     style: StyleRefinement,
     sizing_behavior: ListSizingBehavior,
 }
 
 impl List {
+    /// Opt in to row-local content retention across notifications of the
+    /// list's own view. The revision must change whenever anything affecting
+    /// that index's rendered content, layout, or callbacks changes, including
+    /// untracked closure captures. Reordered/replaced rows must have different
+    /// revisions unless their entire observable row is identical.
+    ///
+    /// The function must be pure, cheap and stable throughout a draw.
+    /// Notify the owning view normally. Without this contract, ordinary
+    /// owner invalidation remains conservative. Global refreshes, changed
+    /// ancestor paths, input restrictions and changed inherited context
+    /// still use the normal fallback.
+    /// For offscreen height changes, also call [ListState::invalidate_items].
+    pub fn with_row_revision(mut self, revision: impl Fn(usize) -> u64 + 'static) -> Self {
+        self.row_revision = Some(Rc::new(revision));
+        self
+    }
+
     /// Set the sizing behavior for the list.
     pub fn with_sizing_behavior(mut self, behavior: ListSizingBehavior) -> Self {
         self.sizing_behavior = behavior;
@@ -140,13 +161,13 @@ impl Element for List {
         let viewport = ContentMask::new(window.visual_bounds(bounds))
             .intersect(&window.visual_content_mask());
         let layout =
-            match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
+            match state.prepaint_items(bounds, padding, true, &mut self.render_item, self.row_revision.clone(), window, cx) {
                 Ok(layout) => layout,
                 Err(autoscroll_request) => {
                     state.version.bump_if(state.logical_scroll_top != Some(autoscroll_request));
                     state.logical_scroll_top = Some(autoscroll_request);
                     state
-                        .prepaint_items(bounds, padding, false, &mut self.render_item, window, cx)
+                        .prepaint_items(bounds, padding, false, &mut self.render_item, None, window, cx)
                         .unwrap()
                 }
             };
