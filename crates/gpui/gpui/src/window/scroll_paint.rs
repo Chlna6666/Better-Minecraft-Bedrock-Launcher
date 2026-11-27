@@ -14,7 +14,6 @@ pub(in crate::window) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
-    raster_eligible: bool,
     static_order: bool,
     scoped_order: bool,
     // Optional compact, immutable row texture in captured physical pixels.
@@ -91,11 +90,11 @@ impl Window {
         let operations = self.next_frame.painter.end_scroll_capture();
         let scale = self.scale_factor();
         let mut content = ScrollPaint::new(origin, capture.scale(scale).bounds, operations);
-        let inherited = previous.is_some_and(|previous| content.inherit_native_identity(previous, scale));
+        if let Some(previous) = previous {
+            content.inherit_native_identity(previous, scale);
+        }
         let content = Arc::new(content);
-        // Keep an existing native publication alive through a compatible
-        // recapture. First-time rows still follow the ordinary admission path.
-        let deferred = inherited && self.platform_window.supports_deferred_scroll()
+        let deferred = self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
             && (if row { content.native_row_placement(viewport, scale, Point::default()) }
                 else { content.native_placement(viewport, scale, Point::default()) })
@@ -160,7 +159,6 @@ impl ScrollPaint {
             origin,
             coverage,
             operations: Arc::new(operations),
-            raster_eligible,
             static_order,
             scoped_order,
             row_raster_bounds,
@@ -247,17 +245,6 @@ impl ScrollPaint {
         moved(self.coverage, delta).intersect(&viewport) == viewport
     }
 
-    /// A transferable placement is independent of the UI element, input
-    /// records and the mutable Painter. It uses the same original indexed
-    /// operation pages for eager and deferred projection.
-    pub(in crate::window) fn placement(self: &Arc<Self>, viewport: ContentMask<ScaledPixels>,
-        delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
-        (self.raster_eligible && self.covers(viewport.bounds, delta)
-            && viewport.corner_radii == Default::default()
-            && [delta.x.0, delta.y.0].into_iter().all(|v| v.is_finite() && v.fract() == 0.))
-            .then(|| ScrollPlacement { source: Arc::clone(self), viewport, delta, native: None })
-    }
-
     /// Native layers are named by the immutable source lifetime and use
     /// its original physical coordinates as content space. No enclosing
     /// scroll container identity or measured paint range is required.
@@ -268,7 +255,12 @@ impl ScrollPaint {
         {
             return None;
         }
-        let mut placement = self.placement(viewport.scale(scale), delta)?;
+        let viewport = viewport.scale(scale);
+        if !self.covers(viewport.bounds, delta) || viewport.corner_radii != Default::default()
+            || ![delta.x.0, delta.y.0].into_iter().all(|v| v.is_finite() && v.fract() == 0.)
+        {
+            return None;
+        }
         let offset = self.origin.scale(scale) - self.native_anchor.scale(scale);
         let translation = offset + delta;
         if [offset.x.0, offset.y.0, translation.x.0, translation.y.0].into_iter()
@@ -276,9 +268,18 @@ impl ScrollPaint {
             return None;
         }
         let id = *self.native_id.get_or_init(super::frame::next_layer_id);
-        placement.native = Some(NativeScrollGeometry { id, generation: self.native_generation, viewport, scale,
-            source_origin: [offset.x.0 as i32, offset.y.0 as i32], row_bounds: None });
-        Some(placement)
+        Some(ScrollPlacement {
+            source: Arc::clone(self),
+            viewport,
+            delta,
+            native: NativeScrollGeometry {
+                id,
+                generation: self.native_generation,
+                scale,
+                source_origin: [offset.x.0 as i32, offset.y.0 as i32],
+                row_bounds: None,
+            },
+        })
     }
 
     /// A row owns a compact, fixed raster rectangle rather than one
@@ -287,11 +288,22 @@ impl ScrollPaint {
     pub(super) fn native_row_placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
         scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
         let row_bounds = self.row_raster_bounds?;
-        let mut placement = self.native_placement(viewport, scale, delta)?;
-        if moved(row_bounds, delta).intersect(&placement.viewport.bounds).is_empty() {
+        let source_viewport = viewport.scale(scale);
+        let visible = moved(row_bounds, delta).intersect(&source_viewport.bounds);
+        if visible.is_empty() {
             return None;
         }
-        placement.native.as_mut()?.row_bounds = Some(row_bounds);
+        let viewport = if viewport.corner_radii == Default::default() {
+            viewport
+        } else if inside_rounded_clip_body(source_viewport, visible) {
+            // In this band the rounded mask is fully opaque at every
+            // fragment sample. Edge rows keep the original per-primitive clip.
+            ContentMask::new(viewport.bounds)
+        } else {
+            return None;
+        };
+        let mut placement = self.native_placement(viewport, scale, delta)?;
+        placement.native.row_bounds = Some(row_bounds);
         Some(placement)
     }
 
@@ -347,7 +359,6 @@ impl ScrollPaint {
 pub(in crate::window) struct NativeScrollGeometry {
     pub(in crate::window) id: u64,
     pub(in crate::window) generation: u64,
-    pub(in crate::window) viewport: ContentMask<Pixels>,
     pub(in crate::window) scale: f32,
     pub(in crate::window) source_origin: [i32; 2],
     pub(in crate::window) row_bounds: Option<Bounds<ScaledPixels>>,
@@ -359,7 +370,7 @@ pub(crate) struct ScrollPlacement {
     source: Arc<ScrollPaint>,
     viewport: ContentMask<ScaledPixels>,
     delta: Point<ScaledPixels>,
-    native: Option<NativeScrollGeometry>,
+    native: NativeScrollGeometry,
 }
 
 impl ScrollPlacement {
@@ -370,9 +381,13 @@ impl ScrollPlacement {
 
     pub(in crate::window) fn viewport(&self) -> ContentMask<ScaledPixels> { self.viewport }
 
-    pub(in crate::window) fn native_geometry(&self) -> Option<NativeScrollGeometry> { self.native }
+    pub(in crate::window) fn native_geometry(&self) -> NativeScrollGeometry { self.native }
 
     pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
+
+    pub(in crate::window) fn has_lcd_glyphs(&self) -> bool {
+        self.source.atlas_tiles.iter().any(|(atlas, _)| atlas.kind == crate::AtlasTextureKind::Subpixel)
+    }
 
     pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }
 
@@ -386,7 +401,7 @@ impl ScrollPlacement {
     /// The viewport is a conservative damage bound for every projected
     /// primitive, including a newly exposed part of the overscan.
     pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
-        self.native.and_then(|native| native.row_bounds)
+        self.native.row_bounds
             .map_or(self.viewport.bounds, |row| moved(row, self.delta).intersect(&self.viewport.bounds))
     }
 
@@ -425,6 +440,30 @@ fn compact_row_raster(visual: PaintBlockBounds, coverage: Bounds<ScaledPixels>) 
     }
     Some(Bounds::new(point(ScaledPixels(left), ScaledPixels(top)),
         crate::size(ScaledPixels(right - left), ScaledPixels(bottom - top))))
+}
+
+fn inside_rounded_clip_body(
+    mask: ContentMask<ScaledPixels>,
+    visible: Bounds<ScaledPixels>,
+) -> bool {
+    let bounds = mask.corner_bounds;
+    let corners = mask.corner_radii;
+    if [corners.top_left, corners.top_right, corners.bottom_right, corners.bottom_left]
+        .into_iter().any(|radius| !radius.0.is_finite() || radius.0 < 0.)
+    {
+        return false;
+    }
+    let left = bounds.left();
+    let right = bounds.right();
+    let guard = ScaledPixels(1.);
+    // Integral vertical sides leave at least half a pixel of SDF coverage
+    // at the nearest fragment center. A fractional edge keeps a full guard.
+    let left = if left.0.fract() == 0. { left } else { left + guard };
+    let right = if right.0.fract() == 0. { right } else { right - guard };
+    visible.left() >= left
+        && visible.right() <= right
+        && visible.top() >= bounds.top() + corners.top_left.max(corners.top_right) + guard
+        && visible.bottom() <= bounds.bottom() - corners.bottom_left.max(corners.bottom_right) - guard
 }
 
 #[cfg(test)]
@@ -501,7 +540,8 @@ mod tests {
         }
         let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
         let delta = point(ScaledPixels(0.), ScaledPixels(-32.));
-        let placement = source.placement(viewport, delta).expect("covered integral translation");
+        let logical_viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let placement = source.native_placement(logical_viewport, 1., delta).expect("covered integral translation");
         assert!(Arc::ptr_eq(placement.raster_source().0, &source.operations));
         let mut eager = Painter::default();
         source.replay(&mut eager, viewport, delta);
@@ -513,12 +553,12 @@ mod tests {
             painter.into_scene()
         }).join().unwrap();
         assert!(eager.paint_operations.matches_by(&recovered.paint_operations, PaintOperation::same_paint));
-        assert!(source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-0.5))).is_none());
-        assert!(source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-256.))).is_none());
+        assert!(source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-0.5))).is_none());
+        assert!(source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-256.))).is_none());
     }
 
     #[test]
-    fn materialized_root_replaces_only_certified_placement_span() {
+    fn owner_materializes_native_marker_between_ordinary_spans() {
         let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
         let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
@@ -527,22 +567,16 @@ mod tests {
             bounds: bounds(48.), content_mask: ContentMask::new(coverage), ..Default::default()
         })));
         let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
-        let old_placement = source.placement(viewport.scale(1.), Point::default()).unwrap();
-        let moved_placement = source.placement(viewport.scale(1.), point(ScaledPixels(0.), ScaledPixels(-32.))).unwrap();
+        let moved_placement = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-32.))).unwrap();
         let outside = |y| Quad { bounds: bounds(y), content_mask: viewport.scale(1.), ..Default::default() };
         let mut painter = Painter::default();
         painter.insert_primitive(outside(0.));
-        old_placement.replay(&mut painter);
+        assert!(painter.push_deferred_scroll(moved_placement.clone()));
         painter.insert_primitive(outside(48.));
         painter.finish();
         let scene = painter.into_scene();
-        let mut paint = crate::window::Paint::new(scene, Arc::default(), Default::default());
-        let mut fixture_source = Operations::default();
-        fixture_source.share(&source.operations, 0..source.operations.len());
-        paint.layers.raster_fixture(fixture_source, coverage, viewport, [0, 0]);
-        paint.layers.certify_fixture_root(&paint.scene, 1..2);
-        paint.layers.attach_fixture_placement(moved_placement.clone());
-        let recovered = paint.materialize_static_root().expect("static root fallback");
+        let paint = crate::window::Paint::new(scene, Arc::default(), Default::default());
+        let recovered = paint.owner_fallback().unwrap().expect("deferred scroll root");
         let mut eager = Painter::default();
         eager.insert_primitive(outside(0.));
         moved_placement.replay(&mut eager);
@@ -576,11 +610,11 @@ mod tests {
         };
         let original = Arc::new(capture(0x0000ff));
         let first = publish(&original);
-        let old = crate::window::SceneLayers::capture_native(&first, None);
+        let old = crate::window::SceneLayers::capture(&first, None, true);
         let mut refreshed = capture(0x00ff00);
         assert!(refreshed.inherit_native_identity(&original, 1.));
         let new = publish(&Arc::new(refreshed));
-        let layers = crate::window::SceneLayers::capture_native(&new, Some(&old));
+        let layers = crate::window::SceneLayers::capture(&new, Some(&old), true);
         let layer = &layers.frames[0];
         assert_eq!(layer.id, old.frames[0].id);
         assert_eq!(layer.generation, 2);
@@ -590,6 +624,62 @@ mod tests {
         let mut relocated = capture(0x0000ff);
         relocated.origin = point(px(0.), px(0.5));
         assert!(!relocated.inherit_native_identity(&original, 1.));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn lcd_tiles_require_and_track_the_opaque_underlay() {
+        let viewport = ContentMask::new(Bounds::new(Point::default(), size(px(40.), px(64.))));
+        let mask = viewport.scale(1.);
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::MonochromeSprite(crate::MonochromeSprite {
+            order: 0,
+            pad: 0,
+            animation_id: None,
+            bounds: mask.bounds,
+            content_mask: mask,
+            color: crate::rgb(0xffffff),
+            tile: crate::AtlasTile {
+                texture_id: crate::AtlasTextureId { index: 0, kind: crate::AtlasTextureKind::Subpixel },
+                tile_id: crate::TileId(1),
+                padding: 0,
+                bounds: Default::default(),
+            },
+            transformation: crate::TransformationMatrix::unit(),
+        })));
+        let frozen = Arc::new(ScrollPaint::new(Point::default(), mask.bounds, operations));
+        let placement = frozen.native_placement(viewport, 1., Point::default()).unwrap();
+        let scene = |background: crate::Rgba, obstructed: bool| {
+            let mut painter = Painter::default();
+            painter.insert_primitive(Quad {
+                bounds: mask.bounds, content_mask: mask, background: background.into(),
+                ..Default::default()
+            });
+            if obstructed {
+                painter.insert_primitive(Quad {
+                    bounds: Bounds::new(Point::default(), size(ScaledPixels(12.), ScaledPixels(12.))),
+                    content_mask: mask, background: crate::rgb(0x009900).into(),
+                    ..Default::default()
+                });
+            }
+            assert!(painter.push_deferred_scroll(placement.clone()));
+            painter.finish();
+            painter.into_scene()
+        };
+        let red = crate::rgb(0x990000);
+        let blue = crate::rgb(0x000099);
+        let red_scene = scene(red, false);
+        let previous = crate::window::SceneLayers::capture(&red_scene, None, true);
+        assert_eq!(previous.frames[0].raster_background(), Some(red));
+        let stable = crate::window::SceneLayers::capture(&red_scene, Some(&previous), true);
+        assert_eq!(stable.frames[0].id, previous.frames[0].id);
+        let changed = crate::window::SceneLayers::capture(&scene(blue, false), Some(&previous), true);
+        assert_eq!(changed.frames[0].raster_background(), Some(blue));
+        assert_ne!(changed.frames[0].id, previous.frames[0].id);
+        for (scene, opaque) in [(&red_scene, false), (&scene(red, true), true)] {
+            let layers = crate::window::SceneLayers::capture(scene, Some(&previous), opaque);
+            assert!(layers.frames[0].root_static_raster().is_none());
+        }
     }
 
     #[test]
@@ -614,10 +704,10 @@ mod tests {
             painter.into_scene()
         };
         let original = Arc::new(capture(0., 0x0000ff));
-        let old = crate::window::SceneLayers::capture_native(&publish(&original), None);
+        let old = crate::window::SceneLayers::capture(&publish(&original), None, true);
         let mut next = capture(16., 0x00ff00);
         assert!(next.inherit_native_identity(&original, 1.));
-        let layers = crate::window::SceneLayers::capture_native(&publish(&Arc::new(next)), Some(&old));
+        let layers = crate::window::SceneLayers::capture(&publish(&Arc::new(next)), Some(&old), true);
         let layer = &layers.frames[0];
         assert_eq!(layer.id, old.frames[0].id);
         assert_eq!(layer.root_static_raster(), Some((viewport.scale(1.).bounds, [0, 16])));
@@ -658,9 +748,7 @@ mod tests {
         assert_eq!(scene.len(), 3);
         assert!(scene.paint_operations.has_deferred_scroll());
         assert_eq!(scene.paint_operations.deferred_scrolls().count(), 1);
-        let layers = crate::window::SceneLayers::capture(
-            &scene, &[], &Default::default(), &[], None,
-        );
+        let layers = crate::window::SceneLayers::capture(&scene, None, true);
         assert_eq!(layers.frames.len(), 1);
         assert_eq!(layers.frames[0].root_static_span(), Some(&(1..2)));
         assert_eq!(layers.frames[0].root_static_raster(), Some((viewport.bounds, [0, -16])));
@@ -673,9 +761,7 @@ mod tests {
         assert!(moved.push_deferred_scroll(later));
         moved.insert_primitive(outside(32.));
         moved.finish();
-        let next = crate::window::SceneLayers::capture(
-            &moved.scene, &[], &Default::default(), &[], Some(&layers),
-        );
+        let next = crate::window::SceneLayers::capture(&moved.scene, Some(&layers), true);
         assert_eq!(next.frames[0].id, layers.frames[0].id);
         assert_eq!(next.frames[0].generation, layers.frames[0].generation);
         assert!(Arc::ptr_eq(&next.frames[0].content, &layers.frames[0].content));
@@ -685,7 +771,7 @@ mod tests {
         assert!(duplicate.push_deferred_scroll(placement.clone()));
         assert!(duplicate.push_deferred_scroll(placement.clone()));
         duplicate.finish();
-        assert!(crate::window::SceneLayers::capture_native(&duplicate.scene, None).frames.is_empty());
+        assert!(crate::window::SceneLayers::capture(&duplicate.scene, None, true).frames.is_empty());
         let mut nested = Painter::default();
         nested.push_layer(viewport.bounds);
         nested.replay_with_ordering(1..2, &scene, std::iter::empty(), Some(&moved));
@@ -693,7 +779,7 @@ mod tests {
         nested.finish();
         assert_eq!(nested.len(), 3);
         assert!(nested.paint_operations.has_deferred_scroll());
-        let nested_layers = crate::window::SceneLayers::capture_native(&nested.scene, Some(&layers));
+        let nested_layers = crate::window::SceneLayers::capture(&nested.scene, Some(&layers), true);
         assert_eq!(nested_layers.frames.len(), 1);
         assert_eq!(nested_layers.frames[0].root_static_span(), Some(&(1..2)));
         assert_eq!(nested_layers.frames[0].id, layers.frames[0].id);
@@ -707,7 +793,7 @@ mod tests {
         assert!(conflict.push_deferred_scroll(placement.clone()));
         conflict.pop_layer();
         conflict.finish();
-        let conflict_layers = crate::window::SceneLayers::capture_native(&conflict.scene, Some(&layers));
+        let conflict_layers = crate::window::SceneLayers::capture(&conflict.scene, Some(&layers), true);
         assert_eq!(conflict_layers.frames.len(), 1);
         assert!(conflict_layers.frames[0].root_static_span().is_none());
         let nested_paint = crate::window::Paint::new(nested.into_scene(), Arc::default(), Default::default());
@@ -770,5 +856,31 @@ mod tests {
                 .paint_operations
                 .matches_by(&reference.paint_operations, PaintOperation::visually_eq)
         );
+    }
+
+    #[test]
+    fn native_row_accepts_rectangular_cells_inside_a_rounded_viewport() {
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(128.), px(128.)));
+        let rounded = ContentMask {
+            bounds: viewport,
+            corner_bounds: viewport,
+            corner_radii: crate::Corners::all(px(12.)),
+        };
+        let coverage = Bounds::new(point(px(0.), px(-128.)), size(px(128.), px(384.))).scale(1.);
+        let cell = Bounds::new(point(px(5.), px(40.)), size(px(75.), px(16.))).scale(1.);
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(crate::Quad {
+            bounds: cell,
+            content_mask: ContentMask::new(cell),
+            ..Default::default()
+        })));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let placement = source.native_row_placement(rounded, 1., Point::default())
+            .expect("the row only touches fully covered pixels");
+        assert_eq!(placement.viewport.corner_radii, Default::default());
+        assert_eq!(placement.raster_source().0.len(), 1);
+        assert!(source.native_row_placement(
+            rounded, 1., point(ScaledPixels(0.), ScaledPixels(-38.)),
+        ).is_none());
     }
 }

@@ -67,12 +67,7 @@ fn requests(layer: &crate::window::LayerFrame, size: DrawableSize) -> Option<Vec
     for row in first..=last {
         let grid_y = row.checked_mul(height)?;
         let grid_end = grid_y.checked_add(height)?;
-        // Row-backed captures own only visible pixels. Clip the two edge
-        // strips exactly; full interior strips retain their stable grid key.
-        // Overscan captures still demand the entire strip be available.
-        let (y, end) = if layer.has_visible_row_source() {
-            (grid_y.max(content_top), grid_end.min(content_bottom))
-        } else { (grid_y, grid_end) };
+        let (y, end) = (grid_y, grid_end);
         let extent = Extent2d::new((right - left) as u32, (end - y) as u32).ok()?;
         let rect = [i64::from(content_left), i64::from(y),
             i64::from(content_left) + i64::from(extent.width()), i64::from(end)];
@@ -1303,7 +1298,7 @@ impl NovaRenderer {
             let prepare = (|| -> Result<bool> {
                 let mut projection = ProjectionArena::new(device, &mut self.scroll_composite_slots[slot].projection, misses * 2)?;
                 let mut depth_views = Vec::<(Extent2d, TextureViewId)>::new();
-                let mut clear_bindings = FxHashMap::<(u32, u32), BindGroupId>::default();
+                let mut clear_bindings = FxHashMap::<(u32, u32, [u32; 4]), BindGroupId>::default();
                 let paged = shared_raster_pages(device, self.backend_info.kind().ok());
                 let mut demand = FxHashMap::<(u32, u32), usize>::default();
                 if paged {
@@ -1326,47 +1321,34 @@ impl NovaRenderer {
                     let (operations, _) = layer.raster_source_for_tile([x, y,
                         x + i64::from(request.raster.extent.width()), y + i64::from(request.raster.extent.height())])
                         .context("missing immutable scroll source")?;
-                    // Use the existing native Painter ordering for the immutable
-                    // source, including equal-order type/atlas sorting. Only a miss
-                    // builds this temporary stream; no persistent CPU Scene cache.
+                    // Native placement admission proves that the captured
+                    // paint order produces the same pixels as a sorted Scene.
+                    let background = layer.raster_background();
                     let placements = if layer.raster_atlas_tiles().is_empty() {
                         FxHashMap::default()
                     } else {
-                        let Some(placements) = self.atlas.ready_scroll_glyphs(layer.raster_atlas_tiles()) else {
+                        let ids = layer.raster_atlas_tiles();
+                        let placements = if background.is_some() {
+                            self.atlas.ready_root_glyphs(ids)
+                        } else {
+                            self.atlas.ready_scroll_glyphs(ids)
+                        };
+                        let Some(placements) = placements else {
                             return Ok(false);
                         };
                         placements
                     };
-                    let mut painter = crate::scene::Painter::default();
+                    let mut streams = StaticStreams { root_lcd: background.is_some(), ..Default::default() };
                     for operation in operations.iter() {
                         match operation {
                             PaintOperation::Primitive(primitive) => {
-                                let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
-                                painter.insert_primitive(primitive);
-                            }
-                            PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
-                            PaintOperation::EndLayer => painter.pop_layer(),
-                            _ => return Ok(false),
-                        }
-                    }
-                    painter.finish();
-                    let source = painter.into_scene();
-                    let mut streams = StaticStreams::default();
-                    // The same native batch iterator as the normal renderer.
-                    for batch in source.batches() {
-                        macro_rules! pack {
-                            ($slice:expr, $kind:ident) => {
-                                for value in $slice {
-                                    if streams.push(&Primitive::$kind(*value), false).is_none() { return Ok(false); }
+                                if primitive.bounds().intersect(&primitive.content_mask().bounds).is_empty() {
+                                    continue;
                                 }
-                            };
-                        }
-                        match batch {
-                            crate::scene::PrimitiveBatch::Quads { quads, .. } => { pack!(quads, Quad); }
-                            crate::scene::PrimitiveBatch::Shadows { shadows, .. } => { pack!(shadows, Shadow); }
-                            crate::scene::PrimitiveBatch::Underlines(underlines) => { pack!(underlines, Underline); }
-                            crate::scene::PrimitiveBatch::MonochromeSprites { sprites, .. } => { pack!(sprites, MonochromeSprite); }
-                            crate::scene::PrimitiveBatch::PolychromeSprites { sprites, .. } => { pack!(sprites, PolychromeSprite); }
+                                let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
+                                if streams.push(&primitive, false).is_none() { return Ok(false); }
+                            }
+                            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
                             _ => return Ok(false),
                         }
                     }
@@ -1399,10 +1381,11 @@ impl NovaRenderer {
                         // and fragment origin arithmetic in the same space.
                         let prepared = (|| -> Result<_> {
                             let globals = pack_global_params(DrawableSize { width: target_extent.width(), height: target_extent.height() },
-                                true, [raster.origin.x as f32 - region.x as f32, raster.origin.y as f32 - region.y as f32]);
+                                background.is_none(), [raster.origin.x as f32 - region.x as f32, raster.origin.y as f32 - region.y as f32]);
                             let (global_buffer, global_offset) = projection.push(device, &mut resources, &globals)?;
                             let buffers = FrameResourceBuffers { global_buffer, ..source_buffers };
-                            let mut commands = streams.commands(self, device, &mut resources, buffers, global_offset, self.pipelines.premultiplied, &[], None)?;
+                            let blend = if background.is_some() { self.pipelines.alpha } else { self.pipelines.premultiplied };
+                            let mut commands = streams.commands(self, device, &mut resources, buffers, global_offset, blend, &[], None)?;
                             if paged {
                                 for command in &mut commands {
                                     let RenderCommand::Draw(draw) = command else {
@@ -1410,16 +1393,19 @@ impl NovaRenderer {
                                     };
                                     draw.scissor = Some(region);
                                 }
-                                // One page-space transparent clear binding per
-                                // extent, shared by all dirty cells and pages.
-                                // Scissor selects the exact rectangle.
-                                let class = (target_extent.width(), target_extent.height());
+                            }
+                            if paged || background.is_some() {
+                                // Reuse one clear binding per physical extent
+                                // and color. Scissor selects the exact cell.
+                                let color = background.unwrap_or_default();
+                                let class = (target_extent.width(), target_extent.height(),
+                                    [color.r, color.g, color.b, color.a].map(f32::to_bits));
                                 let group = if let Some(&group) = clear_bindings.get(&class) { group } else {
                                     let bounds = crate::bounds(crate::point(ScaledPixels(0.), ScaledPixels(0.)),
                                         crate::size(ScaledPixels(class.0 as f32), ScaledPixels(class.1 as f32)));
                                     let mut clear = Vec::with_capacity(PACKED_QUAD_BYTES);
                                     write_quad(&mut clear, &Quad { bounds, content_mask: ContentMask::new(bounds),
-                                        background: crate::rgba(0).into(), ..Default::default() });
+                                        background: color.into(), ..Default::default() });
                                     let clear_buffer = resources.buffer(device, &clear, BufferUsage::STORAGE)?;
                                     let globals = pack_global_params(DrawableSize { width: class.0, height: class.1 }, true, [0., 0.]);
                                     let (global_buffer, global_offset) = projection.push(device, &mut resources, &globals)?;
@@ -1907,7 +1893,10 @@ mod tests {
         let dirty = [42].into_iter().collect();
         assert!(!layer.raster_tile_uses_atlas_damage([0, -256, 128, 0], &dirty));
         assert!(layer.raster_tile_uses_atlas_damage([0, 0, 128, 256], &dirty));
-        assert!(!layer.raster_tile_uses_atlas_damage([0, 256, 128, 512], &dirty));
+        // Capture-space glyph ends at y=320. The two-pixel guard can
+        // affect the adjoining tile until y=322.
+        assert!(layer.raster_tile_uses_atlas_damage([0, 256, 128, 512], &dirty));
+        assert!(!layer.raster_tile_uses_atlas_damage([0, 258, 128, 512], &dirty));
         assert!(!layer.raster_tile_uses_atlas_damage([0, 0, 128, 256], &[43].into_iter().collect()));
     }
 
@@ -1956,27 +1945,6 @@ mod tests {
     }
 
     #[test]
-    fn visible_row_tiles_clip_edges_without_changing_interior_grid() {
-        let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
-            crate::size(crate::px(128.), crate::px(512.))));
-        let mut painter = crate::scene::Painter::default();
-        painter.insert_primitive(Quad { bounds: viewport.scale(1.).bounds,
-            content_mask: viewport.scale(1.), ..Default::default() });
-        painter.finish();
-        let scene = painter.into_scene();
-        let mut paint = crate::window::Paint::default();
-        paint.layers.visible_row_fixture(&scene, viewport, [0, 64]);
-        let plan = requests(&paint.layers.frames[0], DrawableSize { width: 128, height: 512 }).unwrap();
-        assert_eq!(plan.iter().map(|tile| (tile.key.y, tile.raster.origin.y, tile.raster.extent.height()))
-            .collect::<Vec<_>>(), vec![(-1, -64, 64), (0, 0, 256), (1, 256, 192)]);
-        assert_eq!(plan[0].source_origin, [0, 0]);
-        assert_eq!(plan[1].source_origin, [0, 64]);
-        assert_eq!(plan[2].source_origin, [0, 320]);
-        assert_eq!(plan[0].bounds.top(), ScaledPixels(0.));
-        assert_eq!(plan[2].bounds.bottom(), ScaledPixels(512.));
-    }
-
-    #[test]
     fn compact_native_row_uses_one_fixed_texture_when_clipped_by_list_edge() {
         let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
             crate::size(crate::px(128.), crate::px(512.))));
@@ -1994,7 +1962,7 @@ mod tests {
         assert!(painter.push_deferred_scroll(placement));
         painter.finish();
         let scene = painter.into_scene();
-        let layers = crate::window::SceneLayers::capture_native(&scene, None);
+        let layers = crate::window::SceneLayers::capture(&scene, None, true);
         let layer = &layers.frames[0];
         let requests = requests(layer, DrawableSize { width: 128, height: 512 }).unwrap();
         assert_eq!(requests.len(), 1);

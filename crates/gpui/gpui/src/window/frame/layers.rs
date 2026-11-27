@@ -1,9 +1,5 @@
-//! Immutable scroll content publication, adapted from GPUI Fast's LayerContent/LayerPart.
-//!
-//! Prefer an exact overscanned view's immutable source; ordinary visible
-//! Scene ranges remain the fallback for incomplete or unsupported captures.
-use super::{LayerRecord, LayerScrollPosition};
-use crate::{Bounds, ContentMask, Pixels, Point, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperation, Primitive, Scene}};
+//! Immutable scroll content publication, adapted from GPUI Fast's LayerContent.
+use crate::{Bounds, ContentMask, Pixels, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperation, Primitive, Scene}};
 use collections::{FxHashMap, FxHashSet};
 use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
@@ -13,69 +9,25 @@ pub(in crate::window) fn next_layer_id() -> u64 {
     NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A contiguous part of a layer. Lists retain logical row identities; gaps
-/// (decorations or other content) keep their original painter order.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LayerPart {
-    pub(crate) row: Option<usize>,
-    pub(crate) operations: Range<usize>,
-}
-
 pub(crate) struct LayerContent {
     // Reuses the original immutable operation pages instead of copying a
     // Scene per row. This payload never retains the enclosing Scene itself.
     operations: Arc<Operations>,
-    parts: Box<[LayerPart]>,
-    raster: Option<ContentRaster>,
+    raster: ContentRaster,
     // Immutable logical glyph identities collected once with ScrollPaint.
     raster_atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
 }
 
 impl LayerContent {
-    fn capture(scene: &Scene, range: Range<usize>, rows: &[LayerPart]) -> Option<Self> {
-        if range.is_empty() || !scene.can_reuse_range_bounds(range.clone()) {
-            return None;
-        }
-        let mut parts = Vec::with_capacity(rows.len().saturating_add(1));
-        let mut cursor = range.start;
-        for row in rows {
-            if row.operations.start < cursor || row.operations.end < row.operations.start
-                || row.operations.end > range.end
-            {
-                return None;
-            }
-            if cursor < row.operations.start {
-                parts.push(LayerPart {
-                    row: None,
-                    operations: cursor - range.start..row.operations.start - range.start,
-                });
-            }
-            parts.push(LayerPart {
-                row: row.row,
-                operations: row.operations.start - range.start..row.operations.end - range.start,
-            });
-            cursor = row.operations.end;
-        }
-        if cursor < range.end {
-            parts.push(LayerPart {
-                row: None,
-                operations: cursor - range.start..range.end - range.start,
-            });
-        }
-        let mut operations = Operations::default();
-        operations.share(&scene.paint_operations, range);
-        Some(Self { operations: Arc::new(operations), parts: parts.into_boxed_slice(), raster: None, raster_atlas_tiles: Arc::default() })
-    }
-
     fn from_scroll(
         operations: &Arc<Operations>,
         source_coverage: Bounds<ScaledPixels>,
         delta: Point<ScaledPixels>,
-        translation: Option<[i32; 2]>,
+        translation: [i32; 2],
         source_viewport: ContentMask<ScaledPixels>,
         atlas_tiles: &Arc<[(crate::AtlasTextureId, u32)]>,
     ) -> Option<Self> {
-        let [x, y] = translation?;
+        let [x, y] = translation;
         // Capture coordinates = stable content coordinates + source origin.
         // The viewport moved by delta since this capture was painted.
         let origin = translation_point([x, y]) - delta;
@@ -93,78 +45,19 @@ impl LayerContent {
         }
         Some(Self {
             operations: Arc::clone(operations),
-            parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
-            raster: Some(ContentRaster { source_origin, coverage, visible_rows: false }),
+            raster: ContentRaster { source_origin, coverage },
             raster_atlas_tiles: Arc::clone(atlas_tiles),
         })
     }
 
-    /// Lists already publish immutable row operation spans. Promote that
-    /// exact visible capture without inventing overscan or copying its pages.
-    fn from_visible_rows(scene: &Scene, range: Range<usize>, rows: &[LayerPart],
-        viewport: ContentMask<ScaledPixels>, translation: Option<[i32; 2]>) -> Option<Self> {
-        let origin = translation?;
-        if rows.is_empty() || viewport.corner_radii != Default::default()
-            || !scene.paint_operations.range_is_replayable(range.clone())
-            || origin.iter().any(|&value| value.unsigned_abs() > 1_048_576)
-        { return None; }
-        let mut content = Self::capture(scene, range, rows)?;
-        let mut ids = FxHashSet::default();
-        for op in content.operations.iter() {
-            if !static_scroll_raster_operation(op, viewport.bounds) { return None; }
-            match op {
-                PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => {
-                    ids.insert((s.tile.texture_id, s.tile.tile_id.0));
-                }
-                PaintOperation::Primitive(Primitive::PolychromeSprite(s)) => {
-                    ids.insert((s.tile.texture_id, s.tile.tile_id.0));
-                }
-                _ => {}
-            }
-        }
-        content.raster = Some(ContentRaster {
-            source_origin: origin, coverage: LayerFrame::coverage(viewport, translation),
-            visible_rows: true,
-        });
-        content.raster_atlas_tiles = ids.into_iter().collect::<Vec<_>>().into();
-        Some(content)
-    }
-
-    // GPUI Fast inherits a tile only when its ordered contributing paint
-    // is unchanged. Use the existing immutable operation pages for a cheap
-    // equality proof; unknown effects and topology changes reject adoption.
-    fn damage_from(&self, previous: &Self) -> LayerDamage {
-        if self.parts != previous.parts || self.operations.len() != previous.operations.len() {
-            return LayerDamage::Full;
-        }
-        let mut damage: Option<Bounds<ScaledPixels>> = None;
-        let valid = self.operations.matches_by(&previous.operations, |current, old| {
-            let (PaintOperation::Primitive(current), PaintOperation::Primitive(old)) = (current, old) else {
-                return current.same_paint(old)
-                    && matches!(current, PaintOperation::StartLayer(_) | PaintOperation::EndLayer);
-            };
-            let Some(current_bounds) = static_raster_bounds(current) else { return false; };
-            let Some(old_bounds) = static_raster_bounds(old) else { return false; };
-            if !current.visually_eq(old) {
-                let changed = current_bounds.union(&old_bounds);
-                damage = Some(damage.map_or(changed, |bounds| bounds.union(&changed)));
-            }
-            true
-        });
-        if valid {
-            damage.map_or(LayerDamage::Clean, LayerDamage::Bounds)
-        } else {
-            LayerDamage::Full
-        }
-    }
-
     // Native captures use a common content anchor but can paint at
     // different window origins. Compare the ordered records after moving
-    // old geometry into the new capture coordinate system; rectangular
-    // capture masks can differ outside the common content coverage.
+    // old geometry into the new capture coordinate system. The two
+    // capture masks agree in their common coverage. Nested masks can
+    // render correctly but require a full refresh on recapture.
     fn native_damage_from(&self, previous: &Self) -> LayerDamage {
-        let (Some(current), Some(old)) = (self.raster, previous.raster) else { return LayerDamage::Full; };
-        if self.parts != previous.parts || self.operations.len() != previous.operations.len() {
+        let (current, old) = (self.raster, previous.raster);
+        if self.operations.len() != previous.operations.len() {
             return LayerDamage::Full;
         }
         let current_origin = translation_point(current.source_origin);
@@ -212,66 +105,7 @@ impl LayerContent {
         damage.map_or(LayerDamage::Clean, LayerDamage::Bounds)
     }
 
-    /// Compare only the pixels that both viewport captures actually own.
-    /// Rows entering or leaving the viewport can change the operation count
-    /// without changing a single contributing primitive in this intersection.
-    fn matches_translated(
-        &self,
-        previous: &Self,
-        old_translation: [i32; 2],
-        current_translation: [i32; 2],
-        common: Bounds<ScaledPixels>,
-        viewport: ContentMask<ScaledPixels>,
-    ) -> bool {
-        let delta = translation_point([
-            current_translation[0] - old_translation[0],
-            current_translation[1] - old_translation[1],
-        ]);
-        let current_region = translated_bounds(common, translation_point(current_translation));
-        let old_region = translated_bounds(common, translation_point(old_translation));
-        let mut current = self.contributors(current_region, viewport);
-        let mut old = previous.contributors(old_region, viewport);
-        loop {
-            match (current.next(), old.next()) {
-                (None, None) => return true,
-                (Some(Ok(current)), Some(Ok(old)))
-                    if translated_primitive_matches(current, old, delta, viewport) => {}
-                // Unknown effects are never skipped, even outside the
-                // intersection: their dependency footprint is not proven.
-                _ => return false,
-            }
-        }
-    }
 
-    fn contributors(
-        &self,
-        region: Bounds<ScaledPixels>,
-        viewport: ContentMask<ScaledPixels>,
-    ) -> impl Iterator<Item = Result<&Primitive, ()>> + '_ {
-        self.operations.iter().filter_map(move |operation| {
-            match operation {
-                PaintOperation::Primitive(primitive) => {
-                    let Some(bounds) = static_raster_bounds(primitive) else {
-                        return Some(Err(()));
-                    };
-                    if *primitive.content_mask() != viewport {
-                        return Some(Err(()));
-                    }
-                    (!bounds.intersect(&region).is_empty()).then_some(Ok(primitive))
-                }
-                // These markers do not emit pixels. Their actual ordering
-                // effect is preserved by comparing each primitive's exact
-                // DrawOrder and keeping the contributing operation order.
-                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
-                PaintOperation::StartBlur(_) | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => Some(Err(())),
-            }
-        })
-    }
-
-    fn matches(&self, other: &Self) -> bool {
-        self.raster == other.raster && self.parts == other.parts
-            && self.operations.matches_by(&other.operations, PaintOperation::same_paint)
-    }
 }
 
 /// Rasterization uses the source's original coordinates; only the signed
@@ -280,7 +114,6 @@ impl LayerContent {
 struct ContentRaster {
     source_origin: [i32; 2],
     coverage: Bounds<ScaledPixels>,
-    visible_rows: bool,
 }
 
 impl ContentRaster {
@@ -304,28 +137,6 @@ impl ContentRaster {
 // GPU raster coordinates are stable content pixels, with an integral
 // device-pixel translation into the original captured window coordinates.
 // Fractional positions and lists with unknown row heights have no proof.
-pub(super) fn integral_translation(
-    offset: LayerScrollPosition,
-    visual_scale: f32,
-    device_scale: f32,
-) -> Option<[i32; 2]> {
-    let offset = match offset {
-        LayerScrollPosition::Pixels(offset) => offset,
-        LayerScrollPosition::List { pixel_offset: Some(y), .. } => point(crate::px(0.), y),
-        LayerScrollPosition::List { pixel_offset: None, .. } => return None,
-    };
-    if visual_scale != 1. || !device_scale.is_finite() || device_scale <= 0. {
-        return None;
-    }
-    let coordinate = |p: Pixels| {
-        let value = p.0 * device_scale;
-        // Keep exact f32 pixel arithmetic; no rounding of logical state.
-        (value.is_finite() && value.fract() == 0. && value.abs() <= 1_048_576.)
-            .then_some(value as i32)
-    };
-    Some([coordinate(offset.x)?, coordinate(offset.y)?])
-}
-
 fn translation_point(translation: [i32; 2]) -> Point<ScaledPixels> {
     point(ScaledPixels(translation[0] as f32), ScaledPixels(translation[1] as f32))
 }
@@ -335,39 +146,6 @@ fn translated_bounds(mut bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels
     bounds
 }
 
-// GPUI Fast translates primitive coordinates and local masks together.
-// Here the only admitted mask is the exact fixed rectangular viewport.
-// Its pixels agree inside the intersection, so preserve it rather than
-// translating the ancestor clip. Rounded and nested masks are not admitted.
-fn translated_primitive_matches(
-    current: &Primitive,
-    old: &Primitive,
-    delta: Point<ScaledPixels>,
-    viewport: ContentMask<ScaledPixels>,
-) -> bool {
-    if static_raster_bounds(current).is_none() || static_raster_bounds(old).is_none()
-        || *current.content_mask() != viewport || *old.content_mask() != viewport
-    {
-        return false;
-    }
-    macro_rules! compare {
-        ($a:ident, $b:ident) => {{
-            let mut moved = *$b;
-            moved.bounds = translated_bounds(moved.bounds, delta);
-            *$a == moved
-        }};
-    }
-    match (current, old) {
-        (Primitive::Quad(a), Primitive::Quad(b)) => compare!(a, b),
-        (Primitive::Shadow(a), Primitive::Shadow(b)) => compare!(a, b),
-        (Primitive::Underline(a), Primitive::Underline(b)) => compare!(a, b),
-        (Primitive::MonochromeSprite(a), Primitive::MonochromeSprite(b)) => compare!(a, b),
-        (Primitive::PolychromeSprite(a), Primitive::PolychromeSprite(b)) => compare!(a, b),
-        _ => false,
-    }
-}
-
-// The source still covers only a viewport, not an overscan region.
 #[derive(Clone, Copy)]
 enum LayerDamage {
     Full,
@@ -385,7 +163,9 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
             && matches!(sprite.tile.texture_id.kind, crate::AtlasTextureKind::Bgra | crate::AtlasTextureKind::Rgba) => {}
         Primitive::MonochromeSprite(sprite)
             if sprite.transformation == TransformationMatrix::unit()
-                && sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome => {}
+                && (sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome
+                    || (cfg!(target_os = "windows")
+                        && sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel)) => {}
         _ => return None,
     }
     // Include the antialiased boundary; never claim a clean neighbor from
@@ -395,9 +175,10 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
         .into_iter().all(f32::is_finite).then_some(bounds)
 }
 
-// First production admission is deliberately narrow: only independently
-// compositable static primitives with the original rectangular capture mask.
-// Effects, LCD coverage and transformed glyphs must keep the ordinary path.
+// Rectangular local clips stay in the captured primitive. The raster source
+// is bounded by the capture and uses its original coordinates.
+// Effects and transformed glyphs keep the ordinary path. LCD coverage
+// requires the opaque underlay proof at publication.
 pub(in crate::window) fn static_scroll_raster_operation(
     operation: &PaintOperation,
     coverage: Bounds<ScaledPixels>,
@@ -408,7 +189,7 @@ pub(in crate::window) fn static_scroll_raster_operation(
         ].into_iter().all(f32::is_finite),
         PaintOperation::EndLayer => true,
         PaintOperation::Primitive(primitive) => {
-            primitive.content_mask().bounds == coverage
+            contains_visual(coverage, primitive.content_mask().bounds)
                 && primitive.content_mask().corner_radii == Default::default()
                 && static_raster_bounds(primitive).is_some()
         }
@@ -417,10 +198,10 @@ pub(in crate::window) fn static_scroll_raster_operation(
 }
 
 pub(crate) struct LayerFrame {
-    // Native placements use their source identity instead of a container key.
-    layout_key: Option<u64>,
-    /// Stable within one mounted lifetime; not a transient HitboxId.
+    /// Raster identity, stable while the capture and its underlay are valid.
     pub(crate) id: u64,
+    source_id: u64,
+    background: Option<Rgba>,
     pub(crate) generation: u64,
     /// Exact original operation span, certified against native root order.
     /// The owner derives complementary intervals for the selected layers.
@@ -429,69 +210,32 @@ pub(crate) struct LayerFrame {
     /// Certified coverage shared with the immediately previous generation,
     /// in stable content-space device pixels.
     previous_coverage: Option<Bounds<ScaledPixels>>,
-    translation: Option<[i32; 2]>,
+    translation: [i32; 2],
     source_viewport: ContentMask<ScaledPixels>,
-    viewport: ContentMask<Pixels>,
-    offset: LayerScrollPosition,
+    scale: f32,
     pub(crate) content: Arc<LayerContent>,
-    // A placement carries the original indexed source, not the projected
-    // viewport Scene. Keep it outside the generation-owned content.
-    placement: Option<crate::window::scroll_paint::ScrollPlacement>,
+    row_raster: Option<Bounds<ScaledPixels>>,
 }
 
 impl LayerFrame {
-    fn coverage(viewport: ContentMask<ScaledPixels>, translation: Option<[i32; 2]>) -> Bounds<ScaledPixels> {
-        let [x, y] = translation.unwrap_or([0, 0]);
+    fn coverage(viewport: ContentMask<ScaledPixels>, translation: [i32; 2]) -> Bounds<ScaledPixels> {
+        let [x, y] = translation;
         translated_bounds(viewport.bounds, translation_point([-x, -y]))
-    }
-
-    fn transition(&self, record: &LayerRecord, content: &LayerContent) -> (LayerDamage, Option<Bounds<ScaledPixels>>) {
-        if self.viewport != record.viewport || self.source_viewport != record.source_viewport
-            || self.source_viewport.corner_radii != Default::default()
-        {
-            return (LayerDamage::Full, None);
-        }
-        let current_coverage = Self::coverage(record.source_viewport, record.translation);
-        let old_coverage = Self::coverage(self.source_viewport, self.translation);
-        let common = current_coverage.intersect(&old_coverage);
-        if common.is_empty() {
-            return (LayerDamage::Full, None);
-        }
-        let damage = if self.offset == record.offset && self.translation == record.translation {
-            match content.damage_from(&self.content) {
-                LayerDamage::Bounds(bounds) => {
-                    let [x, y] = record.translation.unwrap_or([0, 0]);
-                    LayerDamage::Bounds(translated_bounds(bounds, translation_point([-x, -y])))
-                }
-                damage => damage,
-            }
-        } else if let (Some(old), Some(current)) = (self.translation, record.translation) {
-            if content.matches_translated(&self.content, old, current, common, record.source_viewport) {
-                LayerDamage::Clean
-            } else {
-                LayerDamage::Full
-            }
-        } else {
-            LayerDamage::Full
-        };
-        (damage, Some(common))
     }
 
     /// A static quad root may contain ordinary drawing around this layer.
     /// The certified outside ranges retain their original paint order.
     pub(crate) fn root_static_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
-        self.content.raster?;
         self.static_root_span.as_ref()?;
-        Some((self.source_viewport.bounds, self.translation?))
+        Some((self.source_viewport.bounds, self.translation))
     }
 
     pub(crate) fn native_row_raster(&self) -> Option<Bounds<ScaledPixels>> {
-        let geometry = self.placement.as_ref()?.native_geometry()?;
-        Some(translated_bounds(geometry.row_bounds?, Point::default() - translation_point(geometry.source_origin)))
+        self.row_raster
     }
 
-    pub(crate) fn has_visible_row_source(&self) -> bool {
-        self.content.raster.is_some_and(|raster| raster.visible_rows)
+    pub(crate) fn raster_background(&self) -> Option<Rgba> {
+        self.background
     }
 
     pub(crate) fn raster_atlas_tiles(&self) -> &[(crate::AtlasTextureId, u32)] {
@@ -502,17 +246,6 @@ impl LayerFrame {
         self.static_root_span.as_ref()
     }
 
-    /// Reconstruct the exact ordinary drawing for this placement without
-    /// consulting a live Window or any retained input state.
-    pub(crate) fn replay_placement(&self, painter: &mut crate::scene::Painter) -> bool {
-        if let Some(placement) = &self.placement {
-            placement.replay(painter);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Borrow the original capture, along with the signed projection origin
     /// for this content-space tile. The cache key itself must remain in
     /// content coordinates. The renderer can compile this source on a miss;
@@ -520,7 +253,7 @@ impl LayerFrame {
     pub(crate) fn raster_source_for_tile(
         &self, rect: [i64; 4],
     ) -> Option<(&Operations, [i32; 2])> {
-        let origin = self.content.raster?.source_origin_for_tile(rect)?;
+        let origin = self.content.raster.source_origin_for_tile(rect)?;
         Some((&self.content.operations, origin))
     }
 
@@ -554,26 +287,18 @@ impl LayerFrame {
         })
     }
 
-    /// Only adjacent generations can inherit a visible-source tile. Direct
-    /// overscan sources remain in the same generation until content changes.
+    /// Source identity remains stable during translation. Only an adjacent
+    /// generation can inherit a tile after the source is repainted.
     pub(crate) fn adopt_tile(&self, generation: u64, rect: [i64; 4], scale: f32) -> Option<u64> {
-        // Overscan residency is keyed in stable content space. A same-generation
-        // tile is valid only within the immutable source's certified coverage.
-        if let Some(raster) = self.content.raster {
-            if !scale.is_finite() || scale <= 0. || self.viewport.scale(scale) != self.source_viewport {
-                return None;
-            }
-            self.raster_source_for_tile(rect)?;
-            if !raster.visible_rows && generation != self.generation && self.previous_coverage.is_none() {
-                return None;
-            }
+
+        if scale != self.scale {
+            return None;
         }
+        self.raster_source_for_tile(rect)?;
         if generation == self.generation {
             return Some(generation);
         }
-        if generation.checked_add(1) != Some(self.generation) || !scale.is_finite() || scale <= 0.
-            || self.viewport.scale(scale) != self.source_viewport
-        {
+        if generation.checked_add(1) != Some(self.generation) {
             return None;
         }
         let bounds = self.previous_coverage?;
@@ -605,7 +330,6 @@ impl LayerFrame {
 #[derive(Default)]
 pub(in crate::window) struct StaticPaintOrder {
     scopes: smallvec::SmallVec<[ScopeOrder; 4]>,
-    root_lcd: bool,
     root_extension: bool,
     last_extension: Option<Bounds<ScaledPixels>>,
 }
@@ -643,7 +367,7 @@ impl ScopeOrder {
 
 impl StaticPaintOrder {
     pub(in crate::window) fn root() -> Self {
-        Self { root_lcd: cfg!(target_os = "windows"), root_extension: true, ..Self::default() }
+        Self { root_extension: true, ..Self::default() }
     }
 
     pub(in crate::window) fn accept(&mut self, operation: &PaintOperation) -> bool {
@@ -692,11 +416,7 @@ impl StaticPaintOrder {
                 true
             }
             PaintOperation::Primitive(primitive) => {
-                let lcd = self.root_lcd && matches!(primitive, Primitive::MonochromeSprite(sprite)
-                    if sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel
-                    && sprite.transformation == TransformationMatrix::unit()
-                    && sprite.animation_id.is_none());
-                if !lcd && static_raster_bounds(primitive).is_none() {
+                if static_raster_bounds(primitive).is_none() {
                     return false;
                 }
                 // A shadow fringe outside its native ordering bounds
@@ -783,6 +503,7 @@ fn ordered_static_root(scene: &Scene) -> bool {
     true
 }
 
+#[cfg(test)]
 fn static_root_span(scene: &Scene, range: Range<usize>) -> Option<Range<usize>> {
     (!range.is_empty() && range.end <= scene.len()).then_some(range)
 }
@@ -799,43 +520,6 @@ impl SceneLayers {
         for frame in &self.frames {
             live.extend(frame.content.raster_atlas_tiles.iter().copied());
         }
-    }
-
-    /// Rebuild a certified static root from original operations and placement
-    /// sources. A fresh Painter re-establishes native ordering and prepared
-    /// batches; expanded indices must never reuse the old RetainedPaint proofs.
-    /// Unsupported or overlapping captures remain ordinary operations.
-    pub(crate) fn materialize_static_root(&self, scene: &Scene) -> Option<Scene> {
-        let mut placements: Vec<_> = self.frames.iter().filter_map(|layer| {
-            Some((layer.root_static_span()?.clone(), layer.placement.as_ref()?))
-        }).collect();
-        if placements.is_empty() || !ordered_static_root(scene) { return None; }
-        placements.sort_unstable_by_key(|(range, _)| (range.start, std::cmp::Reverse(range.end)));
-        let mut painter = crate::scene::Painter::default();
-        let mut cursor = 0;
-        let replay = |painter: &mut crate::scene::Painter, range: Range<usize>| -> Option<()> {
-            for operation in scene.paint_operations.get_range(range)?.iter() {
-                match operation {
-                    PaintOperation::Primitive(primitive) => painter.insert_primitive(primitive.clone()),
-                    PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
-                    PaintOperation::EndLayer => painter.pop_layer(),
-                    _ => return None,
-                }
-            }
-            Some(())
-        };
-        for (range, placement) in placements {
-            if range.start < cursor { continue; }
-            if range.is_empty() || range.end > scene.len() || !scene.can_reuse_range_bounds(range.clone()) {
-                return None;
-            }
-            replay(&mut painter, cursor..range.start)?;
-            placement.replay(&mut painter);
-            cursor = range.end;
-        }
-        replay(&mut painter, cursor..scene.len())?;
-        painter.finish();
-        Some(painter.into_scene())
     }
 
     // Native GPU tests use the production admission and coordinate mapping
@@ -859,41 +543,18 @@ impl SceneLayers {
         }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
         let content = LayerContent::from_scroll(
-            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), &atlas_tiles,
+            &operations, coverage, Point::default(), translation, viewport.scale(1.), &atlas_tiles,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         let id = self.frames.len() as u64 + 1;
         self.frames.push(LayerFrame {
-            layout_key: Some(id), id, generation: 1,
+            id, source_id: id, generation: 1, background: None,
             static_root_span: Some(0..0),
             damage: LayerDamage::Full, previous_coverage: None,
-            translation: Some(translation), source_viewport: viewport.scale(1.),
-            viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
+            translation, source_viewport: viewport.scale(1.),
+            scale: 1.,
             content: Arc::new(content),
-            placement: None,
-        });
-    }
-
-    #[cfg(test)]
-    pub(in crate::window) fn attach_fixture_placement(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) {
-        self.frames.last_mut().expect("raster fixture").placement = Some(placement);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn visible_row_fixture(&mut self, scene: &Scene, viewport: ContentMask<Pixels>,
-        translation: [i32; 2]) {
-        let range = 0..scene.len();
-        let rows: Vec<_> = range.clone().map(|row| LayerPart { row: Some(row), operations: row..row+1 }).collect();
-        let content = LayerContent::from_visible_rows(scene, range.clone(), &rows, viewport.scale(1.), Some(translation))
-            .expect("visible row capture");
-        self.frames.push(LayerFrame {
-            layout_key: Some(1), id: 1, generation: 1,
-            static_root_span: static_root_span(scene, range),
-            damage: LayerDamage::Full, previous_coverage: None,
-            translation: Some(translation), source_viewport: viewport.scale(1.), viewport,
-            offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
-            content: Arc::new(content),
-            placement: None,
+            row_raster: None,
         });
     }
 
@@ -903,30 +564,44 @@ impl SceneLayers {
             .then(|| static_root_span(scene, range)).flatten();
     }
 
-    pub(crate) fn capture_native(scene: &Scene, previous: Option<&Self>) -> Self {
+    pub(crate) fn capture(scene: &Scene, previous: Option<&Self>, window_opaque: bool) -> Self {
+        if !scene.paint_operations.has_deferred_scroll() {
+            return Self::default();
+        }
         // Composition eligibility is not a source-lifetime proof. A
         // dynamic root can still own immutable, reusable scroll textures.
         let ordered = ordered_static_root(scene);
         let mut seen = FxHashSet::default();
         let old: FxHashMap<_, _> = previous.into_iter().flat_map(|layers| &layers.frames)
-            .filter(|layer| layer.layout_key.is_none())
-            .map(|layer| (layer.id, layer)).collect();
+            .map(|layer| (layer.source_id, layer)).collect();
         let mut frames = Vec::new();
         for index in scene.paint_operations.deferred_scroll_indices() {
             let Some(PaintOperation::DeferredScroll(placement)) = scene.paint_operations.get(index) else {
                 return Self::default();
             };
-            let Some(geometry) = placement.native_geometry() else { return Self::default(); };
+            let geometry = placement.native_geometry();
             // A source may not be instanced twice in one root using the
             // same cache identity. Reject the entire native plan.
             if !seen.insert(geometry.id) { return Self::default(); }
             let source_viewport = placement.viewport();
             let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
-            let translation = Some([geometry.source_origin[0] + delta.x.0 as i32,
-                geometry.source_origin[1] + delta.y.0 as i32]);
+            let needs_background = placement.has_lcd_glyphs();
+            let background = if needs_background && ordered && window_opaque {
+                raster_background(scene, index, placement.visual_bounds())
+            } else {
+                None
+            };
+            let translation = [geometry.source_origin[0] + delta.x.0 as i32,
+                geometry.source_origin[1] + delta.y.0 as i32];
             // Native source origins are relative to the first capture of
             // this identity; tile keys remain in stable content space.
             let previous = old.get(&geometry.id).copied();
+            let same_background = previous.filter(|layer| layer.background == background);
+            let id = if needs_background {
+                same_background.map_or_else(next_layer_id, |layer| layer.id)
+            } else {
+                geometry.id
+            };
             let content = if let Some(previous) = previous
                 && previous.source_viewport == source_viewport
                 && previous.generation == geometry.generation
@@ -939,12 +614,11 @@ impl SceneLayers {
                 ) else { return Self::default(); };
                 Arc::new(content)
             };
-            let (damage, previous_coverage) = if let Some(previous) = previous
+            let (damage, previous_coverage) = if let Some(previous) = same_background
                 && previous.generation.checked_add(1) == Some(geometry.generation)
                 && previous.source_viewport == source_viewport
-                && let (Some(current), Some(old)) = (content.raster, previous.content.raster)
             {
-                let common = current.coverage.intersect(&old.coverage);
+                let common = content.raster.coverage.intersect(&previous.content.raster.coverage);
                 if common.is_empty() {
                     (LayerDamage::Full, None)
                 } else {
@@ -952,119 +626,51 @@ impl SceneLayers {
                 }
             } else { (LayerDamage::Full, None) };
             frames.push(LayerFrame {
-                layout_key: None, id: geometry.id, generation: geometry.generation,
+                id, source_id: geometry.id, background, generation: geometry.generation,
                 // Native markers are self-contained even inside a proven
                 // ordinary scope; the outside stream preserves its delimiters.
-                static_root_span: ordered.then_some(index..index + 1),
+                static_root_span: (ordered && (!needs_background || background.is_some()))
+                    .then_some(index..index + 1),
                 damage, previous_coverage,
-                translation, source_viewport, viewport: geometry.viewport,
-                offset: LayerScrollPosition::Pixels(point(crate::px(delta.x.0 / geometry.scale), crate::px(delta.y.0 / geometry.scale))),
-                content, placement: Some(placement.clone()),
+                translation, source_viewport, scale: geometry.scale, content,
+                row_raster: geometry.row_bounds.map(|bounds| {
+                    translated_bounds(bounds, Point::default() - translation_point(geometry.source_origin))
+                }),
             });
         }
         Self { frames }
     }
 
-    pub(in crate::window) fn capture(
-        scene: &Scene,
-        records: &[LayerRecord],
-        scroll_views: &crate::window::scroll_views::ScrollViews,
-        view_records: &[crate::window::view_retention::ViewRecordSlot],
-        previous: Option<&Self>,
-    ) -> Self {
-        // Native placements have their own identity, geometry and exact
-        // operation index. Do not infer them from enclosing LayerRecords.
-        if scene.paint_operations.has_deferred_scroll() {
-            return Self::capture_native(scene, previous);
-        }
-        if records.is_empty() {
-            return Self::default();
-        }
-        let mut unique = FxHashSet::default();
-        let mut duplicates = FxHashSet::default();
-        for record in records {
-            if let Some(key) = record.layout_key {
-                if !unique.insert(key) {
-                    duplicates.insert(key);
-                }
-            }
-        }
-        let old: FxHashMap<_, _> = previous.into_iter()
-            .flat_map(|layers| &layers.frames)
-            .filter_map(|layer| layer.layout_key.map(|key| (key, layer)))
-            .collect();
-        let mut frames = Vec::new();
-        // Evaluate at most once per published root, regardless of candidate count.
-        let mut ordered_root = None;
-        let mut sources = None;
-        for record in records {
-            let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
-            if duplicates.contains(&key) { continue; }
-            let range = paint.start.scene_index..paint.end.scene_index;
-            // Derive the physical scale from the owning retained view, not the
-            // current native drawable (which can already have resized).
-            let placement = if record.rows.is_empty() && !range.is_empty() {
-                sources.get_or_insert_with(|| scroll_views.raster_sources(view_records))
-                    .get(&(range.start, range.end)).and_then(|candidates|
-                        scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
-            } else { None };
-            let direct = if let Some(placement) = &placement {
-                let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
-                LayerContent::from_scroll(operations, coverage, delta, record.translation,
-                    record.source_viewport, atlas_tiles)
-            } else if !record.rows.is_empty() {
-                LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
-                    record.source_viewport, record.translation)
-            } else { None };
-            let static_root_span = if direct.as_ref().is_some_and(|content| content.raster.is_some())
-                && scene.can_reuse_range_bounds(range.clone())
-                && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
-            {
-                static_root_span(scene, range.clone())
-            } else { None };
-            let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
-            let previous = old.get(&key).copied();
-            let (id, generation, content, damage, previous_coverage) = if let Some(previous) = previous {
-                if content.raster.is_some() && previous.content.raster == content.raster
-                    && Arc::ptr_eq(&previous.content.operations, &content.operations)
-                    && previous.source_viewport == record.source_viewport
-                {
-                    // Scroll changes the composite placement, not the source.
-                    (previous.id, previous.generation, Arc::clone(&previous.content), LayerDamage::Full, None)
-                } else if previous.viewport == record.viewport && previous.offset == record.offset
-                    && previous.source_viewport == record.source_viewport
-                    && previous.translation == record.translation
-                    && previous.content.matches(&content)
-                {
-                    // Equal pixels need not share their backing pages. Do
-                    // not pin unrelated historical window operations.
-                    let shared = previous.content.operations.matches_by(&content.operations, |_, _| false);
-                    let content = if shared { Arc::clone(&previous.content) } else { Arc::new(content) };
-                    // Preserve the last transition proof if the GPU owner
-                    // has not yet consumed it.
-                    (previous.id, previous.generation, content, previous.damage, previous.previous_coverage)
-                } else if let Some(next) = previous.generation.checked_add(1) {
-                    let visible_pair = content.raster.is_some_and(|raster| raster.visible_rows)
-                        && previous.content.raster.is_some_and(|raster| raster.visible_rows);
-                    let (damage, coverage) = if visible_pair || (content.raster.is_none() && previous.content.raster.is_none()) {
-                        previous.transition(record, &content)
-                    } else { (LayerDamage::Full, None) };
-                    (previous.id, next, Arc::new(content), damage, coverage)
-                } else {
-                    (next_layer_id(), 1, Arc::new(content), LayerDamage::Full, None)
-                }
-            } else {
-                (next_layer_id(), 1, Arc::new(content), LayerDamage::Full, None)
-            };
-            frames.push(LayerFrame {
-                layout_key: Some(key), id, generation, static_root_span, damage, previous_coverage,
-                translation: record.translation, source_viewport: record.source_viewport,
-                viewport: record.viewport, offset: record.offset, content,
-                placement,
-            });
-        }
-        Self { frames }
+
+}
+
+/// GPUI Fast's opaque underlay rule applied after native root-order
+/// certification. The last draw touching the destination must cover it.
+fn raster_background(scene: &Scene, index: usize, visible: Bounds<ScaledPixels>) -> Option<Rgba> {
+    if visible.is_empty() {
+        return None;
     }
+    for operation in scene.paint_operations.range(0..index).iter().rev() {
+        match operation {
+            PaintOperation::Primitive(primitive) if primitive.visual_bounds().intersects(&visible) => {
+                let Primitive::Quad(quad) = primitive else { return None; };
+                let color = quad.background.solid;
+                let full_coverage = contains_visual(quad.bounds, visible)
+                    && contains_visual(quad.content_mask.bounds, visible);
+                let rectangular = quad.corner_radii == Default::default()
+                    && quad.content_mask.corner_radii == Default::default();
+                let no_border = quad.border_color.a == 0. || quad.border_widths == Default::default();
+                return (quad.background.tag == crate::BackgroundTag::Solid
+                    && color.a == 1. && full_coverage && rectangular && no_border)
+                    .then_some(color);
+            }
+            PaintOperation::DeferredScroll(other) if other.visual_bounds().intersects(&visible) => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1109,7 +715,6 @@ mod tests {
     fn overscan_source_maps_signed_content_tiles_without_viewport_projection() {
         let source = ContentRaster {
             source_origin: [0, -128],
-            visible_rows: false,
             coverage: Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
                 size(ScaledPixels(512.), ScaledPixels(1024.))),
         };
@@ -1135,12 +740,12 @@ mod tests {
         operations.finish();
         let operations = Arc::new(operations);
         let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
-            Some([0, -128]), viewport, &Arc::default()).unwrap();
+            [0, -128], viewport, &Arc::default()).unwrap();
         let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
-            Some([0, -192]), viewport, &Arc::default()).unwrap();
+            [0, -192], viewport, &Arc::default()).unwrap();
         assert!(Arc::ptr_eq(&before.operations, &after.operations));
         assert!(before.raster == after.raster);
-        assert_eq!(after.raster.unwrap().source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
+        assert_eq!(after.raster.source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
     }
 
     #[test]
@@ -1150,19 +755,22 @@ mod tests {
             size(crate::px(1024.), crate::px(1024.)),
         ));
         let frame = LayerFrame {
-            layout_key: Some(1), id: 1, generation: 4,
+            id: 1, source_id: 1, generation: 4, background: None,
             static_root_span: None,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),
                 size(ScaledPixels(10.), ScaledPixels(10.)),
             )),
-            viewport,
+            scale: 1.,
             source_viewport: viewport.scale(1.),
-            translation: Some([0, 0]),
+            translation: [0, 0],
             previous_coverage: Some(viewport.scale(1.).bounds),
-            offset: LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(0.))),
-            content: Arc::new(LayerContent { operations: Arc::new(Operations::default()), parts: Box::new([]), raster: None, raster_atlas_tiles: Arc::default() }),
-            placement: None,
+            content: Arc::new(LayerContent {
+                operations: Arc::default(),
+                raster: ContentRaster { source_origin: [0, 0], coverage: viewport.scale(1.).bounds },
+                raster_atlas_tiles: Arc::default(),
+            }),
+            row_raster: None,
         };
         assert_eq!(frame.adopt_tile(3, [0, 0, 512, 512], 1.), Some(4));
         assert_eq!(frame.adopt_tile(3, [512, 0, 1024, 512], 1.), None);
@@ -1170,121 +778,4 @@ mod tests {
         assert_eq!(frame.adopt_tile(2, [0, 0, 512, 512], 1.), None);
     }
 
-    #[test]
-    fn integral_scroll_translation_keeps_fixed_clip_and_glyph_phase() {
-        let viewport = ContentMask::new(Bounds::new(
-            point(ScaledPixels(0.), ScaledPixels(0.)),
-            size(ScaledPixels(1024.), ScaledPixels(1024.)),
-        ));
-        let delta = translation_point([0, -128]);
-        let old = Quad {
-            bounds: Bounds::new(point(ScaledPixels(20.), ScaledPixels(300.)),
-                size(ScaledPixels(100.), ScaledPixels(80.))),
-            content_mask: viewport,
-            ..Default::default()
-        };
-        let current = Quad { bounds: translated_bounds(old.bounds, delta), ..old };
-        assert!(translated_primitive_matches(&Primitive::Quad(current), &Primitive::Quad(old), delta, viewport));
-        let wrong_clip = Quad { content_mask: ContentMask::new(current.bounds), ..current };
-        assert!(!translated_primitive_matches(&Primitive::Quad(wrong_clip), &Primitive::Quad(old), delta, viewport));
-        let common = LayerFrame::coverage(viewport, Some([0, -128]))
-            .intersect(&LayerFrame::coverage(viewport, Some([0, 0])));
-        assert_eq!(common.top(), ScaledPixels(128.));
-        assert_eq!(common.bottom(), ScaledPixels(1024.));
-        assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.))), 1., 2.), Some([0, -128]));
-        assert_eq!(integral_translation(LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(-64.25))), 1., 2.), None);
-    }
-
-    #[test]
-    fn list_translation_requires_a_measured_pixel_offset() {
-        let logical = crate::ListOffset { item_ix: 12, offset_in_item: crate::px(4.) };
-        let position = |pixel_offset| LayerScrollPosition::List { logical, pixel_offset };
-        assert_eq!(integral_translation(position(None), 1., 2.), None);
-        assert_eq!(integral_translation(position(Some(crate::px(-124.))), 1., 2.), Some([0, -248]));
-        assert_eq!(integral_translation(position(Some(crate::px(-124.25))), 1., 2.), None);
-    }
-
-    #[test]
-    fn entering_and_leaving_rows_do_not_invalidate_common_coverage() {
-        let viewport = ContentMask::new(Bounds::new(
-            point(ScaledPixels(0.), ScaledPixels(0.)),
-            size(ScaledPixels(1024.), ScaledPixels(1024.)),
-        ));
-        let common = LayerFrame::coverage(viewport, Some([0, -128]))
-            .intersect(&LayerFrame::coverage(viewport, Some([0, 0])));
-        let quad = |y| Quad {
-            bounds: Bounds::new(point(ScaledPixels(20.), ScaledPixels(y)),
-                size(ScaledPixels(100.), ScaledPixels(32.))),
-            content_mask: viewport,
-            ..Default::default()
-        };
-        let content = |quads: &[Quad]| {
-            let mut operations = Operations::default();
-            for quad in quads {
-                operations.push(PaintOperation::Primitive(Primitive::Quad(*quad)));
-            }
-            LayerContent { operations: Arc::new(operations), parts: Box::new([]), raster: None, raster_atlas_tiles: Arc::default() }
-        };
-        let old = content(&[quad(20.), quad(300.)]);
-        // The first old row is no longer visible; two new rows are outside
-        // the shared region. Neither should affect the shared tile pixels.
-        let current = content(&[quad(172.), quad(920.), quad(970.)]);
-        assert!(current.matches_translated(&old, [0, 0], [0, -128], common, viewport));
-        let changed = content(&[quad(173.), quad(920.), quad(970.)]);
-        assert!(!changed.matches_translated(&old, [0, 0], [0, -128], common, viewport));
-        let entering = content(&[quad(172.), quad(895.)]);
-        // This row touches the common edge, including the AA guard.
-        assert!(!entering.matches_translated(&old, [0, 0], [0, -128], common, viewport));
-        let reordered = content(&[Quad { order: 1, ..quad(172.) }]);
-        assert!(!reordered.matches_translated(&old, [0, 0], [0, -128], common, viewport));
-    }
-
-    #[test]
-    fn visible_row_raster_keeps_original_pages_and_exact_coverage() {
-        let viewport = ContentMask::new(Bounds::new(
-            point(ScaledPixels(0.), ScaledPixels(0.)), size(ScaledPixels(128.), ScaledPixels(512.))));
-        let mut painter = Painter::default();
-        for y in [0., 256.] {
-            let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(y)),
-                size(ScaledPixels(128.), ScaledPixels(256.)));
-            painter.insert_primitive(Quad { bounds, content_mask: viewport, ..Default::default() });
-        }
-        painter.finish();
-        let scene = painter.into_scene();
-        let rows = [LayerPart { row: Some(12), operations: 0..1 },
-            LayerPart { row: Some(13), operations: 1..2 }];
-        let content = LayerContent::from_visible_rows(&scene, 0..2, &rows, viewport, Some([0, 64])).unwrap();
-        assert_eq!(content.parts.as_ref(), &rows);
-        assert!(std::ptr::eq(&content.operations[0], &scene.paint_operations[0]));
-        let raster = content.raster.unwrap();
-        assert!(raster.visible_rows);
-        assert_eq!(raster.source_origin_for_tile([0, -64, 128, 0]), Some([0, 0]));
-        assert!(raster.source_origin_for_tile([0, -256, 128, 0]).is_none());
-        assert!(raster.source_origin_for_tile([0, 256, 128, 512]).is_none());
-    }
-
-    #[test]
-    fn row_parts_share_finalized_operations_in_painter_order() {
-        let mut painter = Painter::default();
-        for x in [0., 10., 20., 30.] {
-            let bounds = Bounds::new(point(ScaledPixels(x), ScaledPixels(0.)),
-                size(ScaledPixels(8.), ScaledPixels(8.)));
-            painter.insert_primitive(Quad { bounds, content_mask: ContentMask::new(bounds), ..Default::default() });
-        }
-        painter.finish();
-        let scene = painter.into_scene();
-        let content = LayerContent::capture(&scene, 1..4, &[
-            LayerPart { row: Some(9), operations: 1..2 },
-            LayerPart { row: Some(8), operations: 2..3 },
-        ]).unwrap();
-        assert_eq!(content.parts.as_ref(), &[
-            LayerPart { row: Some(9), operations: 0..1 },
-            LayerPart { row: Some(8), operations: 1..2 },
-            LayerPart { row: None, operations: 2..3 },
-        ]);
-        assert!(std::ptr::eq(&content.operations[0], &scene.paint_operations[1]));
-        assert!(LayerContent::capture(&scene, 1..4, &[
-            LayerPart { row: Some(0), operations: 0..2 },
-        ]).is_none());
-    }
 }

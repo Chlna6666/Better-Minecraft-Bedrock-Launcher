@@ -208,8 +208,6 @@ impl Interactivity {
                         window.with_content_mask(
                             style.overflow_mask(bounds, window.rem_size()),
                             |window| {
-                                let layer_start = self.scroll_offset.as_ref().map(|_| window.prepaint_index());
-                                let layer_key = layer_start.as_ref().and_then(|_| crate::fast::layout_key::current_layout_key(window));
                                 let hitbox = if self.should_insert_hitbox(&style, window, cx) {
                                     Some(window.insert_hitbox(bounds, self.hitbox_behavior))
                                 } else {
@@ -224,7 +222,6 @@ impl Interactivity {
                                 });
                                 let clip_epoch = window.next_frame.input_clip_epoch;
                                 let visual_scale = window.visual_scale();
-                                let layer_hitbox = hitbox.as_ref().map(|hitbox| hitbox.id);
                                 let result = window.with_scroll_replay_barrier(
                                     window.scroll_row_replay_is_enabled()
                                     && (style.filter_blur.is_some()
@@ -249,19 +246,6 @@ impl Interactivity {
                                         );
                                     } else {
                                         window.next_frame.record_layer_input(input_start, viewport.bounds);
-                                    }
-                                    if let (Some(start), Some(hitbox)) = (layer_start, layer_hitbox) {
-                                        let prepaint = start..window.prepaint_index();
-                                        let owner = window.current_view();
-                                        let device_scale = window.scale_factor();
-                                        // A callback that changes scroll state may have
-                                        // laid out using a different offset; decline proof.
-                                        let placement_scale = if final_offset == scroll_offset { visual_scale } else { f32::NAN };
-                                        window.next_frame.record_layer_prepaint(
-                                            hitbox, owner, layer_key, viewport,
-                                            crate::window::LayerScrollPosition::Pixels(final_offset),
-                                            placement_scale, device_scale, &offset.version, prepaint,
-                                        );
                                     }
                                 }
                                 (result, element_state)
@@ -362,13 +346,7 @@ impl Interactivity {
                                             }
 
                                             self.paint_keyboard_listeners(window, cx);
-                                            let layer = hitbox.filter(|_| self.scroll_offset.is_some())
-                                                .map(|hitbox| (hitbox.id, window.paint_index()));
                                             f(&style, window, cx);
-                                            if let Some((id, start)) = layer {
-                                                let paint = start..window.paint_index();
-                                                window.next_frame.record_layer_paint(id, paint);
-                                            }
 
                                             if let Some(_hitbox) = hitbox {
                                                 #[cfg(any(

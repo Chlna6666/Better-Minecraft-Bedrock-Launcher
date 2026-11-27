@@ -135,7 +135,7 @@ use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
 pub(crate) use frame::{
-    DeferredDraw, Frame, LayerFrame, LayerScrollPosition, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
+    DeferredDraw, Frame, LayerFrame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
     RetainedPaintContext, RetainedSceneSegment,
 };
 #[cfg(test)]

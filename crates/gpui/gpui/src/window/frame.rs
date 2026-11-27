@@ -6,7 +6,6 @@ mod retained_scene_index;
 mod layers;
 pub(crate) use layers::{LayerFrame, SceneLayers};
 pub(super) use layers::{StaticPaintOrder, next_layer_id, static_scroll_raster_operation};
-use layers::LayerPart;
 pub(crate) use paint::{Paint, PaintGeometry};
 use retained_scene_index::Entry;
 
@@ -75,35 +74,6 @@ struct ScrollInputGeometry {
     viewport: ContentMask<Pixels>,
 }
 
-/// A variable-height list retains its logical position. A content-space
-/// pixel offset is only available when the measured prefix is complete.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum LayerScrollPosition {
-    Pixels(Point<Pixels>),
-    List {
-        logical: crate::ListOffset,
-        pixel_offset: Option<Pixels>,
-    },
-}
-
-/// Scroll content ranges refer only to the frame that owns them. A record
-/// is eligible for future layer admission only after both phases complete.
-pub(super) struct LayerRecord {
-    hitbox: HitboxId,
-    owner: EntityId,
-    layout_key: Option<u64>,
-    viewport: ContentMask<Pixels>,
-    offset: LayerScrollPosition,
-    translation: Option<[i32; 2]>,
-    source_viewport: ContentMask<ScaledPixels>,
-    offset_read: crate::StateRead,
-    prepaint: Range<PrepaintStateIndex>,
-    paint: Option<Range<PaintIndex>>,
-    rows: Vec<LayerPart>,
-    /// A carried prepaint must be paired with the same committed paint.
-    replayed: bool,
-}
-
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -122,12 +92,8 @@ pub(crate) struct Frame {
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(super) layer_inputs: Vec<LayerInput>,
-    pub(super) layer_records: Vec<LayerRecord>,
     pub(super) scroll_rows: super::scroll_rows::ScrollRows,
     pub(super) scroll_views: super::scroll_views::ScrollViews,
-    layer_record_slots: FxHashMap<HitboxId, usize>,
-    painted_layers: Vec<usize>,
-    pending_scene_layers: SceneLayers,
     pub(crate) input_clip_epoch: u64,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -303,14 +269,20 @@ impl Frame {
     }
 
     /// Move finalized drawing storage into its sole publication, then share that publication.
-    pub(crate) fn publish(&mut self, geometry: PaintGeometry) -> Arc<Paint> {
+    pub(crate) fn publish(
+        &mut self, geometry: PaintGeometry, previous: Option<&Self>, window_opaque: bool,
+    ) -> Arc<Paint> {
         assert!(self.paint.is_none(), "Paint may only be published once");
         let mut paint = Paint::new(
             self.painter.take_scene(),
             Arc::clone(&self.retained_paint),
             geometry,
         );
-        paint.layers = std::mem::take(&mut self.pending_scene_layers);
+        paint.layers = SceneLayers::capture(
+            &paint.scene,
+            previous.and_then(|frame| frame.paint.as_ref()).map(|paint| &paint.layers),
+            window_opaque,
+        );
         let paint = Arc::new(paint);
         self.paint = Some(Arc::clone(&paint));
         paint
@@ -337,12 +309,8 @@ impl Frame {
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
             layer_inputs: Vec::new(),
-            layer_records: Vec::new(),
             scroll_rows: super::scroll_rows::ScrollRows::default(),
             scroll_views: super::scroll_views::ScrollViews::default(),
-            layer_record_slots: FxHashMap::default(),
-            painted_layers: Vec::new(),
-            pending_scene_layers: SceneLayers::default(),
             input_clip_epoch: 0,
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -405,12 +373,8 @@ impl Frame {
         self.view_retention_records.clear();
         self.hitboxes.clear();
         self.layer_inputs.clear();
-        self.layer_records.clear();
         self.scroll_rows.clear();
         self.scroll_views.clear();
-        self.layer_record_slots.clear();
-        self.painted_layers.clear();
-        self.pending_scene_layers = SceneLayers::default();
         self.input_clip_epoch = 0;
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -455,148 +419,6 @@ impl Frame {
                 })),
             })
             .into_inner()
-    }
-
-    /// Start a record after the container's own hitbox and its contents have
-    /// prepainted. The span includes the container hitbox, so rollback can
-    /// distinguish empty contents from an enclosing transaction.
-    pub(crate) fn record_layer_prepaint(
-        &mut self,
-        hitbox: HitboxId,
-        owner: EntityId,
-        layout_key: Option<u64>,
-        viewport: ContentMask<Pixels>,
-        offset: LayerScrollPosition,
-        visual_scale: f32,
-        device_scale: f32,
-        version: &crate::StateVersion,
-        prepaint: Range<PrepaintStateIndex>,
-    ) {
-        let finite = match offset {
-            LayerScrollPosition::Pixels(offset) => offset.x.0.is_finite() && offset.y.0.is_finite(),
-            LayerScrollPosition::List { logical, .. } => logical.offset_in_item.0.is_finite(),
-        };
-        if !finite {
-            return;
-        }
-        self.push_layer_record(LayerRecord {
-            hitbox, owner, layout_key, viewport, offset,
-            translation: layers::integral_translation(offset, visual_scale, device_scale),
-            source_viewport: viewport.scale(device_scale),
-            offset_read: crate::StateRead::new(version),
-            prepaint, paint: None, rows: Vec::new(), replayed: false,
-        });
-    }
-
-    fn push_layer_record(&mut self, record: LayerRecord) {
-        let index = self.layer_records.len();
-        self.layer_record_slots.insert(record.hitbox, index);
-        self.layer_records.push(record);
-    }
-
-    /// Capture a list row's logical identity and the operations it emitted.
-    /// No primitive payload or row element is copied.
-    pub(crate) fn record_layer_row(
-        &mut self,
-        hitbox: HitboxId,
-        row: usize,
-        start: usize,
-        end: usize,
-    ) {
-        if let Some(&index) = self.layer_record_slots.get(&hitbox) {
-            let record = &mut self.layer_records[index];
-            if !record.replayed && record.paint.is_none() {
-                record.rows.push(LayerPart { row: Some(row), operations: start..end });
-            }
-        }
-    }
-
-    pub(crate) fn record_layer_paint(&mut self, hitbox: HitboxId, paint: Range<PaintIndex>) {
-        if let Some(&index) = self.layer_record_slots.get(&hitbox) {
-            let record = &mut self.layer_records[index];
-            if !record.replayed && record.paint.is_none() {
-                record.paint = Some(paint);
-                self.painted_layers.push(index);
-            }
-        }
-    }
-
-    pub(super) fn truncate_layer_records(&mut self, hitbox_end: usize) {
-        let keep = self.layer_records.partition_point(|record| record.prepaint.end.hitboxes_index <= hitbox_end);
-        for record in self.layer_records.drain(keep..) {
-            self.layer_record_slots.remove(&record.hitbox);
-        }
-        self.painted_layers.retain(|&index| index < keep);
-    }
-
-    /// Only exact copies of every phase stream may rebase a layer's ranges.
-    /// A split enclosing record is deliberately not reconstructed from gaps.
-    pub(super) fn carry_layer_prepaint(
-        &mut self, previous: &Self,
-        source: &Range<PrepaintStateIndex>, target: &Range<PrepaintStateIndex>,
-    ) {
-        if source.end.rebased_from(&source.start, &target.start).as_ref() != Some(&target.end) {
-            return;
-        }
-        let first = previous.layer_records.partition_point(|record| record.prepaint.end.hitboxes_index <= source.start.hitboxes_index);
-        for record in previous.layer_records[first..].iter()
-            .take_while(|record| record.prepaint.end.hitboxes_index <= source.end.hitboxes_index)
-        {
-            if record.paint.is_none()
-                || record.offset_read.status() != crate::StateReadStatus::Unchanged
-                || source.end.rebased_from(&record.prepaint.end, &PrepaintStateIndex::default()).is_none()
-                || self.layer_record_slots.contains_key(&record.hitbox)
-            {
-                continue;
-            }
-            let Some(prepaint) = super::draw_reuse::rebase_prepaint_range(&record.prepaint, source, target) else { continue; };
-            self.push_layer_record(LayerRecord {
-                hitbox: record.hitbox, owner: record.owner, layout_key: record.layout_key,
-                viewport: record.viewport, offset: record.offset,
-                translation: record.translation, source_viewport: record.source_viewport,
-                offset_read: record.offset_read.clone(),
-                prepaint, paint: None, rows: Vec::new(), replayed: true,
-            });
-        }
-    }
-
-    pub(super) fn carry_layer_paint(
-        &mut self, previous: &Self,
-        source: &Range<PaintIndex>, target: &Range<PaintIndex>,
-    ) {
-        if source.end.rebased_from(&source.start, &target.start).as_ref() != Some(&target.end) {
-            return;
-        }
-        // Paint closes in draw order; the operation end is monotonic even
-        // for nested or empty captures. Other phase streams prove containment.
-        let first = previous.painted_layers.partition_point(|&index| {
-            previous.layer_records[index].paint.as_ref().unwrap().end.scene_index < source.start.scene_index
-        });
-        for &index in &previous.painted_layers[first..] {
-            let old = &previous.layer_records[index];
-            let paint = old.paint.as_ref().unwrap();
-            if paint.end.scene_index > source.end.scene_index { break; }
-            let Some(&slot) = self.layer_record_slots.get(&old.hitbox) else { continue; };
-            let record = &mut self.layer_records[slot];
-            if !record.replayed || record.paint.is_some()
-                || source.end.rebased_from(&paint.end, &PaintIndex::default()).is_none()
-            {
-                continue;
-            }
-            if let Some(paint) = super::draw_reuse::rebase_paint_range(paint, source, target) {
-                let old_start = old.paint.as_ref().unwrap().start.scene_index;
-                let new_start = paint.start.scene_index;
-                record.rows.extend(old.rows.iter().filter_map(|part| {
-                    let start = part.operations.start.checked_sub(old_start)?.checked_add(new_start)?;
-                    let end = part.operations.end.checked_sub(old_start)?.checked_add(new_start)?;
-                    (end <= paint.end.scene_index).then_some(LayerPart {
-                        row: part.row, operations: start..end,
-                    })
-                }));
-                record.paint = Some(paint);
-                self.painted_layers.push(slot);
-            }
-        }
     }
 
     /// Admit only a range whose actual input masks prove containment.
@@ -821,15 +643,6 @@ impl Frame {
                 same_paint,
             );
         }
-        // Freeze the exact source fragments after the authoritative Scene
-        // and its shared operation segments are finalized.
-        self.pending_scene_layers = SceneLayers::capture(
-            &self.painter.scene,
-            &self.layer_records,
-            &self.scroll_views,
-            &self.view_retention_records,
-            prev_frame.paint.as_ref().map(|paint| &paint.layers),
-        );
     }
 
     /// Abort a candidate generation without dropping IME handlers still
@@ -863,9 +676,6 @@ impl Frame {
             + self.mounted_scroll_sources.capacity()
             + self.hitboxes.capacity()
             + self.layer_inputs.capacity()
-            + self.layer_records.capacity()
-            + self.layer_record_slots.capacity()
-            + self.painted_layers.capacity()
             + self.window_control_hitboxes.capacity()
             + self.deferred_draws.capacity()
             + self.input_handlers.capacity()
@@ -904,11 +714,6 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_frame_vec_capacity(&mut self.layer_records, FRAME_MIN_RETAINED_CAPACITY, FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
-        trim_frame_vec_capacity(&mut self.painted_layers, FRAME_MIN_RETAINED_CAPACITY, FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER);
-        if self.layer_record_slots.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(self.layer_record_slots.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
-            self.layer_record_slots.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
-        }
         trim_frame_vec_capacity(
             &mut self.layer_inputs,
             FRAME_MIN_RETAINED_CAPACITY,
@@ -1001,11 +806,6 @@ impl Frame {
         trim_vec_against!(mounted_scroll_sources);
         trim_vec_against!(hitboxes);
         trim_vec_against!(layer_inputs);
-        trim_vec_against!(layer_records);
-        trim_vec_against!(painted_layers);
-        if self.layer_record_slots.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(current.layer_record_slots.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
-            self.layer_record_slots.shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(current.layer_record_slots.len()));
-        }
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
         trim_vec_against!(input_handlers);
@@ -1058,9 +858,6 @@ impl Frame {
                 self.mounted_scroll_sources.shrink_to(floor);
                 self.hitboxes.shrink_to(floor);
                 self.layer_inputs.shrink_to(floor);
-                self.layer_records.shrink_to(floor);
-                self.painted_layers.shrink_to(floor);
-                self.layer_record_slots.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);
                 self.input_handlers.shrink_to(floor);
@@ -1239,7 +1036,7 @@ mod publication_tests {
         frame.painter.insert_primitive(quad);
         let original = &frame.painter.paint_operations[0] as *const _;
         frame.finish(&mut previous);
-        let paint = frame.publish(PaintGeometry::default());
+        let paint = frame.publish(PaintGeometry::default(), None, true);
         let operation = &paint.scene.paint_operations[0] as *const _;
         assert_eq!(original, operation, "publication moves existing payload");
         {

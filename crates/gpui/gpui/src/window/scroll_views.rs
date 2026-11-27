@@ -2,7 +2,7 @@
 //! Adapted from GPUI Fast's scroll-layer paint/reuse phases.
 
 use super::{
-    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::{ScrollPaint, ScrollPlacement},
+    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::ScrollPaint,
 };
 use crate::{
     AnyElement, App, Bounds, ContentMask, EntityId, Pixels, Point, StateRead, StateReadStatus,
@@ -37,57 +37,6 @@ impl ScrollViews {
     pub(super) fn clear(&mut self) {
         self.viewport = None;
         self.views.clear();
-    }
-
-    /// Index only captured views, once per publication. Exact spans retain
-    /// their existing uniqueness and viewport proof, without scanning all
-    /// unrelated retained view slots for each scroll container.
-    pub(super) fn raster_sources<'a>(&'a self, records: &'a [super::view_retention::ViewRecordSlot])
-        -> FxHashMap<(usize, usize), smallvec::SmallVec<[&'a super::view_retention::ViewRecordSlot; 1]>>
-    {
-        let mut sources = FxHashMap::<_, smallvec::SmallVec<[_; 1]>>::default();
-        if self.views.is_empty() { return sources; }
-        for slot in records {
-            if !self.views.contains_key(&slot.key) { continue; }
-            let Some(record) = slot.record.as_ref() else { continue; };
-            let range = &record.paint_range;
-            sources.entry((range.start.scene_index, range.end.scene_index)).or_default().push(slot);
-        }
-        sources
-    }
-
-    /// The view must own the entire requested paint span. Do not replace a
-    /// parent range with a child capture, or combine unrelated paint sources.
-    pub(super) fn raster_source(
-        &self,
-        records: &[&super::view_retention::ViewRecordSlot],
-        range: &Range<usize>,
-        viewport: ContentMask<Pixels>,
-        source_viewport: ContentMask<crate::ScaledPixels>,
-    ) -> Option<ScrollPlacement> {
-        if self.views.is_empty() {
-            return None;
-        }
-        let mut candidates = records.iter().filter_map(|slot| {
-            let record = slot.record.as_ref()?;
-            let scale = record.context.device_scale_factor;
-            if record.paint_range.start.scene_index != range.start
-                || record.paint_range.end.scene_index != range.end
-                || viewport.scale(scale) != source_viewport
-            {
-                return None;
-            }
-            let view = self.views.get(&slot.key)?;
-            if view.owner != slot.owner || view.viewport != viewport
-                || record.context.visual_content_mask != viewport
-            {
-                return None;
-            }
-            let delta = view.source.translation(record.context.element_offset, scale)?;
-            view.source.placement(source_viewport, delta)
-        });
-        let source = candidates.next()?;
-        candidates.next().is_none().then_some(source)
     }
 
     pub(super) fn carry(&mut self, key: u64, previous: &Self) {

@@ -300,11 +300,15 @@ impl Window {
                 .round()
                 .max(0.0) as u32,
         );
-        let paint = self.next_frame.publish(PaintGeometry {
-            layout_extent: Some(committed_layout_extent),
-            layout_epoch: self.next_frame_epoch,
-            scale_factor: self.scale_factor,
-        });
+        let paint = self.next_frame.publish(
+            PaintGeometry {
+                layout_extent: Some(committed_layout_extent),
+                layout_epoch: self.next_frame_epoch,
+                scale_factor: self.scale_factor,
+            },
+            Some(&self.rendered_frame),
+            self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque,
+        );
         self.presentation_state
             .publish_pending(paint, scene_animation_values);
         let frame_retained_capacity = self.next_frame.retained_capacity();

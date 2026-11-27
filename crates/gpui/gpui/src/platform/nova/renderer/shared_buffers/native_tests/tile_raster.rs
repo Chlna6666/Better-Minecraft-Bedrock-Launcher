@@ -331,44 +331,38 @@ fn verify(backend: RendererBackend) {
 #[cfg(feature = "nova-gfx-dx12")]
 #[ignore = "requires Windows hardware D3D12 and a native presentable window"]
 fn dx12_scroll_raster_present_skips_scene_pack() {
-    for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaDx12, false, native, false);
-        verify_direct_present(RendererBackend::NovaDx12, true, native, false);
-    }
-    verify_direct_present(RendererBackend::NovaDx12, false, true, true);
+    verify_direct_present(RendererBackend::NovaDx12, None, false);
+    verify_direct_present(RendererBackend::NovaDx12, Some(true), false);
+    verify_direct_present(RendererBackend::NovaDx12, None, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-vulkan")]
 #[ignore = "requires Windows hardware Vulkan and a native presentable window"]
 fn vulkan_scroll_raster_present_skips_scene_pack() {
-    for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaVulkan, false, native, false);
-        verify_direct_present(RendererBackend::NovaVulkan, true, native, false);
-    }
-    verify_direct_present(RendererBackend::NovaVulkan, false, true, true);
+    verify_direct_present(RendererBackend::NovaVulkan, None, false);
+    verify_direct_present(RendererBackend::NovaVulkan, Some(true), false);
+    verify_direct_present(RendererBackend::NovaVulkan, Some(false), false);
+    verify_direct_present(RendererBackend::NovaVulkan, None, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
 #[ignore = "requires Windows hardware D3D11 and a native presentable window"]
 fn dx11_scroll_raster_present_skips_scene_pack() {
-    for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaDx11, false, native, false);
-        verify_direct_present(RendererBackend::NovaDx11, true, native, false);
-    }
-    verify_direct_present(RendererBackend::NovaDx11, false, true, true);
+    verify_direct_present(RendererBackend::NovaDx11, None, false);
+    verify_direct_present(RendererBackend::NovaDx11, Some(true), false);
+    verify_direct_present(RendererBackend::NovaDx11, Some(false), false);
+    verify_direct_present(RendererBackend::NovaDx11, None, true);
 }
 
 #[test]
 #[cfg(feature = "nova-gfx-opengl")]
 #[ignore = "requires Windows OpenGL 4.5 and a native presentable window"]
 fn opengl_scroll_raster_present_skips_scene_pack() {
-    for native in [false, true] {
-        verify_direct_present(RendererBackend::NovaOpenGl, false, native, false);
-        verify_direct_present(RendererBackend::NovaOpenGl, true, native, false);
-    }
-    verify_direct_present(RendererBackend::NovaOpenGl, false, true, true);
+    verify_direct_present(RendererBackend::NovaOpenGl, None, false);
+    verify_direct_present(RendererBackend::NovaOpenGl, Some(true), false);
+    verify_direct_present(RendererBackend::NovaOpenGl, None, true);
 }
 
 #[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
@@ -411,7 +405,9 @@ mod mixed_extension {
 }
 
 #[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
-fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: bool, with_extension: bool) {
+fn verify_direct_present(backend: RendererBackend, grayscale_glyph: Option<bool>, with_extension: bool) {
+    let with_glyph = grayscale_glyph.is_some();
+    let lcd = grayscale_glyph == Some(false);
     let window = native_window::Window::renderer_fixture();
     window.resize(64, 64);
     let mut renderer = NovaRenderer::with_atlas(
@@ -430,16 +426,23 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     // repaint without a clear would accumulate alpha and green intensity.
     let quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
         background: crate::rgba(0x00ff0080).into(), ..Default::default() };
-    let glyph = if with_glyph {
+    let glyph = if let Some(grayscale_antialiasing) = grayscale_glyph {
         use crate::{AtlasKey, FontId, GlyphId, RenderGlyphParams};
         let key = AtlasKey::Glyph(RenderGlyphParams {
             font_id: FontId(1), glyph_id: GlyphId(2), font_size: crate::px(14.),
             subpixel_variant: crate::point(0, 0), scale_factor: 1.,
-            grayscale_antialiasing: true, is_emoji: false, is_cjk: false,
+            grayscale_antialiasing, is_emoji: false, is_cjk: false,
         });
         let tile = renderer.atlas.ensure_tile_with(key, &mut || {
+            let pixels = if grayscale_antialiasing {
+                vec![255; 64 * 64]
+            } else {
+                let mut pixels = [0, 0, 0, 255].repeat(64 * 32);
+                pixels.extend([255, 0, 255, 255].repeat(64 * 32));
+                pixels
+            };
             Ok(Some((crate::size(DevicePixels(64), DevicePixels(64)),
-                std::borrow::Cow::Owned(vec![255; 64 * 64]))))
+                std::borrow::Cow::Owned(pixels))))
         }).expect("glyph allocation").expect("glyph identity");
         renderer.sync_atlas_textures_for_current_backend().expect("atlas pages");
         let descriptor = renderer.atlas_resource_descriptor();
@@ -474,34 +477,22 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     // Background and foreground overlap both promoted fragments.
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
         background: crate::rgb(0xff0000).into(), ..Default::default() });
-    if native {
-        assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
-            std::mem::take(&mut source), coverage, viewport)));
-    } else {
-        painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..quad });
-        if let Some(glyph) = glyph {
-            painter.insert_primitive(crate::MonochromeSprite { content_mask: viewport.scale(1.), ..glyph });
-        }
-    }
+    assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
+        source, coverage, viewport)));
     // Keep an ordinary root interval between two independent promoted layers.
     // The optional extension owns the same logical operation position and
     // emits no draws: test registry preparation/consumer fences even when
     // expansion produces an empty command run.
     let extension_counts = std::sync::Arc::new(mixed_extension::Counts::default());
     if with_extension {
-        assert!(native);
         painter.insert_primitive(crate::PaintRendererExtension::new(bounds, viewport.scale(1.),
             std::sync::Arc::new(mixed_extension::Input(extension_counts.clone()))));
     } else {
         painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
             background: crate::rgb(0x800000).into(), ..Default::default() });
     }
-    if native {
-        assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
-            std::mem::take(&mut second_source), coverage, viewport)));
-    } else {
-        painter.insert_primitive(Quad { content_mask: viewport.scale(1.), ..second_quad });
-    }
+    assert!(painter.push_deferred_scroll(crate::window::scroll_paint::native_scroll_fixture(
+        second_source, coverage, viewport)));
     painter.insert_primitive(Quad { bounds, content_mask: viewport.scale(1.),
         background: crate::rgb(0x808080).into(), ..Default::default() });
     // Keep the same glyph in the ordinary root as well as the raster
@@ -512,21 +503,14 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     painter.finish();
     let mut paint = crate::window::Paint::new(painter.into_scene(), std::sync::Arc::default(),
         crate::window::PaintGeometry { layout_extent: Some((64, 64)), scale_factor: 1., ..Default::default() });
-    let end = if with_glyph && !native { 3 } else { 2 };
-    if native {
-        assert_eq!(paint.scene.len(), 5 + usize::from(with_glyph));
-        assert_eq!(paint.scene.quads.len(), if with_extension { 2 } else { 3 });
-        assert_eq!(paint.scene.renderer_extensions.len(), usize::from(with_extension));
-        assert_eq!(paint.scene.monochrome_sprites.len(), usize::from(with_glyph));
-        paint.layers = crate::window::SceneLayers::capture_native(&paint.scene, None);
-    } else {
-        paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
-        paint.layers.certify_fixture_root(&paint.scene, 1..end);
-        paint.layers.raster_fixture(second_source, coverage, viewport, [0, 0]);
-        paint.layers.certify_fixture_root(&paint.scene, end+1..end+2);
-    }
-    assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..end)));
-    assert_eq!(paint.layers.frames[1].root_static_span(), Some(&(end+1..end+2)));
+    assert_eq!(paint.scene.len(), 5 + usize::from(with_glyph));
+    assert_eq!(paint.scene.quads.len(), if with_extension { 2 } else { 3 });
+    assert_eq!(paint.scene.renderer_extensions.len(), usize::from(with_extension));
+    assert_eq!(paint.scene.monochrome_sprites.len(), usize::from(with_glyph));
+    paint.layers = crate::window::SceneLayers::capture(&paint.scene, None, true);
+    assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..2)));
+    assert_eq!(paint.layers.frames[0].raster_background(), lcd.then(|| crate::rgb(0xff0000)));
+    assert_eq!(paint.layers.frames[1].root_static_span(), Some(&(3..4)));
     let mut protected = FxHashSet::default();
     paint.layers.collect_atlas_tile_ids_into(&mut protected);
     if let Some(glyph) = glyph {
@@ -648,8 +632,13 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
         physical = Some(texture);
-        assert_cell(read, 16, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
-        assert_cell(read, 48, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
+        let (top, bottom) = match grayscale_glyph {
+            Some(false) => ([0, 128, 127, 255], [255, 128, 255, 255]),
+            Some(true) => ([255, 255, 255, 255], [255, 255, 255, 255]),
+            None => ([0, 128, 0, 128], [0, 128, 0, 128]),
+        };
+        assert_cell(read, 16, top);
+        assert_cell(read, 48, bottom);
     }
     if with_extension {
         use std::sync::atomic::Ordering;

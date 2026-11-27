@@ -182,7 +182,6 @@ impl Window {
             layer.hitboxes.end <= index.hitboxes_index
         });
         self.next_frame.layer_inputs.truncate(keep);
-        self.next_frame.truncate_layer_records(index.hitboxes_index);
         self.next_frame
             .tooltip_requests
             .truncate(index.tooltips_index);
@@ -263,19 +262,12 @@ impl Window {
             super::element_work::ElementWorkPhase::Replay,
         );
 
-        let layer_start = (!self.rendered_frame.layer_records.is_empty()).then(|| self.prepaint_index());
         assert!(self.next_frame.carry_input_span(
             &self.rendered_frame,
             range.start.hitboxes_index..range.end.hitboxes_index,
             None,
         ), "validated input range");
-        if let Some(start) = layer_start {
-            self.replay_prepaint_records(range.clone(), external_parent);
-            let target = start..self.prepaint_index();
-            self.next_frame.carry_layer_prepaint(&self.rendered_frame, &range, &target);
-        } else {
-            self.replay_prepaint_records(range, external_parent);
-        }
+        self.replay_prepaint_records(range, external_parent);
     }
 
     /// Carry non-geometric prepaint records independently of hitbox placement.
@@ -433,13 +425,8 @@ impl Window {
     /// not change afterwards, so paint must not pay for the validation again (and a required text
     /// layout was already pinned by the prepaint copy).
     pub(crate) fn replay_validated_paint(&mut self, range: Range<PaintIndex>) {
-        let layer_start = (!self.rendered_frame.layer_records.is_empty()).then(|| self.paint_index());
         self.replay_validated_paint_records(&range);
         self.replay_validated_scene(range.start.scene_index..range.end.scene_index);
-        if let Some(start) = layer_start {
-            let target = start..self.paint_index();
-            self.next_frame.carry_layer_paint(&self.rendered_frame, &range, &target);
-        }
     }
 
     /// Carry the input and state records without replaying any scene operations.

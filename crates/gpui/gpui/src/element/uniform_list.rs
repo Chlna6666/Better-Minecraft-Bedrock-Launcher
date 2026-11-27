@@ -455,19 +455,12 @@ impl Element for UniformList {
             cx,
             |_, window, cx| {
                 for (row, item) in request_layout.items.drain(..) {
-                    let start = window.next_frame.painter.len();
                     window.paint_planned_scroll_row(
                         request_layout.row_plan.as_mut(),
                         row,
                         item,
                         cx,
                     );
-                    if let Some(hitbox) = hitbox.as_ref() {
-                        let end = window.next_frame.painter.len();
-                        window
-                            .next_frame
-                            .record_layer_row(hitbox.id, row, start, end);
-                    }
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);
