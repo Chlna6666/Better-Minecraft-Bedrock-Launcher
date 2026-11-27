@@ -254,6 +254,23 @@ impl Painter {
                 spans.next();
                 continue;
             }
+            // Ordinary static glyphs, image sprites and quads do not need
+            // a retained upload chunk in order to share their operation
+            // payload. Keep the specialized typed Quad/Shadow path ahead
+            // of this one, and never skip the next candidate chunk.
+            if retain_order && !self.retained_prefix_invalid
+                && previous_painter.is_some() && prev_scene.revision != 0
+                && spans.peek().is_none_or(|span| span.paint_range.start > index)
+            {
+                let end = spans.peek().map_or(run_end, |span| run_end.min(span.paint_range.start));
+                let start = index - (run_end - run.len());
+                if let Some(end) = self.replay_static_primitive_run(
+                    prev_scene, index, &run[start..start + end - index], previous_tree,
+                ) {
+                    index = end;
+                    continue;
+                }
+            }
             if let PaintOperation::StartBlur(config) = operation
                 && let Some(end) = self.replay_static_capture(
                     prev_scene, index..range.end, config,
@@ -355,6 +372,55 @@ impl Painter {
             }
             false
         }
+    }
+
+    /// Carry an unchanged operation range without cloning its large enum
+    /// payload or constructing per-primitive ordering tree nodes. Typed
+    /// streams still receive their existing contiguous, sortable instances.
+    /// The caller has proved the entire preceding ordering prefix.
+    fn replay_static_primitive_run(
+        &mut self,
+        previous: &Scene,
+        start: usize,
+        operations: &[PaintOperation],
+        previous_tree: Option<&BoundsTree<ScaledPixels>>,
+    ) -> Option<usize> {
+        if !self.blur_captures.is_empty() {
+            return None;
+        }
+        let layer_order = self.layer_stack.last().copied();
+        let static_primitive = |operation: &PaintOperation| {
+            let PaintOperation::Primitive(primitive) = operation else { return false; };
+            matches!(primitive, Primitive::Quad(_) | Primitive::Underline(_)
+                | Primitive::MonochromeSprite(_) | Primitive::PolychromeSprite(_))
+                && primitive.animation_id().is_none()
+                && layer_order.is_none_or(|order| order == primitive.order())
+                && !Self::ordering_bounds(primitive).is_empty()
+        };
+        let count = operations.iter().take_while(|op| static_primitive(op)).count();
+        if count == 0 {
+            return None;
+        }
+        let range = start..start + count;
+        let primitives = || operations[..count].iter().map(|operation| match operation {
+            PaintOperation::Primitive(primitive) => primitive,
+            _ => unreachable!("qualified static primitive"),
+        });
+        if layer_order.is_none() {
+            // The source prefix and unchanged static geometry establish the
+            // exact draw order. A whole contiguous run can import the old
+            // balanced page, or build it once on the first replay.
+            self.primitive_bounds.extend_ordered(
+                range.clone(), previous_tree,
+                primitives().map(|primitive| (Self::ordering_bounds(primitive), primitive.order())),
+            );
+        }
+        for primitive in primitives() {
+            self.push_replayed_primitive(primitive, primitive.order());
+        }
+        self.scene.paint_operations.share(&previous.paint_operations, range.clone());
+        self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(count);
+        Some(range.end)
     }
 
     /// Adopt a complete, static leaf capture directly from the committed scene.

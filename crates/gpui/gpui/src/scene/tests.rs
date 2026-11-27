@@ -1208,6 +1208,42 @@ fn retained_prefix_replay_preserves_draw_orders() {
 }
 
 #[test]
+fn ordinary_static_glyph_and_quad_replay_shares_operation_payload() {
+    let mut previous = crate::scene::Painter::default();
+    let glyph = monochrome_sprite(0, 0);
+    previous.insert_primitive(Quad {
+        bounds: glyph.bounds,
+        content_mask: glyph.content_mask,
+        ..Quad::default()
+    });
+    for _ in 0..64 {
+        previous.insert_primitive(glyph);
+    }
+    previous.finish();
+    let len = previous.len();
+    let mut replayed = crate::scene::Painter::default();
+    assert!(replayed.replay_with_ordering(0..len, &previous, [], Some(&previous)));
+    assert_eq!(replayed.len(), len);
+    for i in 0..len {
+        assert!(std::ptr::eq(&previous.paint_operations[i], &replayed.paint_operations[i]));
+    }
+    assert_eq!(replayed.monochrome_sprites, previous.monochrome_sprites);
+    assert_eq!(replayed.quads[0], previous.quads[0]);
+    replayed.finish();
+    let mut again = crate::scene::Painter::default();
+    assert!(again.replay_with_ordering(0..len, &replayed, [], Some(&replayed)));
+    for i in 0..len {
+        assert!(std::ptr::eq(&previous.paint_operations[i], &again.paint_operations[i]));
+    }
+    // Following overlapping geometry must see every imported order.
+    let mut expected = crate::scene::Painter::default();
+    expected.replay(0..len, &previous, []);
+    again.insert_primitive(glyph);
+    expected.insert_primitive(glyph);
+    assert_eq!(again.monochrome_sprites.last(), expected.monochrome_sprites.last());
+}
+
+#[test]
 fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
     let content_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(40.0), px(40.0))).scale(1.0);
     let first = Quad {
