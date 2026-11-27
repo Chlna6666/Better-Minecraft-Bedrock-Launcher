@@ -1698,11 +1698,22 @@ impl NovaRenderer {
         } else { None };
         // Preserve root prefix -> resident tiles -> root suffix. The
         // promoted fragment is never encoded or drawn on this path.
-        let outcome = match device.render_and_present_owned(&PresentFrameDescriptor {
+        let frame = PresentFrameDescriptor {
             swapchain: self.swapchain, render_pass: self.render_pass, commands: &commands,
             color_load_op: LoadOp::Clear(clear_color()), depth_attachment: Some(self.depth_attachment()),
             present_region: None,
-        }, &commands) {
+        };
+        // Only publish an owned identity for an actually resident command
+        // stream. One-shot extensions/oversized streams must not pollute
+        // backend native caches or retain their weak allocations.
+        let resident = self.scroll_composite_slots[slot].commands.as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(&cached.commands, &commands));
+        let presented = if resident {
+            device.render_and_present_owned(&frame, &commands)
+        } else {
+            device.render_and_present_tracked(&frame)
+        };
+        let outcome = match presented {
             Ok(outcome) => outcome,
             Err(error) => {
                 // DX11/GL may record native draws before Present or fence

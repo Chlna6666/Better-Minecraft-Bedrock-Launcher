@@ -2121,20 +2121,23 @@ impl VulkanDevice {
         }
         // Swapchain image identity is not part of resolved draw state.
         // Attachment validation and depth transitions remain per-frame.
-        let native_key = ResolvedDrawKey {
+        let native_key = run_plan.map(|_| ResolvedDrawKey {
             viewport, extent: target_extent, targets: render_target_texture.iter().copied().collect(),
             resolve: None, shared_layout: None,
-        };
-        let epochs = self.draw_identity_epochs();
-        let cached_index = run_plan.and_then(|plan| self.resolved_draw_streams.iter().position(|entry|
-            Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key
-                && (entry.epochs == epochs || self.draw_dependencies_live(&entry.dependencies))));
+        });
+        let epochs = run_plan.map_or([0; 3], |_| self.draw_identity_epochs());
+        let cached_index = run_plan.zip(native_key.as_ref()).and_then(|(plan, key)|
+            self.resolved_draw_streams.iter().position(|entry|
+                Arc::ptr_eq(&entry.plan, plan) && &entry.key == key
+                    && (entry.epochs == epochs || self.draw_dependencies_live(&entry.dependencies))));
+        let local_resolved;
+        let resident_resolved;
         let resolved = if let Some(index) = cached_index {
             let mut entry = self.resolved_draw_streams.remove(index);
             entry.epochs = epochs;
-            let resolved = Arc::clone(&entry.resolved);
+            resident_resolved = Arc::clone(&entry.resolved);
             self.resolved_draw_streams.push(entry);
-            resolved
+            resident_resolved.as_ref()
         } else {
         let mut draw_steps = Vec::with_capacity(steps.len());
         let mut descriptor_sets = Vec::new();
@@ -2296,18 +2299,29 @@ impl VulkanDevice {
                 scissor,
             });
         }
-            let resolved = Arc::new(ResolvedDraws { steps: draw_steps, descriptor_sets });
-            if let Some(plan) = run_plan {
+            let draws = ResolvedDraws { steps: draw_steps, descriptor_sets };
+            if let Some((plan, native_key)) = run_plan.zip(native_key) {
                 self.resolved_draw_streams.retain(|entry| entry.plan.is_live()
                     && !(Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key));
                 if self.resolved_draw_streams.len() >= 32 { self.resolved_draw_streams.remove(0); }
+                resident_resolved = Arc::new(draws);
                 self.resolved_draw_streams.push(ResolvedDrawStream {
-                    plan: Arc::clone(plan), key: native_key, epochs, dependencies, resolved: Arc::clone(&resolved),
+                    plan: Arc::clone(plan), key: native_key, epochs, dependencies,
+                    resolved: Arc::clone(&resident_resolved),
                 });
+                resident_resolved.as_ref()
+            } else {
+                // Borrowed, nonresident present keeps its old allocation
+                // profile: no Arc or resident cache key allocation.
+                local_resolved = draws;
+                &local_resolved
             }
-            resolved
         };
-        let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
+        let depth_accesses = if let Some(plan) = run_plan {
+            self.depth_accesses_for_runs(steps, plan, depth_attachment)?
+        } else {
+            self.depth_accesses(steps, depth_attachment)?
+        };
         let transitions = render_target_transition
             .as_ref()
             .map(std::slice::from_ref)
