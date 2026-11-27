@@ -514,7 +514,12 @@ mod tests {
         nested.finish();
         assert_eq!(nested.len(), 3);
         assert!(nested.paint_operations.has_deferred_scroll());
-        assert!(crate::window::SceneLayers::capture_native(&nested.scene, None).frames.is_empty());
+        let nested_layers = crate::window::SceneLayers::capture_native(&nested.scene, Some(&layers));
+        assert_eq!(nested_layers.frames.len(), 1);
+        assert!(nested_layers.frames[0].root_static_span().is_none());
+        assert_eq!(nested_layers.frames[0].id, layers.frames[0].id);
+        assert!(Arc::ptr_eq(&nested_layers.frames[0].content, &layers.frames[0].content));
+        assert_eq!(nested_layers.frames[0].adopt_tile(1, [0, 16, 40, 80], 1.), Some(1));
         let nested_paint = crate::window::Paint::new(nested.into_scene(), Arc::default(), Default::default());
         assert!(!nested_paint.owner_fallback().unwrap().unwrap().scene.paint_operations.has_deferred_scroll());
         assert_eq!(scene.bounds_for_range(1..2), Some(viewport.bounds));

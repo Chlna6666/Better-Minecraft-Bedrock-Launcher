@@ -459,6 +459,14 @@ impl NovaRenderer {
         }
     }
 
+    /// Both ordinary and direct rendering must describe the same atlas
+    /// content and text raster ABI. Atlas allocation/placement changes
+    /// alone do not invalidate pixels already rasterized into a tile.
+    pub(super) fn scroll_tile_context(&self, scale: f32) -> (u64, Option<retained_upload::StaticStreamToken>, u32) {
+        let text = pack_text_raster_params(&self.rendering_parameters);
+        (self.atlas.scroll_content_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)), scale.to_bits())
+    }
+
     pub(super) fn try_scroll_raster_present(&mut self, packet: &mut PresentationPacket) -> Result<Option<bool>> {
         // A None submission is NOT a completed fence. All admitted backends
         // must return a tracked writer from the ordered offscreen API.
@@ -520,9 +528,7 @@ impl NovaRenderer {
         if packet.dirty_region.is_full() && self.rendering_parameters.refresh_monitor_parameters() {
             self.retained_upload.invalidate_encode_key();
         }
-        let text = pack_text_raster_params(&self.rendering_parameters);
-        let context = (self.atlas.scroll_content_generation(), Some(retained_upload::StaticStreamToken::from_bytes(&text)),
-            packet.paint.geometry.scale_factor.to_bits());
+        let context = self.scroll_tile_context(packet.paint.geometry.scale_factor);
         if self.raster_tile_context != Some(context) {
             self.raster_tiles.invalidate_all();
             self.raster_tile_context = Some(context);

@@ -737,7 +737,9 @@ impl SceneLayers {
     }
 
     pub(crate) fn capture_native(scene: &Scene, previous: Option<&Self>) -> Self {
-        if !ordered_static_root(scene) { return Self::default(); }
+        // Composition eligibility is not a source-lifetime proof. A
+        // dynamic root can still own immutable, reusable scroll textures.
+        let ordered = ordered_static_root(scene);
         let mut seen = FxHashSet::default();
         let old: FxHashMap<_, _> = previous.into_iter().flat_map(|layers| &layers.frames)
             .filter(|layer| layer.layout_key.is_none())
@@ -768,10 +770,10 @@ impl SceneLayers {
                 ) else { return Self::default(); };
                 Arc::new(content)
             };
-            if !scene.can_reuse_range_bounds(index..index + 1) { return Self::default(); }
             frames.push(LayerFrame {
                 layout_key: None, id: geometry.id, generation: 1,
-                static_root_span: Some(index..index + 1),
+                static_root_span: (ordered && scene.can_reuse_range_bounds(index..index + 1))
+                    .then_some(index..index + 1),
                 damage: LayerDamage::Full, previous_coverage: None,
                 translation, source_viewport, viewport: geometry.viewport,
                 offset: LayerScrollPosition::Pixels(point(crate::px(delta.x.0 / geometry.scale), crate::px(delta.y.0 / geometry.scale))),

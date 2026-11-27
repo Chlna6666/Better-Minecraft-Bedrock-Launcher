@@ -769,7 +769,7 @@ impl NovaRenderer {
                 self.ensure_backdrop_blur_targets()?;
             }
             let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::DrawPresent);
-            self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
+            self.draw_present(upload, packet, original.as_deref(), backdrop_blur_quality, presentation_timing)
         })();
         if let Some(original) = original {
             packet.paint = original;

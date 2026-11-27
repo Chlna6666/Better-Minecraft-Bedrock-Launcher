@@ -860,12 +860,14 @@ impl NovaRenderer {
         &mut self,
         upload: FrameUploadSummary,
         packet: &mut PresentationPacket,
+        logical_paint: Option<&crate::window::Paint>,
         backdrop_blur_quality: BackdropBlurQuality,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
         let result = self.record_and_submit_present(
             upload,
             packet,
+            logical_paint,
             backdrop_blur_quality,
             presentation_timing,
         );
@@ -891,6 +893,7 @@ impl NovaRenderer {
         &mut self,
         upload: FrameUploadSummary,
         packet: &mut PresentationPacket,
+        logical_paint: Option<&crate::window::Paint>,
         backdrop_blur_quality: BackdropBlurQuality,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
@@ -973,14 +976,15 @@ impl NovaRenderer {
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let text_raster = self.retained_upload.text_raster_token();
         self.raster_tiles.begin_frame();
-        let tile_context = (atlas_content_generation, text_raster, packet.paint.geometry.scale_factor.to_bits());
+        let residency_paint = logical_paint.unwrap_or(&packet.paint);
+        let tile_context = self.scroll_tile_context(residency_paint.geometry.scale_factor);
         if self.raster_tiles.bytes() != 0 {
             if self.raster_tile_context != Some(tile_context) {
                 self.raster_tiles.invalidate_all();
             }
-            let layers: FxHashMap<_, _> = packet.paint.layers.frames.iter()
+            let layers: FxHashMap<_, _> = residency_paint.layers.frames.iter()
                 .map(|layer| (layer.id, layer)).collect();
-            let scale = packet.paint.geometry.scale_factor;
+            let scale = residency_paint.geometry.scale_factor;
             self.raster_tiles.reconcile_tiles(|key, generation, raster| {
                 let layer = layers.get(&key.layer)?;
                 let x = i64::from(raster.origin.x);
