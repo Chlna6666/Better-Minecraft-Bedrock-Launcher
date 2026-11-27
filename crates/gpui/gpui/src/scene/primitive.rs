@@ -259,6 +259,16 @@ impl<'a> PrimitiveRef<'a> {
 }
 
 impl<'a> PaintOperationRef<'a> {
+    pub(crate) fn to_operation(self) -> PaintOperation {
+        match self {
+            Self::Primitive(value) => PaintOperation::Primitive(value.to_primitive()),
+            Self::DeferredScroll(value) => PaintOperation::DeferredScroll(value.clone()),
+            Self::StartLayer(value) => PaintOperation::StartLayer(*value),
+            Self::EndLayer => PaintOperation::EndLayer,
+            Self::StartBlur(value) => PaintOperation::StartBlur(value.clone()),
+            Self::EndBlur => PaintOperation::EndBlur,
+        }
+    }
 
     pub(crate) fn same_paint(self, other: Self) -> bool {
         match (self, other) {
@@ -320,10 +330,6 @@ impl<'a> PaintOperationRef<'a> {
 }
 
 impl Primitive {
-    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
-        self.as_ref().has_same_batch_topology(other.as_ref())
-    }
-
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
         self.as_ref().visually_eq(other.as_ref())
     }
@@ -388,10 +394,6 @@ impl Primitive {
 impl PaintOperation {
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
         self.as_ref().same_paint(other.as_ref())
-    }
-
-    pub(crate) fn has_same_batch_topology(&self, other: &Self) -> bool {
-        self.as_ref().has_same_batch_topology(other.as_ref())
     }
 
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
@@ -475,7 +477,7 @@ impl PartialEq for PaintBlur {
                 || self
                     .content
                     .paint_operations
-                    .matches_by(&other.content.paint_operations, |left, right| {
+                    .matches_views(&other.content.paint_operations, |left, right| {
                         left.visually_eq(right)
                     }))
     }

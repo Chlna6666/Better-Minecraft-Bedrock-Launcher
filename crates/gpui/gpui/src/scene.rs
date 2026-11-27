@@ -9,6 +9,7 @@ mod composite;
 mod display_list;
 pub(crate) mod geometry;
 mod operations;
+mod operation_page;
 mod page_compaction;
 mod painter;
 mod prepared;

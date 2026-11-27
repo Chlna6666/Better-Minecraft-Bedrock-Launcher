@@ -205,12 +205,12 @@ fn retained() -> PaintFixture {
 fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     let mut previous = retained();
     let original = &previous.quads[0] as *const Quad;
-    let operation = &previous.paint_operations[0] as *const _;
+    let operation = previous.paint_operations.storage_identity(0);
     let mut current = PaintFixture::default();
     current.replay(0..previous.len(), &previous);
     current.finish();
     assert_eq!(&current.quads[0] as *const Quad, original);
-    assert_eq!(&current.paint_operations[0] as *const _, operation);
+    assert_eq!(current.paint_operations.storage_identity(0), operation);
     assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
     assert!(current.chunks()[0].replayed);
     let mut reference = crate::scene::Painter::default();
@@ -229,7 +229,7 @@ fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     );
     previous.clear();
     assert_eq!(&current.quads[0] as *const Quad, original);
-    assert_eq!(&current.paint_operations[0] as *const _, operation);
+    assert_eq!(current.paint_operations.storage_identity(0), operation);
     assert_eq!(current.quads.len(), 32);
 }
 
@@ -301,12 +301,12 @@ fn shadow_replay_shares_operations_and_typed_payload_after_source_release() {
     }
     previous.finish();
     let payload = &previous.shadows[0] as *const crate::Shadow;
-    let operation = &previous.paint_operations[0] as *const _;
+    let operation = previous.paint_operations.storage_identity(0);
     let mut current = crate::scene::Painter::default();
     assert!(current.replay(0..previous.len(), &previous, []));
     current.finish();
     assert_eq!(&current.shadows[0] as *const _, payload);
-    assert_eq!(&current.paint_operations[0] as *const _, operation);
+    assert_eq!(current.paint_operations.storage_identity(0), operation);
     previous.clear();
     assert_eq!(current.shadows.len(), 32);
     assert_eq!(current.shadows[31].bounds.origin.x, ScaledPixels(31.));

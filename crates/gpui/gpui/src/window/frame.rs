@@ -1034,10 +1034,10 @@ mod publication_tests {
             ..Default::default()
         };
         frame.painter.insert_primitive(quad);
-        let original = &frame.painter.paint_operations[0] as *const _;
+        let original = frame.painter.paint_operations.storage_identity(0);
         frame.finish(&mut previous);
         let paint = frame.publish(PaintGeometry::default(), None, true);
-        let operation = &paint.scene.paint_operations[0] as *const _;
+        let operation = paint.scene.paint_operations.storage_identity(0);
         assert_eq!(original, operation, "publication moves existing payload");
         {
             let mut presentation = crate::window::state::PresentationState::default();
@@ -1057,11 +1057,11 @@ mod publication_tests {
                 "queue and renderer consume the original publication"
             );
         }
-        assert!(frame.painter.paint_operations.iter().next().is_none());
+        assert!(frame.painter.paint_operations.views().next().is_none());
         frame.clear();
         frame.painter.insert_primitive(quad);
         assert_eq!(paint.scene.len(), 1);
-        assert_eq!(&paint.scene.paint_operations[0] as *const _, operation);
+        assert_eq!(paint.scene.paint_operations.storage_identity(0), operation);
         assert_eq!(Arc::strong_count(&paint), 1);
     }
 }

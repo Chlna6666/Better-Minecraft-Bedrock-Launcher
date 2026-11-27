@@ -61,10 +61,7 @@ fn replay_with_gap(
     scene.finish();
     for index in [1, 35] {
         assert!(
-            std::ptr::eq(
-                &scene.paint_operations[index],
-                &base.paint_operations[index]
-            ),
+            scene.paint_operations.storage_identity(index) == base.paint_operations.storage_identity(index),
             "retained operation payload must survive without a per-frame clone"
         );
     }

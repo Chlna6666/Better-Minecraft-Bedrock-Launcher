@@ -5,14 +5,28 @@ use collections::FxHashMap;
 use smallvec::SmallVec;
 use std::{ops::Range, sync::Arc};
 
+pub(super) trait PagePayload: Sized {
+    fn len(&self) -> usize;
+    fn with_capacity(len: usize) -> Self;
+    fn append_range(&mut self, source: &Self, range: Range<usize>);
+}
+
+impl<T: Clone> PagePayload for Vec<T> {
+    fn len(&self) -> usize { Vec::len(self) }
+    fn with_capacity(len: usize) -> Self { Vec::with_capacity(len) }
+    fn append_range(&mut self, source: &Self, range: Range<usize>) {
+        self.extend_from_slice(&source[range]);
+    }
+}
+
 struct Coverage<'a, T> {
-    owner: &'a Arc<Vec<T>>,
+    owner: &'a Arc<T>,
     ranges: SmallVec<[Range<usize>; 4]>,
     full: bool,
 }
 
 pub(super) struct CompactedPage<T> {
-    pub(super) owner: Arc<Vec<T>>,
+    pub(super) owner: Arc<T>,
     ranges: SmallVec<[(Range<usize>, usize); 4]>,
 }
 
@@ -25,9 +39,9 @@ impl<T> CompactedPage<T> {
     }
 }
 
-pub(super) fn compact_sparse_pages<'a, T: Clone + 'a>(
-    views: impl Iterator<Item = (&'a Arc<Vec<T>>, &'a Range<usize>)>,
-) -> FxHashMap<*const Vec<T>, CompactedPage<T>> {
+pub(super) fn compact_sparse_pages<'a, T: PagePayload + 'a>(
+    views: impl Iterator<Item = (&'a Arc<T>, &'a Range<usize>)>,
+) -> FxHashMap<*const T, CompactedPage<T>> {
     let mut coverage = FxHashMap::<_, Coverage<'a, T>>::default();
     for (owner, range) in views {
         let entry = coverage.entry(Arc::as_ptr(owner)).or_insert_with(|| Coverage {
@@ -74,11 +88,11 @@ pub(super) fn compact_sparse_pages<'a, T: Clone + 'a>(
         if live >= entry.owner.len() / 2 {
             continue;
         }
-        let mut payload = Vec::with_capacity(live);
+        let mut payload = T::with_capacity(live);
         let mut ranges = SmallVec::new();
         for range in entry.ranges {
             let target = payload.len();
-            payload.extend_from_slice(&entry.owner[range.clone()]);
+            payload.append_range(entry.owner, range.clone());
             ranges.push((range, target));
         }
         compacted.insert(identity, CompactedPage { owner: Arc::new(payload), ranges });

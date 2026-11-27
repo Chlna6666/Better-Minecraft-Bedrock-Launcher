@@ -3677,10 +3677,10 @@ fn backdrop_blur_scene_preserves_opacity_scale_and_order(cx: &mut TestAppContext
             .expect("backdrop blur should be emitted into the scene");
         let (blur_index, blur_bounds, blur_radius, blur_opacity, blur_order) = scene
             .paint_operations
-            .iter()
+            .views()
             .enumerate()
             .find_map(|(index, operation)| match operation {
-                PaintOperation::Primitive(Primitive::BackdropBlur(blur)) => {
+                crate::scene::PaintOperationRef::Primitive(crate::scene::PrimitiveRef::BackdropBlur(blur)) => {
                     Some((index, blur.bounds, blur.radius, blur.opacity, blur.order))
                 }
                 _ => None,
@@ -3690,11 +3690,11 @@ fn backdrop_blur_scene_preserves_opacity_scale_and_order(cx: &mut TestAppContext
 
         let (background_index, background_order) = scene
             .paint_operations
-            .iter()
+            .views()
             .enumerate()
             .skip(blur_index + 1)
             .find_map(|(index, operation)| match operation {
-                PaintOperation::Primitive(Primitive::Quad(quad)) if quad.bounds == blur_bounds => {
+                crate::scene::PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Quad(quad)) if quad.bounds == blur_bounds => {
                     Some((index, quad.order))
                 }
                 _ => None,

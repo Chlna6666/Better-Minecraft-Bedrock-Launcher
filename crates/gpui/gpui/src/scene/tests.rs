@@ -987,8 +987,8 @@ fn element_blur_replay_keeps_one_isolated_content_scene() {
         assert_eq!(scene.blurs[0].content.quads.len(), 1);
         assert!(scene.blurs[0].content.blurs.is_empty());
         assert_eq!(scene.blurs[0].bounds, expected_bounds);
-        assert!(!scene.paint_operations.iter().any(|operation| {
-            matches!(operation, PaintOperation::Primitive(Primitive::Blur(_)))
+        assert!(!scene.paint_operations.views().any(|operation| {
+            matches!(operation, PaintOperationRef::Primitive(PrimitiveRef::Blur(_)))
         }));
     }
 }
@@ -1163,14 +1163,14 @@ fn retained_prefix_replay_preserves_draw_orders() {
     let replay_end = previous.len();
     let expected_replayed_orders = previous
         .paint_operations
-        .iter()
+        .views()
         .filter_map(|operation| match operation {
-            PaintOperation::Primitive(primitive) => Some(primitive.order()),
-            PaintOperation::StartLayer(_)
-            | PaintOperation::EndLayer
-            | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur
-            | PaintOperation::DeferredScroll(_) => None,
+            PaintOperationRef::Primitive(primitive) => Some(primitive.order()),
+            PaintOperationRef::StartLayer(_)
+            | PaintOperationRef::EndLayer
+            | PaintOperationRef::StartBlur(_)
+            | PaintOperationRef::EndBlur
+            | PaintOperationRef::DeferredScroll(_) => None,
         })
         .collect::<Vec<_>>();
 
@@ -1178,14 +1178,14 @@ fn retained_prefix_replay_preserves_draw_orders() {
     replayed.replay(0..replay_end, &previous, []);
     let actual_replayed_orders = replayed
         .paint_operations
-        .iter()
+        .views()
         .filter_map(|operation| match operation {
-            PaintOperation::Primitive(primitive) => Some(primitive.order()),
-            PaintOperation::StartLayer(_)
-            | PaintOperation::EndLayer
-            | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur
-            | PaintOperation::DeferredScroll(_) => None,
+            PaintOperationRef::Primitive(primitive) => Some(primitive.order()),
+            PaintOperationRef::StartLayer(_)
+            | PaintOperationRef::EndLayer
+            | PaintOperationRef::StartBlur(_)
+            | PaintOperationRef::EndBlur
+            | PaintOperationRef::DeferredScroll(_) => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(actual_replayed_orders, expected_replayed_orders);
@@ -1225,7 +1225,7 @@ fn ordinary_static_glyph_and_quad_replay_shares_operation_payload() {
     assert!(replayed.replay_with_ordering(0..len, &previous, [], Some(&previous)));
     assert_eq!(replayed.len(), len);
     for i in 0..len {
-        assert!(std::ptr::eq(&previous.paint_operations[i], &replayed.paint_operations[i]));
+        assert!((previous.paint_operations.storage_identity(i) == replayed.paint_operations.storage_identity(i)));
     }
     assert!(replayed.monochrome_sprites.iter().eq(previous.monochrome_sprites.iter()));
     assert!(std::ptr::eq(&replayed.monochrome_sprites[0], &previous.monochrome_sprites[0]));
@@ -1234,7 +1234,7 @@ fn ordinary_static_glyph_and_quad_replay_shares_operation_payload() {
     let mut again = crate::scene::Painter::default();
     assert!(again.replay_with_ordering(0..len, &replayed, [], Some(&replayed)));
     for i in 0..len {
-        assert!(std::ptr::eq(&previous.paint_operations[i], &again.paint_operations[i]));
+        assert!((previous.paint_operations.storage_identity(i) == again.paint_operations.storage_identity(i)));
     }
     // Following overlapping geometry must see every imported order.
     let mut expected = crate::scene::Painter::default();
@@ -1737,7 +1737,7 @@ fn completed_capture_groups_match_legacy_scan_after_replay_and_clear() {
         for start in 0..=scene.len() {
             for end in start..=scene.len() {
                 let mut expected_bounds: Option<Bounds<ScaledPixels>> = None;
-                for bounds in scene.paint_operations.range(start..end).iter().filter_map(PaintOperation::visual_bounds)
+                for bounds in scene.paint_operations.range(start..end).views().filter_map(PaintOperationRef::visual_bounds)
                     .chain(expected.iter().filter(|(range, _)| range.start < end && start < range.end).map(|(_, bounds)| *bounds)) {
                     expected_bounds = Some(expected_bounds.map_or(bounds, |old| old.union(&bounds)));
                 }
@@ -1869,7 +1869,7 @@ fn retained_quad_replay_rejects_a_proof_from_another_scene_revision() {
     let spans = source.retention.replay_quads(&source.paint, range.clone());
     assert!(current.replay(range, &other, spans));
     assert_eq!(current.len(), other.len());
-    assert!(!std::ptr::eq(&current.paint_operations[0], &other.paint_operations[0]));
+    assert!(!(current.paint_operations.storage_identity(0) == other.paint_operations.storage_identity(0)));
 }
 
 #[test]
@@ -1925,7 +1925,7 @@ fn retained_shadow_pages_preserve_static_payload_and_reject_partial_runs() {
     previous.finish();
     let mut current = crate::scene::Painter::default();
     assert!(current.replay_with_ordering(0..32, &previous, [], Some(&previous)));
-    assert!(std::ptr::eq(&current.paint_operations[0], &previous.paint_operations[0]));
+    assert!((current.paint_operations.storage_identity(0) == previous.paint_operations.storage_identity(0)));
     assert!(std::ptr::eq(&current.shadows[0], &previous.shadows[0]));
     current.insert_primitive(shadow);
     assert_eq!(current.shadows.last().unwrap().order, 33);

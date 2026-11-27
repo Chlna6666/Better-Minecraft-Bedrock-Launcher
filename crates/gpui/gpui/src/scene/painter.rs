@@ -274,16 +274,7 @@ impl Painter {
                 let marker_changed = self.scene.paint_operations.view(capture.operation_start)
                     .is_some_and(|operation| matches!(operation, PaintOperationRef::StartBlur(marker) if marker.bounds != tight));
                 if marker_changed {
-                    self.scene.paint_operations.edit(capture.operation_start..capture.operation_start + 1, |operation| {
-                        if let PaintOperation::StartBlur(marker) = operation {
-                            marker.bounds = tight;
-                        }
-                    });
-                    self.scene.paint_operations.edit(capture.operation_start + 1..end, |operation| {
-                        if let PaintOperation::StartLayer(bounds) = operation {
-                            *bounds = bounds.intersect(&tight);
-                        }
-                    });
+                    self.scene.paint_operations.tighten_capture(capture.operation_start, end, tight);
                 }
             }
             tight

@@ -27,7 +27,7 @@ fn borrowed_runs_preserve_payload_identity_and_shared_comparison() {
                 for view in run.iter() {
                     assert!(view.same_paint(target.view(index).unwrap()));
                     if let PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Quad(quad)) = view {
-                        let PaintOperation::Primitive(Primitive::Quad(expected)) = &target[index] else {
+                        let PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Quad(expected)) = target.view(index).unwrap() else {
                             panic!("view kind differs from owned kind");
                         };
                         assert!(std::ptr::eq(quad, expected));
@@ -50,8 +50,8 @@ fn borrowed_runs_preserve_payload_identity_and_shared_comparison() {
 #[test]
 fn shared_ranges_survive_source_clear_and_preserve_new_insertions() {
     let mut source = operations(12);
-    let first = &source[2] as *const _;
-    let last = &source[9] as *const _;
+    let first = source.storage_identity(2);
+    let last = source.storage_identity(9);
     let mut current = Operations::default();
     current.share(&source, 2..6);
     current.push(PaintOperation::EndLayer);
@@ -59,20 +59,20 @@ fn shared_ranges_survive_source_clear_and_preserve_new_insertions() {
     current.push(PaintOperation::EndBlur);
     current.finish();
     assert_eq!(current.len(), 8);
-    assert!(matches!(current[4], PaintOperation::EndLayer));
-    assert!(matches!(current[7], PaintOperation::EndBlur));
+    assert!(matches!(current.view(4).unwrap(), PaintOperationRef::EndLayer));
+    assert!(matches!(current.view(7).unwrap(), PaintOperationRef::EndBlur));
     source.clear();
-    assert_eq!(first, &current[0] as *const _);
-    assert_eq!(last, &current[6] as *const _);
+    assert_eq!(first, current.storage_identity(0));
+    assert_eq!(last, current.storage_identity(6));
     for start in 0..=current.len() {
         for end in start..=current.len() {
             let range = current.range(start..end);
-            assert_eq!(range.iter().count(), end - start);
-            let forward: Vec<_> = range.iter().map(|op| op as *const _).collect();
-            let reverse: Vec<_> = range.iter().rev().map(|op| op as *const _).collect();
+            assert_eq!(range.views().count(), end - start);
+            let forward: Vec<_> = range.views().map(|op| op.visual_bounds()).collect();
+            let reverse: Vec<_> = range.views().rev().map(|op| op.visual_bounds()).collect();
             assert!(forward.iter().rev().eq(&reverse));
-            for (index, operation) in range.iter().enumerate() {
-                assert!(std::ptr::eq(operation, &current[start + index]));
+            for (index, operation) in range.views().enumerate() {
+                assert!(operation.same_paint(current.view(start + index).unwrap()));
             }
         }
     }
@@ -90,26 +90,26 @@ fn editing_a_shared_range_detaches_only_changed_operations() {
     current.edit(12..13, |op| *op = PaintOperation::EndLayer);
     for index in 0..12 {
         if (4..7).contains(&index) {
-            assert!(matches!(current[index], PaintOperation::StartLayer(_)));
-            assert!(matches!(source[index], PaintOperation::Primitive(_)));
+            assert!(matches!(current.view(index).unwrap(), PaintOperationRef::StartLayer(_)));
+            assert!(matches!(source.view(index).unwrap(), PaintOperationRef::Primitive(_)));
         } else {
-            assert!(std::ptr::eq(&current[index], &source[index]));
+            assert_eq!(current.storage_identity(index), source.storage_identity(index));
         }
     }
-    assert!(matches!(current[12], PaintOperation::EndLayer));
+    assert!(matches!(current.view(12).unwrap(), PaintOperationRef::EndLayer));
     current.finish();
-    assert_eq!(current.iter().count(), 13);
+    assert_eq!(current.views().count(), 13);
     current.edit(1..12, |op| *op = PaintOperation::EndBlur);
     assert!(
         current
             .range(1..12)
-            .iter()
-            .all(|op| matches!(op, PaintOperation::EndBlur))
+            .views()
+            .all(|op| matches!(op, PaintOperationRef::EndBlur))
     );
     assert!(
         source
-            .iter()
-            .all(|op| matches!(op, PaintOperation::Primitive(_)))
+            .views()
+            .all(|op| matches!(op, PaintOperationRef::Primitive(_)))
     );
 }
 
@@ -122,12 +122,12 @@ fn compaction_counts_all_views_and_releases_sparse_old_pages() {
     }
     current.compact();
     assert_eq!(current.segments.len(), 1);
-    assert!(std::ptr::eq(&source[20], &current[20]));
+    assert_eq!(source.storage_identity(20), current.storage_identity(20));
     let mut sparse = Operations::default();
     sparse.share(&source, 20..23);
     sparse.compact();
     assert_eq!(sparse.segments[0].owner.len(), 3);
-    assert!(!std::ptr::eq(&source[20], &sparse[0]));
+    assert_ne!(source.storage_identity(20), sparse.storage_identity(0));
 }
 
 #[test]
@@ -143,10 +143,10 @@ fn repeated_sparse_views_compact_the_unique_payload_only_once() {
     assert_eq!(target.len(), 128 * 10);
     assert_eq!(target.segments[0].owner.len(), 8);
     assert!(target.segments.iter().all(|segment| Arc::ptr_eq(&segment.owner, &target.segments[0].owner)));
-    assert!(std::ptr::eq(&target[2], &target[4]));
-    assert!(std::ptr::eq(&target[0], &target[10]));
+    assert_eq!(target.storage_identity(2), target.storage_identity(4));
+    assert_eq!(target.storage_identity(0), target.storage_identity(10));
     drop(source);
-    assert!(target.iter().all(|op| matches!(op, PaintOperation::Primitive(_))));
+    assert!(target.views().all(|op| matches!(op, PaintOperationRef::Primitive(_))));
 }
 
 #[test]
@@ -163,8 +163,8 @@ fn edits_and_ranges_follow_logical_order_across_shared_and_pending_runs() {
         ));
         visited += 1;
     });
-    for (index, operation) in current.range(2..9).iter().enumerate() {
-        let PaintOperation::StartLayer(bounds) = operation else {
+    for (index, operation) in current.range(2..9).views().enumerate() {
+        let PaintOperationRef::StartLayer(bounds) = operation else {
             panic!("edited layer")
         };
         assert_eq!(bounds.origin.x.0, index as f32);
@@ -172,11 +172,11 @@ fn edits_and_ranges_follow_logical_order_across_shared_and_pending_runs() {
     for start in 0..=10 {
         for end in start..=10 {
             let view = current.range(start..end);
-            assert_eq!(view.iter().count(), end - start);
+            assert_eq!(view.views().count(), end - start);
             assert!(
-                view.iter()
-                    .zip(view.iter().rev().rev())
-                    .all(|(a, b)| std::ptr::eq(a, b))
+                view.views()
+                    .zip(view.views().rev().rev())
+                    .all(|(a, b)| a.same_paint(b))
             );
         }
     }
@@ -195,28 +195,28 @@ fn scan_range(operations: &Operations, range: Range<usize>) -> bool {
     let mut layer_depth = 0usize;
     for (index, operation) in operations
         .range(0..range.end)
-        .iter()
+        .views()
         .enumerate()
     {
         if index == range.start && (blur_depth != 0 || layer_depth != 0) {
             return false;
         }
         match operation {
-            PaintOperation::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
-            PaintOperation::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
-            PaintOperation::EndBlur => {
+            PaintOperationRef::StartBlur(_) => blur_depth = blur_depth.saturating_add(1),
+            PaintOperationRef::StartLayer(_) => layer_depth = layer_depth.saturating_add(1),
+            PaintOperationRef::EndBlur => {
                 let Some(depth) = blur_depth.checked_sub(1) else {
                     return false;
                 };
                 blur_depth = depth;
             }
-            PaintOperation::EndLayer => {
+            PaintOperationRef::EndLayer => {
                 let Some(depth) = layer_depth.checked_sub(1) else {
                     return false;
                 };
                 layer_depth = depth;
             }
-            PaintOperation::Primitive(_) | PaintOperation::DeferredScroll(_) => {}
+            PaintOperationRef::Primitive(_) | PaintOperationRef::DeferredScroll(_) => {}
         }
     }
     blur_depth == 0 && layer_depth == 0
@@ -308,7 +308,7 @@ fn range_comparison_skips_shared_runs_even_with_pending_tails() {
     for start in 0..=128 {
         for end in start..=128 {
             let mut compared = 0;
-            assert!(current.range(start..end).matches_by(source.range(start..end), |_, _| {
+            assert!(current.range(start..end).matches_views(source.range(start..end), |_, _| {
                 compared += 1;
                 true
             }));
@@ -316,10 +316,10 @@ fn range_comparison_skips_shared_runs_even_with_pending_tails() {
             assert_eq!(compared, expected, "{start}..{end}");
         }
     }
-    assert!(!current.range(63..66).matches_by(source.range(63..66), |_, _| false));
-    assert!(!current.range(0..1).matches_by(source.range(0..2), |_, _| true));
+    assert!(!current.range(63..66).matches_views(source.range(63..66), |_, _| false));
+    assert!(!current.range(0..1).matches_views(source.range(0..2), |_, _| true));
     let mut compared = 0;
-    assert!(current.range(1..32).matches_by(source.range(0..31), |_, _| {
+    assert!(current.range(1..32).matches_views(source.range(0..31), |_, _| {
         compared += 1;
         true
     }));
@@ -338,25 +338,25 @@ fn range_slices_match_logical_indices_across_shared_and_pending_runs() {
         for end in start..=current.len() {
             let range = current.range(start..end);
             let mut index = start;
-            for slice in range.slices() {
-                assert!(!slice.is_empty());
-                for op in slice {
-                    assert!(std::ptr::eq(op, &current[index]));
+            for run in range.runs() {
+                assert!(!run.is_empty());
+                for op in run.iter() {
+                    assert!(op.same_paint(current.view(index).unwrap()));
                     index += 1;
                 }
             }
             assert_eq!(index, end);
             // A replay cursor may jump over a shared span crossing runs.
             for skip in start..=end {
-                let mut runs = range.slices();
-                let mut run: &[PaintOperation] = &[];
+                let mut runs = range.runs();
+                let mut run = OperationRun::default();
                 let mut run_end = start;
                 for index in skip..end {
                     while index >= run_end {
                         run = runs.next().unwrap();
                         run_end += run.len();
                     }
-                    assert!(std::ptr::eq(&run[index - (run_end - run.len())], &current[index]));
+                    assert!(run.get(index - (run_end - run.len())).unwrap().same_paint(current.view(index).unwrap()));
                 }
             }
         }
@@ -372,19 +372,19 @@ fn damage_edges_skip_shared_pages_and_stop_at_first_real_mismatch() {
     current.share(&source, 400..1024);
     current.finish();
     let mut comparisons = 0;
-    let mut compare = |a: &PaintOperation, b: &PaintOperation| {
+    let mut compare = |a: PaintOperationRef<'_>, b: PaintOperationRef<'_>| {
         comparisons += 1;
         a.visually_eq(b)
     };
-    assert_eq!(current.all().common_prefix_by(source.all(), &mut compare), 400);
-    assert_eq!(current.all().common_suffix_by(source.all(), &mut compare), 624);
+    assert_eq!(current.all().common_prefix_views(source.all(), &mut compare), 400);
+    assert_eq!(current.all().common_suffix_views(source.all(), &mut compare), 624);
     assert_eq!(comparisons, 2);
     let mut calls = 0;
-    assert_eq!(source.range(5..1000).common_prefix_by(current.range(5..400), |_, _| {
+    assert_eq!(source.range(5..1000).common_prefix_views(current.range(5..400), |_, _| {
         calls += 1; false
     }), 395);
     assert_eq!(calls, 0);
-    assert_eq!(source.range(400..1024).common_suffix_by(current.range(401..1025), |_, _| {
+    assert_eq!(source.range(400..1024).common_suffix_views(current.range(401..1025), |_, _| {
         panic!("shared suffix must not compare primitives")
     }), 624);
 }

@@ -141,17 +141,17 @@ fn verify(backend: RendererBackend) {
     );
     let shared_operation = unchanged
         .paint_operations
-        .iter()
+        .views()
         .position(|operation| {
             matches!(
                 operation,
-                crate::scene::PaintOperation::Primitive(crate::Primitive::Shadow(_))
+                crate::scene::PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Shadow(_))
             )
         })
         .expect("static shadow operation");
     assert_eq!(
-        &painter.paint_operations[shared_operation] as *const _,
-        &unchanged.paint_operations[shared_operation] as *const _,
+        painter.paint_operations.storage_identity(shared_operation),
+        unchanged.paint_operations.storage_identity(shared_operation),
     );
     let replayed = Arc::new(crate::window::Paint::new(
         painter.into_scene(),

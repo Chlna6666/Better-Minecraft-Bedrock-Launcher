@@ -1,7 +1,8 @@
 //! Ordered Paint storage; shared payloads do not retain earlier Scenes.
-use super::{PaintOperation, PaintOperationRef};
+use super::{PaintOperation, PaintOperationRef, operation_page::OperationPage};
+use crate::{Bounds, ScaledPixels};
 use std::{
-    ops::{Index, Range},
+    ops::Range,
     sync::Arc,
 };
 
@@ -9,7 +10,7 @@ use std::{
 mod tests;
 
 struct Segment {
-    owner: Arc<Vec<PaintOperation>>,
+    owner: Arc<OperationPage>,
     range: Range<usize>,
     end: usize,
 }
@@ -17,16 +18,13 @@ impl Segment {
     fn start(&self) -> usize {
         self.end - self.range.len()
     }
-    fn slice(&self) -> &[PaintOperation] {
-        &self.owner[self.range.clone()]
-    }
 }
 
 /// The only ordered operation payload, with immutable retained ranges and new append storage.
 #[derive(Default)]
 pub(crate) struct Operations {
     segments: Vec<Segment>,
-    pending: Vec<PaintOperation>,
+    pending: OperationPage,
     len: usize,
     // Sparse prefix states belong to the authoritative operation sequence.
     boundaries: Vec<ReplayBoundary>,
@@ -40,25 +38,41 @@ pub(crate) struct OperationRange<'a> {
     end: usize,
 }
 
-/// A logical range within a backing owner, independent of its storage representation.
+/// A logical range within one immutable owner. No consumer can access the
+/// physical index array, or assume a full enum lives at its address.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OperationRun<'a> {
-    operations: &'a [PaintOperation],
+    owner: Option<&'a OperationPage>,
+    start: usize,
+    end: usize,
 }
 
 impl<'a> OperationRun<'a> {
-    pub(crate) fn len(self) -> usize { self.operations.len() }
+    fn new(owner: &'a OperationPage, range: Range<usize>) -> Self {
+        Self { owner: Some(owner), start: range.start, end: range.end }
+    }
+
+    pub(crate) fn len(self) -> usize { self.end - self.start }
+
+    fn is_empty(self) -> bool { self.start == self.end }
 
     pub(crate) fn get(self, index: usize) -> Option<PaintOperationRef<'a>> {
-        self.operations.get(index).map(PaintOperation::as_ref)
+        if index >= self.len() { return None; }
+        Some(self.owner?.view(self.start + index))
     }
 
     pub(crate) fn range(self, range: Range<usize>) -> Self {
-        Self { operations: &self.operations[range] }
+        assert!(range.start <= range.end && range.end <= self.len());
+        Self { owner: self.owner, start: self.start + range.start, end: self.start + range.end }
     }
 
     pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'a>> + Clone {
-        self.operations.iter().map(PaintOperation::as_ref)
+        (self.start..self.end).map(move |index| self.owner.expect("nonempty operation run").view(index))
+    }
+
+    fn same_storage(self, other: OperationRun<'_>) -> bool {
+        self.len() == other.len() && self.start == other.start
+            && self.owner.zip(other.owner).is_some_and(|(a, b)| std::ptr::eq(a, b))
     }
 }
 
@@ -88,14 +102,14 @@ enum ScopeChange {
 }
 
 impl ScopeChange {
-    fn of(operation: &PaintOperation) -> Self {
+    fn of(operation: PaintOperationRef<'_>) -> Self {
         match operation {
-            PaintOperation::Primitive(_) => Self::None,
-            PaintOperation::DeferredScroll(_) => Self::DeferredScroll,
-            PaintOperation::StartBlur(_) => Self::StartBlur,
-            PaintOperation::EndBlur => Self::EndBlur,
-            PaintOperation::StartLayer(_) => Self::StartLayer,
-            PaintOperation::EndLayer => Self::EndLayer,
+            PaintOperationRef::Primitive(_) => Self::None,
+            PaintOperationRef::DeferredScroll(_) => Self::DeferredScroll,
+            PaintOperationRef::StartBlur(_) => Self::StartBlur,
+            PaintOperationRef::EndBlur => Self::EndBlur,
+            PaintOperationRef::StartLayer(_) => Self::StartLayer,
+            PaintOperationRef::EndLayer => Self::EndLayer,
         }
     }
 }
@@ -153,11 +167,12 @@ impl Operations {
                     && self.boundary_at(range.end).independent()))
     }
 
+    #[cfg(test)]
     fn rebuild_boundaries(&mut self) {
         let mut boundaries = std::mem::take(&mut self.boundaries);
         boundaries.clear();
         let mut state = ReplayBoundary::default();
-        for (index, operation) in self.iter().enumerate() {
+        for (index, operation) in self.views().enumerate() {
             let change = ScopeChange::of(operation);
             if change != ScopeChange::None {
                 state = state.advance(index + 1, change);
@@ -186,8 +201,8 @@ impl Operations {
     }
 
     pub(crate) fn deferred_scrolls(&self) -> impl Iterator<Item = &crate::window::scroll_paint::ScrollPlacement> {
-        self.deferred_scroll_indices().filter_map(|index| match self.get(index) {
-            Some(PaintOperation::DeferredScroll(placement)) => Some(placement),
+        self.deferred_scroll_indices().filter_map(|index| match self.view(index) {
+            Some(PaintOperationRef::DeferredScroll(placement)) => Some(placement),
             _ => None,
         })
     }
@@ -203,7 +218,7 @@ impl Operations {
     /// belong to their Arc owners and must not be counted per view.
     pub(crate) fn private_capacity_bytes(&self) -> u64 {
         (self.segments.capacity() as u64).saturating_mul(std::mem::size_of::<Segment>() as u64)
-            .saturating_add((self.pending.capacity() as u64).saturating_mul(std::mem::size_of::<PaintOperation>() as u64))
+            .saturating_add(self.pending.capacity_bytes() as u64)
             .saturating_add((self.boundaries.capacity() as u64).saturating_mul(std::mem::size_of::<ReplayBoundary>() as u64))
     }
     pub(crate) fn shrink_to(&mut self, floor: usize) {
@@ -213,7 +228,7 @@ impl Operations {
     }
     pub(crate) fn push(&mut self, operation: PaintOperation) {
         self.len += 1;
-        self.record_boundary(self.len, ScopeChange::of(&operation));
+        self.record_boundary(self.len, ScopeChange::of(operation.as_ref()));
         self.pending.push(operation);
     }
     pub(crate) fn clear(&mut self) {
@@ -221,7 +236,7 @@ impl Operations {
         self.boundaries.clear();
         for segment in self.segments.drain(..) {
             if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
-                && owner.capacity() > self.pending.capacity()
+                && owner.capacity_bytes() > self.pending.capacity_bytes()
             {
                 owner.clear();
                 self.pending = owner;
@@ -229,22 +244,28 @@ impl Operations {
         }
         self.len = 0;
     }
-    pub(crate) fn get(&self, index: usize) -> Option<&PaintOperation> {
-        if index >= self.len {
-            return None;
-        }
-        let segment = self
-            .segments
-            .partition_point(|segment| segment.end <= index);
+    pub(crate) fn view(&self, index: usize) -> Option<PaintOperationRef<'_>> {
+        if index >= self.len { return None; }
+        let segment = self.segments.partition_point(|segment| segment.end <= index);
         Some(if let Some(segment) = self.segments.get(segment) {
-            &segment.slice()[index - segment.start()]
+            segment.owner.view(segment.range.start + index - segment.start())
         } else {
-            &self.pending[index - (self.len - self.pending.len())]
+            self.pending.view(index - (self.len - self.pending.len()))
         })
     }
-    pub(crate) fn first(&self) -> Option<&PaintOperation> {
-        self.get(0)
+
+    #[cfg(test)]
+    pub(crate) fn storage_identity(&self, index: usize) -> *const () {
+        let segment = self.segments.partition_point(|segment| segment.end <= index);
+        if let Some(segment) = self.segments.get(segment) {
+            let local = segment.range.start + index - segment.start();
+            segment.owner.range_identity(local..local + 1)
+        } else {
+            let local = index - (self.len - self.pending.len());
+            self.pending.range_identity(local..local + 1)
+        }
     }
+
     pub(crate) fn get_range(&self, range: Range<usize>) -> Option<OperationRange<'_>> {
         (range.start <= range.end && range.end <= self.len).then_some(OperationRange {
             operations: self,
@@ -259,14 +280,6 @@ impl Operations {
     pub(crate) fn all(&self) -> OperationRange<'_> {
         self.range(0..self.len)
     }
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &PaintOperation> + Clone {
-        self.all().iter()
-    }
-
-    pub(crate) fn view(&self, index: usize) -> Option<PaintOperationRef<'_>> {
-        self.get(index).map(PaintOperation::as_ref)
-    }
-
     pub(crate) fn views(&self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'_>> + Clone {
         self.all().views()
     }
@@ -276,20 +289,6 @@ impl Operations {
         compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
     ) -> bool {
         self.all().matches_views(other.all(), compare)
-    }
-
-    /// Compares ordered Paint operations while skipping ranges that both generations share.
-    ///
-    /// A retained replay can rebuild a Scene from unchanged immutable operation segments plus a
-    /// small set of newly painted segments. Comparing the operation values one by one defeats that
-    /// sharing at Scene commit time, so identical storage ranges are treated as an exact proof and
-    /// only unshared spans are passed to `matches`.
-    pub(crate) fn matches_by(
-        &self,
-        other: &Self,
-        matches: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
-    ) -> bool {
-        self.for_each_unshared_pair(other, matches)
     }
 
     /// Compares Paint values and, after the first visual change, checks whether the remaining
@@ -329,15 +328,6 @@ impl Operations {
         )
     }
 
-    /// Visits unshared operation pairs, skipping immutable storage ranges shared by both Scenes.
-    fn for_each_unshared_pair(
-        &self,
-        other: &Self,
-        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
-    ) -> bool {
-        self.all().matches_by(other.all(), compare)
-    }
-
     /// Freeze newly appended operations without rewriting any existing immutable ranges.
     pub(crate) fn finish(&mut self) {
         if !self.pending.is_empty() {
@@ -347,7 +337,7 @@ impl Operations {
             self.append(Arc::new(pending), 0..count);
         }
     }
-    fn append(&mut self, owner: Arc<Vec<PaintOperation>>, range: Range<usize>) {
+    fn append(&mut self, owner: Arc<OperationPage>, range: Range<usize>) {
         self.len += range.len();
         if let Some(previous) = self.segments.last_mut()
             && Arc::ptr_eq(&previous.owner, &owner)
@@ -417,111 +407,133 @@ impl Operations {
             }
         }
     }
-    /// Edit only requested operations; shared neighbours keep their original backing.
-    /// Capture construction uses this before publishing a Paint generation.
-    pub(crate) fn edit(&mut self, range: Range<usize>, mut edit: impl FnMut(&mut PaintOperation)) {
-        assert!(range.start <= range.end && range.end <= self.len);
-        if range.is_empty() {
+    /// Modify scope payloads without rebuilding the ordinary primitive stream.
+    /// Shared pages detach only the affected scope record. The sparse index
+    /// identifies precisely which operations need modification.
+    pub(crate) fn tighten_capture(&mut self, start: usize, end: usize, tight: Bounds<ScaledPixels>) {
+        self.finish();
+        let boundaries = std::mem::take(&mut self.boundaries);
+        let first = boundaries.partition_point(|boundary| boundary.after <= start);
+        let mut scopes = boundaries[first..].iter()
+            .take_while(|boundary| boundary.after <= end)
+            .filter_map(|boundary| {
+                let index = boundary.after - 1;
+                ((index == start && boundary.change == ScopeChange::StartBlur)
+                    || (index > start && boundary.change == ScopeChange::StartLayer))
+                    .then_some((index, boundary.change))
+            }).peekable();
+        if scopes.peek().is_none() {
+            drop(scopes);
+            self.boundaries = boundaries;
             return;
         }
-        let mut structure_changed = false;
-        let mut edit = |operation: &mut PaintOperation| {
-            let before = ScopeChange::of(operation);
-            edit(operation);
-            structure_changed |= before != ScopeChange::of(operation);
-        };
-        let pending_start = self.len - self.pending.len();
-        if range.start < pending_start {
-            let segments = std::mem::take(&mut self.segments);
-            let pending_len = self.pending.len();
-            self.len = 0;
-            for segment in segments {
-                self.edit_segment(segment, &range, &mut edit);
+        let segments = std::mem::take(&mut self.segments);
+        self.len = 0;
+        for mut segment in segments {
+            let begin = segment.start();
+            if scopes.peek().is_none_or(|(index, _)| *index >= segment.end) {
+                self.append(segment.owner, segment.range);
+                continue;
             }
-            self.len += pending_len;
-        }
-        if range.end > pending_start {
-            for operation in &mut self.pending
-                [range.start.saturating_sub(pending_start)..range.end - pending_start]
-            {
-                edit(operation);
+            if let Some(owner) = Arc::get_mut(&mut segment.owner) {
+                while let Some((index, change)) = scopes.next_if(|(index, _)| *index < segment.end) {
+                    let local = segment.range.start + index - begin;
+                    match change {
+                        ScopeChange::StartBlur => owner.set_blur_bounds(local, tight),
+                        ScopeChange::StartLayer => owner.clip_layer(local, tight),
+                        _ => unreachable!(),
+                    }
+                }
+                self.append(segment.owner, segment.range);
+                continue;
+            }
+            let mut cursor = segment.range.start;
+            while let Some((index, change)) = scopes.next_if(|(index, _)| *index < segment.end) {
+                let local = segment.range.start + index - begin;
+                if cursor < local {
+                    self.append(Arc::clone(&segment.owner), cursor..local);
+                }
+                let mut page = OperationPage::default();
+                page.push(segment.owner.view(local).to_operation());
+                match change {
+                    ScopeChange::StartBlur => page.set_blur_bounds(0, tight),
+                    ScopeChange::StartLayer => page.clip_layer(0, tight),
+                    _ => unreachable!(),
+                }
+                self.append(Arc::new(page), 0..1);
+                cursor = local + 1;
+            }
+            if cursor < segment.range.end {
+                self.append(segment.owner, cursor..segment.range.end);
             }
         }
-        if structure_changed {
-            self.rebuild_boundaries();
-        }
+        drop(scopes);
+        self.boundaries = boundaries;
     }
 
-    fn edit_segment(
-        &mut self,
-        mut segment: Segment,
-        range: &Range<usize>,
-        edit: &mut impl FnMut(&mut PaintOperation),
-    ) {
-        let start = range.start.max(segment.start());
-        let end = range.end.min(segment.end);
-        if start >= end {
-            self.append(segment.owner, segment.range);
-            return;
-        }
-        let local = segment.range.start + start - segment.start();
-        let local_end = local + end - start;
-        if let Some(owner) = Arc::get_mut(&mut segment.owner) {
-            for operation in &mut owner[local..local_end] {
-                edit(operation);
+    /// Test-only generic editor for arbitrary changes of operation kind.
+    #[cfg(test)]
+    pub(crate) fn edit(&mut self, range: Range<usize>, mut edit: impl FnMut(&mut PaintOperation)) {
+        assert!(range.start <= range.end && range.end <= self.len);
+        if range.is_empty() { return; }
+        self.finish();
+        let segments = std::mem::take(&mut self.segments);
+        self.len = 0;
+        for segment in segments {
+            let start = range.start.max(segment.start());
+            let end = range.end.min(segment.end);
+            if start >= end {
+                self.append(segment.owner, segment.range);
+                continue;
             }
-            self.append(segment.owner, segment.range);
-            return;
+            let local = segment.range.start + start - segment.start();
+            let local_end = local + end - start;
+            if segment.range.start < local {
+                self.append(Arc::clone(&segment.owner), segment.range.start..local);
+            }
+            let mut changed = OperationPage::default();
+            for index in local..local_end {
+                let mut operation = segment.owner.view(index).to_operation();
+                edit(&mut operation);
+                changed.push(operation);
+            }
+            self.append(Arc::new(changed), 0..end - start);
+            if local_end < segment.range.end {
+                self.append(segment.owner, local_end..segment.range.end);
+            }
         }
-        if segment.range.start < local {
-            self.append(Arc::clone(&segment.owner), segment.range.start..local);
-        }
-        let mut changed = segment.owner[local..local_end].to_vec();
-        for operation in &mut changed {
-            edit(operation);
-        }
-        self.append(Arc::new(changed), 0..end - start);
-        if local_end < segment.range.end {
-            self.append(segment.owner, local_end..segment.range.end);
-        }
+        self.rebuild_boundaries();
     }
 }
 
 impl<'a> OperationRange<'a> {
-    pub(crate) fn len(self) -> usize {
-        self.end - self.start
-    }
-    pub(crate) fn get(self, index: usize) -> Option<&'a PaintOperation> {
-        (index < self.len()).then(|| &self.operations[self.start + index])
-    }
+    pub(crate) fn len(self) -> usize { self.end - self.start }
+
     pub(crate) fn range(self, range: Range<usize>) -> Self {
         assert!(range.start <= range.end && range.end <= self.len());
-        Self {
-            operations: self.operations,
-            start: self.start + range.start,
-            end: self.start + range.end,
-        }
+        Self { operations: self.operations, start: self.start + range.start, end: self.start + range.end }
     }
+
     pub(crate) fn view(self, index: usize) -> Option<PaintOperationRef<'a>> {
-        self.get(index).map(PaintOperation::as_ref)
-    }
-
-    pub(crate) fn common_prefix_views(
-        self, other: OperationRange<'_>,
-        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
-    ) -> usize {
-        self.common_prefix_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
-    }
-
-    pub(crate) fn common_suffix_views(
-        self, other: OperationRange<'_>,
-        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
-    ) -> usize {
-        self.common_suffix_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
+        if index >= self.len() { return None; }
+        self.operations.view(self.start + index)
     }
 
     pub(crate) fn runs(self) -> impl DoubleEndedIterator<Item = OperationRun<'a>> + Clone {
-        self.slices().map(|operations| OperationRun { operations })
+        let first = self.operations.segments.partition_point(|segment| segment.end <= self.start);
+        let end = self.operations.segments.partition_point(|segment| segment.start() < self.end);
+        let pending_start = self.operations.len - self.operations.pending.len();
+        let pending = if self.end > pending_start && self.start < self.end {
+            OperationRun::new(&self.operations.pending,
+                self.start.saturating_sub(pending_start)..self.end - pending_start)
+        } else {
+            OperationRun::default()
+        };
+        self.operations.segments[first..end].iter().map(move |segment| {
+            let start = segment.range.start + self.start.saturating_sub(segment.start());
+            let end = segment.range.start + self.end.min(segment.end) - segment.start();
+            OperationRun::new(&segment.owner, start..end)
+        }).chain(std::iter::once(pending)).filter(|run| !run.is_empty())
     }
 
     pub(crate) fn views(self) -> impl DoubleEndedIterator<Item = PaintOperationRef<'a>> + Clone {
@@ -530,143 +542,66 @@ impl<'a> OperationRange<'a> {
 
     pub(crate) fn matches_views(
         self, other: OperationRange<'_>,
-        mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
+        compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
     ) -> bool {
-        self.matches_by(other, |a, b| compare(a.as_ref(), b.as_ref()))
+        self.len() == other.len() && self.common_prefix_views(other, compare) == self.len()
     }
 
-    /// Compare logical ranges using their immutable backing slices as an
-    /// exact proof. Pending tails are compared without freezing the builder.
-    pub(crate) fn matches_by(
-        self,
-        other: OperationRange<'_>,
-        mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
-    ) -> bool {
-        if self.len() != other.len() {
-            return false;
-        }
-        let mut left_runs = self.slices();
-        let mut right_runs = other.slices();
-        let mut left = left_runs.next().unwrap_or(&[]);
-        let mut right = right_runs.next().unwrap_or(&[]);
-        while !left.is_empty() && !right.is_empty() {
-            let count = left.len().min(right.len());
-            let (a, left_tail) = left.split_at(count);
-            let (b, right_tail) = right.split_at(count);
-            // Both slices are live and nonempty, so equal addresses prove
-            // identical storage, including the source offset.
-            if !std::ptr::eq(a, b) && !a.iter().zip(b).all(|(a, b)| compare(a, b)) {
-                return false;
-            }
-            left = if left_tail.is_empty() { left_runs.next().unwrap_or(&[]) } else { left_tail };
-            right = if right_tail.is_empty() { right_runs.next().unwrap_or(&[]) } else { right_tail };
-        }
-        left.is_empty() && right.is_empty()
-    }
-
-    /// Count equal leading operations without visiting identical immutable
-    /// slices. The caller must prove shared storage is sufficient for its
-    /// equality semantics (e.g. no externally sampled animation state).
-    pub(crate) fn common_prefix_by(
+    pub(crate) fn common_prefix_views(
         self, other: OperationRange<'_>,
-        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+        compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
     ) -> usize {
-        common_shared_edge(self.slices(), other.slices(), false, compare)
+        common_shared_edge(self.runs(), other.runs(), false, compare)
     }
 
-    /// Same proof in reverse logical order. Exclude an already matched
-    /// prefix by restricting the input ranges before calling this method.
-    pub(crate) fn common_suffix_by(
+    pub(crate) fn common_suffix_views(
         self, other: OperationRange<'_>,
-        compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+        compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
     ) -> usize {
-        common_shared_edge(self.slices().rev(), other.slices().rev(), true, compare)
-    }
-
-    /// Contiguous portions in logical order, including an unfinished tail.
-    /// Resolve the segment boundaries once for the whole range.
-    pub(crate) fn slices(self) -> impl DoubleEndedIterator<Item = &'a [PaintOperation]> + Clone {
-        let first = self
-            .operations
-            .segments
-            .partition_point(|segment| segment.end <= self.start);
-        let end = self
-            .operations
-            .segments
-            .partition_point(|segment| segment.start() < self.end);
-        let pending_start = self.operations.len - self.operations.pending.len();
-        let pending = if self.end > pending_start && self.start < self.end {
-            &self.operations.pending
-                [self.start.saturating_sub(pending_start)..self.end - pending_start]
-        } else {
-            &[]
-        };
-        self.operations.segments[first..end]
-            .iter()
-            .map(move |segment| {
-                let start = self.start.saturating_sub(segment.start());
-                let end = self.end.min(segment.end) - segment.start();
-                &segment.slice()[start..end]
-            })
-            .chain(std::iter::once(pending))
-            .filter(|slice| !slice.is_empty())
-    }
-
-    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = &'a PaintOperation> + Clone {
-        self.slices().flat_map(|slice| slice.iter())
+        common_shared_edge(self.runs().rev(), other.runs().rev(), true, compare)
     }
 }
-// Walk physical ranges in lockstep. A shared page is compared in O(1),
-// including unequal segment lengths and different logical offsets.
+
 fn common_shared_edge<'a, 'b>(
-    mut left_runs: impl Iterator<Item = &'a [PaintOperation]>,
-    mut right_runs: impl Iterator<Item = &'b [PaintOperation]>,
+    mut left_runs: impl Iterator<Item = OperationRun<'a>>,
+    mut right_runs: impl Iterator<Item = OperationRun<'b>>,
     reverse: bool,
-    mut compare: impl FnMut(&PaintOperation, &PaintOperation) -> bool,
+    mut compare: impl FnMut(PaintOperationRef<'_>, PaintOperationRef<'_>) -> bool,
 ) -> usize {
-    let mut left = left_runs.next().unwrap_or(&[]);
-    let mut right = right_runs.next().unwrap_or(&[]);
+    let mut left = left_runs.next().unwrap_or_default();
+    let mut right = right_runs.next().unwrap_or_default();
     let mut matched = 0;
     while !left.is_empty() && !right.is_empty() {
         let count = left.len().min(right.len());
-        let split = |slice: &[PaintOperation]| if reverse {
-            slice.len() - count
-        } else { count };
         let (a, left_tail) = if reverse {
-            let (tail, head) = left.split_at(split(left));
-            (head, tail)
-        } else { left.split_at(split(left)) };
+            (left.range(left.len()-count..left.len()), left.range(0..left.len()-count))
+        } else {
+            (left.range(0..count), left.range(count..left.len()))
+        };
         let (b, right_tail) = if reverse {
-            let (tail, head) = right.split_at(split(right));
-            (head, tail)
-        } else { right.split_at(split(right)) };
-        if !std::ptr::eq(a, b) {
-            if reverse {
-                for (a, b) in a.iter().rev().zip(b.iter().rev()) {
-                    if !compare(a, b) { return matched; }
-                    matched += 1;
-                }
-            } else {
-                for (a, b) in a.iter().zip(b.iter()) {
-                    if !compare(a, b) { return matched; }
-                    matched += 1;
-                }
+            (right.range(right.len()-count..right.len()), right.range(0..right.len()-count))
+        } else {
+            (right.range(0..count), right.range(count..right.len()))
+        };
+        if a.same_storage(b) {
+            matched += count;
+        } else if reverse {
+            for (a,b) in a.iter().rev().zip(b.iter().rev()) {
+                if !compare(a,b) { return matched; }
+                matched += 1;
             }
         } else {
-            matched += count;
+            for (a,b) in a.iter().zip(b.iter()) {
+                if !compare(a,b) { return matched; }
+                matched += 1;
+            }
         }
-        left = if left_tail.is_empty() { left_runs.next().unwrap_or(&[]) } else { left_tail };
-        right = if right_tail.is_empty() { right_runs.next().unwrap_or(&[]) } else { right_tail };
+        left = if left_tail.is_empty() { left_runs.next().unwrap_or_default() } else { left_tail };
+        right = if right_tail.is_empty() { right_runs.next().unwrap_or_default() } else { right_tail };
     }
     matched
 }
 
-impl Index<usize> for Operations {
-    type Output = PaintOperation;
-    fn index(&self, index: usize) -> &Self::Output {
-        self.get(index).expect("Paint index must be in bounds")
-    }
-}
 impl Extend<PaintOperation> for Operations {
     fn extend<T: IntoIterator<Item = PaintOperation>>(&mut self, operations: T) {
         for operation in operations {

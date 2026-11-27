@@ -556,7 +556,7 @@ mod tests {
             painter.finish();
             painter.into_scene()
         }).join().unwrap();
-        assert!(eager.paint_operations.matches_by(&recovered.paint_operations, PaintOperation::same_paint));
+        assert!(eager.paint_operations.matches_views(&recovered.paint_operations, PaintOperationRef::same_paint));
         assert!(source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-0.5))).is_none());
         assert!(source.native_placement(logical_viewport, 1., point(ScaledPixels(0.), ScaledPixels(-256.))).is_none());
     }
@@ -586,7 +586,7 @@ mod tests {
         moved_placement.replay(&mut eager);
         eager.insert_primitive(outside(48.));
         eager.finish();
-        assert!(recovered.scene.paint_operations.matches_by(&eager.paint_operations, PaintOperation::same_paint));
+        assert!(recovered.scene.paint_operations.matches_views(&eager.paint_operations, PaintOperationRef::same_paint));
         assert_eq!(recovered.scene.len(), 3);
         assert!(recovered.layers.frames.is_empty());
     }
@@ -857,7 +857,7 @@ mod tests {
         eager.insert_primitive(outside(32.));
         eager.finish();
         assert!(!recovered.scene.paint_operations.has_deferred_scroll());
-        assert!(recovered.scene.paint_operations.matches_by(&eager.paint_operations, PaintOperation::same_paint));
+        assert!(recovered.scene.paint_operations.matches_views(&eager.paint_operations, PaintOperationRef::same_paint));
     }
 
     #[test]
@@ -892,7 +892,7 @@ mod tests {
         assert!(
             indexed
                 .paint_operations
-                .matches_by(&reference.paint_operations, PaintOperation::visually_eq)
+                .matches_views(&reference.paint_operations, PaintOperationRef::visually_eq)
         );
     }
 

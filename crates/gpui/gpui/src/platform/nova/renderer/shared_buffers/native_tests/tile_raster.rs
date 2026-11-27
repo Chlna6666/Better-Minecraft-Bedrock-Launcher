@@ -76,11 +76,11 @@ fn verify(backend: RendererBackend) {
     // Compile the immutable source through the ordinary native upload
     // pipeline. RasterTile supplies projection; no primitive is translated.
     let mut painter = crate::scene::Painter::default();
-    for operation in operations.iter() {
+    for operation in operations.views() {
         match operation {
-            crate::scene::PaintOperation::Primitive(primitive) => painter.insert_primitive(primitive.clone()),
-            crate::scene::PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
-            crate::scene::PaintOperation::EndLayer => painter.pop_layer(),
+            crate::scene::PaintOperationRef::Primitive(primitive) => painter.insert_primitive(primitive.to_primitive()),
+            crate::scene::PaintOperationRef::StartLayer(bounds) => painter.push_layer(*bounds),
+            crate::scene::PaintOperationRef::EndLayer => painter.pop_layer(),
             _ => unreachable!("static raster source"),
         }
     }
