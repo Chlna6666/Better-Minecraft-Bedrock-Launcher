@@ -108,9 +108,26 @@ impl StateAccessLog {
     pub(in crate::window) fn share(&mut self, source: &Self, range: Range<usize>) {
         assert!(source.contains(range.clone()));
         if range.is_empty() { return; }
-        self.freeze();
         for block in source.blocks_in(range.clone()) {
-            self.append(block.slice(range.start.max(block.begin())..range.end.min(block.end)));
+            let block = block.slice(range.start.max(block.begin())..range.end.min(block.end));
+            // A tiny fragment must not retain an almost entirely unused old
+            // page. Pack it together with fresh accesses instead. Large or
+            // contiguous fragments keep the zero-key-copy sharing path.
+            let adjacent = self.pending.is_empty() && self.blocks.last().is_some_and(|last|
+                match (&last.page, &block.page) {
+                    (Some(a), Some(b)) => Rc::ptr_eq(a, b) && last.start + last.len == block.start,
+                    _ => false,
+                });
+            if let Some(page) = &block.page
+                && !adjacent && block.len * 4 < page.len()
+            {
+                for key in &page[block.start..block.start + block.len] {
+                    self.push(key.clone());
+                }
+            } else {
+                self.freeze();
+                self.append(block);
+            }
         }
         let pending_start = source.len - source.pending.len();
         for key in &source.pending[range.start.saturating_sub(pending_start)
@@ -223,6 +240,23 @@ mod tests {
         assert_eq!(candidate.keys(110..115).cloned().collect::<Vec<_>>(), (20..25).map(key).collect::<Vec<_>>());
         source.clear();
         assert_eq!(candidate.key(114), Some(&key(24)));
+    }
+
+    #[test]
+    fn sparse_replay_packs_small_fragments_instead_of_pinning_old_pages() {
+        let mut source = StateAccessLog::default();
+        for i in 0..PAGE_LEN * 8 { source.push(Some(key(i))); }
+        source.freeze();
+        let mut target = StateAccessLog::default();
+        for i in 0..8 {
+            target.share(&source, i * PAGE_LEN..i * PAGE_LEN + 1);
+        }
+        target.freeze();
+        assert_eq!(target.blocks.len(), 1);
+        assert_eq!(target.blocks[0].page.as_ref().unwrap().len(), 8);
+        assert!(source.blocks.iter().all(|block| Rc::strong_count(block.page.as_ref().unwrap()) == 1));
+        assert_eq!(target.keys(0..8).cloned().collect::<Vec<_>>(),
+            (0..8).map(|i| key(i * PAGE_LEN)).collect::<Vec<_>>());
     }
 
     #[test]

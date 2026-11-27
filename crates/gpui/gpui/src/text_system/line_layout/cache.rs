@@ -310,8 +310,41 @@ impl<V> LayoutStore<V> {
         self.used_count = 0;
     }
 
+    /// Slot IDs are private to this table and its two logs. Repack only on
+    /// explicit memory trimming (or a small, heavily fragmented arena),
+    /// rewriting every live index before exposing the compacted table.
+    fn compact_slots(&mut self) {
+        if self.free.is_empty() { return; }
+        let mut relocated = vec![usize::MAX; self.slots.len()];
+        let mut write = 0;
+        for read in 0..self.slots.len() {
+            if self.slots[read].is_some() {
+                relocated[read] = write;
+                if read != write {
+                    self.slots[write] = self.slots[read].take();
+                }
+                write += 1;
+            }
+        }
+        self.slots.truncate(write);
+        for id in self.keys.values_mut().chain(self.previous.iter_mut()).chain(self.current.iter_mut()) {
+            *id = relocated[*id];
+            debug_assert!(*id < write);
+        }
+        self.free.clear();
+    }
+
     fn trim(&mut self, floor: usize, force: bool) {
-        // Live IDs cannot move while either access log can refer to them.
+        // Compact only if enough memory will actually be reclaimed.
+        // Bound automatic compaction work so ordinary frames do not pay
+        // an unbounded relocation spike after a large page transition.
+        let holes = self.free.len();
+        if holes >= 64 && holes >= self.slots.len() / 2
+            && (force || (self.slots.len() <= 4096 && holes >= self.slots.len() * 3 / 4))
+        {
+            self.compact_slots();
+        }
+        // Trim trailing holes without changing any live ID.
         while self.slots.last().is_some_and(Option::is_none) {
             self.slots.pop();
         }
@@ -1189,6 +1222,32 @@ mod tests {
         store.clear();
         assert!(store.previous.is_empty());
         assert_eq!(store.used_count, 0);
+    }
+
+    #[test]
+    fn compacted_text_slots_rebase_both_access_logs_and_lookup_identity() {
+        let mut store = LayoutStore::<LineLayout>::default();
+        let keys: Vec<_> = (0..128).map(|i| Arc::new(CacheKey {
+            text: format!("line {i}").into(),
+            font_size: px(14.),
+            runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        })).collect();
+        for key in &keys {
+            store.insert(key.clone(), Arc::new(LineLayout::default()), 1);
+        }
+        store.finish(1, |_, _| {});
+        assert_eq!(store.replay(127..128, 2), 1);
+        store.finish(2, |_, _| {});
+        assert_eq!(store.free.len(), 127);
+        assert_eq!(store.replay(0..1, 3), 1);
+        store.trim(0, true);
+        assert_eq!(store.slots.len(), 1);
+        assert_eq!(store.previous, vec![0]);
+        assert_eq!(store.current, vec![0]);
+        assert_eq!(store.keys[&keys[127]], 0);
+        assert_eq!(store.used_count, 1);
+        store.finish(3, |_, _| panic!("live slot retired"));
     }
 
     #[test]
