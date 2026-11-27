@@ -24,6 +24,7 @@ pub(in crate::window) struct ScrollPaint {
     // Logical origin at the first publication of this source identity.
     native_anchor: Point<Pixels>,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
+    has_lcd_glyphs: bool,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
@@ -111,6 +112,7 @@ impl ScrollPaint {
         operations.finish();
         // Qualify once, not on each scrolled frame or GPU owner request.
         let mut atlas_tiles = collections::FxHashSet::default();
+        let mut has_lcd_glyphs = false;
         let mut order = super::frame::StaticPaintOrder::default();
         let mut static_order = true;
         let mut scoped = super::frame::StaticPaintOrder::default();
@@ -124,6 +126,7 @@ impl ScrollPaint {
         for operation in operations.iter() {
             match operation {
                 PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
+                    has_lcd_glyphs |= sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel;
                     atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
                 PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
@@ -166,6 +169,7 @@ impl ScrollPaint {
             native_generation: 1,
             native_anchor: origin,
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
+            has_lcd_glyphs,
             block_bounds,
         }
     }
@@ -386,7 +390,7 @@ impl ScrollPlacement {
     pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
 
     pub(in crate::window) fn has_lcd_glyphs(&self) -> bool {
-        self.source.atlas_tiles.iter().any(|(atlas, _)| atlas.kind == crate::AtlasTextureKind::Subpixel)
+        self.source.has_lcd_glyphs
     }
 
     pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }

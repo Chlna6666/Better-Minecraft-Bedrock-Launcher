@@ -26,7 +26,8 @@ impl LayerContent {
         translation: [i32; 2],
         source_viewport: ContentMask<ScaledPixels>,
         atlas_tiles: &Arc<[(crate::AtlasTextureId, u32)]>,
-    ) -> Option<Self> {
+        previous: Option<&Arc<Self>>,
+    ) -> Option<Arc<Self>> {
         let [x, y] = translation;
         // Capture coordinates = stable content coordinates + source origin.
         // The viewport moved by delta since this capture was painted.
@@ -43,11 +44,22 @@ impl LayerContent {
         {
             return None;
         }
-        Some(Self {
+        let raster = ContentRaster { source_origin, coverage };
+        // Placement/viewport changes do not change the frozen source.
+        // Validate the new viewport above, then reuse the exact source
+        // allocation even when the clipping rectangle has changed.
+        if let Some(previous) = previous
+            && previous.raster == raster
+            && Arc::ptr_eq(&previous.operations, operations)
+            && Arc::ptr_eq(&previous.raster_atlas_tiles, atlas_tiles)
+        {
+            return Some(Arc::clone(previous));
+        }
+        Some(Arc::new(Self {
             operations: Arc::clone(operations),
-            raster: ContentRaster { source_origin, coverage },
+            raster,
             raster_atlas_tiles: Arc::clone(atlas_tiles),
-        })
+        }))
     }
 
     // Native captures use a common content anchor but can paint at
@@ -543,7 +555,7 @@ impl SceneLayers {
         }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
         let content = LayerContent::from_scroll(
-            &operations, coverage, Point::default(), translation, viewport.scale(1.), &atlas_tiles,
+            &operations, coverage, Point::default(), translation, viewport.scale(1.), &atlas_tiles, None,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         let id = self.frames.len() as u64 + 1;
@@ -553,7 +565,7 @@ impl SceneLayers {
             damage: LayerDamage::Full, previous_coverage: None,
             translation, source_viewport: viewport.scale(1.),
             scale: 1.,
-            content: Arc::new(content),
+            content,
             row_raster: None,
         });
     }
@@ -602,18 +614,10 @@ impl SceneLayers {
             } else {
                 geometry.id
             };
-            let content = if let Some(previous) = previous
-                && previous.source_viewport == source_viewport
-                && previous.generation == geometry.generation
-                && Arc::ptr_eq(&previous.content.operations, operations)
-            {
-                Arc::clone(&previous.content)
-            } else {
-                let Some(content) = LayerContent::from_scroll(
-                    operations, coverage, delta, translation, source_viewport, atlas_tiles,
-                ) else { return Self::default(); };
-                Arc::new(content)
-            };
+            let Some(content) = LayerContent::from_scroll(
+                operations, coverage, delta, translation, source_viewport, atlas_tiles,
+                previous.map(|layer| &layer.content),
+            ) else { return Self::default(); };
             let (damage, previous_coverage) = if let Some(previous) = same_background
                 && previous.generation.checked_add(1) == Some(geometry.generation)
                 && previous.source_viewport == source_viewport
@@ -739,13 +743,27 @@ mod tests {
         })));
         operations.finish();
         let operations = Arc::new(operations);
+        let atlas = Arc::default();
         let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
-            [0, -128], viewport, &Arc::default()).unwrap();
+            [0, -128], viewport, &atlas, None).unwrap();
         let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
-            [0, -192], viewport, &Arc::default()).unwrap();
-        assert!(Arc::ptr_eq(&before.operations, &after.operations));
-        assert!(before.raster == after.raster);
+            [0, -192], viewport, &atlas, Some(&before)).unwrap();
+        assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.raster.source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
+        let clipped = ContentMask::new(Bounds::new(
+            point(ScaledPixels(0.), ScaledPixels(16.)),
+            size(ScaledPixels(512.), ScaledPixels(192.)),
+        ));
+        let clipped = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
+            [0, -192], clipped, &atlas, Some(&after)).unwrap();
+        assert!(Arc::ptr_eq(&before, &clipped));
+        let uncovered = ContentMask::new(Bounds::new(Point::default(),
+            size(ScaledPixels(1024.), ScaledPixels(256.))));
+        assert!(LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
+            [0, -192], uncovered, &atlas, Some(&after)).is_none());
+        let new_origin = LayerContent::from_scroll(&operations, coverage, Point::default(),
+            [0, -64], viewport, &atlas, Some(&before)).unwrap();
+        assert!(!Arc::ptr_eq(&before, &new_origin));
     }
 
     #[test]
