@@ -45,12 +45,14 @@ struct ReplayBoundary {
     after: usize,
     blur_depth: usize,
     layer_depth: usize,
+    deferred_scrolls: usize,
     invalid: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScopeChange {
     None,
+    DeferredScroll,
     StartBlur,
     EndBlur,
     StartLayer,
@@ -61,6 +63,7 @@ impl ScopeChange {
     fn of(operation: &PaintOperation) -> Self {
         match operation {
             PaintOperation::Primitive(_) => Self::None,
+            PaintOperation::DeferredScroll(_) => Self::DeferredScroll,
             PaintOperation::StartBlur(_) => Self::StartBlur,
             PaintOperation::EndBlur => Self::EndBlur,
             PaintOperation::StartLayer(_) => Self::StartLayer,
@@ -83,6 +86,7 @@ impl ReplayBoundary {
                 Some(depth) => self.layer_depth = depth,
                 None => self.invalid = true,
             },
+            ScopeChange::DeferredScroll => self.deferred_scrolls += 1,
             ScopeChange::None => {}
         }
         self
@@ -127,6 +131,23 @@ impl Operations {
             }
         }
         self.boundaries = boundaries;
+    }
+
+    /// Deferred operations participate in the existing sparse prefix
+    /// metadata. Sharing, editing and clearing ranges preserve the proof.
+    pub(crate) fn has_deferred_scroll(&self) -> bool {
+        self.boundaries.last().is_some_and(|boundary| boundary.deferred_scrolls != 0)
+    }
+
+    pub(crate) fn deferred_scrolls(&self) -> impl Iterator<Item = &crate::window::scroll_paint::ScrollPlacement> {
+        self.boundaries.iter().scan(0, |previous, boundary| {
+            let changed = boundary.deferred_scrolls != *previous;
+            *previous = boundary.deferred_scrolls;
+            Some(changed.then_some(boundary.after - 1))
+        }).flatten().filter_map(|index| match self.get(index) {
+            Some(PaintOperation::DeferredScroll(placement)) => Some(placement),
+            _ => None,
+        })
     }
 
     pub(crate) fn len(&self) -> usize {

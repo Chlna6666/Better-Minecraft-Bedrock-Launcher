@@ -205,7 +205,7 @@ impl LayerContent {
                 // effect is preserved by comparing each primitive's exact
                 // DrawOrder and keeping the contributing operation order.
                 PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
-                PaintOperation::StartBlur(_) | PaintOperation::EndBlur => Some(Err(())),
+                PaintOperation::StartBlur(_) | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => Some(Err(())),
             }
         })
     }

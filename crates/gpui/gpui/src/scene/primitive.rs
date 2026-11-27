@@ -33,6 +33,10 @@ pub(crate) enum PrimitiveKind {
 #[derive(Clone)]
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
+    /// One logical operation owns the immutable source and its placement.
+    /// Production emission is gated on complete renderer/root-order support.
+    #[allow(dead_code)]
+    DeferredScroll(crate::window::scroll_paint::ScrollPlacement),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
     StartBlur(BlurCapture),
@@ -214,6 +218,7 @@ impl PaintOperation {
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
             // Unlike damage comparison, Scene revision equality includes structural layer bounds.
             (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
             (Self::EndLayer, Self::EndLayer) | (Self::EndBlur, Self::EndBlur) => true,
@@ -236,6 +241,7 @@ impl PaintOperation {
     pub(crate) fn visually_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            (Self::DeferredScroll(left), Self::DeferredScroll(right)) => left.same_paint(right),
             // Paint layers are batching/order metadata and do not produce pixels themselves. Their
             // spatial bounds may move with a layout animation while every actual pixel-producing
             // primitive remains outside a backdrop sampling region. Treating that metadata motion
@@ -252,6 +258,7 @@ impl PaintOperation {
     pub(crate) fn visual_bounds(&self) -> Option<Bounds<ScaledPixels>> {
         match self {
             Self::Primitive(primitive) => Some(primitive.visual_bounds()),
+            Self::DeferredScroll(placement) => Some(placement.visual_bounds()),
             // A paint layer is batching metadata, not a pixel-producing operation. Its bounds may
             // cover the entire window while the actual primitives inside it occupy a small region.
             // Counting the layer rectangle as visual damage makes unrelated backdrop filters

@@ -26,7 +26,8 @@ impl Scene {
                 | PaintOperation::StartLayer(_)
                 | PaintOperation::EndLayer
                 | PaintOperation::StartBlur(_)
-                | PaintOperation::EndBlur => None,
+                | PaintOperation::EndBlur
+                | PaintOperation::DeferredScroll(_) => None,
             })
             .reduce(|left, right| left.union(&right))
     }

@@ -47,7 +47,18 @@ impl Paint {
     /// UI history. The materialized Scene has new operation indices and
     /// therefore receives fresh retention metadata.
     pub(crate) fn materialize_static_root(&self) -> Option<Self> {
-        let scene = self.layers.materialize_static_root(&self.scene)?;
+        let scene = if self.scene.paint_operations.has_deferred_scroll() {
+            if !self.scene.paint_operations.range_is_replayable(0..self.scene.len()) {
+                return None;
+            }
+            let mut painter = crate::scene::Painter::default();
+            // No old Quad or DrawOrder proofs may survive expansion.
+            painter.replay(0..self.scene.len(), &self.scene, std::iter::empty());
+            painter.finish();
+            painter.into_scene()
+        } else {
+            self.layers.materialize_static_root(&self.scene)?
+        };
         Some(Self::new(scene, Arc::default(), self.geometry))
     }
 }

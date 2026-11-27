@@ -106,6 +106,11 @@ pub(super) fn scan_capture_groups(
             }
             // The layer only groups primitives for draw ordering. Its own bounds
             // must not inflate an isolated filter's pixel-producing footprint.
+            PaintOperation::DeferredScroll(placement) => {
+                for (_, _, bounds) in &mut stack {
+                    *bounds = bounds.union(&placement.visual_bounds());
+                }
+            }
             PaintOperation::StartLayer(_) => {}
             PaintOperation::EndBlur => {
                 let Some((start, config, bounds)) = stack.pop() else {

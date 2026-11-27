@@ -239,7 +239,7 @@ impl ScrollPaint {
                             painter.insert_primitive(project_primitive(primitive, delta, viewport));
                         }
                     }
-                    PaintOperation::StartBlur(_) | PaintOperation::EndBlur => {
+                    PaintOperation::DeferredScroll(_) | PaintOperation::StartBlur(_) | PaintOperation::EndBlur => {
                         unreachable!("scroll capture admits only built-in unfiltered paint")
                     }
                 }
@@ -250,7 +250,7 @@ impl ScrollPaint {
 
 /// Immutable placement, suitable for a published Paint generation.
 #[derive(Clone)]
-pub(in crate::window) struct ScrollPlacement {
+pub(crate) struct ScrollPlacement {
     source: Arc<ScrollPaint>,
     viewport: ContentMask<ScaledPixels>,
     delta: Point<ScaledPixels>,
@@ -262,7 +262,23 @@ impl ScrollPlacement {
         (&self.source.operations, self.source.coverage, self.delta, &self.source.atlas_tiles)
     }
 
-    pub(in crate::window) fn replay(&self, painter: &mut Painter) {
+    pub(crate) fn same_paint(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.source, &other.source)
+            && self.viewport == other.viewport
+            && self.delta == other.delta
+    }
+
+    /// The viewport is a conservative damage bound for every projected
+    /// primitive, including a newly exposed part of the overscan.
+    pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
+        self.viewport.bounds
+    }
+
+    pub(crate) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
+        self.source.collect_atlas_tile_ids_into(live);
+    }
+
+    pub(crate) fn replay(&self, painter: &mut Painter) {
         self.source.replay(painter, self.viewport, self.delta);
     }
 }
@@ -384,6 +400,49 @@ mod tests {
         assert!(recovered.scene.paint_operations.matches_by(&eager.paint_operations, PaintOperation::same_paint));
         assert_eq!(recovered.scene.len(), 3);
         assert!(recovered.layers.frames.is_empty());
+    }
+
+    #[test]
+    fn native_deferred_scroll_is_one_operation_and_rebuilds_ordinary_paint() {
+        let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))).scale(1.));
+        let mut operations = Operations::default();
+        for y in [16., 32., 48., 64.] {
+            operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                bounds: bounds(y), content_mask: ContentMask::new(coverage), ..Default::default()
+            })));
+        }
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let placement = source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let outside = |y| Quad { bounds: bounds(y), content_mask: viewport, ..Default::default() };
+        let mut deferred = Painter::default();
+        deferred.insert_primitive(outside(0.));
+        deferred.scene.paint_operations.push(PaintOperation::DeferredScroll(placement.clone()));
+        deferred.insert_primitive(outside(32.));
+        deferred.finish();
+        let scene = deferred.into_scene();
+        assert_eq!(scene.len(), 3);
+        assert!(scene.paint_operations.has_deferred_scroll());
+        assert_eq!(scene.paint_operations.deferred_scrolls().count(), 1);
+        assert_eq!(scene.bounds_for_range(1..2), Some(viewport.bounds));
+        let mut shared = Operations::default();
+        shared.share(&scene.paint_operations, 1..2);
+        assert!(shared.has_deferred_scroll());
+        assert!(shared.range_is_replayable(0..1));
+        shared.edit(0..1, |operation| *operation = PaintOperation::Primitive(Primitive::Quad(outside(0.))));
+        assert!(!shared.has_deferred_scroll());
+        shared.clear();
+        assert!(!shared.has_deferred_scroll());
+        let paint = crate::window::Paint::new(scene, Arc::default(), Default::default());
+        let recovered = paint.materialize_static_root().expect("native deferred fallback");
+        let mut eager = Painter::default();
+        eager.insert_primitive(outside(0.));
+        placement.replay(&mut eager);
+        eager.insert_primitive(outside(32.));
+        eager.finish();
+        assert!(!recovered.scene.paint_operations.has_deferred_scroll());
+        assert!(recovered.scene.paint_operations.matches_by(&eager.paint_operations, PaintOperation::same_paint));
     }
 
     #[test]

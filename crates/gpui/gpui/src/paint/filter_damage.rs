@@ -336,7 +336,8 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
                 | PaintOperation::StartLayer(_)
                 | PaintOperation::EndLayer
                 | PaintOperation::StartBlur(_)
-                | PaintOperation::EndBlur => None,
+                | PaintOperation::EndBlur
+                | PaintOperation::DeferredScroll(_) => None,
             };
             if let Some(damage) = damage
                 && !damage.is_empty()
@@ -424,7 +425,8 @@ pub(crate) fn backdrop_blur_operations(
             | PaintOperation::StartLayer(_)
             | PaintOperation::EndLayer
             | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur => None,
+            | PaintOperation::EndBlur
+            | PaintOperation::DeferredScroll(_) => None,
         })
 }
 

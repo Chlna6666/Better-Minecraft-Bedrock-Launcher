@@ -212,6 +212,11 @@ impl Scene {
                 .iter()
                 .map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)),
         );
+        if self.paint_operations.has_deferred_scroll() {
+            for placement in self.paint_operations.deferred_scrolls() {
+                placement.collect_atlas_tile_ids_into(ids);
+            }
+        }
         for blur in &self.blurs {
             blur.content.collect_atlas_tile_ids_into(ids);
         }
@@ -231,6 +236,11 @@ impl Scene {
                 .iter()
                 .map(|sprite| (sprite.tile.texture_id, sprite.tile.tile_id.0)),
         );
+        if self.paint_operations.has_deferred_scroll() {
+            for placement in self.paint_operations.deferred_scrolls() {
+                placement.collect_atlas_tile_ids_into(ids);
+            }
+        }
         for blur in &self.blurs {
             blur.content.collect_polychrome_tile_ids_into(ids);
         }
@@ -254,7 +264,8 @@ impl Scene {
                 }
                 PaintOperation::StartLayer(_)
                 | PaintOperation::EndLayer
-                | PaintOperation::EndBlur => {}
+                | PaintOperation::EndBlur
+                | PaintOperation::DeferredScroll(_) => {}
             }
         }
     }

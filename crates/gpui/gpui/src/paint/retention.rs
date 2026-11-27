@@ -297,7 +297,7 @@ pub(crate) fn filter_source_matches(
         let animation_id = match current {
             PaintOperation::Primitive(primitive) => primitive.animation_id(),
             PaintOperation::StartBlur(blur) => blur.animation_id,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur => {
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => {
                 None
             }
         };

@@ -28,7 +28,7 @@ pub(crate) fn gpu_sample_damage(
         let animation_id = match operation {
             PaintOperation::Primitive(primitive) => primitive.animation_id(),
             PaintOperation::StartBlur(capture) => capture.animation_id,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur => {
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur | PaintOperation::DeferredScroll(_) => {
                 None
             }
         };

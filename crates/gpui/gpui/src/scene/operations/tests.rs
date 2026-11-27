@@ -159,7 +159,7 @@ fn scan_range(operations: &Operations, range: Range<usize>) -> bool {
                 };
                 layer_depth = depth;
             }
-            PaintOperation::Primitive(_) => {}
+            PaintOperation::Primitive(_) | PaintOperation::DeferredScroll(_) => {}
         }
     }
     blur_depth == 0 && layer_depth == 0

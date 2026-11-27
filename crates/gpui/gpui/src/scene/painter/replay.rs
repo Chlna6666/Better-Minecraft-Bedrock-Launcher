@@ -283,7 +283,8 @@ impl Painter {
                                     PaintOperation::StartLayer(_)
                                     | PaintOperation::EndLayer
                                     | PaintOperation::StartBlur(_)
-                                    | PaintOperation::EndBlur => None,
+                                    | PaintOperation::EndBlur
+                                    | PaintOperation::DeferredScroll(_) => None,
                                 });
                             (captured_primitive, capture.scene.retained_prefix_invalid)
                         };
@@ -298,6 +299,12 @@ impl Painter {
                     } else {
                         self.replay_primitive(primitive, retain_order);
                     }
+                }
+                PaintOperation::DeferredScroll(placement) => {
+                    // Expanded operations have new native indices and
+                    // ordering. Never adopt the old retained prefix.
+                    self.retained_prefix_invalid = true;
+                    placement.replay(self);
                 }
                 PaintOperation::StartLayer(bounds) => {
                     if let Some(capture) = self.blur_captures.last_mut() {

@@ -1169,7 +1169,8 @@ fn retained_prefix_replay_preserves_draw_orders() {
             PaintOperation::StartLayer(_)
             | PaintOperation::EndLayer
             | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur => None,
+            | PaintOperation::EndBlur
+            | PaintOperation::DeferredScroll(_) => None,
         })
         .collect::<Vec<_>>();
 
@@ -1183,7 +1184,8 @@ fn retained_prefix_replay_preserves_draw_orders() {
             PaintOperation::StartLayer(_)
             | PaintOperation::EndLayer
             | PaintOperation::StartBlur(_)
-            | PaintOperation::EndBlur => None,
+            | PaintOperation::EndBlur
+            | PaintOperation::DeferredScroll(_) => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(actual_replayed_orders, expected_replayed_orders);

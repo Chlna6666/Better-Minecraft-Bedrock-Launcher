@@ -128,7 +128,7 @@ pub(super) fn auto_capture_static_background(
                 }
                 continue;
             }
-            PaintOperation::StartBlur(_) => {
+            PaintOperation::StartBlur(_) | PaintOperation::DeferredScroll(_) => {
                 return reject_auto_static_capture(scene, "unsupported_capture_boundary");
             }
             PaintOperation::EndBlur => continue,

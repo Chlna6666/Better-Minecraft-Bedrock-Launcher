@@ -159,7 +159,8 @@ impl Painter {
                     PaintOperation::StartLayer(_)
                     | PaintOperation::EndLayer
                     | PaintOperation::StartBlur(_)
-                    | PaintOperation::EndBlur => None,
+                    | PaintOperation::EndBlur
+                    | PaintOperation::DeferredScroll(_) => None,
                 });
             if let Some(primitive) = captured_primitive {
                 self.scene
