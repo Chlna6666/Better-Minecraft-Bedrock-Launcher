@@ -1,3 +1,6 @@
+mod parents;
+
+use parents::ParentStore;
 use super::DispatchActionListener;
 use crate::fast::interactivity::SharedListeners;
 use crate::{
@@ -22,7 +25,7 @@ pub(crate) struct DispatchTree {
     pub(super) view_stack: Vec<EntityId>,
     nodes: NodeStore,
     // Dense topology is independent of immutable listener/context payload.
-    parents: Vec<u32>,
+    parents: ParentStore,
     // Only nodes that actually own a focus or view route. Ordered by
     // logical node index, independent of immutable payload page placement.
     route_nodes: Vec<u32>,
@@ -234,18 +237,6 @@ impl Index<usize> for NodeStore {
     }
 }
 
-fn encode_parent(parent: Option<DispatchNodeId>) -> u32 {
-    parent.map_or(NO_PARENT, |id| {
-        let value = u32::try_from(id.0).expect("dispatch node index overflow");
-        assert!(value != NO_PARENT, "dispatch node index reserved for no parent");
-        value
-    })
-}
-
-fn decode_parent(parent: u32) -> Option<DispatchNodeId> {
-    (parent != NO_PARENT).then_some(DispatchNodeId(parent as usize))
-}
-
 pub(crate) struct ReusedSubtree {
     pub(super) old_range: Range<usize>,
     pub(super) new_range: Range<usize>,
@@ -276,7 +267,7 @@ impl DispatchTree {
             context_stack: Vec::new(),
             view_stack: Vec::new(),
             nodes: NodeStore::default(),
-            parents: Vec::new(),
+            parents: ParentStore::default(),
             route_nodes: Vec::new(),
             focusable_node_ids: FxHashMap::default(),
             view_node_ids: FxHashMap::default(),
@@ -320,7 +311,7 @@ impl DispatchTree {
         trim_vec!(node_stack);
         trim_vec!(context_stack);
         trim_vec!(view_stack);
-        trim_vec!(parents);
+        self.parents.trim_for_reuse(&current.parents);
         trim_vec!(route_nodes);
         self.nodes.trim_for_reuse(&current.nodes);
 
@@ -346,7 +337,7 @@ impl DispatchTree {
         self.context_stack
             .shrink_to(floor.max(self.context_stack.len()));
         self.view_stack.shrink_to(floor.max(self.view_stack.len()));
-        self.parents.shrink_to(floor.max(self.parents.len()));
+        self.parents.trim(aggressive);
         self.route_nodes.shrink_to(floor.max(self.route_nodes.len()));
         self.nodes.trim(aggressive);
         self.focusable_node_ids
@@ -364,7 +355,7 @@ impl DispatchTree {
         let node_id = DispatchNodeId(self.nodes.len());
 
         assert!(node_id.0 < NO_PARENT as usize, "dispatch node index overflow");
-        self.parents.push(encode_parent(parent));
+        self.parents.push(parent);
         self.nodes.push(DispatchNode::default());
         self.node_stack.push(node_id);
         node_id
@@ -481,9 +472,8 @@ impl DispatchTree {
             .chain(std::iter::once((outer.end, outer.end)))
         {
             let (end, next) = end_and_gap;
-            for (offset, &encoded) in self.parents[start..end].iter().enumerate() {
+            for (offset, parent) in self.parents.iter(start..end).enumerate() {
                 let index = start + offset;
-                let parent = decode_parent(encoded);
                 if parent == anchor { continue; }
                 let Some(parent) = parent else { return false; };
                 if parent.0 >= start && parent.0 < index { continue; }
@@ -515,22 +505,7 @@ impl DispatchTree {
         let new_range = start..start + old_range.len();
         let mut contains_focus = false;
         assert!(new_range.end <= NO_PARENT as usize, "dispatch node index overflow");
-        self.parents.reserve(old_range.len());
-        // Parent indices are the only mandatory per-node replay work.
-        // Iterate the compact topology; route restoration below visits
-        // only nodes with actual Focus/View metadata.
-        for (offset, &encoded) in source.parents[old_range.clone()].iter().enumerate() {
-            let id = DispatchNodeId(start + offset);
-            let parent = match decode_parent(encoded) {
-                Some(parent) if old_range.contains(&parent.0) => {
-                    debug_assert!(parent.0 < old_range.start + offset);
-                    Some(DispatchNodeId(start + parent.0 - old_range.start))
-                }
-                parent => external_parent(parent),
-            };
-            debug_assert!(parent.is_none_or(|parent| parent.0 < id.0));
-            self.parents.push(encode_parent(parent));
-        }
+        self.parents.replay(&source.parents, old_range.clone(), &mut external_parent);
         let first_route = source.route_nodes.partition_point(|&id| (id as usize) < old_range.start);
         let routes = source.route_nodes[first_route..].iter()
             .copied().take_while(|&id| (id as usize) < old_range.end);
@@ -637,7 +612,7 @@ impl DispatchTree {
         let mut current_node_id = Some(target);
         while let Some(node_id) = current_node_id {
             dispatch_path.push(node_id);
-            current_node_id = self.parents.get(node_id.0).copied().and_then(decode_parent);
+            current_node_id = self.parents.parent(node_id.0);
         }
         dispatch_path.reverse(); // Reverse the path so it goes from the root to the focused node.
         dispatch_path
@@ -676,12 +651,13 @@ impl DispatchTree {
     }
 
     fn parent(&self, id: DispatchNodeId) -> Option<DispatchNodeId> {
-        decode_parent(self.parents[id.0])
+        self.parents.parent(id.0)
     }
 
     pub(crate) fn freeze(&mut self) {
         debug_assert_eq!(self.nodes.len(), self.parents.len());
         self.nodes.freeze();
+        self.parents.freeze();
     }
 
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
