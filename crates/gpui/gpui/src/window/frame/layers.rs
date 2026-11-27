@@ -375,6 +375,9 @@ pub(crate) struct LayerFrame {
     viewport: ContentMask<Pixels>,
     offset: LayerScrollPosition,
     pub(crate) content: Arc<LayerContent>,
+    // A placement carries the original indexed source, not the projected
+    // viewport Scene. Keep it outside the generation-owned content.
+    placement: Option<crate::window::scroll_paint::ScrollPlacement>,
 }
 
 impl LayerFrame {
@@ -433,6 +436,17 @@ impl LayerFrame {
 
     pub(crate) fn root_static_span(&self) -> Option<&Range<usize>> {
         self.static_root_span.as_ref()
+    }
+
+    /// Reconstruct the exact ordinary drawing for this placement without
+    /// consulting a live Window or any retained input state.
+    pub(crate) fn replay_placement(&self, painter: &mut crate::scene::Painter) -> bool {
+        if let Some(placement) = &self.placement {
+            placement.replay(painter);
+            true
+        } else {
+            false
+        }
     }
 
     /// Borrow the original capture, along with the signed projection origin
@@ -577,6 +591,7 @@ impl SceneLayers {
             translation: Some(translation), source_viewport: viewport.scale(1.),
             viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
             content: Arc::new(content),
+            placement: None,
         });
     }
 
@@ -594,6 +609,7 @@ impl SceneLayers {
             translation: Some(translation), source_viewport: viewport.scale(1.), viewport,
             offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
             content: Arc::new(content),
+            placement: None,
         });
     }
 
@@ -635,15 +651,17 @@ impl SceneLayers {
             let range = paint.start.scene_index..paint.end.scene_index;
             // Derive the physical scale from the owning retained view, not the
             // current native drawable (which can already have resized).
-            let direct = if record.rows.is_empty() && !range.is_empty() {
+            let placement = if record.rows.is_empty() && !range.is_empty() {
                 scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
-                     .and_then(|(operations, coverage, delta, atlas_tiles)| LayerContent::from_scroll(
-                        operations, coverage, delta, record.translation, record.source_viewport, atlas_tiles,
-                    ))
-            } else {
+            } else { None };
+            let direct = if let Some(placement) = &placement {
+                let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
+                LayerContent::from_scroll(operations, coverage, delta, record.translation,
+                    record.source_viewport, atlas_tiles)
+            } else if !record.rows.is_empty() {
                 LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
                     record.source_viewport, record.translation)
-            };
+            } else { None };
             let static_root_span = if direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
@@ -688,6 +706,7 @@ impl SceneLayers {
                 layout_key: key, id, generation, static_root_span, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
+                placement,
             });
         }
         Self { frames }

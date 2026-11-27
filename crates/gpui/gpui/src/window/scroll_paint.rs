@@ -5,12 +5,12 @@ use crate::{
     scene::{Operations, PaintOperation, Painter, Primitive},
 };
 use smallvec::SmallVec;
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 const OPERATIONS_PER_BLOCK: usize = 32;
 const MIN_INDEXED_OPERATIONS: usize = 128;
 
-pub(super) struct ScrollPaint {
+pub(in crate::window) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
@@ -62,7 +62,7 @@ impl Window {
         item: &mut AnyElement,
         suppress_hover: bool,
         cx: &mut App,
-    ) -> Rc<ScrollPaint> {
+    ) -> Arc<ScrollPaint> {
         let viewport = self.visual_content_mask();
         let height = viewport.bounds.size.height;
         let capture = ContentMask::new(Bounds::new(
@@ -79,7 +79,7 @@ impl Window {
         self.content_mask_stack.pop();
         let operations = self.next_frame.painter.end_scroll_capture();
         let scale = self.scale_factor();
-        let content = Rc::new(ScrollPaint::new(
+        let content = Arc::new(ScrollPaint::new(
             origin,
             capture.scale(scale).bounds,
             operations,
@@ -186,6 +186,17 @@ impl ScrollPaint {
         moved(self.coverage, delta).intersect(&viewport) == viewport
     }
 
+    /// A transferable placement is independent of the UI element, input
+    /// records and the mutable Painter. It uses the same original indexed
+    /// operation pages for eager and deferred projection.
+    pub(in crate::window) fn placement(self: &Arc<Self>, viewport: ContentMask<ScaledPixels>,
+        delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
+        (self.raster_eligible && self.covers(viewport.bounds, delta)
+            && viewport.corner_radii == Default::default()
+            && [delta.x.0, delta.y.0].into_iter().all(|v| v.is_finite() && v.fract() == 0.))
+            .then(|| ScrollPlacement { source: Arc::clone(self), viewport, delta })
+    }
+
     pub(super) fn replay(
         &self,
         painter: &mut Painter,
@@ -231,6 +242,25 @@ impl ScrollPaint {
                 }
             }
         }
+    }
+}
+
+/// Immutable placement, suitable for a published Paint generation.
+#[derive(Clone)]
+pub(in crate::window) struct ScrollPlacement {
+    source: Arc<ScrollPaint>,
+    viewport: ContentMask<ScaledPixels>,
+    delta: Point<ScaledPixels>,
+}
+
+impl ScrollPlacement {
+    pub(in crate::window) fn raster_source(&self) -> (&Arc<Operations>, Bounds<ScaledPixels>,
+        Point<ScaledPixels>, &Arc<[(crate::AtlasTextureId, u32)]>) {
+        (&self.source.operations, self.source.coverage, self.delta, &self.source.raster_atlas_tiles)
+    }
+
+    pub(in crate::window) fn replay(&self, painter: &mut Painter) {
+        self.source.replay(painter, self.viewport, self.delta);
     }
 }
 

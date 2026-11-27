@@ -2,14 +2,14 @@
 //! Adapted from GPUI Fast's scroll-layer paint/reuse phases.
 
 use super::{
-    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::ScrollPaint,
+    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::{ScrollPaint, ScrollPlacement},
 };
 use crate::{
     AnyElement, App, Bounds, ContentMask, EntityId, Pixels, Point, StateRead, StateReadStatus,
     Task, Window,
 };
 use collections::{FxHashMap, FxHashSet};
-use std::{ops::Range, rc::Rc, sync::Arc, time::{Duration, Instant}};
+use std::{ops::Range, sync::Arc, time::{Duration, Instant}};
 
 const SCROLL_HOVER_DELAY: Duration = Duration::from_millis(100);
 
@@ -41,7 +41,7 @@ impl ScrollViews {
         range: &Range<usize>,
         viewport: ContentMask<Pixels>,
         source_viewport: ContentMask<crate::ScaledPixels>,
-    ) -> Option<(&Arc<crate::scene::Operations>, Bounds<crate::ScaledPixels>, Point<crate::ScaledPixels>, &Arc<[(crate::AtlasTextureId, u32)]>)> {
+    ) -> Option<ScrollPlacement> {
         if self.views.is_empty() {
             return None;
         }
@@ -61,8 +61,7 @@ impl ScrollViews {
                 return None;
             }
             let delta = view.source.translation(record.context.element_offset, scale)?;
-            let (operations, coverage, atlas_tiles) = view.source.raster_operations()?;
-            Some((operations, coverage, delta, atlas_tiles))
+            view.source.placement(source_viewport, delta)
         });
         let source = candidates.next()?;
         candidates.next().is_none().then_some(source)
@@ -87,7 +86,7 @@ struct ScrollView {
     capture_revision: u64,
     owner: EntityId,
     viewport: ContentMask<Pixels>,
-    source: Rc<ScrollPaint>,
+    source: Arc<ScrollPaint>,
     reads: Rc<[StateRead]>,
     stale_input: bool,
 }

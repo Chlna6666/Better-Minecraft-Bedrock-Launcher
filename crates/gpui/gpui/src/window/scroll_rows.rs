@@ -8,7 +8,7 @@ use crate::{
     ScrollCapture, Size, StateRead, StateReadStatus, Window,
 };
 use collections::FxHashMap;
-use std::{collections::VecDeque, ops::Range, rc::Rc};
+use std::{collections::VecDeque, ops::Range, rc::Rc, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
@@ -94,7 +94,7 @@ struct RowRecord {
     context: Rc<ListContext>,
     prepaint: RowPrepaint,
     paint: Range<PaintIndex>,
-    content: Rc<ScrollPaint>,
+    content: Arc<ScrollPaint>,
 }
 
 struct RowMeasurement {
@@ -387,7 +387,7 @@ impl Window {
         row: usize,
         prepaint: RowPrepaint,
         paint: Range<PaintIndex>,
-        content: Rc<ScrollPaint>,
+        content: Arc<ScrollPaint>,
     ) {
         self.next_frame.scroll_rows.rows.insert(
             (plan.key, row),
