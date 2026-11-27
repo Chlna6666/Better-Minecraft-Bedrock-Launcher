@@ -4006,9 +4006,10 @@ fn scroll_layer_input_matches_flat_hit_testing(cx: &mut TestAppContext) {
         }
         frame.record_layer_input(1, inner);
         for id in 10..18 {
-            frame.hitboxes.push(make(id, viewport, HitboxBehavior::Normal));
+            frame.hitboxes.push(make(id, viewport, if id == 13 {
+                HitboxBehavior::BlockMouseExceptScroll
+            } else { HitboxBehavior::Normal }));
         }
-        frame.hitboxes[12].behavior = HitboxBehavior::BlockMouseExceptScroll;
         frame.record_layer_input(1, viewport);
         assert_eq!(frame.layer_inputs.len(), 2);
         let points = [point(px(0.), px(0.)), point(px(15.), px(15.)), point(px(25.), px(25.))];
@@ -4045,7 +4046,7 @@ fn scroll_layer_input_carries_complete_ranges_and_rolls_back(cx: &mut TestAppCon
         window.rendered_frame.record_layer_input(0, viewport);
         let baseline = window.prepaint_index();
         window.next_frame.carry_layer_inputs(&window.rendered_frame, 8..16);
-        window.next_frame.hitboxes.extend_from_slice(&window.rendered_frame.hitboxes[8..16]);
+        window.next_frame.hitboxes.share(&window.rendered_frame.hitboxes, 8..16, Point::default());
         assert_eq!(window.next_frame.layer_inputs.len(), 1);
         assert_eq!(window.next_frame.layer_inputs[0].hitboxes, 0..8);
         window.truncate_prepaint_to(baseline);
@@ -4086,9 +4087,9 @@ fn scroll_input_projection_preserves_fixed_rounded_viewport(cx: &mut TestAppCont
         let position = point(px(25.), px(40.));
         assert_eq!(window.next_frame.hit_test(position).ids.len(), 8);
         assert!(window.rendered_frame.hit_test(position).ids.is_empty());
-        assert_eq!(window.next_frame.hitboxes[0].content_mask, mask);
-        assert_eq!(window.next_frame.hitboxes[0].bounds.origin.y, px(35.));
-        assert_eq!(window.rendered_frame.hitboxes[0].bounds.origin.y, px(55.));
+        assert_eq!(window.next_frame.hitboxes.iter().next().unwrap().content_mask, mask);
+        assert_eq!(window.next_frame.hitboxes.iter().next().unwrap().bounds.origin.y, px(35.));
+        assert_eq!(window.rendered_frame.hitboxes.iter().next().unwrap().bounds.origin.y, px(55.));
 
         // No mutation if a nested clip invalidated the proof.
         window.rendered_frame.layer_inputs.clear();

@@ -2,6 +2,8 @@ use super::state::ElementVisualTransform;
 use super::*;
 
 mod paint;
+mod hitboxes;
+pub(super) use hitboxes::HitboxStore;
 mod state_access;
 mod retained_scene_index;
 mod layers;
@@ -91,7 +93,7 @@ pub(crate) struct Frame {
     pub(crate) painter: crate::scene::Painter,
     paint: Option<Arc<Paint>>,
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
-    pub(crate) hitboxes: Vec<Hitbox>,
+    pub(crate) hitboxes: HitboxStore,
     pub(super) layer_inputs: Vec<LayerInput>,
     pub(super) scroll_rows: super::scroll_rows::ScrollRows,
     pub(super) scroll_views: super::scroll_views::ScrollViews,
@@ -313,7 +315,7 @@ impl Frame {
             painter: crate::scene::Painter::for_frame(),
             paint: None,
             retained_paint: Arc::default(),
-            hitboxes: Vec::new(),
+            hitboxes: HitboxStore::default(),
             layer_inputs: Vec::new(),
             scroll_rows: super::scroll_rows::ScrollRows::default(),
             scroll_views: super::scroll_views::ScrollViews::default(),
@@ -436,14 +438,14 @@ impl Frame {
             return;
         }
         let bottom_right = viewport.bottom_right();
-        if self.hitboxes[start..end].iter().all(|hitbox| {
+        if self.hitboxes.slices(start..end).all(|(slice, _)| slice.iter().all(|hitbox| {
             let clip = hitbox.content_mask.bounds;
             let end = clip.bottom_right();
             clip.origin.x >= viewport.origin.x
                 && clip.origin.y >= viewport.origin.y
                 && end.x <= bottom_right.x
                 && end.y <= bottom_right.y
-        }) {
+        })) {
             self.layer_inputs.push(LayerInput {
                 hitboxes: start..end,
                 viewport,
@@ -469,7 +471,8 @@ impl Frame {
             && self.input_clip_epoch == clip_epoch
             && visual_scale.is_finite()
             && visual_scale > 0.0
-            && self.hitboxes[start..].iter().all(|hitbox| hitbox.content_mask == viewport)
+            && self.hitboxes.slices(start..self.hitboxes.len()).all(|(slice, _)|
+                slice.iter().all(|hitbox| hitbox.content_mask == viewport))
         {
             self.layer_inputs.last_mut().expect("recorded input").geometry =
                 Some(ScrollInputGeometry { offset, visual_scale, viewport });
@@ -502,9 +505,7 @@ impl Frame {
         source: Range<usize>,
         scroll_offset: Option<Point<Pixels>>,
     ) -> bool {
-        let Some(hitboxes) = previous.hitboxes.get(source.clone()) else {
-            return false;
-        };
+        if !previous.hitboxes.contains(&source) { return false; }
         if let Some(offset) = scroll_offset {
             let first = previous.layer_inputs.partition_point(|layer| layer.hitboxes.end < source.end);
             let mut matching = previous.layer_inputs[first..].iter()
@@ -521,12 +522,7 @@ impl Frame {
             }
             if delta != Point::default() {
                 let start = self.hitboxes.len();
-                self.hitboxes.extend(hitboxes.iter().map(|hitbox| Hitbox {
-                    id: hitbox.id,
-                    bounds: Bounds::new(hitbox.bounds.origin + delta, hitbox.bounds.size),
-                    content_mask: geometry.viewport,
-                    behavior: hitbox.behavior,
-                }));
+                self.hitboxes.share(&previous.hitboxes, source.clone(), delta);
                 self.layer_inputs.push(LayerInput {
                     hitboxes: start..self.hitboxes.len(),
                     viewport: layer.viewport,
@@ -538,11 +534,11 @@ impl Frame {
         }
         // Normal retained prepaint uses the exact existing coordinates.
         // Its parent cannot infer raw mask provenance from a replayed span.
-        if !hitboxes.is_empty() {
+        if !source.is_empty() {
             self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
         }
-        self.carry_layer_inputs(previous, source);
-        self.hitboxes.extend_from_slice(hitboxes);
+        self.carry_layer_inputs(previous, source.clone());
+        self.hitboxes.share(&previous.hitboxes, source, Point::default());
         true
     }
 
@@ -569,8 +565,9 @@ impl Frame {
                     break;
                 }
             }
-            for hitbox in self.hitboxes[start..cursor].iter().rev() {
-                let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+            for (slice, translation) in self.hitboxes.slices(start..cursor).rev() {
+                for hitbox in slice.iter().rev() {
+                let bounds = translation.bounds(hitbox.bounds).intersect(&hitbox.content_mask.bounds);
                 if bounds.contains(&position) {
                     hit_test.ids.push(hitbox.id);
                     if !set_hover_hitbox_count
@@ -582,6 +579,7 @@ impl Frame {
                     if hitbox.behavior == HitboxBehavior::BlockMouse {
                         break 'hitboxes;
                     }
+                }
                 }
             }
             cursor = start;
@@ -614,6 +612,7 @@ impl Frame {
         );
         self.accessed_element_states.freeze();
         self.dispatch_tree.freeze();
+        self.hitboxes.freeze();
         for element_state_key in self.accessed_element_states.keys(0..self.accessed_element_states.len()) {
             if prev_frame.element_states.is_empty() {
                 break;
@@ -721,11 +720,7 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_frame_vec_capacity(
-            &mut self.hitboxes,
-            FRAME_MIN_RETAINED_CAPACITY,
-            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        self.hitboxes.trim(false, FRAME_MIN_RETAINED_CAPACITY);
         trim_frame_vec_capacity(
             &mut self.window_control_hitboxes,
             FRAME_MIN_RETAINED_CAPACITY,
@@ -806,7 +801,7 @@ impl Frame {
         self.dispatch_tree.trim_for_reuse(&current.dispatch_tree);
         trim_vec_against!(mouse_listeners);
         trim_vec_against!(mounted_scroll_sources);
-        trim_vec_against!(hitboxes);
+        self.hitboxes.trim_for_reuse(&current.hitboxes);
         trim_vec_against!(layer_inputs);
         trim_vec_against!(window_control_hitboxes);
         trim_vec_against!(deferred_draws);
@@ -857,7 +852,7 @@ impl Frame {
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 self.mouse_listeners.shrink_to(floor);
                 self.mounted_scroll_sources.shrink_to(floor);
-                self.hitboxes.shrink_to(floor);
+                self.hitboxes.trim(true, floor);
                 self.layer_inputs.shrink_to(floor);
                 self.window_control_hitboxes.shrink_to(floor);
                 self.deferred_draws.shrink_to(floor);

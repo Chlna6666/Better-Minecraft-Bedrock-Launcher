@@ -244,7 +244,7 @@ impl Window {
             return false;
         };
         let logical_delta = origin - record.prepaint.origin;
-        let hitboxes = &self.rendered_frame.hitboxes[hitbox_range(&record.prepaint)];
+        let hitboxes = hitbox_range(&record.prepaint);
         record.revision == plan.revision
             && *record.context == *plan.context
             && record.content.covers(viewport, delta)
@@ -255,7 +255,7 @@ impl Window {
                 .all(|read| read.status() == StateReadStatus::Unchanged)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
-            && (plan.hover_held || !self.hits_scroll_row(hitboxes, logical_delta))
+            && (plan.hover_held || !self.hits_scroll_row(&self.rendered_frame.hitboxes, hitboxes, logical_delta))
     }
 
     pub(crate) fn reuse_scroll_row(
@@ -272,14 +272,8 @@ impl Window {
         if !hitbox_range(&record.prepaint).is_empty() {
             self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
         }
-        self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes[hitbox_range(&record.prepaint)]
-                .iter()
-                .cloned()
-                .map(|mut hitbox| {
-                    hitbox.bounds.origin += delta;
-                    hitbox
-                }),
+        self.next_frame.hitboxes.share(
+            &self.rendered_frame.hitboxes, hitbox_range(&record.prepaint), delta,
         );
         let parent = self.next_frame.dispatch_tree.active_node_id();
         self.replay_prepaint_records(recorded, |_| parent);
@@ -322,14 +316,13 @@ impl Window {
         // Capturing inside an effect or renderer animation changes what the
         // child would emit. Leave those paths on their regular painter.
         let viewport = self.visual_content_mask();
-        let hitboxes = &self.next_frame.hitboxes[hitbox_range(&prepaint)];
+        let hitboxes = hitbox_range(&prepaint);
         let suppress_hover = plan.hover_held && !hitboxes.is_empty();
         if self.next_frame.painter.is_capturing_blur()
             || self.scene_animation.is_some()
-            || hitboxes
-                .iter()
-                .any(|hitbox| hitbox.content_mask != viewport)
-            || (!suppress_hover && self.hits_scroll_row(hitboxes, Point::default()))
+            || self.next_frame.hitboxes.slices(hitboxes.clone())
+                .any(|(slice, _)| slice.iter().any(|hitbox| hitbox.content_mask != viewport))
+            || (!suppress_hover && self.hits_scroll_row(&self.next_frame.hitboxes, hitboxes, Point::default()))
         {
             item.paint(self, cx);
             return;
@@ -422,13 +415,8 @@ impl Window {
         );
     }
 
-    pub(super) fn hits_scroll_row(&self, hitboxes: &[Hitbox], delta: Point<Pixels>) -> bool {
-        !self.pointer_outside
-            && hitboxes.iter().any(|hitbox| {
-                hitbox.content_mask.bounds.contains(&self.mouse_position)
-                    && Bounds::new(hitbox.bounds.origin + delta, hitbox.bounds.size)
-                        .contains(&self.mouse_position)
-            })
+    pub(super) fn hits_scroll_row(&self, hitboxes: &super::frame::HitboxStore, range: Range<usize>, delta: Point<Pixels>) -> bool {
+        !self.pointer_outside && hitboxes.any_at(range, self.mouse_position, delta)
     }
 }
 

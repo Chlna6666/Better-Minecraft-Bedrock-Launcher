@@ -170,19 +170,16 @@ impl Window {
         {
             return None;
         }
-        let moved_hitboxes = &self.rendered_frame.hitboxes[hitboxes(&previous.prepaint_range)];
-        if !self.scroll_hover_is_held(cx) && self.hits_scroll_row(moved_hitboxes, delta) {
+        let moved_hitboxes = hitboxes(&previous.prepaint_range);
+        if !self.scroll_hover_is_held(cx)
+            && self.hits_scroll_row(&self.rendered_frame.hitboxes, moved_hitboxes.clone(), delta)
+        {
             return None;
         }
         let start = self.prepaint_index();
         if !moved_hitboxes.is_empty() {
             self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
-            self.next_frame
-                .hitboxes
-                .extend(moved_hitboxes.iter().cloned().map(|mut hitbox| {
-                    hitbox.bounds.origin += delta;
-                    hitbox
-                }));
+            self.next_frame.hitboxes.share(&self.rendered_frame.hitboxes, moved_hitboxes, delta);
         }
         let parent = self.next_frame.dispatch_tree.active_node_id();
         self.replay_prepaint_records(previous.prepaint_range.clone(), |_| parent);
@@ -221,10 +218,11 @@ impl Window {
         prepaint: &Range<PrepaintStateIndex>,
         viewport: ContentMask<Pixels>,
     ) -> bool {
-        let input = &self.next_frame.hitboxes[hitboxes(prepaint)];
+        let input = hitboxes(prepaint);
         prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
             && prepaint.start.tooltips_index == prepaint.end.tooltips_index
-            && input.iter().all(|hitbox| hitbox.content_mask == viewport)
+            && self.next_frame.hitboxes.slices(input).all(|(slice, _)|
+                slice.iter().all(|hitbox| hitbox.content_mask == viewport))
     }
 
     pub(crate) fn paint_scroll_view(
@@ -236,12 +234,12 @@ impl Window {
         context: &RetainedPaintContext,
         cx: &mut App,
     ) {
-        let input = &self.next_frame.hitboxes[hitboxes(prepaint)];
+        let input = hitboxes(prepaint);
         let suppress_hover = !input.is_empty() && self.scroll_hover_is_held(cx);
         if self.visual_content_mask() != capture.viewport
             || self.scene_animation.is_some()
             || self.next_frame.painter.is_capturing_blur()
-            || (!suppress_hover && self.hits_scroll_row(input, Point::default()))
+            || (!suppress_hover && self.hits_scroll_row(&self.next_frame.hitboxes, input, Point::default()))
         {
             element.paint(self, cx);
             return;
