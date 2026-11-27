@@ -161,7 +161,8 @@ pub use lifecycle::DispatchPhase;
 pub(crate) use lifecycle::{
     AnyObserver, FrameCallback, WindowInvalidator, ignore_window_not_found,
 };
-pub(crate) use open::DEFAULT_WINDOW_SIZE;
+#[doc(hidden)]
+pub use open::DEFAULT_WINDOW_SIZE;
 pub use options::*;
 pub use paint::{PaintQuad, fill, outline, quad};
 pub use paint_resources::{ImagePaintProgress, ImagePaintRequest, ImageSampling};

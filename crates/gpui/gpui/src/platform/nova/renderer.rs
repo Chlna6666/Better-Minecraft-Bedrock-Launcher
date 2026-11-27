@@ -512,7 +512,8 @@ impl NovaRenderer {
     }
 
     #[cfg(not(target_os = "windows"))]
-    pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
+    #[doc(hidden)]
+    pub fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
     }
 
@@ -591,7 +592,8 @@ impl NovaRenderer {
         lock_backend(&self.backend).surface_capabilities(self.swapchain)
     }
 
-    pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
         if let Some(previous) = self
             .pending_presentation_packet
             .as_ref()
@@ -1391,7 +1393,8 @@ impl NovaRenderer {
             .and_then(|packet| packet.paint.geometry.layout_extent)
     }
 
-    pub(crate) fn has_active_presentation_animations(&self) -> bool {
+    #[doc(hidden)]
+    pub fn has_active_presentation_animations(&self) -> bool {
         self.pending_presentation_packet.is_some()
             || self
                 .active_presentation_packet
@@ -1413,7 +1416,8 @@ impl NovaRenderer {
             })
     }
 
-    pub(crate) fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
+    #[doc(hidden)]
+    pub fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
         if let Some(packet) = self.active_presentation_packet.as_mut() {
             packet.set_frame_interval(interval);
         }

@@ -516,7 +516,8 @@ impl WindowBackgroundCapabilities {
         }
     }
 
-    pub(crate) fn resolve(
+    #[doc(hidden)]
+    pub fn resolve(
         self,
         requested: WindowBackgroundAppearance,
     ) -> WindowBackgroundAppearance {

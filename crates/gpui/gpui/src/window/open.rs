@@ -1,7 +1,7 @@
 use super::state::{ElementVisualTransform, InputModality, PresentationState};
 use super::*;
 
-pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> Bounds<Pixels> {
     const DEFAULT_WINDOW_OFFSET: Point<Pixels> = point(px(0.), px(35.));

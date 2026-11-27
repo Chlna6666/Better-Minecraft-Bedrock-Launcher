@@ -4061,7 +4061,8 @@ dependencies = [
  "parking_lot",
  "raw-window-handle",
  "smallvec",
- "strum 0.27.2",
+ "smol",
+ "strum 0.28.0",
  "unicode-segmentation",
  "uuid",
 ]

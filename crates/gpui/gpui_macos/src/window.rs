@@ -1304,7 +1304,7 @@ impl PlatformWindow for MacWindow {
     fn appearance(&self) -> WindowAppearance {
         unsafe {
             let appearance: id = msg_send![self.0.lock().native_window, effectiveAppearance];
-            WindowAppearance::from_native(appearance)
+            crate::window_appearance::appearance_from_native(appearance)
         }
     }
 
@@ -2048,7 +2048,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
     let mut lock = window_state.as_ref().lock();
 
     let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height)) };
+    let event = unsafe { crate::events::input_from_native(native_event, Some(window_height)) };
 
     let Some(event) = event else {
         return NO;
@@ -2179,7 +2179,7 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
     let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height)) };
+    let event = unsafe { crate::events::input_from_native(native_event, Some(window_height)) };
 
     if let Some(mut event) = event {
         match &mut event {

@@ -465,7 +465,8 @@ impl NovaRenderer {
         Ok(())
     }
 
-    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: Option<u64>) {
+    #[doc(hidden)]
+    pub fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: Option<u64>) {
         let request = DrawableSizeRequest { size, epoch };
         self.pending_drawable_size = Some(request);
     }
@@ -538,7 +539,8 @@ impl NovaRenderer {
         }
     }
 
-    pub(crate) fn update_transparency(&mut self, is_transparent: bool) {
+    #[doc(hidden)]
+    pub fn update_transparency(&mut self, is_transparent: bool) {
         let previous_alpha = self.surface_alpha;
         let next_alpha = match self.alpha_state_for_current_backend_transparency(is_transparent) {
             Ok(alpha) => alpha,

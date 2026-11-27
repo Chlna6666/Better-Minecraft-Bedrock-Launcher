@@ -63,6 +63,13 @@ use std::{
 pub(crate) use dispatcher::*;
 pub(crate) use display::*;
 pub(crate) use keyboard::*;
+pub(crate) use implementation::{
+    LMGetKbdType, TISCopyCurrentKeyboardLayoutInputSource,
+    TISCopyCurrentKeyboardInputSource, TISGetInputSourceProperty, UCKeyTranslate,
+    kTISPropertyUnicodeKeyLayoutData, kTISPropertyInputSourceID,
+    kTISPropertyLocalizedName, kTISPropertyInputSourceIsASCIICapable,
+    kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
+};
 pub use implementation::MacPlatform;
 pub(crate) use window::*;
 

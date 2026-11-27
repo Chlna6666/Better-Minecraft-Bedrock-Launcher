@@ -57,7 +57,8 @@ impl PromptButton {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn is_cancel(&self) -> bool {
+    #[doc(hidden)]
+    pub fn is_cancel(&self) -> bool {
         matches!(self, PromptButton::Cancel(_))
     }
 

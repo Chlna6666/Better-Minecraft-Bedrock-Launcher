@@ -21,7 +21,8 @@ libc = "0.2"
 log = "0.4"
 parking_lot = "0.12"
 smallvec = "1.15"
-strum = { version = "0.27", features = ["derive"] }
+smol = "2.0"
+strum = { version = "0.28.0", features = ["derive"] }
 unicode-segmentation = "1"
 util = { version = "0.2.2", package = "gpui_util" }
 uuid = { version = "1", features = ["v4"] }

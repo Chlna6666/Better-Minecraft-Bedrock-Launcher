@@ -685,7 +685,7 @@ impl Platform for MacPlatform {
         unsafe {
             let app = NSApplication::sharedApplication(nil);
             let appearance: id = msg_send![app, effectiveAppearance];
-            WindowAppearance::from_native(appearance)
+            crate::window_appearance::appearance_from_native(appearance)
         }
     }
 
