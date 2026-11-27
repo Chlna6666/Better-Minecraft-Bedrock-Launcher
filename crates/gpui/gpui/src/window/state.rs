@@ -487,7 +487,7 @@ pub struct Window {
     pub(super) input_readers: FxHashMap<EntityId, u8>,
     pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,
     pub(super) checked_scroll_generation: Option<u64>,
-    pub(super) mounted_scroll_validation: crate::StateReadValidation,
+    pub(super) mounted_scroll_routing: RefCell<super::scroll_dependencies::MountedScrollRouting>,
     /// Views whose rendered output has read [`Window::viewport_size`]. A content resize dirties
     /// only these views; cached siblings whose bounds and dependencies stay unchanged remain
     /// eligible for retained replay.

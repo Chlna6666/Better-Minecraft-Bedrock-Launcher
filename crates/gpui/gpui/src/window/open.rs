@@ -527,7 +527,7 @@ impl Window {
             input_readers: FxHashMap::default(),
             next_input_readers: RefCell::new(FxHashMap::default()),
             checked_scroll_generation: None,
-            mounted_scroll_validation: Default::default(),
+            mounted_scroll_routing: Default::default(),
             viewport_dependent_views: RefCell::new(FxHashSet::default()),
             view_bounds_stack: Vec::new(),
             element_offset_stack: Vec::new(),

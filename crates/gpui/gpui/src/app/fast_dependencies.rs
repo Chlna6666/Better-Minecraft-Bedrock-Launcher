@@ -464,7 +464,61 @@ impl StateEpochs {
     }
 }
 
+// Bounded UI-thread journal of observed state identities. No owning
+// references, per-state subscriber lists, or unbounded mutation history.
+const STATE_MUTATION_CAPACITY: usize = 256;
+
+struct StateMutations {
+    sequence: u64,
+    identities: [usize; STATE_MUTATION_CAPACITY],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StateMutationCursor(u64);
+
+impl StateMutationCursor {
+    pub(crate) fn current() -> Self {
+        STATE_MUTATIONS.with(|log| Self(log.borrow().sequence))
+    }
+
+    /// Visit only changes since a certified snapshot. A lagging consumer
+    /// or a dense update must fall back rather than omit overwritten events.
+    pub(crate) fn visit_since(
+        self,
+        budget: usize,
+        mut visit: impl FnMut(usize),
+    ) -> Option<Self> {
+        STATE_MUTATIONS.with(|log| {
+            let log = log.borrow();
+            let count = log.sequence.wrapping_sub(self.0);
+            if count > STATE_MUTATION_CAPACITY.min(budget) as u64 {
+                return None;
+            }
+            for offset in 0..count {
+                let sequence = self.0.wrapping_add(offset);
+                visit(log.identities[sequence as usize % STATE_MUTATION_CAPACITY]);
+            }
+            Some(Self(log.sequence))
+        })
+    }
+}
+
+fn record_state_mutation(identity: usize) {
+    let _ = STATE_MUTATIONS.try_with(|log| {
+        let mut log = log.borrow_mut();
+        let index = log.sequence as usize % STATE_MUTATION_CAPACITY;
+        log.identities[index] = identity;
+        log.sequence = log.sequence.wrapping_add(1);
+    });
+}
+
 thread_local! {
+    static STATE_MUTATIONS: RefCell<StateMutations> = const {
+        RefCell::new(StateMutations {
+            sequence: 0,
+            identities: [0; STATE_MUTATION_CAPACITY],
+        })
+    };
     static STATE_READ_LOG: RefCell<Option<Rc<RefCell<Vec<StateRead>>>>> = const { RefCell::new(None) };
     static STATE_EPOCHS: Cell<StateEpochs> = const { Cell::new(StateEpochs { content: 0, placement: 0 }) };
 }
@@ -508,6 +562,9 @@ impl StateVersion {
     pub(crate) fn bump(&self) {
         self.0.value.set(self.get().wrapping_add(1));
         advance_state_domain(self.0.domain);
+        if Rc::weak_count(&self.0) != 0 {
+            record_state_mutation(Rc::as_ptr(&self.0) as usize);
+        }
     }
 
     #[inline]
@@ -532,6 +589,7 @@ impl Drop for StateVersion {
     fn drop(&mut self) {
         if Rc::strong_count(&self.0) == 1 && Rc::weak_count(&self.0) != 0 {
             advance_state_domain(self.0.domain);
+            record_state_mutation(Rc::as_ptr(&self.0) as usize);
         }
     }
 }
@@ -650,7 +708,7 @@ impl StateRead {
         Self { state: Rc::downgrade(&version.0), at: version.get() }
     }
 
-    fn id(&self) -> usize {
+    pub(crate) fn id(&self) -> usize {
         self.state.as_ptr() as usize
     }
 
@@ -802,6 +860,30 @@ mod state_dedup_tests {
         state.bump();
         assert!(!validation.unchanged(&reads));
         assert_eq!(validation.0.get(), ValidatedEpoch::Unchecked);
+    }
+
+    #[test]
+    fn bounded_mutation_cursor_reports_observed_changes_and_overflow() {
+        let state = StateVersion::placement();
+        let read = StateRead::new(&state);
+        let cursor = StateMutationCursor::current();
+        let unobserved = StateVersion::default();
+        unobserved.bump();
+        let mut changed = Vec::new();
+        state.bump();
+        let next = cursor.visit_since(1, |id| changed.push(id)).unwrap();
+        assert_eq!(changed, [read.id()]);
+        drop(state);
+        changed.clear();
+        let _ = next.visit_since(1, |id| changed.push(id)).unwrap();
+        assert_eq!(changed, [read.id()]);
+        let cursor = StateMutationCursor::current();
+        let state = StateVersion::default();
+        let _read = StateRead::new(&state);
+        for _ in 0..=STATE_MUTATION_CAPACITY {
+            state.bump();
+        }
+        assert!(cursor.visit_since(usize::MAX, |_| unreachable!()).is_none());
     }
 
     #[test]

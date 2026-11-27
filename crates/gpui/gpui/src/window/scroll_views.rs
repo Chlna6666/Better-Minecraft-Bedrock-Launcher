@@ -214,8 +214,9 @@ impl Window {
         let frame = &self.rendered_frame;
         let old_paint = frame.published_paint_ref().ok_or(Outcome::MissingPaint)?;
         let mut members = smallvec::SmallVec::<[PlacementMember; 1]>::new();
-        let changed: smallvec::SmallVec<[_; 4]> = frame.mounted_scroll_sources.iter().enumerate()
-            .filter(|(_, source)| !source.unchanged()).collect();
+        let changed: smallvec::SmallVec<[_; 4]> = self.mounted_scroll_routing.borrow_mut()
+            .changed_indices(&frame.mounted_scroll_sources).iter()
+            .map(|&index| (index, &frame.mounted_scroll_sources[index])).collect();
         if changed.len() != owners.len() {
             return Err(Outcome::MountedSources);
         }
@@ -422,8 +423,7 @@ impl Window {
         self.frame_can_degrade = false;
         self.draw_deadline = None;
         self.checked_scroll_generation = Some(crate::state_generation());
-        // Acknowledging the transaction replaces mounted read snapshots.
-        self.mounted_scroll_validation = Default::default();
+        self.mounted_scroll_routing.get_mut().acknowledge_all();
         self.last_generation_stats = super::state::FrameGenerationStats::default();
         self.last_generation_stats.scene = self.rendered_frame.scene().frame_metrics();
         self.last_generation_stats.frame_retained_capacity = self.rendered_frame.retained_capacity();

@@ -1,7 +1,8 @@
 //! Scroll dependencies use state versions, not per-getter executable probes.
 //! StateVersion follows longbridge/gpui-fast fast/dependencies.rs (Apache-2.0;
 //! Copyright 2022-2025 Zed Industries, Inc.; Copyright 2026 Longbridge).
-use crate::{EntityId, Pixels, Point, Window, StateRead, StateReadStatus, state_generation};
+use crate::{EntityId, Pixels, Point, Window, StateRead, StateReadStatus, StateReadValidation, StateMutationCursor, state_generation};
+use smallvec::SmallVec;
 pub(crate) use crate::StateVersion;
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -85,6 +86,84 @@ impl MountedScrollSource {
     }
 }
 
+/// Sparse index over the committed mounted sources, not a second source
+/// registry. Small windows keep the existing allocation-free epoch path.
+#[derive(Default)]
+pub(super) struct MountedScrollRouting {
+    index: Vec<(usize, usize)>,
+    cursor: Option<StateMutationCursor>,
+    dirty: SmallVec<[usize; 4]>,
+    validation: StateReadValidation,
+}
+
+impl MountedScrollRouting {
+    const SPARSE_THRESHOLD: usize = 16;
+
+    pub(super) fn reset_frame(&mut self, source_count: usize) {
+        self.index.clear();
+        self.cursor = None;
+        self.dirty.clear();
+        self.validation = Default::default();
+        // Keep ordinary frame churn allocation-free, but release capacity
+        // inherited from a much larger previous page.
+        let target = source_count.max(Self::SPARSE_THRESHOLD);
+        if self.index.capacity() > target.saturating_mul(4) {
+            self.index.shrink_to(target);
+        }
+        if self.dirty.capacity() > target.saturating_mul(4) {
+            self.dirty.shrink_to_fit();
+        }
+    }
+
+    /// Called only after the placement transaction accounts for every
+    /// changed source and replaces its snapshot. The identity index remains
+    /// valid and later mutations still appear after the prepared cursor.
+    pub(super) fn acknowledge_all(&mut self) {
+        self.dirty.clear();
+        self.validation = Default::default();
+    }
+
+    pub(super) fn changed_indices(&mut self, sources: &[MountedScrollSource]) -> &[usize] {
+        if sources.len() < Self::SPARSE_THRESHOLD {
+            self.dirty.clear();
+            let dirty = &mut self.dirty;
+            self.validation.poll(
+                sources.iter().enumerate().map(|(index, source)| (index, &source.read)),
+                |index, _| dirty.push(index),
+            );
+            return &self.dirty;
+        }
+
+        if let Some(cursor) = self.cursor {
+            let index = &self.index;
+            let dirty = &mut self.dirty;
+            if let Some(next) = cursor.visit_since(sources.len() / 2, |id| {
+                let start = index.partition_point(|&(identity, _)| identity < id);
+                let end = index.partition_point(|&(identity, _)| identity <= id);
+                dirty.extend(index[start..end].iter().map(|&(_, source)| source));
+            }) {
+                self.cursor = Some(next);
+                dirty.sort_unstable();
+                dirty.dedup();
+                dirty.retain(|source| !sources[*source].unchanged());
+                return &self.dirty;
+            }
+        }
+
+        // The first committed observation (or overflow) is authoritative.
+        // Build the immutable identity-to-index table only on a new frame.
+        if self.index.is_empty() {
+            self.index.extend(sources.iter().enumerate().map(|(index, source)| (source.read.id(), index)));
+            self.index.sort_unstable();
+        }
+        self.dirty.clear();
+        self.dirty.extend(sources.iter().enumerate()
+            .filter_map(|(index, source)| (!source.unchanged()).then_some(index)));
+        self.cursor = Some(StateMutationCursor::current());
+        &self.dirty
+    }
+}
+
 /// Copy only the sources belonging to a replayed listener span. Indices
 /// stay ordered and speculative frames never mutate the committed probes.
 pub(crate) fn carry_scroll_sources(
@@ -135,15 +214,16 @@ impl Window {
         }
         self.checked_scroll_generation = Some(generation);
         let mut scrolled = smallvec::SmallVec::<[EntityId; 4]>::new();
-        self.mounted_scroll_validation.poll(
-            self.rendered_frame.mounted_scroll_sources.iter()
-                .map(|source| (source.owner, &source.read)),
-            |owner, status| {
-                if status == StateReadStatus::Changed && !scrolled.contains(&owner) {
-                    scrolled.push(owner);
+        {
+            let sources = &self.rendered_frame.mounted_scroll_sources;
+            let mut routing = self.mounted_scroll_routing.borrow_mut();
+            for &index in routing.changed_indices(sources) {
+                let source = &sources[index];
+                if source.read.status() == StateReadStatus::Changed && !scrolled.contains(&source.owner) {
+                    scrolled.push(source.owner);
                 }
-            },
-        );
+            }
+        }
         self.invalidator.invalidate_scroll_views(scrolled);
         let mut changed = smallvec::SmallVec::<[EntityId; 4]>::new();
         if self.invalidator.changed_state_owners(&mut changed) {
@@ -189,6 +269,40 @@ mod tests {
         assert_eq!(reads[0].status(), StateReadStatus::Unchanged);
         state.borrow_mut().y = crate::px(10.);
         assert_eq!(reads[0].status(), StateReadStatus::Changed);
+    }
+
+    #[test]
+    fn sparse_mounted_routes_match_full_scan_through_acknowledgement_and_overflow() {
+        let mut states: Vec<_> = (0..32).map(|_| Some(StateVersion::placement())).collect();
+        let owner = EntityId::from(1);
+        let mut sources: Vec<_> = states.iter().enumerate().map(|(index, state)| {
+            MountedScrollSource::new(index, owner, state.as_ref().unwrap())
+        }).collect();
+        // One state can own multiple mounted listener routes.
+        sources.push(MountedScrollSource::new(32, owner, states[7].as_ref().unwrap()));
+        let mut routing = MountedScrollRouting::default();
+        assert!(routing.changed_indices(&sources).is_empty());
+        states[7].as_ref().unwrap().bump();
+        states[7].as_ref().unwrap().bump();
+        states[12].as_ref().unwrap().bump();
+        assert_eq!(routing.changed_indices(&sources), &[7, 12, 32]);
+        assert_eq!(routing.changed_indices(&sources), &[7, 12, 32]);
+        for index in [7, 12, 32] {
+            let state = states[if index == 32 { 7 } else { index }].as_ref().unwrap();
+            sources[index].acknowledge(state);
+        }
+        routing.acknowledge_all();
+        assert!(routing.changed_indices(&sources).is_empty());
+        drop(states[3].take());
+        assert_eq!(routing.changed_indices(&sources), &[3]);
+        for _ in 0..300 {
+            states[15].as_ref().unwrap().bump();
+        }
+        let expected: Vec<_> = sources.iter().enumerate()
+            .filter_map(|(index, source)| (!source.unchanged()).then_some(index)).collect();
+        assert_eq!(routing.changed_indices(&sources), expected.as_slice());
+        routing.reset_frame(sources.len());
+        assert_eq!(routing.changed_indices(&sources), expected.as_slice());
     }
 
     #[test]
