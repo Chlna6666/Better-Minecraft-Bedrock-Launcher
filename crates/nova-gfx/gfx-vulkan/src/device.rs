@@ -1993,6 +1993,7 @@ impl VulkanDevice {
             None,
             None,
             false,
+            None,
         )
     }
 
@@ -2006,6 +2007,7 @@ impl VulkanDevice {
         clear_region: Option<ScissorRect>,
         viewport: Option<Viewport>,
         graph_write_hazard: bool,
+        run_plan: Option<&Arc<gfx_core::DrawRunPlan>>,
     ) -> Result<()> {
         let mut present_image = None;
         let mut render_target_texture = None;
@@ -2117,8 +2119,26 @@ impl VulkanDevice {
                 return Err(Error::InvalidInput("Vulkan depth attachment is smaller than the rendering area".into()));
             }
         }
+        // Swapchain image identity is not part of resolved draw state.
+        // Attachment validation and depth transitions remain per-frame.
+        let native_key = ResolvedDrawKey {
+            viewport, extent: target_extent, targets: render_target_texture.iter().copied().collect(),
+            resolve: None, shared_layout: None,
+        };
+        let epochs = self.draw_identity_epochs();
+        let cached_index = run_plan.and_then(|plan| self.resolved_draw_streams.iter().position(|entry|
+            Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key
+                && (entry.epochs == epochs || self.draw_dependencies_live(&entry.dependencies))));
+        let resolved = if let Some(index) = cached_index {
+            let mut entry = self.resolved_draw_streams.remove(index);
+            entry.epochs = epochs;
+            let resolved = Arc::clone(&entry.resolved);
+            self.resolved_draw_streams.push(entry);
+            resolved
+        } else {
         let mut draw_steps = Vec::with_capacity(steps.len());
         let mut descriptor_sets = Vec::new();
+        let mut dependencies = DrawDependencies::default();
         // Reuse the resolved native descriptor range for consecutive draws with
         // identical portable bindings. No repeated registry lookups or copies.
         let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
@@ -2140,6 +2160,27 @@ impl VulkanDevice {
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
             let groups = step.bind_groups();
+            if run_plan.is_some() {
+                dependencies.pipelines.entry(step.pipeline()).or_insert(self.render_pipelines.native_stamp(step.pipeline())?);
+                for &id in groups {
+                    dependencies.groups.entry(id).or_insert(self.bind_groups.native_stamp(id)?);
+                }
+                let mut remember = |id| -> Result<()> {
+                    if let std::collections::hash_map::Entry::Vacant(entry) = dependencies.buffers.entry(id) {
+                        entry.insert(self.buffers.native_stamp(id)?);
+                    }
+                    Ok(())
+                };
+                match step {
+                    RenderCommand::Draw(_) => {}
+                    RenderCommand::DrawIndexed(draw) => remember(draw.index_buffer.buffer)?,
+                    RenderCommand::DrawIndirect(draw) => remember(draw.arguments)?,
+                    RenderCommand::DrawIndexedIndirect(draw) => {
+                        remember(draw.arguments)?;
+                        remember(draw.index_buffer.buffer)?;
+                    }
+                }
+            }
             if previous_bank != Some((step.pipeline(), groups)) {
                 self.validate_draw_sampled_bank(pipeline_record, groups,
                     render_target_texture.as_slice(), None)?;
@@ -2255,6 +2296,17 @@ impl VulkanDevice {
                 scissor,
             });
         }
+            let resolved = Arc::new(ResolvedDraws { steps: draw_steps, descriptor_sets });
+            if let Some(plan) = run_plan {
+                self.resolved_draw_streams.retain(|entry| entry.plan.is_live()
+                    && !(Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key));
+                if self.resolved_draw_streams.len() >= 32 { self.resolved_draw_streams.remove(0); }
+                self.resolved_draw_streams.push(ResolvedDrawStream {
+                    plan: Arc::clone(plan), key: native_key, epochs, dependencies, resolved: Arc::clone(&resolved),
+                });
+            }
+            resolved
+        };
         let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
         let transitions = render_target_transition
             .as_ref()
@@ -2267,8 +2319,8 @@ impl VulkanDevice {
             color_views: std::slice::from_ref(&image_view),
             depth_view: depth_view.map(|(view, _)| view),
             present_image,
-            steps: &draw_steps,
-            descriptor_sets: &descriptor_sets,
+            steps: &resolved.steps,
+            descriptor_sets: &resolved.descriptor_sets,
             shared_sampled_set: None,
             extent,
             viewport_extent,
@@ -2331,6 +2383,19 @@ impl VulkanDevice {
             return Err(Error::InvalidInput("draw sampled bank aliases a color attachment".into()));
         }
         Ok(())
+    }
+
+    fn owned_draw_plan(&mut self, owner: &Arc<[RenderCommand]>) -> Arc<gfx_core::DrawRunPlan> {
+        self.draw_run_plans.retain(|plan| plan.is_live());
+        let limit = if self.multi_draw_indirect { self.max_draw_indirect_count } else { 1 };
+        let plan = if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches(owner, limit)) {
+            self.draw_run_plans.remove(index)
+        } else {
+            if self.draw_run_plans.len() >= 32 { self.draw_run_plans.remove(0); }
+            Arc::new(gfx_core::DrawRunPlan::new(owner, limit))
+        };
+        self.draw_run_plans.push(Arc::clone(&plan));
+        plan
     }
 
     fn draw_identity_epochs(&self) -> [u64; 3] {
@@ -2887,6 +2952,7 @@ impl VulkanDevice {
         clear_color: ClearColor,
         depth_attachment: Option<DepthAttachment>,
         damage: Option<ScissorRect>,
+        owner: Option<&Arc<[RenderCommand]>>,
     ) -> Result<PresentOutcome> {
         if self.swapchains.get(swapchain_id)?.rebuild_pending {
             // The legacy caller may already have issued producer work and
@@ -2925,8 +2991,11 @@ impl VulkanDevice {
         encoder_record.frame_probe_surface = sample.then_some((swapchain_id, native_chain));
         timings.command_encoder_create = encoder_create_started.elapsed();
         let command_record_started = Instant::now();
-        let record_result = self.record_render_step_list_desc(
+        let plan = owner.map(|owner| self.owned_draw_plan(owner));
+        let command_buffer = self.command_encoders.get(encoder)?.command_buffers[0];
+        let record_result = self.record_render_step_list_desc_into(
             encoder,
+            command_buffer,
             BeginRenderPassDescriptor {
                 render_pass: render_pass_id,
                 target: RenderTarget::Swapchain {
@@ -2937,6 +3006,10 @@ impl VulkanDevice {
             },
             steps,
             depth_attachment,
+            None,
+            None,
+            false,
+            plan.as_ref(),
         );
         timings.command_record = command_record_started.elapsed();
         if let Err(error) = record_result {
@@ -6301,7 +6374,23 @@ impl PresentationDevice for VulkanDevice {
             clear_color,
             frame.depth_attachment,
             frame.present_region,
+            None,
         )
+    }
+
+    fn render_and_present_owned(
+        &mut self,
+        frame: &PresentFrameDescriptor<'_>,
+        owner: &Arc<[RenderCommand]>,
+    ) -> Result<PresentOutcome> {
+        if !std::ptr::eq(frame.commands, owner.as_ref()) {
+            return Err(Error::InvalidInput("owned present stream identity mismatch".into()));
+        }
+        let LoadOp::Clear(clear_color) = frame.color_load_op else {
+            return Err(Error::Unavailable("Vulkan swapchain LoadOp::Load is not implemented".into()));
+        };
+        self.record_and_present_timed(frame.swapchain, frame.render_pass, frame.commands,
+            clear_color, frame.depth_attachment, frame.present_region, Some(owner))
     }
 
     fn indirect_draw_count_limit(&self) -> Option<u32> {
