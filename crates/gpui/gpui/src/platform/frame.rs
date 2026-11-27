@@ -337,38 +337,28 @@ impl DirtyRegion {
                 break;
             }
         }
-        self.rects.extend(pending);
-
-        // Coalesce only when the union stays rectangular. Never expand an L
-        // shape to its bounding box merely because two rectangles overlap.
-        let mut index = 0;
-        while index < self.rects.len() {
-            let a = self.rects[index].bounds;
-            let mut next_index = index + 1;
-            let mut merged = false;
-            while next_index < self.rects.len() {
-                let b = self.rects[next_index].bounds;
+        // Existing rectangles were coalesced on insertion. Each new strip
+        // can only create adjacencies involving itself or its expanded union.
+        // Covered primitives produce no strips and pay no coalescing cost.
+        for mut rect in pending {
+            let mut index = 0;
+            while index < self.rects.len() {
+                let a = rect.bounds;
+                let b = self.rects[index].bounds;
                 let horizontal = a.origin.y == b.origin.y
                     && a.size.height == b.size.height
-                    && (a.origin.x + a.size.width == b.origin.x
-                        || b.origin.x + b.size.width == a.origin.x);
+                    && (a.right() == b.left() || b.right() == a.left());
                 let vertical = a.origin.x == b.origin.x
                     && a.size.width == b.size.width
-                    && (a.origin.y + a.size.height == b.origin.y
-                        || b.origin.y + b.size.height == a.origin.y);
+                    && (a.bottom() == b.top() || b.bottom() == a.top());
                 if horizontal || vertical {
-                    self.rects[index].bounds = a.union(&b);
-                    self.rects.swap_remove(next_index);
-                    merged = true;
-                    break;
+                    rect.bounds = a.union(&self.rects.swap_remove(index).bounds);
+                    index = 0;
+                } else {
+                    index += 1;
                 }
-                next_index += 1;
             }
-            if merged {
-                index = 0;
-            } else {
-                index += 1;
-            }
+            self.rects.push(rect);
         }
         if self.rects.len() > MAX_DIRTY_RECTS
             && let Some(bounds) = self.union_bounds()
