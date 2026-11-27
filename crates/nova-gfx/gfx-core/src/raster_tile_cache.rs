@@ -1,5 +1,5 @@
 //! Physical tile residency. Generation adoption follows GPUI Fast's clean-tile rule.
-use crate::{Error, Format, MemoryLocation, RasterTile, ResourceDevice, Result,
+use crate::{BindGroupDescriptor, BindGroupId, Error, Format, MemoryLocation, RasterTile, ResourceDevice, Result,
     SubmissionId, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
     TextureViewDescriptor, TextureViewId};
 use smallvec::SmallVec;
@@ -70,6 +70,9 @@ struct Entry {
     stale: bool,
     last_used: u64,
     readers: SmallVec<[SubmissionId; 4]>,
+    // A sampled descriptor belongs to the physical texture view, not the
+    // current content generation or a transient reader submission.
+    sampling_bindings: SmallVec<[(usize, BindGroupId); 2]>,
 }
 impl Entry {
     fn idle(&self) -> bool {
@@ -85,9 +88,10 @@ impl Entry {
 }
 
 /// Device-local raster texture cache with explicit native completion tracking.
-/// The caller must register accepted readers before further cache mutation and
-/// retire external descriptors before evicting their views. No CPU waits are
-/// inserted; unavailable or busy tiles require the ordinary rendering fallback.
+/// The caller must register accepted readers before further cache mutation.
+/// Cache-owned sampling descriptors retire before their views; any other
+/// external descriptors remain the caller's responsibility. No CPU waits
+/// are inserted; unavailable or busy tiles require ordinary fallback.
 pub struct RasterTileCache {
     entries: HashMap<RasterTileKey, Entry>,
     frame: u64,
@@ -199,6 +203,32 @@ impl RasterTileCache {
         Some(RasterTileRead { key, serial: e.serial, texture, writer })
     }
 
+    /// Reuse a sampled descriptor for a physical tile and stable consumer
+    /// slot. The descriptor factory is called only on a miss. All external
+    /// resources captured by this slot (buffers, sampler and layout) must
+    /// remain unchanged and alive until the cache is cleared. Register the
+    /// accepted reader before mutating the cache, exactly as for a normal
+    /// sampling lease.
+    pub fn sampling_binding<D: ResourceDevice + ?Sized>(
+        &mut self, device: &mut D, read: RasterTileRead, slot: usize,
+        descriptor: impl FnOnce() -> BindGroupDescriptor,
+    ) -> Result<BindGroupId> {
+        let e = self.entries.get_mut(&read.key)
+            .filter(|e| e.serial == read.serial && e.handles() == Some(read.texture)
+                && !e.stale && match e.state {
+                    State::Ready => true,
+                    State::Submitted(writer) => read.writer == Some(writer),
+                    _ => false,
+                })
+            .ok_or_else(|| Error::InvalidInput("binding references a superseded tile lease".into()))?;
+        if let Some((_, binding)) = e.sampling_bindings.iter().find(|(key, _)| *key == slot) {
+            return Ok(*binding);
+        }
+        let binding = device.create_bind_group(&descriptor())?;
+        e.sampling_bindings.push((slot, binding));
+        Ok(binding)
+    }
+
     /// Register an accepted native reader of an ordered lease. The consumer
     /// must actually have been submitted after the lease's writer; neither
     /// recording this fence nor the dependency makes that writer complete.
@@ -255,7 +285,7 @@ impl RasterTileCache {
             self.entries.insert(key, Entry {
                 raster, format, texture, view: None, bytes, generation, serial,
                 state: State::Invalid, stale: true, last_used: self.frame,
-                readers: SmallVec::new(),
+                readers: SmallVec::new(), sampling_bindings: SmallVec::new(),
             });
             self.bytes += bytes;
             match device.create_texture_view(&TextureViewDescriptor {
@@ -357,6 +387,10 @@ impl RasterTileCache {
         let e = self.entries.get_mut(&key).unwrap();
         debug_assert!(e.idle());
         e.invalidate();
+        while let Some((_, binding)) = e.sampling_bindings.last().copied() {
+            device.destroy_bind_group(binding)?;
+            e.sampling_bindings.pop();
+        }
         if let Some(view) = e.view {
             device.destroy_texture_view(view)?;
             e.view = None;
@@ -381,7 +415,7 @@ mod tests {
             raster: raster(), format: Format::Bgra8Unorm,
             texture: TextureId::from_parts(1, 1), view: Some(TextureViewId::from_parts(1, 1)),
             bytes: 1024, generation, serial: 1, state, stale: false,
-            last_used: 0, readers: SmallVec::new(),
+            last_used: 0, readers: SmallVec::new(), sampling_bindings: SmallVec::new(),
         }
     }
     #[test]

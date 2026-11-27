@@ -474,6 +474,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     let mut physical = None;
     let mut second_physical = None;
     let mut composite_buffers = None;
+    let mut composite_binding = None;
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
     let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
     let second_key = RasterTileKey { layer: paint.layers.frames[1].id, x: 0, y: 0 };
@@ -494,6 +495,17 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, handles, "free slot reuses physical composite buffers");
         }
         composite_buffers = Some(handles);
+        let read = renderer.raster_tiles.lookup_ordered(key, 1, tile, Format::Bgra8Unorm, |_| false)
+            .expect("completed tile sampling lease");
+        let binding = device!(renderer, device, {
+            renderer.raster_tiles.sampling_binding(device, read, 0, || {
+                panic!("resident tile must already own the composite slot descriptor")
+            }).expect("resident descriptor")
+        });
+        if let Some(previous) = composite_binding {
+            assert_eq!(previous, binding, "resident hit reuses the native bind group");
+        }
+        composite_binding = Some(binding);
         let texture = renderer.raster_tiles.lookup(key, 1, tile, Format::Bgra8Unorm)
             .expect("published native scroll texture");
         let second = renderer.raster_tiles.lookup(second_key, 1, tile, Format::Bgra8Unorm)

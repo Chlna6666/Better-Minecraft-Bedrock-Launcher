@@ -383,6 +383,9 @@ pub(super) struct CompositeSlot {
     global: Option<BufferId>,
     sprites: Option<BufferId>,
     outside: Option<BufferId>,
+    // Dedicated immutable animation sentinel; never bind a growable normal
+    // renderer animation buffer into a resident tile descriptor.
+    static_animation: Option<BufferId>,
 }
 
 const RETAINED_OUTSIDE_QUADS: usize = 256;
@@ -412,7 +415,7 @@ impl CompositeSlot {
     }
 
     fn destroy<D: ResourceDevice>(self, device: &mut D) {
-        for buffer in [self.global, self.sprites, self.outside].into_iter().flatten() {
+        for buffer in [self.global, self.sprites, self.outside, self.static_animation].into_iter().flatten() {
             if let Err(error) = device.destroy_buffer(buffer) {
                 log::debug!("scroll composite slot retirement failed: {error}");
             }
@@ -432,7 +435,7 @@ impl NovaRenderer {
         // An unknown reader or failed fence is not safe to reclaim. The
         // device registry retains the allocations until device teardown.
         if self.scroll_raster_failed || !self.pending_submissions.is_empty()
-            || !self.scroll_raster_resources.is_empty()
+            || !self.scroll_raster_resources.is_empty() || self.raster_tiles.bytes() != 0
         {
             return;
         }
@@ -554,8 +557,12 @@ impl NovaRenderer {
             self.raster_tile_context = Some(context);
         }
         self.raster_tiles.begin_frame();
+        // Row promotion can expose dozens of independent source IDs.
+        // Reconcile cache entries in O(tiles + layers), not a nested scan.
+        let layers: FxHashMap<_, _> = packet.paint.layers.frames.iter()
+            .map(|layer| (layer.id, layer)).collect();
         self.raster_tiles.reconcile_tiles(|key, generation, raster| {
-            let layer = packet.paint.layers.frames.iter().find(|layer| layer.id == key.layer)?;
+            let layer = layers.get(&key.layer)?;
             let x = i64::from(raster.origin.x);
             let y = i64::from(raster.origin.y);
             layer.adopt_tile(generation, [x, y, x + i64::from(raster.extent.width()),
@@ -775,7 +782,16 @@ impl NovaRenderer {
                 &globals, GLOBAL_UPLOAD_BYTES, BufferUsage::UNIFORM)?;
             let poly_sprite_buffer = CompositeSlot::write(device, &mut composite_slot.sprites,
                 &bytes, MAX_TILES * PACKED_POLY_SPRITE_BYTES, BufferUsage::STORAGE)?;
-            let buffers = FrameResourceBuffers { global_buffer, poly_sprite_buffer, poly_sprite_capacity: MAX_TILES, ..original };
+            let animation_value_buffer = if let Some(buffer) = composite_slot.static_animation {
+                buffer
+            } else {
+                CompositeSlot::write(device, &mut composite_slot.static_animation,
+                    &[0; PACKED_ANIMATION_VALUE_BYTES], PACKED_ANIMATION_VALUE_BYTES, BufferUsage::STORAGE)?
+            };
+            let buffers = FrameResourceBuffers {
+                global_buffer, poly_sprite_buffer, poly_sprite_capacity: MAX_TILES,
+                animation_value_buffer, animation_value_capacity: 1, ..original
+            };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
             let root_buffers = outside.streams.upload(device, &mut resources, buffers,
                 &pack_text_raster_params(&self.rendering_parameters), Some(&mut composite_slot.outside))?;
@@ -790,8 +806,11 @@ impl NovaRenderer {
                 root_offset = boundary;
                 let end = tile_offset + plan.requests.len();
                 for (index, read) in reads[tile_offset..end].iter().enumerate() {
-                    let group = resources.binding(device, self.poly_sprite_bind_group_layout,
-                        poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler))?;
+                    let group = self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
+                        label: Some("resident scroll composite binding".into()),
+                        layout: self.poly_sprite_bind_group_layout,
+                        entries: poly_atlas_resource_bindings(buffers, read.texture().view, self.atlas_sampler),
+                    })?;
                     commands.push(RenderCommand::Draw(DrawCommand { pipeline, bind_groups: bind_group_list([group]),
                         vertex_count: 4, first_vertex: 0, instance_count: 1, first_instance: (tile_offset + index) as u32, scissor: None }));
                 }
