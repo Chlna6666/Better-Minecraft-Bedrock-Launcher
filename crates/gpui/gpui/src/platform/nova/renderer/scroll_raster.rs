@@ -126,6 +126,10 @@ impl NovaRenderer {
             }
             let (_, resources) = self.scroll_raster_resources.swap_remove(i);
             match &mut *lock_backend(&self.backend) {
+                #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+                NovaBackend::Dx11(device) => resources.destroy(device),
+                #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+                NovaBackend::OpenGl(device) => resources.destroy(device),
                 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
                 NovaBackend::Dx12(device) => resources.destroy(device),
                 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -139,8 +143,8 @@ impl NovaRenderer {
     }
 
     pub(super) fn try_scroll_raster_present(&mut self, packet: &mut PresentationPacket) -> Result<Option<bool>> {
-        // DX11/OpenGL do not return a tracked writer from the ordered
-        // offscreen API yet. A None submission is NOT a completed fence.
+        // A None submission is NOT a completed fence. All admitted backends
+        // must return a tracked writer from the ordered offscreen API.
         if self.scroll_raster_failed || self.live_resize_active
             || self.presentation_submission_mode() == GpuSubmissionMode::Synchronous
             || self.surface_format != Format::Bgra8Unorm
@@ -156,9 +160,13 @@ impl NovaRenderer {
         };
         let Some(requests) = requests(layer, self.active_size) else { return Ok(None); };
         let backend = Arc::clone(&self.backend);
-        // Only the three backends with an explicit ordered offscreen fence
-        // can admit pending writes. Other backends keep their normal path.
+        // All five native backends implement explicit ordered offscreen
+        // fences. No independent graphics queue is used for scroll tiles.
         let supported = match &*lock_backend(&backend) {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(_) => true,
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            NovaBackend::OpenGl(_) => true,
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(_) => true,
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -185,6 +193,10 @@ impl NovaRenderer {
                 y + i64::from(raster.extent.height())], packet.paint.geometry.scale_factor)
         });
         let result = match &mut *lock_backend(&backend) {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => self.scroll_raster_present(device, layer, &requests, slot),
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            NovaBackend::OpenGl(device) => self.scroll_raster_present(device, layer, &requests, slot),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => self.scroll_raster_present(device, layer, &requests, slot),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]

@@ -341,7 +341,21 @@ fn vulkan_scroll_raster_present_skips_scene_pack() {
     verify_direct_present(RendererBackend::NovaVulkan);
 }
 
-#[cfg(any(feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan"))]
+#[test]
+#[cfg(feature = "nova-gfx-dx11")]
+#[ignore = "requires Windows hardware D3D11 and a native presentable window"]
+fn dx11_scroll_raster_present_skips_scene_pack() {
+    verify_direct_present(RendererBackend::NovaDx11);
+}
+
+#[test]
+#[cfg(feature = "nova-gfx-opengl")]
+#[ignore = "requires Windows OpenGL 4.5 and a native presentable window"]
+fn opengl_scroll_raster_present_skips_scene_pack() {
+    verify_direct_present(RendererBackend::NovaOpenGl);
+}
+
+#[cfg(any(feature = "nova-gfx-dx11", feature = "nova-gfx-dx12", feature = "nova-gfx-vulkan", feature = "nova-gfx-opengl"))]
 fn verify_direct_present(backend: RendererBackend) {
     let window = native_window::Window::renderer_fixture();
     window.resize(64, 64);

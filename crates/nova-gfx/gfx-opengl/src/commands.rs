@@ -354,6 +354,8 @@ impl PresentationDevice for OpenGlDevice {
                 tag,
             )?;
         }
-        Ok(None)
+        // Use the same native serial/fence registry as Present. A single
+        // completion marker covers the entire ordered batch, not each pass.
+        if passes.is_empty() { Ok(None) } else { self.signal().map(Some) }
     }
 }
