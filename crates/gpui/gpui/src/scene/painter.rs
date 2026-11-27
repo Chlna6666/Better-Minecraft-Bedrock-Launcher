@@ -35,6 +35,7 @@ pub(crate) struct Painter {
     frame_builder: bool,
     draw_payload_pending: bool,
     draw_permutation: super::primitive_stream::DrawPermutation,
+    draw_scratch_low_frames: u16,
 }
 struct BlurCaptureState {
     config: BlurCapture,

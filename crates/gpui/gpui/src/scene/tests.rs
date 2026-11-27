@@ -1936,3 +1936,85 @@ fn retained_shadow_pages_preserve_static_payload_and_reject_partial_runs() {
     partial.insert_primitive(shadow);
     assert_eq!(partial.shadows.last().unwrap().order, 17);
 }
+
+
+#[test]
+fn window_frame_records_typed_draws_once_and_preserves_logical_reads() {
+    let viewport = bounds(point(px(0.), px(0.)), size(px(200.), px(200.))).scale(1.);
+    let quad = |x| Quad {
+        bounds: bounds(point(px(x), px(0.)), size(px(20.), px(20.))).scale(1.),
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    };
+    let mut frame = Painter::for_frame();
+    let mut reference = Painter::default();
+    // The third primitive is independent of the overlapping first two.
+    for x in [0., 5., 100., 102., 8.] {
+        frame.insert_primitive(quad(x));
+        reference.insert_primitive(quad(x));
+    }
+    assert_eq!(frame.len(), 5);
+    assert_eq!(frame.quads.len(), 0, "no independent draw payload during construction");
+    assert_eq!(frame.bounds_for_range(0..frame.len()), reference.bounds_for_range(0..reference.len()));
+    frame.finish();
+    reference.finish();
+    assert!(frame.quads.iter().eq(reference.quads.iter()));
+    for operation in frame.paint_operations.views() {
+        let PaintOperationRef::Primitive(PrimitiveRef::Quad(value)) = operation else {
+            panic!("expected quad");
+        };
+        let drawn = frame.quads.iter().find(|quad| *quad == value).unwrap();
+        assert!(std::ptr::eq(value, drawn));
+    }
+
+    // Mixing a rebuilt prefix, retained suffix and a new tail must not
+    // overwrite the operation page or reorder equal draw keys.
+    let mut replay = Painter::for_frame();
+    replay.insert_primitive(quad(0.));
+    assert!(replay.replay_with_ordering(1..frame.len(), &frame, [], Some(&frame)));
+    replay.insert_primitive(quad(150.));
+    // Rebuild a reference instead of appending to already sorted scratch.
+    let mut expected = Painter::default();
+    for x in [0., 5., 100., 102., 8., 150.] { expected.insert_primitive(quad(x)); }
+    expected.finish();
+    replay.finish();
+    assert!(replay.quads.iter().eq(expected.quads.iter()));
+    assert!(replay.paint_operations.matches_views(&expected.paint_operations, |a, b| a.same_paint(b)));
+    replay.clear();
+    replay.insert_primitive(quad(40.));
+    assert_eq!(replay.len(), 1);
+    replay.finish();
+    assert_eq!(replay.quads.len(), 1);
+    assert_eq!(frame.quads.len(), 5);
+}
+
+#[test]
+fn window_frame_capture_mirrors_never_enter_root_typed_draws() {
+    let viewport = bounds(point(px(0.), px(0.)), size(px(200.), px(200.))).scale(1.);
+    let quad = |x| Quad {
+        bounds: bounds(point(px(x), px(0.)), size(px(20.), px(20.))).scale(1.),
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    };
+    let mut frame = Painter::for_frame();
+    frame.insert_primitive(quad(0.));
+    frame.begin_blur(BlurCapture {
+        animation_id: None, layer_id: None, bounds: viewport,
+        content_mask: ContentMask::new(viewport), radius: ScaledPixels(4.), opacity: 1.,
+    });
+    frame.insert_primitive(quad(60.));
+    frame.end_blur();
+    frame.insert_primitive(quad(120.));
+    frame.finish();
+    assert_eq!(frame.quads.len(), 2);
+    assert_eq!(frame.blurs.len(), 1);
+    assert_eq!(frame.blurs[0].content.quads.len(), 1);
+    assert!(frame.quads.iter().all(|quad| quad.bounds.origin.x != ScaledPixels(60.)));
+    assert_eq!(frame.blurs[0].content.quads[0].bounds.origin.x, ScaledPixels(60.));
+    let mut replay = Painter::for_frame();
+    replay.replay(0..frame.len(), &frame, []);
+    replay.finish();
+    assert!(replay.quads.iter().eq(frame.quads.iter()));
+    assert_eq!(replay.blurs.len(), 1);
+    assert_eq!(replay.blurs[0].content.quads.len(), 1);
+}

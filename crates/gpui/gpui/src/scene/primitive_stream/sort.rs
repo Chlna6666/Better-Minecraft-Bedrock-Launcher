@@ -118,8 +118,9 @@ fn permute<T: Copy>(items: &mut [T], keys: &mut [(u32, usize)]) {
 #[derive(Default)]
 pub(crate) struct DrawPermutation {
     order: Vec<u32>,
-    inverse: Vec<u32>,
-    counts: Vec<u32>,
+    // Dense counts are no longer needed when the inverse map is built.
+    // Reuse the same buffer instead of retaining another narrow array.
+    mapping: Vec<u32>,
     keys: Vec<u64>,
     wide_keys: Vec<u128>,
 }
@@ -145,20 +146,20 @@ impl DrawPermutation {
             });
             let span = (max - min) as usize;
             if span < len.saturating_mul(2) {
-                self.counts.clear();
-                self.counts.resize(span + 1, 0);
+                self.mapping.clear();
+                self.mapping.resize(span + 1, 0);
                 for value in values.iter() {
-                    self.counts[(value.order() - min) as usize] += 1;
+                    self.mapping[(value.order() - min) as usize] += 1;
                 }
                 let mut offset = 0;
-                for count in &mut self.counts {
+                for count in &mut self.mapping {
                     let next = offset + *count;
                     *count = offset;
                     offset = next;
                 }
                 self.order.resize(len, 0);
                 for (slot, value) in values.iter().enumerate() {
-                    let next = &mut self.counts[(value.order() - min) as usize];
+                    let next = &mut self.mapping[(value.order() - min) as usize];
                     self.order[*next as usize] = slot as u32;
                     *next += 1;
                 }
@@ -179,11 +180,11 @@ impl DrawPermutation {
             self.order.extend(self.wide_keys.iter().map(|&key| key as u32 & ((1 << 28) - 1)));
         }
 
-        self.inverse.resize(len, 0);
+        self.mapping.resize(len, 0);
         for (new, &old) in self.order.iter().enumerate() {
-            self.inverse[old as usize] = new as u32;
+            self.mapping[old as usize] = new as u32;
         }
-        remap(&self.inverse);
+        remap(&self.mapping);
 
         // Rotate each permutation cycle with one typed assignment per
         // displaced slot instead of swapping two large primitives per step.
@@ -203,10 +204,17 @@ impl DrawPermutation {
             }
         }
         self.order.clear();
-        self.inverse.clear();
-        self.counts.clear();
+        self.mapping.clear();
         self.keys.clear();
         self.wide_keys.clear();
+    }
+
+    pub(crate) fn needs_trim(&self, floor: usize) -> bool {
+        let threshold = floor.saturating_mul(2);
+        self.order.capacity() > threshold
+            || self.mapping.capacity() > threshold.saturating_mul(2)
+            || self.keys.capacity() > threshold
+            || self.wide_keys.capacity() > threshold
     }
 
     /// Trim only after the existing idle/high-water policy qualifies it.
@@ -219,8 +227,7 @@ impl DrawPermutation {
             };
         }
         trim!(order, floor);
-        trim!(inverse, floor);
-        trim!(counts, floor.saturating_mul(2));
+        trim!(mapping, floor.saturating_mul(2));
         trim!(keys, floor);
         trim!(wide_keys, floor);
     }

@@ -154,3 +154,73 @@ fn profile<T: Ordered>(input: &[T], order_limit: u32) {
         adapted[100]
     );
 }
+
+
+#[test]
+fn operation_permutation_preserves_slots_in_dense_offset_and_sparse_domains() {
+    let mut scratch = DrawPermutation::default();
+    for (offset, order_limit) in [(0, 8), (1_000_000, 16), (0, u32::MAX)] {
+        let mut actual = quads(4096, order_limit);
+        for quad in &mut actual { quad.order += offset; }
+        let logical = actual.clone();
+        let mut expected = actual.clone();
+        expected.sort_by_key(Quad::order);
+        let mut remapped = Vec::new();
+        scratch.apply(&mut actual, |inverse| remapped.extend_from_slice(inverse));
+        assert_eq!(actual, expected);
+        for (old, new) in remapped.iter().enumerate() {
+            assert_eq!(logical[old], actual[*new as usize]);
+        }
+        scratch.apply(&mut actual, |_| panic!("sorted input must not allocate or remap"));
+    }
+}
+
+#[test]
+#[ignore = "manual release-profile tail comparison; no GPU or window scheduling included"]
+fn operation_permutation_tail_profile() {
+    fn legacy(items: &mut [Quad]) {
+        if items.is_sorted_by_key(Quad::order) { return; }
+        let mut sorted: Vec<usize> = (0..items.len()).collect();
+        sorted.sort_unstable_by_key(|&slot| (items[slot].order, slot));
+        let mut target = vec![0usize; items.len()];
+        for (new, old) in sorted.into_iter().enumerate() { target[old] = new; }
+        black_box(&target);
+        for old in 0..target.len() {
+            while target[old] != old {
+                let new = target[old];
+                items.swap(old, new);
+                target.swap(old, new);
+            }
+        }
+    }
+    for count in [128, 1024, 10_000] {
+        for order_limit in [8, 64, u32::MAX] {
+            let input = quads(count, order_limit);
+            let mut scratch = DrawPermutation::default();
+            let mut baseline = Vec::new();
+            let mut candidate = Vec::new();
+            for trial in 0..530 {
+                let mut old = input.clone();
+                let mut new = input.clone();
+                for optimized in [trial % 2 == 0, trial % 2 != 0] {
+                    let start = Instant::now();
+                    if optimized {
+                        scratch.apply(black_box(&mut new), |inverse| { black_box(inverse); });
+                        let nanos = start.elapsed().as_nanos();
+                        if trial >= 30 { candidate.push(nanos); }
+                    } else {
+                        legacy(black_box(&mut old));
+                        let nanos = start.elapsed().as_nanos();
+                        if trial >= 30 { baseline.push(nanos); }
+                    }
+                }
+                assert_eq!(old, new);
+            }
+            for (name, samples) in [("legacy", &mut baseline), ("narrow", &mut candidate)] {
+                samples.sort_unstable();
+                println!("operation_permutation {name} n={count} orders={order_limit} p50_ns={} p95_ns={} p99_ns={}",
+                    samples[249], samples[474], samples[494]);
+            }
+        }
+    }
+}

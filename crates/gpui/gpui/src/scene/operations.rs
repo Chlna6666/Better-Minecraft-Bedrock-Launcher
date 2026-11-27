@@ -393,6 +393,15 @@ impl Operations {
         self.compact_pages(false);
     }
 
+    pub(super) fn same_physical_ranges(&self, previous: &Self) -> bool {
+        self.pending.is_empty() && previous.pending.is_empty()
+            && self.len == previous.len
+            && self.segments.len() == previous.segments.len()
+            && self.segments.iter().zip(&previous.segments).all(|(a, b)| {
+                Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
+            })
+    }
+
     /// Compact operation indices first, then compact each typed allocation
     /// from the union of operation and draw coverage. The two views receive
     /// the exact same replacement allocation and physical slot mapping.

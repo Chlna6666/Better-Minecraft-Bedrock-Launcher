@@ -102,18 +102,34 @@ impl Painter {
         self.scene
             .renderer_extensions
             .sort_unstable_by_key(|extension| extension.order);
-        self.scene.paint_operations.compact_with_draws(
-            &mut self.scene.shadows,
-            &mut self.scene.quads,
-            &mut self.scene.monochrome_sprites,
-        );
-        static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
-        if let Some(previous) = previous {
-            let (same_paint, same_batch_topology) =
+        // Prove identity before compaction can replace immutable pages.
+        // A stable replay of the previously compacted allocation set has
+        // exactly the same live coverage, so rebuilding maps is pure waste.
+        let same_physical = previous.is_some_and(|previous| {
+            previous.revision != 0
+                && self.scene.paint_operations.same_physical_ranges(&previous.paint_operations)
+                && self.scene.shadows.same_physical_ranges(&previous.shadows)
+                && self.scene.quads.same_physical_ranges(&previous.quads)
+                && self.scene.monochrome_sprites.same_physical_ranges(&previous.monochrome_sprites)
+        });
+        let reuse = previous.map(|previous| {
+            if same_physical {
+                (true, true)
+            } else {
                 self.scene.paint_operations.scene_reuse_matches(
-                    &previous.paint_operations,
-                    self.scene.replayed_primitives > 0,
-                );
+                    &previous.paint_operations, self.scene.replayed_primitives > 0,
+                )
+            }
+        });
+        if !same_physical {
+            self.scene.paint_operations.compact_with_draws(
+                &mut self.scene.shadows,
+                &mut self.scene.quads,
+                &mut self.scene.monochrome_sprites,
+            );
+        }
+        static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+        if let Some((previous, (same_paint, same_batch_topology))) = previous.zip(reuse) {
             if same_paint || same_batch_topology {
                 self.scene
                     .prepared_batches
@@ -186,7 +202,18 @@ impl Painter {
         // actually visible now, not from a page that may have disappeared during this transition.
         self.recent_peak_paint_operations = paint.paint_operations.len();
         self.recent_peak_primitives = paint.primitive_count();
-        self.draw_permutation.trim(self.recent_peak_primitives.max(SCENE_MIN_RETAINED_CAPACITY));
+        // Avoid shrinking and regrowing the scratch during alternating
+        // large/small interactive frames. Require a sustained low watermark.
+        let floor = self.recent_peak_primitives.max(SCENE_MIN_RETAINED_CAPACITY);
+        if self.draw_permutation.needs_trim(floor) {
+            self.draw_scratch_low_frames = self.draw_scratch_low_frames.saturating_add(1);
+            if self.draw_scratch_low_frames >= SCENE_IDLE_TRIM_FRAMES {
+                self.draw_permutation.trim(floor);
+                self.draw_scratch_low_frames = 0;
+            }
+        } else {
+            self.draw_scratch_low_frames = 0;
+        }
     }
 
     fn trim_retained_capacity(&mut self) {
@@ -263,6 +290,7 @@ impl Painter {
         );
         self.scene.prepared_batches.trim_scratch(primitive_floor);
         self.draw_permutation.trim(primitive_floor);
+        self.draw_scratch_low_frames = 0;
         self.recent_peak_paint_operations = self.scene.paint_operations.len();
         self.recent_peak_primitives = self.primitive_count();
     }

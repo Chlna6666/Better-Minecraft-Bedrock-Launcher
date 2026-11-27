@@ -368,6 +368,17 @@ impl<T: Ordered> PrimitiveStream<T> {
         self.remap_pages(&compacted);
     }
 
+    /// Identical immutable physical views need no coverage recomputation.
+    /// No Weak identity table, payload comparison or allocation is involved.
+    pub(super) fn same_physical_ranges(&self, previous: &Self) -> bool {
+        self.pending.is_empty() && previous.pending.is_empty()
+            && self.len == previous.len
+            && self.segments.len() == previous.segments.len()
+            && self.segments.iter().zip(&previous.segments).all(|(a, b)| {
+                Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
+            })
+    }
+
     pub(super) fn has_full_physical_ranges(&self) -> bool {
         debug_assert!(self.pending.is_empty());
         self.segments.iter().all(|segment| segment.range.len() == segment.owner.len())
