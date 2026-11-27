@@ -239,6 +239,15 @@ struct StaticStreams {
 }
 
 impl StaticStreams {
+    fn commands_resident(&self) -> bool {
+        self.runs.iter().all(|run| match run.kind {
+            SourceKind::Quad => self.quads.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+            SourceKind::Shadow => self.shadows.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+            SourceKind::Underline => self.underlines.len() <= RETAINED_OUTSIDE_STREAM_BYTES,
+            _ => false,
+        })
+    }
+
     fn push(&mut self, primitive: &Primitive, split: bool) -> Option<()> {
         macro_rules! append {
             ($stream:ident, $bytes:ident, $limit:ident, $write:ident, $value:expr, $kind:expr) => {{
@@ -561,9 +570,29 @@ pub(super) struct CompositeSlot {
     placements: Option<BufferId>,
     placement_bytes: Vec<u8>,
     outside: OutsideGpuStreams,
+    commands: Option<ResidentCompositeCommands>,
     // Dedicated immutable animation sentinel; never bind a growable normal
     // renderer animation buffer into a resident tile descriptor.
     static_animation: Option<BufferId>,
+}
+
+// Retain only commands whose complete native dependencies are resident.
+// Atlas-backed root runs and dynamic extensions remain fence-owned
+// transients; their command lists must be prepared on every frame.
+struct ResidentCompositeCommands {
+    root: std::sync::Weak<OutsideRoot>,
+    pipeline: RenderPipelineId,
+    tiles: Vec<(u32, BindGroupId)>,
+    boundaries: Vec<usize>,
+    commands: Arc<[RenderCommand]>,
+}
+
+impl ResidentCompositeCommands {
+    fn matches(&self, root: &Arc<OutsideRoot>, pipeline: RenderPipelineId,
+        tiles: &[(u32, BindGroupId)], boundaries: &[usize]) -> bool {
+        std::ptr::eq(self.root.as_ptr(), Arc::as_ptr(root))
+            && self.pipeline == pipeline && self.tiles == tiles && self.boundaries == boundaries
+    }
 }
 
 // The existing free presentation slot is the ownership boundary. Keep
@@ -1307,7 +1336,7 @@ impl NovaRenderer {
             self.scroll_composite_slots.resize_with(slot + 1, CompositeSlot::default);
         }
         let mut resources = Resources::default();
-        let prepare = (|| -> Result<Vec<RenderCommand>> {
+        let prepare = (|| -> Result<Arc<[RenderCommand]>> {
             let composite_slot = &mut self.scroll_composite_slots[slot];
             let layer_slots = composite_slot.layer_slots.reconcile(plans.iter().map(|plan| plan.layer.id))?;
             let instances = composite_slot.tile_slots.reconcile(requests.iter().map(|(_, request)| request.key))?;
@@ -1382,7 +1411,24 @@ impl NovaRenderer {
             let tile_buffers = FrameResourceBuffers { animation_value_buffer: placement_buffer,
                 animation_value_capacity: MAX_TILES, ..buffers };
             let pipeline = if premultiplied { self.pipelines.premultiplied.poly_sprites } else { self.pipelines.alpha.poly_sprites };
+            // Resolve live sampling leases before testing command identity.
+            // An evicted/recreated view cannot reuse a stale descriptor ID.
+            let mut tiles = Vec::with_capacity(reads.len());
+            for (&instance, read) in instances.iter().zip(&reads) {
+                let group = self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
+                    label: Some("resident scroll composite binding".into()),
+                    layout: self.poly_sprite_bind_group_layout,
+                    entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
+                })?;
+                tiles.push((instance, group));
+            }
             let unchanged = std::ptr::eq(composite_slot.outside.root.as_ptr(), Arc::as_ptr(&outside));
+            let cacheable = outside.extensions.is_empty() && outside.streams.commands_resident();
+            if unchanged && cacheable && let Some(cached) = &composite_slot.commands
+                && cached.matches(&outside, pipeline, &tiles, &boundaries) {
+                return Ok(Arc::clone(&cached.commands));
+            }
+            composite_slot.commands = None;
             if !unchanged {
                 composite_slot.outside.retire_bindings(device)?;
             }
@@ -1406,18 +1452,20 @@ impl NovaRenderer {
                 commands.extend(root.by_ref().take(boundary - root_offset));
                 root_offset = boundary;
                 let end = tile_offset + plan.requests.len();
-                for (index, read) in reads[tile_offset..end].iter().enumerate() {
-                    let group = self.raster_tiles.sampling_binding(device, *read, slot, || BindGroupDescriptor {
-                        label: Some("resident scroll composite binding".into()),
-                        layout: self.poly_sprite_bind_group_layout,
-                        entries: poly_atlas_resource_bindings(tile_buffers, read.texture().view, self.atlas_sampler),
-                    })?;
-                    append_composite_tile(&mut commands, previous_tile, pipeline, group, instances[tile_offset + index]);
+                for &(instance, group) in &tiles[tile_offset..end] {
+                    append_composite_tile(&mut commands, previous_tile, pipeline, group, instance);
                     previous_tile = true;
                 }
                 tile_offset = end;
             }
             commands.extend(root);
+            let commands: Arc<[RenderCommand]> = commands.into();
+            if cacheable {
+                self.scroll_composite_slots[slot].commands = Some(ResidentCompositeCommands {
+                    root: Arc::downgrade(&outside), pipeline, tiles,
+                    boundaries: boundaries.clone(), commands: Arc::clone(&commands),
+                });
+            }
             Ok(commands)
         })();
         let commands = match prepare {
@@ -1499,6 +1547,24 @@ mod tests {
         let mut paint = crate::window::Paint::default();
         paint.layers.raster_fixture(operations, coverage, viewport, translation);
         paint
+    }
+
+    #[test]
+    fn resident_command_identity_requires_exact_order_and_native_bindings() {
+        let root = Arc::new(OutsideRoot { source: crate::scene::Operations::default(),
+            source_ends: Vec::new(), atlas_epoch: None, streams: StaticStreams::default(),
+            boundaries: Vec::new(), extensions: Vec::new() });
+        let a = BindGroupId::from_parts(1, 1);
+        let b = BindGroupId::from_parts(2, 1);
+        let pipeline = RenderPipelineId::from_parts(1, 1);
+        let cached = ResidentCompositeCommands { root: Arc::downgrade(&root), pipeline,
+            tiles: vec![(0, a), (2, b)], boundaries: vec![1, 2],
+            commands: Vec::<RenderCommand>::new().into() };
+        assert!(cached.matches(&root, pipeline, &[(0, a), (2, b)], &[1, 2]));
+        assert!(!cached.matches(&root, pipeline, &[(2, b), (0, a)], &[1, 2]));
+        assert!(!cached.matches(&root, pipeline, &[(0, b), (2, b)], &[1, 2]));
+        assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[0, 2]));
+        assert!(!cached.matches(&root, RenderPipelineId::from_parts(2, 1), &[(0, a), (2, b)], &[1, 2]));
     }
 
     #[test]
