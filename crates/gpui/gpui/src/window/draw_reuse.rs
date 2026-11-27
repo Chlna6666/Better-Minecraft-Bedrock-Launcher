@@ -279,11 +279,9 @@ impl Window {
         external_parent: impl FnMut(Option<DispatchNodeId>) -> Option<DispatchNodeId>,
     ) {
         // Tooltip ranges are excluded at admission; there are no owners to move.
-        self.next_frame.accessed_element_states.extend(
-            self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
-                ..range.end.accessed_element_states_index]
-                .iter()
-                .cloned(),
+        self.next_frame.accessed_element_states.share(
+            &self.rendered_frame.accessed_element_states,
+            range.start.accessed_element_states_index..range.end.accessed_element_states_index,
         );
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -481,11 +479,9 @@ impl Window {
                 .iter()
                 .cloned(),
         );
-        self.next_frame.accessed_element_states.extend(
-            self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
-                ..range.end.accessed_element_states_index]
-                .iter()
-                .cloned(),
+        self.next_frame.accessed_element_states.share(
+            &self.rendered_frame.accessed_element_states,
+            range.start.accessed_element_states_index..range.end.accessed_element_states_index,
         );
         self.next_frame.tab_stops.replay(
             &self.rendered_frame.tab_stops.insertion_history

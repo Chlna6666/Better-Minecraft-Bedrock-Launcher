@@ -359,7 +359,7 @@ impl Window {
         }
         if record.prepaint_range.start.deferred_draws_index != record.prepaint_range.end.deferred_draws_index
             || record.prepaint_range.start.tooltips_index != record.prepaint_range.end.tooltips_index
-            || !record.layout_state_range.iter().all(|range| self.rendered_frame.accessed_element_states.get(range.clone()).is_some())
+            || !record.layout_state_range.iter().all(|range| self.rendered_frame.accessed_element_states.contains(range.clone()))
             || self.rendered_frame.view_retention_records.get(record.nested.clone()).is_none()
             || self.rendered_frame.retained_scene_segments.get(record.scene_segments.clone()).is_none()
         {
@@ -444,8 +444,8 @@ impl Window {
     pub(crate) fn replay_view_layout_states(&mut self, source: &StateAccessBlocks) -> StateAccessBlocks {
         let start = self.next_frame.accessed_element_states.len();
         for span in source.iter() {
-            self.next_frame.accessed_element_states.extend_from_slice(
-                &self.rendered_frame.accessed_element_states[span.clone()],
+            self.next_frame.accessed_element_states.share(
+                &self.rendered_frame.accessed_element_states, span.clone(),
             );
         }
         self.view_layout_state_range(start)
@@ -454,7 +454,7 @@ impl Window {
     /// Cancel speculative ownership without moving other owners' offsets.
     pub(crate) fn cancel_view_layout_states(&mut self, blocks: &StateAccessBlocks) {
         for span in blocks.resolve(&self.prebuilt_state_relocations).iter() {
-            self.next_frame.accessed_element_states[span.clone()].fill(None);
+            self.next_frame.accessed_element_states.cancel(span.clone());
         }
     }
 

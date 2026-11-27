@@ -2,6 +2,7 @@ use super::state::ElementVisualTransform;
 use super::*;
 
 mod paint;
+mod state_access;
 mod retained_scene_index;
 mod layers;
 pub(crate) use layers::{LayerFrame, SceneLayers};
@@ -79,7 +80,7 @@ pub(crate) struct Frame {
     pub(crate) window_active: bool,
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     // Tombstones cancel speculative layout-state replay without shifting frame ranges.
-    pub(super) accessed_element_states: Vec<Option<(GlobalElementId, TypeId)>>,
+    pub(super) accessed_element_states: state_access::StateAccessLog,
     pub(crate) mouse_listeners: Vec<MouseListener>,
     pub(super) mounted_scroll_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     /// Whether the completed frame contains an application listener that needs every MouseMove
@@ -304,7 +305,7 @@ impl Frame {
             focus: None,
             window_active: false,
             element_states: FxHashMap::default(),
-            accessed_element_states: Vec::new(),
+            accessed_element_states: state_access::StateAccessLog::default(),
             mouse_listeners: Vec::new(),
             mounted_scroll_sources: Vec::new(),
             has_continuous_mouse_move_listener: false,
@@ -611,7 +612,8 @@ impl Frame {
                 .sum::<usize>()
                 == self.retained_scene_segments.len()
         );
-        for element_state_key in self.accessed_element_states.iter().flatten() {
+        self.accessed_element_states.freeze();
+        for element_state_key in self.accessed_element_states.keys(0..self.accessed_element_states.len()) {
             if prev_frame.element_states.is_empty() {
                 break;
             }
@@ -701,13 +703,7 @@ impl Frame {
         {
             self.element_states.shrink_to(state_target);
         }
-        let accessed_state_target =
-            FRAME_MIN_RETAINED_CAPACITY.max(self.accessed_element_states.len());
-        trim_frame_vec_capacity(
-            &mut self.accessed_element_states,
-            accessed_state_target,
-            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        self.accessed_element_states.trim(false);
         self.dispatch_tree.trim_retained_capacity(false);
         trim_frame_vec_capacity(
             &mut self.mouse_listeners,
@@ -805,7 +801,7 @@ impl Frame {
         {
             self.element_states.shrink_to(state_target);
         }
-        trim_vec_against!(accessed_element_states);
+        self.accessed_element_states.trim_for_reuse(&current.accessed_element_states);
         self.dispatch_tree.trim_for_reuse(&current.dispatch_tree);
         trim_vec_against!(mouse_listeners);
         trim_vec_against!(mounted_scroll_sources);
@@ -855,8 +851,7 @@ impl Frame {
                 };
                 self.element_states
                     .shrink_to(floor.max(self.element_states.len()));
-                self.accessed_element_states
-                    .shrink_to(floor.max(self.accessed_element_states.len()));
+                self.accessed_element_states.trim(true);
                 self.dispatch_tree
                     .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 self.mouse_listeners.shrink_to(floor);
