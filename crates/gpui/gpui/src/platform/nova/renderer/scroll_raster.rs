@@ -681,21 +681,19 @@ struct PhysicalRasterPass {
     commands: Vec<RenderCommand>,
 }
 
-fn coalesce_raster_pages(passes: &mut [RasterPass]) -> Vec<PhysicalRasterPass> {
+fn coalesce_raster_pages(passes: impl IntoIterator<Item = PhysicalRasterPass>) -> Vec<PhysicalRasterPass> {
     let mut physical = Vec::<PhysicalRasterPass>::new();
     let mut pages = FxHashMap::default();
-    for pass in passes {
-        let view = pass.write.texture().view;
-        if pass.paged && let Some(&index) = pages.get(&view) {
+    for mut pass in passes {
+        if pass.paged && let Some(&index) = pages.get(&pass.view) {
             let target: &mut PhysicalRasterPass = &mut physical[index];
-            debug_assert_eq!(target.extent, pass.target_extent);
+            debug_assert_eq!(target.extent, pass.extent);
             debug_assert_eq!(target.depth, pass.depth);
             target.commands.append(&mut pass.commands);
             continue;
         }
-        if pass.paged { pages.insert(view, physical.len()); }
-        physical.push(PhysicalRasterPass { view, extent: pass.target_extent,
-            depth: pass.depth, paged: pass.paged, commands: std::mem::take(&mut pass.commands) });
+        if pass.paged { pages.insert(pass.view, physical.len()); }
+        physical.push(pass);
     }
     physical
 }
@@ -1103,7 +1101,10 @@ impl NovaRenderer {
             // Independent cells never sample another scroll page while
             // rasterizing. Their producer order commutes, so gather by
             // physical attachment; keep logical reservations for fences.
-            let physical = coalesce_raster_pages(&mut passes);
+            let physical = coalesce_raster_pages(passes.iter_mut().map(|pass| PhysicalRasterPass {
+                view: pass.write.texture().view, extent: pass.target_extent, depth: pass.depth,
+                paged: pass.paged, commands: std::mem::take(&mut pass.commands),
+            }));
             let descriptors: Vec<_> = physical.iter().map(|pass| RenderPassCommands {
                 color_attachments: std::slice::from_ref(&pass.view), render_pass: self.render_pass,
                 commands: &pass.commands,
@@ -1299,6 +1300,27 @@ mod tests {
         let mut paint = crate::window::Paint::default();
         paint.layers.raster_fixture(operations, coverage, viewport, translation);
         paint
+    }
+
+    #[test]
+    fn page_passes_group_nonadjacent_cells_without_reordering_cell_commands() {
+        let view = |id| TextureViewId::from_parts(id, 1);
+        let pass = |id, instance, paged| {
+            let mut commands = Vec::new();
+            append_composite_tile(&mut commands, false, RenderPipelineId::from_parts(1, 1),
+                BindGroupId::from_parts(1, 1), instance);
+            PhysicalRasterPass { view: view(id), extent: Extent2d::new(64, 128).unwrap(),
+                depth: view(9), paged, commands }
+        };
+        let groups = coalesce_raster_pages([pass(1, 0, true), pass(2, 1, true),
+            pass(1, 2, true), pass(3, 3, false)]);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups.iter().map(|p| p.view).collect::<Vec<_>>(), [view(1), view(2), view(3)]);
+        assert_eq!(groups[0].commands.iter().map(|command| match command {
+            RenderCommand::Draw(draw) => draw.first_instance,
+            _ => unreachable!(),
+        }).collect::<Vec<_>>(), [0, 2]);
+        assert!(!groups[2].paged);
     }
 
     #[test]

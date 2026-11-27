@@ -426,8 +426,10 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(-64.)),
         crate::size(crate::ScaledPixels(64.), crate::ScaledPixels(192.)),
     );
+    // A translucent source detects missing Replace clears: a third-frame
+    // repaint without a clear would accumulate alpha and green intensity.
     let quad = Quad { bounds, content_mask: crate::ContentMask::new(coverage),
-        background: crate::rgb(0x00ff00).into(), ..Default::default() };
+        background: crate::rgba(0x00ff0080).into(), ..Default::default() };
     let glyph = if with_glyph {
         use crate::{AtlasKey, FontId, GlyphId, RenderGlyphParams};
         let key = AtlasKey::Glyph(RenderGlyphParams {
@@ -605,7 +607,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
         physical = Some(texture);
-        assert_cell(read, if with_glyph { [255, 255, 255, 255] } else { [0, 255, 0, 255] });
+        assert_cell(read, if with_glyph { [255, 255, 255, 255] } else { [0, 128, 0, 128] });
     }
     if with_extension {
         use std::sync::atomic::Ordering;

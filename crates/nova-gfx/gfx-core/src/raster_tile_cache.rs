@@ -613,6 +613,34 @@ mod tests {
     }
 
     #[test]
+    fn shared_page_leases_have_independent_logical_fences() {
+        let mut cache = RasterTileCache::new(4096);
+        let mut a = entry(1, State::Ready);
+        let mut b = entry(1, State::Ready);
+        a.page_slot = Some(0);
+        b.page_slot = Some(1);
+        let texture = a.texture;
+        cache.pages.insert(texture, Page { cell: raster().extent,
+            extent: Extent2d::new(16, 32).unwrap(), format: Format::Bgra8Unorm,
+            view: a.view, bytes: 2048, cells: 2, occupied: 3, sampling_bindings: SmallVec::new() });
+        cache.entries.insert(key(0), a);
+        cache.entries.insert(key(1), b);
+        let a = cache.lookup_ordered(key(0), 1, raster(), Format::Bgra8Unorm, |_| false).unwrap();
+        let b = cache.lookup_ordered(key(1), 1, raster(), Format::Bgra8Unorm, |_| false).unwrap();
+        assert_eq!(a.texture(), b.texture());
+        assert_ne!(a.region(), b.region());
+        let fence = SubmissionId::from_parts(5, 1);
+        cache.record_ordered_reader(a, fence).unwrap();
+        assert!(!cache.entries[&key(0)].idle());
+        assert!(cache.entries[&key(1)].idle());
+        cache.invalidate_layer(7);
+        cache.complete(fence);
+        assert!(cache.entries.values().all(Entry::idle));
+        assert!(cache.lookup_ordered(key(1), 1, raster(), Format::Bgra8Unorm, |_| true).is_none());
+        assert_eq!(cache.physical_textures(), 1);
+    }
+
+    #[test]
     fn clean_generation_adoption() {
         let mut c = RasterTileCache::new(4096);
         c.entries.insert(key(0), entry(3, State::Ready));
