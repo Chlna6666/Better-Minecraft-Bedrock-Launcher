@@ -12,7 +12,6 @@ use std::{
 
 use calloop::{LoopHandle, PostAction};
 use filedescriptor::{FileDescriptor, Pipe};
-use strum::IntoEnumIterator;
 use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
@@ -175,7 +174,7 @@ impl<T: ReceiveData> DataOffer<T> {
     }
 
     fn read_image(&self, connection: &Connection) -> Option<ClipboardItem> {
-        for format in ImageFormat::iter() {
+        for format in ImageFormat::formats() {
             let mime_type = format.mime_type();
             if !self.has_mime_type(mime_type) {
                 continue;

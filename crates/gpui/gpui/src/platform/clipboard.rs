@@ -169,6 +169,11 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// Iterates supported clipboard formats in preferred paste order.
+    pub fn formats() -> impl ExactSizeIterator<Item = Self> {
+        <Self as strum::IntoEnumIterator>::iter()
+    }
+
     /// Returns the mime type for the ImageFormat
     pub const fn mime_type(self) -> &'static str {
         match self {

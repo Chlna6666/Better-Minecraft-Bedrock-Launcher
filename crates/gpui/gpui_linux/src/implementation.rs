@@ -181,53 +181,53 @@ macro_rules! impl_linux_platform {
             fn background_executor(&self) -> BackgroundExecutor {
                 self.with_common(|common| common.background_executor.clone())
             }
-        
+
             fn foreground_executor(&self) -> ForegroundExecutor {
                 self.with_common(|common| common.foreground_executor.clone())
             }
-        
+
             fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
                 self.with_common(|common| common.text_system.clone())
             }
-        
+
             fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {
                 LinuxClient::keyboard_layout(self)
             }
-        
+
             fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
                 Arc::new(gpui::DummyKeyboardMapper)
             }
-        
+
             fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
                 self.with_common(|common| common.callbacks.displays_changed = Some(callback));
             }
-        
+
             fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
                 self.with_common(|common| common.callbacks.keyboard_layout_change = Some(callback));
             }
-        
+
             fn run(&self, on_finish_launching: Box<dyn FnOnce()>) {
                 on_finish_launching();
-        
+
                 LinuxClient::run(self);
-        
+
                 let quit = self.with_common(|common| common.callbacks.quit.take());
                 if let Some(mut fun) = quit {
                     fun();
                 }
             }
-        
+
             fn quit(&self) {
                 self.with_common(|common| common.signal.stop());
             }
-        
+
             fn compositor_name(&self) -> &'static str {
                 LinuxClient::compositor_name(self)
             }
-        
+
             fn restart(&self, binary_path: Option<PathBuf>) {
                 use std::os::unix::process::CommandExt as _;
-        
+
                 // get the process id of the current process
                 let app_pid = std::process::id().to_string();
                 // get the path to the executable
@@ -242,22 +242,22 @@ macro_rules! impl_linux_platform {
                         }
                     }
                 };
-        
+
                 log::info!("Restarting process, using app path: {:?}", app_path);
-        
+
                 // Script to wait for the current process to exit and then restart the app.
                 let script = format!(
                     r#"
                     while kill -0 {pid} 2>/dev/null; do
                         sleep 0.1
                     done
-        
+
                     {app_path}
                     "#,
                     pid = app_pid,
                     app_path = app_path.display()
                 );
-        
+
                 #[allow(
                     clippy::disallowed_methods,
                     reason = "We are restarting ourselves, using std command thus is fine"
@@ -268,41 +268,41 @@ macro_rules! impl_linux_platform {
                     .arg(script)
                     .process_group(0)
                     .spawn();
-        
+
                 match restart_process {
                     Ok(_) => self.quit(),
                     Err(e) => log::error!("failed to spawn restart script: {:?}", e),
                 }
             }
-        
+
             fn activate(&self, _ignoring_other_apps: bool) {
                 log::info!("activate is not implemented on Linux, ignoring the call")
             }
-        
+
             fn hide(&self) {
                 log::info!("hide is not implemented on Linux, ignoring the call")
             }
-        
+
             fn hide_other_apps(&self) {
                 log::info!("hide_other_apps is not implemented on Linux, ignoring the call")
             }
-        
+
             fn unhide_other_apps(&self) {
                 log::info!("unhide_other_apps is not implemented on Linux, ignoring the call")
             }
-        
+
             fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
                 LinuxClient::primary_display(self)
             }
-        
+
             fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
                 LinuxClient::displays(self)
             }
-        
+
             fn active_window(&self) -> Option<AnyWindowHandle> {
                 LinuxClient::active_window(self)
             }
-        
+
             #[cfg(any(feature = "wayland", feature = "x11"))]
             fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
                 let executor = self.background_executor();
@@ -336,11 +336,11 @@ macro_rules! impl_linux_platform {
                     }))
                 })
             }
-        
+
             fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
                 LinuxClient::window_stack(self)
             }
-        
+
             fn open_window(
                 &self,
                 handle: AnyWindowHandle,
@@ -348,27 +348,27 @@ macro_rules! impl_linux_platform {
             ) -> anyhow::Result<Box<dyn PlatformWindow>> {
                 LinuxClient::open_window(self, handle, options)
             }
-        
+
             fn open_url(&self, url: &str) {
                 self.open_uri(url);
             }
-        
+
             fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
                 self.with_common(|common| common.callbacks.open_urls = Some(callback));
             }
-        
+
             fn prompt_for_paths(
                 &self,
                 options: PathPromptOptions,
             ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
                 let (done_tx, done_rx) = oneshot::channel();
-        
+
                 #[cfg(not(any(feature = "wayland", feature = "x11")))]
                 let _ = (done_tx.send(Ok(None)), options);
-        
+
                 #[cfg(any(feature = "wayland", feature = "x11"))]
                 let identifier = self.window_identifier();
-        
+
                 #[cfg(any(feature = "wayland", feature = "x11"))]
                 self.foreground_executor()
                     .spawn(async move {
@@ -377,7 +377,7 @@ macro_rules! impl_linux_platform {
                         } else {
                             "Open File"
                         };
-        
+
                         let request = match ashpd::desktop::file_chooser::OpenFileRequest::default()
                             .identifier(identifier.await)
                             .modal(true)
@@ -398,7 +398,7 @@ macro_rules! impl_linux_platform {
                                 return;
                             }
                         };
-        
+
                         let result = match request.response() {
                             Ok(response) => Ok(Some(
                                 response
@@ -415,26 +415,26 @@ macro_rules! impl_linux_platform {
                     .detach();
                 done_rx
             }
-        
+
             fn prompt_new_path(
                 &self,
                 directory: &Path,
                 suggested_name: Option<&str>,
             ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
                 let (done_tx, done_rx) = oneshot::channel();
-        
+
                 #[cfg(not(any(feature = "wayland", feature = "x11")))]
                 let _ = (done_tx.send(Ok(None)), directory, suggested_name);
-        
+
                 #[cfg(any(feature = "wayland", feature = "x11"))]
                 let identifier = self.window_identifier();
-        
+
                 #[cfg(any(feature = "wayland", feature = "x11"))]
                 self.foreground_executor()
                     .spawn({
                         let directory = directory.to_owned();
                         let suggested_name = suggested_name.map(|s| s.to_owned());
-        
+
                         async move {
                             let mut request_builder =
                                 ashpd::desktop::file_chooser::SaveFileRequest::default()
@@ -443,11 +443,11 @@ macro_rules! impl_linux_platform {
                                     .title("Save File")
                                     .current_folder(directory)
                                     .expect("pathbuf should not be nul terminated");
-        
+
                             if let Some(suggested_name) = suggested_name {
                                 request_builder = request_builder.current_name(suggested_name.as_str());
                             }
-        
+
                             let request = match request_builder.send().await {
                                 Ok(request) => request,
                                 Err(err) => {
@@ -461,7 +461,7 @@ macro_rules! impl_linux_platform {
                                     return;
                                 }
                             };
-        
+
                             let result = match request.response() {
                                 Ok(response) => Ok(response
                                     .uris()
@@ -474,19 +474,19 @@ macro_rules! impl_linux_platform {
                         }
                     })
                     .detach();
-        
+
                 done_rx
             }
-        
+
             fn can_select_mixed_paths(&self) -> bool {
                 // org.freedesktop.portal.FileChooser only supports "pick files" and "pick directories".
                 false
             }
-        
+
             fn reveal_path(&self, path: &Path) {
                 LinuxClient::reveal_path(self, path.to_owned());
             }
-        
+
             fn open_with_system(&self, path: &Path) {
                 let path = path.to_owned();
                 self.background_executor()
@@ -503,71 +503,71 @@ macro_rules! impl_linux_platform {
                     })
                     .detach();
             }
-        
+
             fn on_quit(&self, callback: Box<dyn FnMut() -> bool>) {
                 self.with_common(|common| {
                     common.callbacks.quit = Some(callback);
                 });
             }
-        
+
             fn on_reopen(&self, callback: Box<dyn FnMut()>) {
                 self.with_common(|common| {
                     common.callbacks.reopen = Some(callback);
                 });
             }
-        
+
             fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
                 self.with_common(|common| {
                     common.callbacks.app_menu_action = Some(callback);
                 });
             }
-        
+
             fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>) {
                 self.with_common(|common| {
                     common.callbacks.will_open_app_menu = Some(callback);
                 });
             }
-        
+
             fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
                 self.with_common(|common| {
                     common.callbacks.validate_app_menu_command = Some(callback);
                 });
             }
-        
+
             fn app_path(&self) -> Result<PathBuf> {
                 // get the path of the executable of the current process
                 let app_path = env::current_exe()?;
                 Ok(app_path)
             }
-        
+
             fn set_menus(&self, menus: Vec<Menu>, _keymap: &Keymap) {
                 self.with_common(|common| {
                     common.menus = menus.into_iter().map(|menu| menu.owned()).collect();
                 })
             }
-        
+
             fn menus(&self) -> Option<Vec<OwnedMenu>> {
                 self.with_common(|common| Some(common.menus.clone()))
             }
-        
+
             fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {
                 // todo(linux)
             }
-        
+
             fn path_for_auxiliary_executable(&self, _name: &str) -> Result<PathBuf> {
                 Err(anyhow::Error::msg(
                     "Platform<LinuxPlatform>::path_for_auxiliary_executable is not implemented yet",
                 ))
             }
-        
+
             fn set_cursor_style(&self, style: CursorStyle) {
                 LinuxClient::set_cursor_style(self, style)
             }
-        
+
             fn should_auto_hide_scrollbars(&self) -> bool {
                 self.with_common(|common| common.auto_hide_scrollbars)
             }
-        
+
             fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
                 let url = url.to_string();
                 let username = username.to_string();
@@ -586,15 +586,15 @@ macro_rules! impl_linux_platform {
                     Ok(())
                 })
             }
-        
+
             fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
                 let url = url.to_string();
                 self.background_executor().spawn(async move {
                     let keyring = oo7::Keyring::new().await?;
                     keyring.unlock().await?;
-        
+
                     let items = keyring.search_items(&vec![("url", &url)]).await?;
-        
+
                     for item in items.into_iter() {
                         if item.label().await.is_ok_and(|label| label == KEYRING_LABEL) {
                             let attributes = item.attributes().await?;
@@ -603,7 +603,7 @@ macro_rules! impl_linux_platform {
                                 .context("Cannot find username in stored credentials")?;
                             item.unlock().await?;
                             let secret = item.secret().await?;
-        
+
                             // we lose the zeroizing capabilities at this boundary,
                             // a current limitation GPUI's credentials api
                             return Ok(Some((username.to_string(), secret.to_vec())));
@@ -614,50 +614,50 @@ macro_rules! impl_linux_platform {
                     Ok(None)
                 })
             }
-        
+
             fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
                 let url = url.to_string();
                 self.background_executor().spawn(async move {
                     let keyring = oo7::Keyring::new().await?;
                     keyring.unlock().await?;
-        
+
                     let items = keyring.search_items(&vec![("url", &url)]).await?;
-        
+
                     for item in items.into_iter() {
                         if item.label().await.is_ok_and(|label| label == KEYRING_LABEL) {
                             item.delete().await?;
                             return Ok(());
                         }
                     }
-        
+
                     Ok(())
                 })
             }
-        
+
             fn window_appearance(&self) -> WindowAppearance {
                 self.with_common(|common| common.appearance)
             }
-        
+
             fn register_url_scheme(&self, _: &str) -> Task<anyhow::Result<()>> {
                 Task::ready(Err(anyhow!("register_url_scheme unimplemented")))
             }
-        
+
             fn write_to_primary(&self, item: ClipboardItem) {
                 LinuxClient::write_to_primary(self, item)
             }
-        
+
             fn write_to_clipboard(&self, item: ClipboardItem) {
                 LinuxClient::write_to_clipboard(self, item)
             }
-        
+
             fn read_from_primary(&self) -> Option<ClipboardItem> {
                 LinuxClient::read_from_primary(self)
             }
-        
+
             fn read_from_clipboard(&self) -> Option<ClipboardItem> {
                 LinuxClient::read_from_clipboard(self)
             }
-        
+
             fn add_recent_document(&self, _path: &Path) {}
         }
     };
