@@ -422,11 +422,7 @@ impl StateInner {
                                     plan.record_prepaint(item.index, prepaint);
                                 } else if let (Some((start, read_start)), Some(reads)) = (start, item.capture_reads.take()) {
                                     let prepaint_reads = cx.entities.state_reads_since(read_start);
-                                    let reads = if prepaint_reads.is_empty() {
-                                        reads
-                                    } else {
-                                        reads.iter().chain(prepaint_reads.iter()).cloned().collect()
-                                    };
+                                    let reads = crate::merge_state_reads(&reads, &prepaint_reads);
                                     plan.record_prepaint(item.index, RowPrepaint {
                                         row_revision: plan.row_revision(item.index),
                                         origin: item_origin,

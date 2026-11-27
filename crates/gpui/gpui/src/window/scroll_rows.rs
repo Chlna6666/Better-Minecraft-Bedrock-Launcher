@@ -425,12 +425,7 @@ impl Window {
         let paint = start..self.paint_index();
         let paint_reads = cx.entities.state_reads_since(read_start);
         if !paint_reads.is_empty() {
-            prepaint.reads = prepaint
-                .reads
-                .iter()
-                .chain(paint_reads.iter())
-                .cloned()
-                .collect();
+            prepaint.reads = crate::merge_state_reads(&prepaint.reads, &paint_reads);
         }
         self.remember_scroll_row(plan, row, prepaint, paint, content);
     }

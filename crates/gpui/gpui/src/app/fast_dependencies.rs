@@ -151,14 +151,7 @@ impl RenderDependencies {
     pub(crate) fn merge_replayed(&mut self, previous: &Self) {
         self.entities = merge_sorted(&self.entities, &previous.entities);
         self.globals = merge_sorted(&self.globals, &previous.globals);
-        if self.states.is_empty() {
-            self.states = previous.states.clone();
-        } else if !previous.states.is_empty() {
-            let mut states = Vec::with_capacity(self.states.len() + previous.states.len());
-            states.extend_from_slice(&self.states);
-            states.extend_from_slice(&previous.states);
-            self.states = unique_states(&states);
-        }
+        self.states = merge_state_reads(&self.states, &previous.states);
     }
 
     pub(crate) fn same_routes(&self, other: &Self) -> bool {
@@ -371,6 +364,42 @@ impl StateRead {
     }
 }
 
+/// Merge two first-read-unique snapshots in observation order. Keep the
+/// earlier version even if the state changed between recording phases.
+/// Common duplicate-only merges retain the original immutable allocation.
+pub(crate) fn merge_state_reads(
+    earlier: &Rc<[StateRead]>,
+    later: &Rc<[StateRead]>,
+) -> Rc<[StateRead]> {
+    if later.is_empty() || Rc::ptr_eq(earlier, later) {
+        return earlier.clone();
+    }
+    if earlier.is_empty() {
+        return later.clone();
+    }
+
+    if earlier.len().saturating_add(later.len()) <= 16 {
+        let mut new_reads = later.iter().filter(|read| {
+            !earlier.iter().any(|old| old.id() == read.id())
+        }).peekable();
+        if new_reads.peek().is_none() {
+            return earlier.clone();
+        }
+        return earlier.iter().chain(new_reads).cloned().collect();
+    }
+
+    let mut seen = FxHashSet::with_capacity_and_hasher(
+        earlier.len().saturating_add(later.len()),
+        Default::default(),
+    );
+    seen.extend(earlier.iter().map(StateRead::id));
+    let mut new_reads = later.iter().filter(|read| seen.insert(read.id())).peekable();
+    if new_reads.peek().is_none() {
+        return earlier.clone();
+    }
+    earlier.iter().chain(new_reads).cloned().collect()
+}
+
 /// The first read of each state, in order, as in Fast's unique_states.
 fn unique_states(states: &[StateRead]) -> Rc<[StateRead]> {
     // A single scroll handle is common; avoid allocating a hash table for it.
@@ -411,6 +440,37 @@ impl Drop for StateReadRecording {
 #[cfg(test)]
 mod state_dedup_tests {
     use super::*;
+
+    #[test]
+    fn merge_keeps_first_snapshot_and_shares_duplicate_only_reads() {
+        let first = StateVersion::default();
+        let second = StateVersion::default();
+        let earlier = unique_states(&[StateRead::new(&first)]);
+        first.bump();
+        let duplicate = unique_states(&[StateRead::new(&first)]);
+        let merged = merge_state_reads(&earlier, &duplicate);
+        assert!(Rc::ptr_eq(&merged, &earlier));
+        assert_eq!(merged[0].status(), StateReadStatus::Changed);
+
+        let later = unique_states(&[StateRead::new(&second), StateRead::new(&first)]);
+        let merged = merge_state_reads(&earlier, &later);
+        assert_eq!(merged.len(), 2);
+        assert!(merged[0].belongs_to(&first));
+        assert!(merged[1].belongs_to(&second));
+        assert_eq!(merged[0].status(), StateReadStatus::Changed);
+    }
+
+    #[test]
+    fn merge_large_unique_snapshots_preserves_order_and_identity() {
+        let states: Vec<_> = (0..32).map(|_| StateVersion::default()).collect();
+        let earlier = unique_states(&states[..24].iter().map(StateRead::new).collect::<Vec<_>>());
+        let duplicate = unique_states(&states[8..24].iter().map(StateRead::new).collect::<Vec<_>>());
+        assert!(Rc::ptr_eq(&merge_state_reads(&earlier, &duplicate), &earlier));
+        let later = unique_states(&states[16..].iter().map(StateRead::new).collect::<Vec<_>>());
+        let merged = merge_state_reads(&earlier, &later);
+        assert_eq!(merged.len(), states.len());
+        assert!(merged.iter().zip(&states).all(|(read, state)| read.belongs_to(state)));
+    }
 
     #[test]
     fn dedup_preserves_earliest_snapshot_in_small_and_repeated_logs() {

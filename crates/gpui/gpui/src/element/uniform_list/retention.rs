@@ -65,11 +65,7 @@ pub(super) fn prepaint(
                 });
                 if let Some((start, read_start)) = before {
                     let extra = cx.entities.state_reads_since(read_start);
-                    let reads = if extra.is_empty() {
-                        shared_reads.clone()
-                    } else {
-                        shared_reads.iter().chain(extra.iter()).cloned().collect()
-                    };
+                    let reads = crate::merge_state_reads(&shared_reads, &extra);
                     let prepaint = RowPrepaint {
                         row_revision: plan.row_revision(index),
                         origin,
