@@ -151,6 +151,7 @@ mod tests {
                     origin: Origin2d { x: 10, y: 10 },
                     size: Extent2d::new(1, 1).expect("test extent"),
                     bytes_per_row: 4,
+                    page: 0,
                     offset: 0,
                     len: 0,
                 });

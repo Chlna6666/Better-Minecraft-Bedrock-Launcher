@@ -21,12 +21,62 @@ pub(in crate::platform::nova) struct AtlasUploadStats {
     pub(in crate::platform::nova) arena_capacity: usize,
 }
 
+/// Physically independent staging pages. The ordinary upload path can
+/// append to its active page; adopted worker pages are never grown in place.
+#[derive(Default)]
+pub(in crate::platform::nova) struct UploadArena {
+    pages: Vec<Vec<u8>>,
+    active: Option<usize>,
+}
+
+impl UploadArena {
+    pub(in crate::platform::nova) fn len(&self) -> usize {
+        self.pages.iter().map(Vec::len).sum()
+    }
+
+    pub(in crate::platform::nova) fn capacity(&self) -> usize {
+        self.pages.iter().map(Vec::capacity).sum()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pages.iter().all(Vec::is_empty)
+    }
+
+    pub(in crate::platform::nova) fn adopt(&mut self, page: Vec<u8>) -> usize {
+        let index = self.pages.len();
+        self.pages.push(page);
+        index
+    }
+
+    pub(in crate::platform::nova) fn discard_last(&mut self, index: usize) -> Vec<u8> {
+        assert_eq!(index + 1, self.pages.len());
+        assert_ne!(self.active, Some(index));
+        self.pages.pop().expect("adopted upload page")
+    }
+
+    fn active_page(&mut self, len: usize) -> usize {
+        if let Some(index) = self.active {
+            return index;
+        }
+        let index = self.adopt(crate::assets::acquire_bitmap_buffer_capacity(len));
+        self.active = Some(index);
+        index
+    }
+
+    pub(in crate::platform::nova) fn release(self) {
+        for page in self.pages {
+            crate::assets::release_bitmap_buffer(page);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::platform::nova) struct PendingAtlasUpload {
     pub(in crate::platform::nova) texture_id: AtlasTextureId,
     origin: Origin2d,
     size: Extent2d,
     bytes_per_row: u32,
+    page: usize,
     offset: usize,
     len: usize,
 }
@@ -36,6 +86,7 @@ impl PendingAtlasUpload {
     // combined layout. Do not reorder writes or allocate a staging copy.
     fn append(&mut self, next: &Self) -> bool {
         if self.texture_id != next.texture_id
+            || self.page != next.page
             || self.offset.checked_add(self.len) != Some(next.offset)
         {
             return false;
@@ -91,7 +142,7 @@ impl PendingAtlasUpload {
 
 #[derive(Default)]
 pub(in crate::platform::nova) struct AtlasUploadBatch {
-    bytes: Vec<u8>,
+    bytes: UploadArena,
     uploads: Vec<PendingAtlasUpload>,
     // Captured under the SAME lock as the queued writes. New pages created
     // after this point belong to the next batch, not the current GPU upload.
@@ -179,9 +230,9 @@ impl NovaAtlas {
                     .offset
                     .checked_add(pending_upload.len)
                     .ok_or_else(|| anyhow::anyhow!("nova atlas upload range overflow"))?;
-                let pixels = batch.bytes.get(pending_upload.offset..end).ok_or_else(|| {
-                    anyhow::anyhow!("nova atlas pending upload range is out of bounds")
-                })?;
+                let pixels = batch.bytes.pages.get(pending_upload.page)
+                    .and_then(|page| page.get(pending_upload.offset..end))
+                    .ok_or_else(|| anyhow::anyhow!("nova atlas pending upload range is out of bounds"))?;
                 writes.push(TextureWrite {
                     descriptor: TextureWriteDescriptor {
                         texture: resolve_texture(pending_upload.texture_id)?,
@@ -240,15 +291,26 @@ impl NovaAtlas {
     }
 
     fn recycle_upload_batch(&self, mut batch: AtlasUploadBatch) {
-        batch.bytes.clear();
         batch.uploads.clear();
+        // Reuse at most the previous ordinary staging page locally. Worker
+        // pages return to the existing bounded bitmap pool.
+        let mut reusable = batch.bytes.active.map(|index| {
+            let mut page = std::mem::take(&mut batch.bytes.pages[index]);
+            page.clear();
+            page
+        });
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         if state.upload_bytes.is_empty()
             && state.pending_uploads.is_empty()
-            && batch.bytes.capacity() > state.upload_bytes.capacity()
-            && batch.bytes.capacity() <= NOVA_ATLAS_RETAINED_UPLOAD_BYTES
+            && reusable.as_ref().is_some_and(|page| {
+                page.capacity() > state.upload_bytes.capacity()
+                    && page.capacity() <= NOVA_ATLAS_RETAINED_UPLOAD_BYTES
+            })
         {
-            state.upload_bytes = batch.bytes;
+            let previous = std::mem::take(&mut state.upload_bytes);
+            let page = reusable.take().expect("reusable upload page");
+            state.upload_bytes.active = Some(state.upload_bytes.adopt(page));
+            drop(previous);
         }
         if state.pending_uploads.is_empty()
             && batch.uploads.capacity() > state.pending_uploads.capacity()
@@ -256,16 +318,25 @@ impl NovaAtlas {
         {
             state.pending_uploads = batch.uploads;
         }
+        drop(state);
+        batch.bytes.release();
+        if let Some(page) = reusable {
+            crate::assets::release_bitmap_buffer(page);
+        }
     }
 
     fn restore_upload_batch(&self, mut batch: AtlasUploadBatch) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         // Producers may have queued a newer value while this batch was in
         // flight. Restore older writes BEFORE those values, preserving order.
-        let base_offset = batch.bytes.len();
-        batch.bytes.append(&mut state.upload_bytes);
+        let base_page = batch.bytes.pages.len();
+        let newer_active = state.upload_bytes.active.take();
+        batch.bytes.pages.append(&mut state.upload_bytes.pages);
         for upload in &mut state.pending_uploads {
-            upload.offset = upload.offset.saturating_add(base_offset);
+            upload.page = upload.page.checked_add(base_page).expect("upload page index overflow");
+        }
+        if let Some(index) = newer_active {
+            batch.bytes.active = Some(base_page + index);
         }
         batch.uploads.append(&mut state.pending_uploads);
         state.upload_bytes = batch.bytes;
@@ -277,8 +348,7 @@ impl NovaAtlas {
         self.state
             .lock()
             .expect("nova atlas lock poisoned")
-            .upload_bytes
-            .clone()
+            .upload_bytes.pages.iter().flatten().copied().collect()
     }
 
     #[cfg(test)]
@@ -293,12 +363,58 @@ impl NovaAtlas {
     #[cfg(test)]
     pub(in crate::platform::nova) fn clear_pending_uploads_for_test(&self) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        state.upload_bytes.clear();
+        state.upload_bytes = UploadArena::default();
         state.pending_uploads.clear();
     }
 }
 
 impl NovaAtlasState {
+    /// Publish a range already encoded into an adopted worker page.
+    pub(in crate::platform::nova) fn enqueue_encoded_tile_upload(
+        &mut self,
+        texture_id: AtlasTextureId,
+        origin: Point<DevicePixels>,
+        size: Size<DevicePixels>,
+        page: usize,
+        range: std::ops::Range<usize>,
+    ) -> bool {
+        let padding = NOVA_ATLAS_TILE_PADDING;
+        let Some(width) = (size.width.0.max(1) as u32).checked_add(2 * padding) else {
+            return false;
+        };
+        let Some(height) = (size.height.0.max(1) as u32).checked_add(2 * padding) else {
+            return false;
+        };
+        let Ok(extent) = Extent2d::new(width, height) else {
+            return false;
+        };
+        let Some(bytes_per_row) = width.checked_mul(atlas_bytes_per_pixel(texture_id.kind) as u32) else {
+            return false;
+        };
+        let Some(len) = (bytes_per_row as usize).checked_mul(height as usize) else {
+            return false;
+        };
+        if range.len() != len || self.upload_bytes.pages.get(page)
+            .and_then(|pixels| pixels.get(range.clone())).is_none()
+        {
+            return false;
+        }
+        self.pending_uploads.push(PendingAtlasUpload {
+            texture_id,
+            origin: Origin2d {
+                x: origin.x.0.saturating_sub(padding as i32).max(0) as u32,
+                y: origin.y.0.saturating_sub(padding as i32).max(0) as u32,
+            },
+            size: extent,
+            bytes_per_row,
+            page,
+            offset: range.start,
+            len,
+        });
+        self.content_generation = self.content_generation.wrapping_add(1);
+        true
+    }
+
     pub(in crate::platform::nova) fn remove_pending_uploads(&mut self, texture_id: AtlasTextureId) {
         self.pending_uploads
             .retain(|upload| upload.texture_id != texture_id);
@@ -386,7 +502,8 @@ impl NovaAtlasState {
             let Some(end) = pending_upload.offset.checked_add(pending_upload.len) else {
                 return false;
             };
-            let Some(pixels) = self.upload_bytes.get_mut(pending_upload.offset..end) else {
+            let Some(pixels) = self.upload_bytes.pages.get_mut(pending_upload.page)
+                .and_then(|page| page.get_mut(pending_upload.offset..end)) else {
                 return false;
             };
             let encoded =
@@ -396,16 +513,15 @@ impl NovaAtlasState {
             }
             return encoded;
         }
-        let offset = self.upload_bytes.len();
+        let page = self.upload_bytes.active_page(len);
+        let pixels = &mut self.upload_bytes.pages[page];
+        let offset = pixels.len();
         let Some(end) = offset.checked_add(len) else {
             return false;
         };
-        if self.upload_bytes.is_empty() {
-            self.upload_bytes = crate::assets::acquire_bitmap_buffer_capacity(len);
-        }
-        self.upload_bytes.resize(end, 0);
+        pixels.resize(end, 0);
         if encode_padded_atlas_upload(
-            &mut self.upload_bytes[offset..end],
+            &mut pixels[offset..end],
             size,
             bytes,
             texture_kind,
@@ -413,7 +529,7 @@ impl NovaAtlasState {
         )
         .is_none()
         {
-            self.upload_bytes.truncate(offset);
+            pixels.truncate(offset);
             return false;
         }
         self.pending_uploads.push(PendingAtlasUpload {
@@ -421,6 +537,7 @@ impl NovaAtlasState {
             origin: upload_origin,
             size: extent,
             bytes_per_row,
+            page,
             offset,
             len,
         });
@@ -453,6 +570,7 @@ mod upload_texture_snapshot_tests {
             origin: Origin2d { x: 200, y: 200 },
             size: Extent2d::new(8, 8).expect("valid test extent"),
             bytes_per_row: 32,
+            page: 0,
             offset: 0,
             len: 256,
         };
@@ -495,6 +613,7 @@ mod upload_texture_snapshot_tests {
                 origin: Origin2d { x: 300, y: 300 },
                 size: Extent2d::new(8, 8).expect("valid extent"),
                 bytes_per_row: 32,
+                page: 0,
                 offset: 0,
                 len: 0,
             });

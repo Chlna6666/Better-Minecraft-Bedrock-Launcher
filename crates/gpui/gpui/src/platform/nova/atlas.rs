@@ -11,7 +11,8 @@ use std::sync::{
 pub(super) use super::atlas_encoding::encode_atlas_upload;
 use super::atlas_encoding::{atlas_kind_index, fallback_atlas_bytes};
 pub(super) use super::queue::AtlasUploadStats;
-use super::queue::PendingAtlasUpload;
+use super::queue::{PendingAtlasUpload, UploadArena};
+use super::atlas_encoding::{atlas_source_byte_len, encode_padded_atlas_upload};
 
 /// Small first-page size used by each atlas kind for fallback pixels and typical first-frame
 /// glyph/icon traffic. When this page fills, normal allocation keeps using 2048px pages.
@@ -76,7 +77,7 @@ pub(super) struct NovaAtlasState {
     full_kinds_logged: FxHashSet<AtlasTextureKind>,
     #[cfg(test)]
     disabled_kinds: FxHashSet<AtlasTextureKind>,
-    pub(super) upload_bytes: Vec<u8>,
+    pub(super) upload_bytes: UploadArena,
     pub(super) pending_uploads: Vec<PendingAtlasUpload>,
     /// Monotonic counter bumped whenever a texture is created or removed.
     texture_set_generation: u64,
@@ -102,7 +103,7 @@ impl Default for NovaAtlasState {
             full_kinds_logged: FxHashSet::default(),
             #[cfg(test)]
             disabled_kinds: FxHashSet::default(),
-            upload_bytes: Vec::new(),
+            upload_bytes: UploadArena::default(),
             pending_uploads: Vec::new(),
             texture_set_generation: 0,
             content_generation: 0,
@@ -135,6 +136,47 @@ struct PendingAtlasRemoval {
 struct AtlasBuildEntry {
     build: Mutex<()>,
     generation: AtomicU64,
+}
+
+enum TilePixels<'a> {
+    Raw(&'a [u8]),
+    Encoded { page: usize, range: std::ops::Range<usize> },
+}
+
+struct PreparedGlyphUpload {
+    index: usize,
+    generation: u64,
+    size: Size<DevicePixels>,
+    range: Option<std::ops::Range<usize>>,
+}
+
+// Encode directly into the worker's final staging allocation. Invalid or
+// oversized data follows the normal allocation fallback without publishing.
+fn encode_glyph_upload(
+    page: &mut Vec<u8>,
+    kind: AtlasTextureKind,
+    size: Size<DevicePixels>,
+    bytes: &[u8],
+) -> Option<std::ops::Range<usize>> {
+    let (width, height) = padded_content_texture_size(size)?;
+    if bytes.len() < atlas_source_byte_len(size, kind)? {
+        return None;
+    }
+    let len = (width as usize).checked_mul(height as usize)?
+        .checked_mul(atlas_bytes_per_pixel(kind))?;
+    let offset = page.len();
+    let end = offset.checked_add(len)?;
+    if page.capacity() == 0 {
+        *page = crate::assets::acquire_bitmap_buffer_capacity(len);
+    }
+    page.resize(end, 0);
+    if encode_padded_atlas_upload(
+        &mut page[offset..end], size, bytes, kind, NOVA_ATLAS_TILE_PADDING,
+    ).is_none() {
+        page.truncate(offset);
+        return None;
+    }
+    Some(offset..end)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -242,14 +284,17 @@ impl NovaAtlas {
         &self,
         keys: &[AtlasKey],
         entries: &[Option<Arc<AtlasBuildEntry>>],
-        pending: &mut Vec<(usize, u64, Size<DevicePixels>, Vec<u8>)>,
+        pending: &mut Vec<PreparedGlyphUpload>,
+        pixels: &mut Vec<u8>,
         ready: &mut [Option<AtlasTile>],
     ) {
         if pending.is_empty() {
             return;
         }
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        for (index, generation, size, bytes) in pending.drain(..) {
+        let first_upload = state.pending_uploads.len();
+        let page = state.upload_bytes.adopt(std::mem::take(pixels));
+        for PreparedGlyphUpload { index, generation, size, range } in pending.drain(..) {
             let key = &keys[index];
             let entry = entries[index].as_ref().expect("owned glyph build");
             ready[index] = if entry.generation.load(AtomicOrdering::Acquire) != generation {
@@ -257,10 +302,20 @@ impl NovaAtlas {
             } else if let Some(tile) = state.tiles.get(key).copied() {
                 Some(tile)
             } else {
-                state.publish_new_tile(key.clone(), size, &bytes)
+                let pixels = match range {
+                    Some(range) => TilePixels::Encoded { page, range },
+                    None => TilePixels::Raw(&[]),
+                };
+                state.publish_new_tile(key.clone(), size, pixels)
             };
         }
+        let unused = (state.pending_uploads.len() == first_upload)
+            .then(|| state.upload_bytes.discard_last(page));
         self.publish_state_flags(&state);
+        drop(state);
+        if let Some(page) = unused {
+            crate::assets::release_bitmap_buffer(page);
+        }
     }
 
     fn lookup_or_restore_tile(&self, key: &AtlasKey) -> Option<AtlasTile> {
@@ -299,7 +354,7 @@ impl NovaAtlas {
             GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
                 if state.pending_uploads.is_empty() {
                     let upload_bytes = std::mem::take(&mut state.upload_bytes);
-                    crate::assets::release_bitmap_buffer(upload_bytes);
+                    upload_bytes.release();
                     state.pending_uploads.shrink_to(0);
                 }
             }
@@ -504,7 +559,7 @@ impl PlatformAtlas for NovaAtlas {
             AtlasKey::Image(params) => Some((params.image_id, params.frame_slot)),
             _ => None,
         };
-        let tile = state.publish_new_tile(key, size, &bytes);
+        let tile = state.publish_new_tile(key, size, TilePixels::Raw(&bytes));
         self.publish_state_flags(&state);
         drop(state);
         if let Some((image_id, frame_slot)) = image_key {
@@ -557,7 +612,7 @@ impl PlatformAtlas for NovaAtlas {
         }
 
         let previous = state.tiles.get(key).copied();
-        let allocated = state.allocate_and_upload(key, size, bytes.as_ref());
+        let allocated = state.allocate_and_upload(key, size, TilePixels::Raw(bytes.as_ref()));
         let Some(allocated) = allocated else {
             let texture_kind = key.texture_kind();
             if state.full_kinds_logged.insert(texture_kind) {
@@ -620,7 +675,7 @@ impl PlatformAtlas for NovaAtlas {
             let mut guards = Vec::with_capacity(group.len());
             let mut deferred = Vec::new();
             let mut pending = Vec::new();
-            let mut pending_bytes = 0usize;
+            let mut pixels = Vec::new();
             for (index, entry) in entries.iter().enumerate() {
                 let Some(entry) = entry else { continue };
                 let Ok(guard) = entry.build.try_lock() else {
@@ -634,14 +689,13 @@ impl PlatformAtlas for NovaAtlas {
                 }
                 let generation = entry.generation.load(AtomicOrdering::Acquire);
                 let (size, bytes) = glyph_bitmap(build(&group[index])?);
-                pending_bytes = pending_bytes.saturating_add(bytes.capacity());
-                pending.push((index, generation, size, bytes));
-                if pending_bytes >= BATCH_BITMAP_BYTES {
-                    self.publish_glyph_batch(&keys, &entries, &mut pending, &mut ready);
-                    pending_bytes = 0;
+                let range = encode_glyph_upload(&mut pixels, keys[index].texture_kind(), size, &bytes);
+                pending.push(PreparedGlyphUpload { index, generation, size, range });
+                if pixels.capacity() >= BATCH_BITMAP_BYTES {
+                    self.publish_glyph_batch(&keys, &entries, &mut pending, &mut pixels, &mut ready);
                 }
             }
-            self.publish_glyph_batch(&keys, &entries, &mut pending, &mut ready);
+            self.publish_glyph_batch(&keys, &entries, &mut pending, &mut pixels, &mut ready);
             drop(guards);
             for index in deferred {
                 ready[index] = self.ensure_glyph_with(&group[index], &mut || build(&group[index]))?;
@@ -866,9 +920,9 @@ impl NovaAtlasState {
         &mut self,
         key: AtlasKey,
         size: Size<DevicePixels>,
-        bytes: &[u8],
+        pixels: TilePixels<'_>,
     ) -> Option<AtlasTile> {
-        let Some(tile) = self.allocate_and_upload(&key, size, bytes) else {
+        let Some(tile) = self.allocate_and_upload(&key, size, pixels) else {
             let texture_kind = key.texture_kind();
             if self.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
@@ -891,10 +945,10 @@ impl NovaAtlasState {
         &mut self,
         key: &AtlasKey,
         size: Size<DevicePixels>,
-        bytes: &[u8],
+        pixels: TilePixels<'_>,
     ) -> Option<AtlasTile> {
         let dedicated = matches!(key, AtlasKey::Image(_)) && image_prefers_dedicated_texture(size);
-        self.allocate_and_upload_kind_with_placement(key.texture_kind(), size, bytes, dedicated)
+        self.allocate_and_upload_kind_with_placement(key.texture_kind(), size, pixels, dedicated)
     }
 
     fn allocate_and_upload_kind(
@@ -903,14 +957,14 @@ impl NovaAtlasState {
         size: Size<DevicePixels>,
         bytes: &[u8],
     ) -> Option<AtlasTile> {
-        self.allocate_and_upload_kind_with_placement(texture_kind, size, bytes, false)
+        self.allocate_and_upload_kind_with_placement(texture_kind, size, TilePixels::Raw(bytes), false)
     }
 
     fn allocate_and_upload_kind_with_placement(
         &mut self,
         texture_kind: AtlasTextureKind,
         size: Size<DevicePixels>,
-        bytes: &[u8],
+        pixels: TilePixels<'_>,
         dedicated: bool,
     ) -> Option<AtlasTile> {
         #[cfg(test)]
@@ -918,6 +972,11 @@ impl NovaAtlasState {
             return None;
         }
 
+        if let TilePixels::Raw(bytes) = &pixels {
+            if bytes.len() < atlas_source_byte_len(size, texture_kind)? {
+                return None;
+            }
+        }
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         let padded_width = width.saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2));
@@ -941,14 +1000,15 @@ impl NovaAtlasState {
                 allocation_min_y.saturating_add(i32::try_from(NOVA_ATLAS_TILE_PADDING).ok()?),
             ),
         };
-        if !self.enqueue_new_tile_upload(
-            texture_id,
-            texture_kind,
-            origin,
-            size,
-            bytes,
-            NOVA_ATLAS_TILE_PADDING,
-        ) {
+        let uploaded = match pixels {
+            TilePixels::Raw(bytes) => self.enqueue_new_tile_upload(
+                texture_id, texture_kind, origin, size, bytes, NOVA_ATLAS_TILE_PADDING,
+            ),
+            TilePixels::Encoded { page, range } => self.enqueue_encoded_tile_upload(
+                texture_id, origin, size, page, range,
+            ),
+        };
+        if !uploaded {
             self.deallocate_texture_allocation(texture_id, allocation_id);
             return None;
         }

@@ -97,6 +97,43 @@ mod tests {
     }
 
     #[test]
+    fn adopted_pages_preserve_allocation_and_retry_order() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let texture = AtlasTextureId { index: 0, kind: AtlasTextureKind::Rgba };
+        let page = vec![7; 36];
+        let pointer = page.as_ptr();
+        {
+            let mut state = atlas.state.lock().expect("atlas");
+            let index = state.upload_bytes.adopt(page);
+            assert!(state.enqueue_encoded_tile_upload(
+                texture, crate::point(DevicePixels(10), DevicePixels(10)),
+                crate::size(DevicePixels(1), DevicePixels(1)), index, 0..36,
+            ));
+        }
+        let batch = AtlasUpload::new(&atlas);
+        queue(&atlas, 9, 10);
+        assert!(batch.upload(
+            |_| Ok(TextureId::from_parts(0, 0)),
+            |writes| {
+                assert_eq!(writes[0].data.as_ptr(), pointer);
+                anyhow::bail!("retry")
+            },
+        ).is_err());
+        let restored = AtlasUpload::new(&atlas);
+        restored.upload(
+            |_| Ok(TextureId::from_parts(0, 0)),
+            |writes| {
+                assert_eq!(writes.len(), 2);
+                assert_eq!(writes[0].data.as_ptr(), pointer);
+                assert_eq!(writes[0].data, &[7; 36]);
+                assert_eq!(writes[1].data, &[9; 4]);
+                Ok(())
+            },
+        ).expect("retry retains page ownership");
+    }
+
+    #[test]
     fn adjacent_rows_share_one_native_write_without_copying() {
         let atlas = NovaAtlas::new();
         atlas.clear_pending_uploads_for_test();
@@ -118,7 +155,7 @@ mod tests {
             }
         }
         let batch = AtlasUpload::new(&atlas);
-        let original_ptr = batch.batch().bytes.as_ptr();
+        let original_ptr = batch.batch().bytes.pages[0].as_ptr();
         let stats = batch
             .upload(
                 |_| Ok(TextureId::from_parts(0, 0)),
