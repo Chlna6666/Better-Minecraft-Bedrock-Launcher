@@ -69,7 +69,6 @@ impl LayerContent {
         delta: Point<ScaledPixels>,
         translation: Option<[i32; 2]>,
         source_viewport: ContentMask<ScaledPixels>,
-        quad_only: bool,
         atlas_tiles: &Arc<[(crate::AtlasTextureId, u32)]>,
     ) -> Option<Self> {
         let [x, y] = translation?;
@@ -91,7 +90,7 @@ impl LayerContent {
         Some(Self {
             operations: Arc::clone(operations),
             parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
-            raster: Some(ContentRaster { source_origin, coverage, quad_only, visible_rows: false }),
+            raster: Some(ContentRaster { source_origin, coverage, visible_rows: false }),
             raster_atlas_tiles: Arc::clone(atlas_tiles),
         })
     }
@@ -107,26 +106,21 @@ impl LayerContent {
         { return None; }
         let mut content = Self::capture(scene, range, rows)?;
         let mut ids = FxHashSet::default();
-        let mut quad_only = true;
         for op in content.operations.iter() {
             if !static_scroll_raster_operation(op, viewport.bounds) { return None; }
             match op {
                 PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => {
                     ids.insert((s.tile.texture_id, s.tile.tile_id.0));
-                    quad_only = false;
                 }
                 PaintOperation::Primitive(Primitive::PolychromeSprite(s)) => {
                     ids.insert((s.tile.texture_id, s.tile.tile_id.0));
-                    quad_only = false;
                 }
-                PaintOperation::Primitive(Primitive::Quad(_)) => {}
-                PaintOperation::Primitive(_) => quad_only = false,
                 _ => {}
             }
         }
         content.raster = Some(ContentRaster {
             source_origin: origin, coverage: LayerFrame::coverage(viewport, translation),
-            quad_only, visible_rows: true,
+            visible_rows: true,
         });
         content.raster_atlas_tiles = ids.into_iter().collect::<Vec<_>>().into();
         Some(content)
@@ -228,7 +222,6 @@ impl LayerContent {
 struct ContentRaster {
     source_origin: [i32; 2],
     coverage: Bounds<ScaledPixels>,
-    quad_only: bool,
     visible_rows: bool,
 }
 
@@ -370,10 +363,9 @@ pub(crate) struct LayerFrame {
     /// Stable within one mounted lifetime; not a transient HitboxId.
     pub(crate) id: u64,
     pub(crate) generation: u64,
-    /// Original root operation ranges before and after the promoted fragment.
-    /// A verified static painter-order root can be split without reading the
-    /// promoted operations on the GPU owner.
-    static_root_outside: Option<[Range<usize>; 2]>,
+    /// Exact original operation span, certified against native root order.
+    /// The owner derives complementary intervals for the selected layers.
+    static_root_span: Option<Range<usize>>,
     damage: LayerDamage,
     /// Certified coverage shared with the immediately previous generation,
     /// in stable content-space device pixels.
@@ -427,7 +419,7 @@ impl LayerFrame {
     /// The certified outside ranges retain their original paint order.
     pub(crate) fn root_static_raster(&self) -> Option<(Bounds<ScaledPixels>, [i32; 2])> {
         self.content.raster?;
-        self.static_root_outside.as_ref()?;
+        self.static_root_span.as_ref()?;
         Some((self.source_viewport.bounds, self.translation?))
     }
 
@@ -439,8 +431,8 @@ impl LayerFrame {
         &self.content.raster_atlas_tiles
     }
 
-    pub(crate) fn root_static_outside(&self) -> Option<&[Range<usize>; 2]> {
-        self.static_root_outside.as_ref()
+    pub(crate) fn root_static_span(&self) -> Option<&Range<usize>> {
+        self.static_root_span.as_ref()
     }
 
     /// Borrow the original capture, along with the signed projection origin
@@ -535,19 +527,8 @@ fn ordered_static_root(scene: &Scene) -> bool {
     true
 }
 
-fn static_outside_ranges(scene: &Scene, range: Range<usize>) -> Option<[Range<usize>; 2]> {
-    if range.is_empty() || range.end > scene.len() { return None; }
-    let mut outside = [0..range.start, range.end..scene.len()];
-    // Empty scopes do not need a native draw or an owner-side scan.
-    for span in &mut outside {
-        let operations = scene.paint_operations.range(span.clone());
-        if operations.iter().all(|operation|
-            matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer))
-        {
-            *span = 0..0;
-        }
-    }
-    Some(outside)
+fn static_root_span(scene: &Scene, range: Range<usize>) -> Option<Range<usize>> {
+    (!range.is_empty() && range.end <= scene.len()).then_some(range)
 }
 
 #[derive(Default)]
@@ -585,12 +566,12 @@ impl SceneLayers {
         }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
         let content = LayerContent::from_scroll(
-            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), atlas_tiles.is_empty(), &atlas_tiles,
+            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), &atlas_tiles,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         self.frames.push(LayerFrame {
             layout_key: 1, id: 1, generation: 1,
-            static_root_outside: Some([0..0, 0..0]),
+            static_root_span: Some(0..0),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.),
             viewport, offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
@@ -607,7 +588,7 @@ impl SceneLayers {
             .expect("visible row capture");
         self.frames.push(LayerFrame {
             layout_key: 1, id: 1, generation: 1,
-            static_root_outside: static_outside_ranges(scene, range),
+            static_root_span: static_root_span(scene, range),
             damage: LayerDamage::Full, previous_coverage: None,
             translation: Some(translation), source_viewport: viewport.scale(1.), viewport,
             offset: LayerScrollPosition::Pixels(point(crate::px(translation[0] as f32), crate::px(translation[1] as f32))),
@@ -617,8 +598,8 @@ impl SceneLayers {
 
     #[cfg(test)]
     pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
-        self.frames[0].static_root_outside = ordered_static_root(scene)
-            .then(|| static_outside_ranges(scene, range)).flatten();
+        self.frames[0].static_root_span = ordered_static_root(scene)
+            .then(|| static_root_span(scene, range)).flatten();
     }
 
     pub(super) fn capture(
@@ -655,18 +636,18 @@ impl SceneLayers {
             // current native drawable (which can already have resized).
             let direct = if record.rows.is_empty() && !range.is_empty() {
                 scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
-                     .and_then(|(operations, coverage, delta, quad_only, atlas_tiles)| LayerContent::from_scroll(
-                        operations, coverage, delta, record.translation, record.source_viewport, quad_only, atlas_tiles,
+                     .and_then(|(operations, coverage, delta, atlas_tiles)| LayerContent::from_scroll(
+                        operations, coverage, delta, record.translation, record.source_viewport, atlas_tiles,
                     ))
             } else {
                 LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
                     record.source_viewport, record.translation)
             };
-            let static_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some())
+            let static_root_span = if direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
             {
-                static_outside_ranges(scene, range.clone())
+                static_root_span(scene, range.clone())
             } else { None };
             let Some(content) = direct.or_else(|| LayerContent::capture(scene, range, &record.rows)) else { continue; };
             let previous = old.get(&key).copied();
@@ -703,7 +684,7 @@ impl SceneLayers {
                 (NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed), 1, Arc::new(content), LayerDamage::Full, None)
             };
             frames.push(LayerFrame {
-                layout_key: key, id, generation, static_root_outside, damage, previous_coverage,
+                layout_key: key, id, generation, static_root_span, damage, previous_coverage,
                 translation: record.translation, source_viewport: record.source_viewport,
                 viewport: record.viewport, offset: record.offset, content,
             });
@@ -731,9 +712,9 @@ mod tests {
         painter.finish();
         let scene = painter.into_scene();
         assert!(ordered_static_root(&scene));
-        assert_eq!(static_outside_ranges(&scene, 1..2), Some([0..1, 2..3]));
-        assert_eq!(static_outside_ranges(&scene, 0..3), Some([0..0, 0..0]));
-        assert!(static_outside_ranges(&scene, 3..4).is_none());
+        assert_eq!(static_root_span(&scene, 1..2), Some(1..2));
+        assert_eq!(static_root_span(&scene, 0..3), Some(0..3));
+        assert!(static_root_span(&scene, 3..4).is_none());
     }
 
     #[test]
@@ -754,7 +735,6 @@ mod tests {
     fn overscan_source_maps_signed_content_tiles_without_viewport_projection() {
         let source = ContentRaster {
             source_origin: [0, -128],
-            quad_only: true,
             visible_rows: false,
             coverage: Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
                 size(ScaledPixels(512.), ScaledPixels(1024.))),
@@ -781,9 +761,9 @@ mod tests {
         operations.finish();
         let operations = Arc::new(operations);
         let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
-            Some([0, -128]), viewport, true, &Arc::default()).unwrap();
+            Some([0, -128]), viewport, &Arc::default()).unwrap();
         let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
-            Some([0, -192]), viewport, true, &Arc::default()).unwrap();
+            Some([0, -192]), viewport, &Arc::default()).unwrap();
         assert!(Arc::ptr_eq(&before.operations, &after.operations));
         assert!(before.raster == after.raster);
         assert_eq!(after.raster.unwrap().source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
@@ -797,7 +777,7 @@ mod tests {
         ));
         let frame = LayerFrame {
             layout_key: 1, id: 1, generation: 4,
-            static_root_outside: None,
+            static_root_span: None,
             damage: LayerDamage::Bounds(Bounds::new(
                 point(ScaledPixels(600.), ScaledPixels(20.)),
                 size(ScaledPixels(10.), ScaledPixels(10.)),

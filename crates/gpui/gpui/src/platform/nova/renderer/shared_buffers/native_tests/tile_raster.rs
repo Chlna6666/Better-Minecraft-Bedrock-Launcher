@@ -426,7 +426,7 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool) {
     paint.layers.raster_fixture(source, coverage, viewport, [0, 0]);
     let end = if with_glyph { 3 } else { 2 };
     paint.layers.certify_fixture_root(&paint.scene, 1..end);
-    assert_eq!(paint.layers.frames[0].root_static_outside(), Some(&[0..1, end..end+1]));
+    assert_eq!(paint.layers.frames[0].root_static_span(), Some(&(1..end)));
     let mut protected = FxHashSet::default();
     paint.layers.collect_atlas_tile_ids_into(&mut protected);
     if let Some(glyph) = glyph {

@@ -264,8 +264,7 @@ struct LayerPlan<'a> {
 
 fn layer_plan<'a>(layers: &'a [crate::window::LayerFrame], scene_len: usize, size: DrawableSize) -> Vec<LayerPlan<'a>> {
     let mut candidates: Vec<_> = layers.iter().filter_map(|layer| {
-        let [prefix, suffix] = layer.root_static_outside()?;
-        let span = prefix.end..if suffix.is_empty() { scene_len } else { suffix.start };
+        let span = layer.root_static_span()?.clone();
         if span.start > span.end || span.end > scene_len { return None; }
         Some(LayerPlan { layer, span, requests: requests(layer, size)? })
     }).collect();
