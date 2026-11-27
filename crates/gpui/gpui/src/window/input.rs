@@ -7,7 +7,7 @@ mod control;
 
 impl Window {
     pub(crate) fn rendered_hitbox_bounds(&self, id: HitboxId) -> Option<Bounds<Pixels>> {
-        self.rendered_frame.hitboxes.iter().find(|hitbox| hitbox.id == id).map(|hitbox| hitbox.bounds)
+        self.rendered_frame.hitboxes.bounds_for_id(id)
     }
 
     /// Sets an input handler, such as [`ElementInputHandler`][element_input_handler], which interfaces with the

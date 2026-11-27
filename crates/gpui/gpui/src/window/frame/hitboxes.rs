@@ -1,7 +1,7 @@
 //! UI-owned immutable hitbox pages. A retained scroll range shares the
 //! original geometry and publishes only its placement, not a second bitmap
 //! of hitbox coordinates. Clips remain in window space.
-use crate::{Bounds, Hitbox, Pixels, Point, point, px};
+use crate::{Bounds, Hitbox, HitboxId, Pixels, Point, point, px};
 use std::{ops::Range, rc::Rc};
 
 const PAGE_LEN: usize = 128;
@@ -125,6 +125,7 @@ impl HitboxStore {
 
     // Geometry is materialized only for APIs that return individual hitboxes.
     // Hit testing and admission use borrowed slices directly.
+    #[cfg(test)]
     pub(in crate::window) fn range(&self, range: Range<usize>)
         -> impl DoubleEndedIterator<Item = Hitbox> + '_
     {
@@ -137,8 +138,21 @@ impl HitboxStore {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::window) fn iter(&self) -> impl DoubleEndedIterator<Item = Hitbox> + '_ {
         self.range(0..self.len)
+    }
+
+    /// Find the first logical occurrence, as the old flat iterator did.
+    /// Only the matching rectangle needs projection, not every preceding
+    /// hitbox. Returning a value also ends the frame borrow before paint.
+    pub(in crate::window) fn bounds_for_id(&self, id: HitboxId) -> Option<Bounds<Pixels>> {
+        for (slice, translation) in self.slices(0..self.len) {
+            if let Some(hitbox) = slice.iter().find(|hitbox| hitbox.id == id) {
+                return Some(translation.bounds(hitbox.bounds));
+            }
+        }
+        None
     }
 
     pub(in crate::window) fn any_at(&self, range: Range<usize>, position: Point<Pixels>, delta: Point<Pixels>) -> bool {
@@ -245,7 +259,7 @@ impl HitboxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentMask, HitboxBehavior, HitboxId, size};
+    use crate::{ContentMask, HitboxBehavior, size};
 
     fn hitbox(index: usize) -> Hitbox {
         let bounds = Bounds::new(point(px(0.), px(index as f32)), size(px(10.), px(1.)));
@@ -267,6 +281,8 @@ mod tests {
         assert!(Rc::ptr_eq(&source.spans[1].owner, &target.spans[1].owner));
         let first = target.iter().next().unwrap();
         assert_eq!(first.bounds.origin.y, px(-10.));
+        assert_eq!(target.bounds_for_id(first.id), Some(first.bounds));
+        assert_eq!(target.bounds_for_id(HitboxId(u64::MAX)), None);
         assert_eq!(first.content_mask, source.iter().next().unwrap().content_mask);
         assert_eq!(source.iter().next().unwrap().bounds.origin.y, px(0.));
         let mut second = HitboxStore::default();
