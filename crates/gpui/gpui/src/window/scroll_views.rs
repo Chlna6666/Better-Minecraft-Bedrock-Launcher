@@ -139,10 +139,9 @@ fn hitboxes(range: &Range<PrepaintStateIndex>) -> Range<usize> {
 // An owned candidate contains only the changed position, immutable Paint
 // and identifiers into the same UI-owned frame. Preparing it never consumes
 // invalidations or edits committed records.
-struct PlacementTransaction {
-    epoch: super::lifecycle::PlacementEpoch,
-    scroll_owner: EntityId,
-    source_revision: u64,
+struct PlacementMember {
+    marker: usize,
+    placement: super::scroll_paint::ScrollPlacement,
     key: u64,
     slot: usize,
     mounted_source: usize,
@@ -150,18 +149,24 @@ struct PlacementTransaction {
     sampled: Point<Pixels>,
     delta: Point<Pixels>,
     hitboxes: Range<usize>,
-    paint: Arc<super::Paint>,
     damage: Bounds<crate::ScaledPixels>,
     stale_input: bool,
 }
 
+struct PlacementTransaction {
+    epoch: super::lifecycle::PlacementEpoch,
+    owners: smallvec::SmallVec<[EntityId; 4]>,
+    source_revision: u64,
+    members: smallvec::SmallVec<[PlacementMember; 1]>,
+    paint: Arc<super::Paint>,
+}
+
 impl Window {
-    /// Direct commit for one native vertical scroller
-    /// and one complete retained child with unchanged logical operation
-    /// indices. No virtual-list rows, external effects,
-    /// changed dependencies or partially captured content are admitted.
+    /// Direct commit for independent native vertical scrollers with one
+    /// complete retained child each. No nested captures, virtual-list rows,
+    /// external effects, or partially captured content are admitted.
     fn prepare_scroll_placement(&self, cx: &App) -> Result<PlacementTransaction, Outcome> {
-        let (epoch, scroll_owner) = self.invalidator.pending_placement().ok_or(Outcome::Invalidation)?;
+        let (epoch, owners) = self.invalidator.pending_placement().ok_or(Outcome::Invalidation)?;
         // Scheduling an ordinary wheel frame sets refreshing. Its pending
         // placement epoch, rather than the scheduling flag, proves the work.
         if !self.has_completed_rendered_frame || self.force_full_redraw.get()
@@ -208,6 +213,46 @@ impl Window {
 
         let frame = &self.rendered_frame;
         let old_paint = frame.published_paint_ref().ok_or(Outcome::MissingPaint)?;
+        let mut members = smallvec::SmallVec::<[PlacementMember; 1]>::new();
+        let changed: smallvec::SmallVec<[_; 4]> = frame.mounted_scroll_sources.iter().enumerate()
+            .filter(|(_, source)| !source.unchanged()).collect();
+        if changed.len() != owners.len() {
+            return Err(Outcome::MountedSources);
+        }
+        for &owner in &owners {
+            let member = self.prepare_placement_member(cx, epoch, owner, old_paint, &changed)?;
+            if members.iter().any(|previous| {
+                previous.marker == member.marker
+                    || previous.slot == member.slot
+                    || previous.mounted_source == member.mounted_source
+                    || (previous.hitboxes.start < member.hitboxes.end
+                        && member.hitboxes.start < previous.hitboxes.end)
+                    || !previous.damage.intersect(&member.damage).is_empty()
+            }) {
+                return Err(Outcome::MultipleCaptures);
+            }
+            members.push(member);
+        }
+        members.sort_unstable_by_key(|member| member.marker);
+        let placements: smallvec::SmallVec<[_; 1]> = members.iter()
+            .map(|member| (member.marker, member.placement.clone())).collect();
+        let paint = old_paint.with_scroll_placements(&placements,
+            self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
+            .ok_or(Outcome::ScenePublication)?;
+        Ok(PlacementTransaction {
+            epoch, owners, source_revision: old_paint.scene.revision, members, paint,
+        })
+    }
+
+    fn prepare_placement_member(
+        &self,
+        cx: &App,
+        epoch: super::lifecycle::PlacementEpoch,
+        scroll_owner: EntityId,
+        old_paint: &super::Paint,
+        changed: &[(usize, &super::scroll_dependencies::MountedScrollSource)],
+    ) -> Result<PlacementMember, Outcome> {
+        let frame = &self.rendered_frame;
         let mut moved = frame.scroll_views.views.iter().filter_map(|(&key, view)| {
             let direct = view.binding.direct.as_ref()?;
             if direct.owner != scroll_owner || direct.child != view.owner {
@@ -226,13 +271,13 @@ impl Window {
         {
             return Err(Outcome::CaptureDependencies);
         }
-        // Every changed mounted source must be this very offset/version.
-        // A second source (including a tracked handle's geometry state)
-        // requires the ordinary traversal. Dead sources also revoke proof.
-        let mut changed = frame.mounted_scroll_sources.iter().enumerate()
-            .filter(|(_, source)| !source.unchanged());
-        let (mounted_source, mounted) = changed.next().ok_or(Outcome::MountedSources)?;
-        if changed.next().is_some() || !mounted.changed_for(scroll_owner, &offset.version) {
+        // Every changed source must be matched exactly once by a member.
+        // Geometry changes, dead sources and ambiguous ownership revoke proof.
+        let mut matching = changed.iter().filter(|(_, source)| {
+            source.changed_for(scroll_owner, &offset.version)
+        });
+        let (mounted_source, _) = matching.next().copied().ok_or(Outcome::MountedSources)?;
+        if matching.next().is_some() {
             return Err(Outcome::MountedSources);
         }
         let delta = sampled - view.binding.sampled;
@@ -304,13 +349,10 @@ impl Window {
         {
             return Err(Outcome::Damage);
         }
-        let new_paint = old_paint.with_scroll_placement(marker, placement,
-            self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
-            .ok_or(Outcome::ScenePublication)?;
-        Ok(PlacementTransaction {
-            epoch, scroll_owner, source_revision: old_paint.scene.revision, key, slot,
+        Ok(PlacementMember {
+            marker, placement, key, slot,
             mounted_source, offset, sampled, delta, hitboxes: input,
-            paint: new_paint, damage,
+            damage,
             stale_input: view.stale_input || listeners || (hover_held && !hitboxes(pre).is_empty()),
         })
     }
@@ -333,24 +375,26 @@ impl Window {
             }
         };
         if self.rendered_frame.scene().revision != transaction.source_revision
-            || *transaction.offset.borrow() != transaction.sampled
-            || !self.invalidator.commit_placement(transaction.epoch, transaction.scroll_owner)
+            || transaction.members.iter().any(|member| *member.offset.borrow() != member.sampled)
+            || !self.invalidator.commit_placement(transaction.epoch, &transaction.owners)
         {
             scroll_placement::record(Outcome::CommitRace);
             return false;
         }
         let frame = &mut self.rendered_frame;
-        let record = frame.view_retention_records[transaction.slot].record.as_mut()
-            .expect("validated retained view");
-        record.bounds.origin += transaction.delta;
-        Rc::make_mut(&mut record.context).element_offset += transaction.delta;
-        // A normal traversal will re-establish the splice/layout context.
-        record.splice_safe = false;
-        let view = frame.scroll_views.views.get_mut(&transaction.key).expect("validated scroll view");
-        view.binding.sampled = transaction.sampled;
-        view.stale_input = transaction.stale_input;
-        frame.mounted_scroll_sources[transaction.mounted_source].acknowledge(&transaction.offset.version);
-        frame.commit_scroll_placement(Arc::clone(&transaction.paint), transaction.hitboxes, transaction.delta);
+        for member in &transaction.members {
+            let record = frame.view_retention_records[member.slot].record.as_mut()
+                .expect("validated retained view");
+            record.bounds.origin += member.delta;
+            Rc::make_mut(&mut record.context).element_offset += member.delta;
+            record.splice_safe = false;
+            let view = frame.scroll_views.views.get_mut(&member.key).expect("validated scroll view");
+            view.binding.sampled = member.sampled;
+            view.stale_input = member.stale_input;
+            frame.mounted_scroll_sources[member.mounted_source].acknowledge(&member.offset.version);
+        }
+        frame.commit_scroll_placements(Arc::clone(&transaction.paint),
+            transaction.members.iter().map(|member| (member.hitboxes.clone(), member.delta)));
         self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
         if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
             self.active_dirty_to_present_started_at = Some(
@@ -359,7 +403,9 @@ impl Window {
         if !self.needs_present.get() {
             self.render_dirty_region = super::DirtyRegion::empty();
         }
-        self.render_dirty_region.push(transaction.damage);
+        for member in &transaction.members {
+            self.render_dirty_region.push(member.damage);
+        }
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
         self.render_dirty_region.coalesce_if_large(viewport, super::DIRTY_REGION_FULL_REDRAW_RATIO);
         self.render_present_mode = if self.render_dirty_region.is_full() {
@@ -385,7 +431,7 @@ impl Window {
         super::record_scene_frame_metrics(self.last_generation_stats.scene);
         super::record_frame_retained_capacity(self.last_generation_stats.frame_retained_capacity);
         self.reset_cursor_style(cx);
-        if transaction.stale_input { self.schedule_scroll_hover_restore(cx); }
+        if transaction.members.iter().any(|member| member.stale_input) { self.schedule_scroll_hover_restore(cx); }
         scroll_placement::record(Outcome::Committed);
         log::trace!(target: "gpui::diagnostics", "gpui placement-only frame committed without root traversal");
         true

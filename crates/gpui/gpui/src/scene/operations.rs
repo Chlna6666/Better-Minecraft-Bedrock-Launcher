@@ -9,6 +9,7 @@ use std::{
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone)]
 struct Segment {
     owner: Arc<OperationPage>,
     range: Range<usize>,
@@ -20,10 +21,39 @@ impl Segment {
     }
 }
 
+#[derive(Default)]
+struct SegmentTable(Option<Arc<Vec<Segment>>>);
+
+impl std::ops::Deref for SegmentTable {
+    type Target = [Segment];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl SegmentTable {
+    fn make_mut(&mut self) -> &mut Vec<Segment> {
+        Arc::make_mut(self.0.get_or_insert_with(Arc::default))
+    }
+
+    fn take(&mut self) -> Vec<Segment> {
+        self.0.take().map_or_else(Vec::new, Arc::unwrap_or_clone)
+    }
+
+    fn shares_storage(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 /// The only ordered operation payload, with immutable retained ranges and new append storage.
 #[derive(Default)]
 pub(crate) struct Operations {
-    segments: Vec<Segment>,
+    segments: SegmentTable,
     pending: OperationPage,
     len: usize,
     // Sparse prefix states belong to the authoritative operation sequence.
@@ -272,17 +302,20 @@ impl Operations {
     /// Private backing storage only; immutable shared operation pages
     /// belong to their Arc owners and must not be counted per view.
     pub(crate) fn private_capacity_bytes(&self) -> u64 {
-        (self.segments.capacity() as u64).saturating_mul(std::mem::size_of::<Segment>() as u64)
+        (self.segments.0.as_ref().filter(|table| Arc::strong_count(table) == 1)
+            .map_or(0, |table| table.capacity()) as u64).saturating_mul(std::mem::size_of::<Segment>() as u64)
             .saturating_add(self.pending.capacity_bytes() as u64)
             .saturating_add((self.boundaries.capacity() as u64).saturating_mul(std::mem::size_of::<ReplayBoundary>() as u64))
     }
     pub(super) fn account_storage(&self, accounting: &mut crate::diagnostics::frame_storage::Accounting) {
         use crate::diagnostics::frame_storage::Kind;
-        accounting.add(&self.segments, Kind::Descriptor);
+        if let Some(table) = &self.segments.0 {
+            accounting.add(table, Kind::Descriptor);
+        }
         if let Some(boundaries) = &self.boundaries.0 {
             accounting.add(boundaries, Kind::Descriptor);
         }
-        for segment in &self.segments {
+        for segment in self.segments.iter() {
             segment.owner.account_storage(accounting);
         }
         self.pending.account_storage(accounting);
@@ -290,7 +323,9 @@ impl Operations {
 
     pub(crate) fn shrink_to(&mut self, floor: usize) {
         self.pending.shrink_to(floor);
-        self.segments.shrink_to(self.segments.len());
+        if let Some(table) = self.segments.0.as_mut().and_then(Arc::get_mut) {
+            table.shrink_to_fit();
+        }
         self.boundaries.shrink_to_fit();
     }
     pub(super) fn collect_pending_poly_tiles(&self, ids: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
@@ -322,13 +357,17 @@ impl Operations {
     pub(crate) fn clear(&mut self) {
         self.pending.clear();
         self.boundaries.clear();
-        for segment in self.segments.drain(..) {
-            if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
-                && owner.capacity_bytes() > self.pending.capacity_bytes()
-            {
-                owner.clear();
-                self.pending = owner;
+        if let Some(table) = self.segments.0.as_mut().and_then(Arc::get_mut) {
+            for segment in table.drain(..) {
+                if let Ok(mut owner) = Arc::try_unwrap(segment.owner)
+                    && owner.capacity_bytes() > self.pending.capacity_bytes()
+                {
+                    owner.clear();
+                    self.pending = owner;
+                }
             }
+        } else {
+            self.segments.0 = None;
         }
         self.len = 0;
     }
@@ -456,7 +495,8 @@ impl Operations {
     }
     fn append(&mut self, owner: Arc<OperationPage>, range: Range<usize>) {
         self.len += range.len();
-        if let Some(previous) = self.segments.last_mut()
+        let segments = self.segments.make_mut();
+        if let Some(previous) = segments.last_mut()
             && Arc::ptr_eq(&previous.owner, &owner)
             && previous.range.end == range.start
         {
@@ -464,7 +504,7 @@ impl Operations {
             previous.end = self.len;
             return;
         }
-        self.segments.push(Segment {
+        segments.push(Segment {
             owner,
             range,
             end: self.len,
@@ -478,59 +518,71 @@ impl Operations {
     pub(super) fn same_physical_ranges(&self, previous: &Self) -> bool {
         self.pending.is_empty() && previous.pending.is_empty()
             && self.len == previous.len
-            && self.segments.len() == previous.segments.len()
-            && self.segments.iter().zip(&previous.segments).all(|(a, b)| {
-                Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
-            })
+            && (self.segments.shares_storage(&previous.segments)
+                || (self.segments.len() == previous.segments.len()
+                    && self.segments.iter().zip(previous.segments.iter()).all(|(a, b)| {
+                        Arc::ptr_eq(&a.owner, &b.owner) && a.range == b.range
+                    })))
     }
 
-    /// Replace a single certified scroll marker without regenerating
-    /// prefix states or rechecking the ordinary pages just borrowed.
-    /// Reject mixed payload pages just as the general placement proof does.
-    pub(super) fn with_scroll_placement(
+    /// Replace sorted, distinct scroll markers in one pass. All changed
+    /// markers share one new physical page; untouched ranges keep their
+    /// owners and prefix states. Failure never mutates the source.
+    pub(super) fn with_scroll_placements(
         &self,
-        index: usize,
-        placement: crate::window::scroll_paint::ScrollPlacement,
+        placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
     ) -> Option<Self> {
-        if !self.pending.is_empty() || index >= self.len {
-            return None;
-        }
-        let slot = self.segments.partition_point(|segment| segment.end <= index);
-        let segment = self.segments.get(slot)?;
-        if !segment.owner.is_scroll_only() {
-            return None;
-        }
-        let local = segment.range.start + index - segment.start();
-        let PaintOperationRef::DeferredScroll(old) = segment.owner.view(local) else {
-            return None;
-        };
-        if !placement.same_source_placement_domain(old)
-            || placement.visual_bounds() != old.visual_bounds()
-            || placement.same_paint(old)
+        if !self.pending.is_empty() || placements.is_empty()
+            || placements.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || placements.last()?.0 >= self.len
         {
             return None;
         }
-
+        let mut marker_page = OperationPage::default();
+        for (index, placement) in placements {
+            let slot = self.segments.partition_point(|segment| segment.end <= *index);
+            let segment = self.segments.get(slot)?;
+            if !segment.owner.is_scroll_only() {
+                return None;
+            }
+            let local = segment.range.start + *index - segment.start();
+            let PaintOperationRef::DeferredScroll(old) = segment.owner.view(local) else {
+                return None;
+            };
+            if !placement.same_source_placement_domain(old)
+                || placement.visual_bounds() != old.visual_bounds()
+                || placement.same_paint(old)
+            {
+                return None;
+            }
+            marker_page.push(PaintOperation::DeferredScroll(placement.clone()));
+        }
+        let marker_page = Arc::new(marker_page);
         let mut result = Self {
             boundaries: self.boundaries.clone(),
-            segments: Vec::with_capacity(self.segments.len().saturating_add(2)),
             ..Self::default()
         };
-        for segment in &self.segments[..slot] {
-            result.append(Arc::clone(&segment.owner), segment.range.clone());
+        result.segments.make_mut().reserve(self.segments.len().saturating_add(placements.len().saturating_mul(2)));
+        let mut next = 0;
+        for segment in self.segments.iter() {
+            let mut cursor = segment.range.start;
+            while let Some((index, _)) = placements.get(next) {
+                if *index >= segment.end {
+                    break;
+                }
+                let local = segment.range.start + *index - segment.start();
+                if cursor < local {
+                    result.append(Arc::clone(&segment.owner), cursor..local);
+                }
+                result.append(Arc::clone(&marker_page), next..next + 1);
+                cursor = local + 1;
+                next += 1;
+            }
+            if cursor < segment.range.end {
+                result.append(Arc::clone(&segment.owner), cursor..segment.range.end);
+            }
         }
-        if segment.range.start < local {
-            result.append(Arc::clone(&segment.owner), segment.range.start..local);
-        }
-        let mut marker = OperationPage::default();
-        marker.push(PaintOperation::DeferredScroll(placement));
-        result.append(Arc::new(marker), 0..1);
-        if local + 1 < segment.range.end {
-            result.append(Arc::clone(&segment.owner), local + 1..segment.range.end);
-        }
-        for segment in &self.segments[slot + 1..] {
-            result.append(Arc::clone(&segment.owner), segment.range.clone());
-        }
+        debug_assert_eq!(next, placements.len());
         debug_assert_eq!(result.len, self.len);
         Some(result)
     }
@@ -622,7 +674,7 @@ impl Operations {
         let compacted = {
             let mut seen = FxHashSet::default();
             let mut coverage = Vec::new();
-            for segment in &self.segments {
+            for segment in self.segments.iter() {
                 if seen.insert(Arc::as_ptr(&segment.owner)) {
                     segment.owner.draw_coverage(&mut coverage);
                 }
@@ -635,7 +687,7 @@ impl Operations {
         if compacted.is_empty() { return; }
         stream.remap_pages(&compacted);
         let mut replacements = FxHashMap::default();
-        for segment in &mut self.segments {
+        for segment in self.segments.make_mut() {
             let identity = Arc::as_ptr(&segment.owner);
             if let Some(replacement) = replacements.get(&identity) {
                 segment.owner = Arc::clone(replacement);
@@ -674,7 +726,7 @@ impl Operations {
             return;
         }
         // Logical offsets and existing descriptor capacity stay intact.
-        for segment in &mut self.segments {
+        for segment in self.segments.make_mut() {
             if let Some(page) = compacted.get(&Arc::as_ptr(&segment.owner)) {
                 segment.range = page.remap(segment.range.clone());
                 segment.owner = Arc::clone(&page.owner);
@@ -689,6 +741,12 @@ impl Operations {
             return;
         }
         self.finish();
+        if self.len == 0 && range.start == 0 && range.end == previous.len {
+            self.segments.0 = previous.segments.0.clone();
+            self.boundaries = previous.boundaries.clone();
+            self.len = previous.len;
+            return;
+        }
         let destination = self.len;
         let first_boundary = previous.boundaries.partition_point(|b| b.after <= range.start);
         for boundary in previous.boundaries[first_boundary..].iter().take_while(|b| b.after <= range.end) {
@@ -748,7 +806,7 @@ impl Operations {
             self.boundaries = boundaries;
             return;
         }
-        let segments = std::mem::take(&mut self.segments);
+        let segments = self.segments.take();
         self.len = 0;
         for mut segment in segments {
             let begin = segment.start();
@@ -798,7 +856,7 @@ impl Operations {
         assert!(range.start <= range.end && range.end <= self.len);
         if range.is_empty() { return; }
         self.finish();
-        let segments = std::mem::take(&mut self.segments);
+        let segments = self.segments.take();
         self.len = 0;
         for segment in segments {
             let start = range.start.max(segment.start());

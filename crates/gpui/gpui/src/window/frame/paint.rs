@@ -51,14 +51,22 @@ impl Paint {
 
     /// Create a new GPU-visible immutable Paint while the committed UI
     /// frame keeps ownership of its existing input and layout records.
+    #[cfg(test)]
     pub(in crate::window) fn with_scroll_placement(
         &self, index: usize, placement: crate::window::scroll_paint::ScrollPlacement,
         window_opaque: bool,
     ) -> Option<Arc<Self>> {
-        let scene = self.scene.with_scroll_placement(index, placement.clone())?;
+        self.with_scroll_placements(&[(index, placement)], window_opaque)
+    }
+
+    pub(in crate::window) fn with_scroll_placements(
+        &self, placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
+        window_opaque: bool,
+    ) -> Option<Arc<Self>> {
+        let scene = self.scene.with_scroll_placements(placements)?;
         let retention = Arc::new(self.retained_paint.placement_variant(&self.scene, &scene)?);
         let mut result = Self::new(scene, retention, self.geometry);
-        result.layers = self.layers.with_scroll_placement(index, &placement, window_opaque)
+        result.layers = self.layers.with_scroll_placements(placements, window_opaque)
             .unwrap_or_else(|| SceneLayers::capture_against(
                 &result.scene, Some((&self.scene, &self.layers)), window_opaque,
             ));

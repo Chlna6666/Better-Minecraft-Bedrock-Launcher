@@ -589,8 +589,9 @@ mod tests {
         ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
         let mut sibling_ops = Operations::default();
         sibling_ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
-        let sibling = Arc::new(ScrollPaint::new(Point::default(), coverage, sibling_ops))
-            .native_placement(viewport, 1., Point::default()).unwrap();
+        let sibling_source = Arc::new(ScrollPaint::new(Point::default(), coverage, sibling_ops));
+        let sibling = sibling_source.native_placement(viewport, 1., Point::default()).unwrap();
+        let sibling_moved = sibling_source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-8.))).unwrap();
         let source = Arc::new(ScrollPaint::new(Point::default(), coverage, ops));
         let first = source.native_placement(viewport, 1., Point::default()).unwrap();
         let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
@@ -606,6 +607,16 @@ mod tests {
         let mut publication = crate::window::Paint::new(old, Arc::new(retention), Default::default());
         publication.layers = crate::window::SceneLayers::capture(&publication.scene, None, true);
         let publication = Arc::new(publication);
+        let batch = publication.with_scroll_placements(&[(1, moved.clone()), (3, sibling_moved.clone())], true)
+            .expect("two certified markers");
+        assert_eq!(batch.scene.paint_operations.deferred_scroll_indices().collect::<Vec<_>>(), vec![1, 3]);
+        assert!(batch.scene.paint_operations.shares_boundary_storage(&publication.scene.paint_operations));
+        assert!(matches!(batch.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(new)) if new.same_paint(&moved)));
+        assert!(matches!(batch.scene.paint_operations.view(3), Some(PaintOperationRef::DeferredScroll(new)) if new.same_paint(&sibling_moved)));
+        assert!(matches!(publication.scene.paint_operations.view(3), Some(PaintOperationRef::DeferredScroll(old)) if old.same_paint(&sibling)));
+        assert!(std::ptr::eq(&batch.scene.quads[0], &publication.scene.quads[0]));
+        assert!(publication.with_scroll_placements(&[(1, moved.clone()), (1, moved.clone())], true).is_none());
+        assert!(publication.with_scroll_placements(&[(1, moved.clone()), (2, sibling_moved.clone())], true).is_none());
         let next = publication.with_scroll_placement(1, moved.clone(), true).unwrap();
         let direct = publication.layers.with_scroll_placement(1, &moved, true)
             .expect("certified marker inherits its proof even with siblings");

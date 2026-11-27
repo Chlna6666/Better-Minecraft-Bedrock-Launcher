@@ -95,11 +95,11 @@ impl Scene {
         accounting.add(&self.capture_groups, Kind::Operation);
     }
 
-    /// Build a new immutable publication from one changed native marker.
+    /// Build one immutable publication from certified changed native markers.
     /// The first direct-commit path deliberately excludes draw formats
     /// whose physical storage is not yet independently shareable.
-    pub(crate) fn with_scroll_placement(
-        &self, index: usize, placement: crate::window::scroll_paint::ScrollPlacement,
+    pub(crate) fn with_scroll_placements(
+        &self, placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
     ) -> Option<Self> {
         if self.revision == 0 || !self.paths.is_empty() || !self.underlines.is_empty()
             || !self.surfaces.is_empty() || !self.backdrop_blurs.is_empty()
@@ -109,7 +109,7 @@ impl Scene {
             return None;
         }
         let mut scene = Self {
-            paint_operations: self.paint_operations.with_scroll_placement(index, placement)?,
+            paint_operations: self.paint_operations.with_scroll_placements(placements)?,
             ..Self::default()
         };
         scene.shadows.share(&self.shadows, 0..self.shadows.len());

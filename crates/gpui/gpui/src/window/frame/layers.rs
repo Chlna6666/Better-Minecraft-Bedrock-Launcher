@@ -612,16 +612,25 @@ impl SceneLayers {
     /// changed, with identical source, visual bounds and operation order.
     /// Root order and LCD underlays depend on marker bounds. With bounds
     /// and window opacity unchanged, sibling layer proofs still hold.
+    #[cfg(test)]
     pub(in crate::window) fn with_scroll_placement(
         &self,
         index: usize,
         placement: &crate::window::scroll_paint::ScrollPlacement,
         window_opaque: bool,
     ) -> Option<Self> {
-        if self.window_opaque != window_opaque {
+        self.with_scroll_placements(&[(index, placement.clone())], window_opaque)
+    }
+
+    pub(in crate::window) fn with_scroll_placements(
+        &self,
+        placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
+        window_opaque: bool,
+    ) -> Option<Self> {
+        if placements.is_empty() || self.window_opaque != window_opaque {
             return None;
         }
-        if !self.ordered && self.frames.is_empty() && !placement.has_static_order() {
+        if !self.ordered && self.frames.is_empty() && placements.iter().all(|(_, placement)| !placement.has_static_order()) {
             // The same logical source still requires owner-side expansion.
             // There are no raster layers or opaque underlays to recapture.
             return Some(Self {
@@ -634,32 +643,34 @@ impl SceneLayers {
         if !self.ordered {
             return None;
         }
-        let span = index..index + 1;
-        let slot = self.frames.iter().position(|layer| layer.root_static_span() == Some(&span))?;
-        let old = &self.frames[slot];
-        let geometry = placement.native_geometry();
-        let viewport = placement.viewport();
-        if old.source_id != geometry.id
-            || old.generation != geometry.generation
-            || old.source_viewport != viewport
-            || old.scale != geometry.scale
-            || (placement.has_lcd_glyphs() && (!window_opaque || old.background.is_none()))
-        {
-            return None;
-        }
-        let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
-        let translation = [
-            geometry.source_origin[0].checked_add(delta.x.0 as i32)?,
-            geometry.source_origin[1].checked_add(delta.y.0 as i32)?,
-        ];
-        let content = LayerContent::from_scroll(
-            operations, coverage, delta, translation, viewport, atlas_tiles, Some(&old.content),
-        )?;
-        if !Arc::ptr_eq(&content, &old.content) {
-            return None;
-        }
         let mut frames = self.frames.clone();
-        frames[slot].translation = translation;
+        for (index, placement) in placements {
+            let span = *index..*index + 1;
+            let slot = self.frames.iter().position(|layer| layer.root_static_span() == Some(&span))?;
+            let old = &self.frames[slot];
+            let geometry = placement.native_geometry();
+            let viewport = placement.viewport();
+            if old.source_id != geometry.id
+                || old.generation != geometry.generation
+                || old.source_viewport != viewport
+                || old.scale != geometry.scale
+                || (placement.has_lcd_glyphs() && (!window_opaque || old.background.is_none()))
+            {
+                return None;
+            }
+            let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
+            let translation = [
+                geometry.source_origin[0].checked_add(delta.x.0 as i32)?,
+                geometry.source_origin[1].checked_add(delta.y.0 as i32)?,
+            ];
+            let content = LayerContent::from_scroll(
+                operations, coverage, delta, translation, viewport, atlas_tiles, Some(&old.content),
+            )?;
+            if !Arc::ptr_eq(&content, &old.content) {
+                return None;
+            }
+            frames[slot].translation = translation;
+        }
         // Match the general capture's same-generation adoption policy.
         for frame in &mut frames {
             frame.damage = LayerDamage::Full;

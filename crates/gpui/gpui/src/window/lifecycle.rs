@@ -557,20 +557,24 @@ impl WindowInvalidator {
 
     /// Peek without consuming the ordinary traversal's invalidation set.
     /// A failed direct transaction leaves every pending request intact.
-    pub(super) fn pending_placement(&self) -> Option<(PlacementEpoch, EntityId)> {
+    pub(super) fn pending_placement(&self) -> Option<(PlacementEpoch, SmallVec<[EntityId; 4]>)> {
         let inner = self.inner.borrow();
         if !inner.dirty || inner.draw_phase != DrawPhase::None || !inner.pending_view_scoped
             || !inner.pending_work.placement_only() || !inner.dirty_views.is_empty()
-            || inner.pending_placement_views.len() != 1
+            || inner.pending_placement_views.is_empty()
         {
             return None;
         }
         Some((PlacementEpoch { content: inner.scroll_content_revision,
-            placement: inner.scroll_placement_revision }, inner.pending_placement_views[0]))
+            placement: inner.scroll_placement_revision }, inner.pending_placement_views.clone()))
     }
 
-    pub(super) fn commit_placement(&self, epoch: PlacementEpoch, owner: EntityId) -> bool {
-        if self.pending_placement() != Some((epoch, owner)) { return false; }
+    pub(super) fn commit_placement(&self, epoch: PlacementEpoch, owners: &[EntityId]) -> bool {
+        if !self.pending_placement().is_some_and(|(pending, expected)| {
+            pending == epoch && expected.as_slice() == owners
+        }) {
+            return false;
+        }
         let mut inner = self.inner.borrow_mut();
         inner.pending_placement_views.clear();
         inner.pending_work = FrameWork::default();
@@ -736,20 +740,36 @@ mod view_invalidation_tests {
         let owner = EntityId::from(1);
         invalidator.invalidate_scroll_views([owner]);
         let (epoch, expected_owner) = invalidator.pending_placement().unwrap();
-        assert_eq!(expected_owner, owner);
-        assert!(!invalidator.commit_placement(epoch, EntityId::from(2)));
-        assert_eq!(invalidator.pending_placement(), Some((epoch, owner)));
+        assert_eq!(expected_owner.as_slice(), &[owner]);
+        assert!(!invalidator.commit_placement(epoch, &[EntityId::from(2)]));
+        assert_eq!(invalidator.pending_placement(), Some((epoch, expected_owner)));
         invalidator.set_replay_only_dirty();
-        assert!(!invalidator.commit_placement(epoch, owner));
+        assert!(!invalidator.commit_placement(epoch, &[owner]));
         assert!(invalidator.is_dirty());
         assert_eq!(invalidator.take_views(), FxHashSet::from_iter([owner]));
         invalidator.set_dirty(false);
         invalidator.invalidate_scroll_views([owner]);
         let (next, _) = invalidator.pending_placement().unwrap();
         assert_ne!(epoch, next);
-        assert!(invalidator.commit_placement(next, owner));
+        assert!(invalidator.commit_placement(next, &[owner]));
         assert!(!invalidator.is_dirty());
         assert!(invalidator.take_views().is_empty());
+    }
+
+    #[test]
+    fn multi_placement_commit_requires_the_complete_owner_set() {
+        let invalidator = WindowInvalidator::new();
+        invalidator.set_dirty(false);
+        let first = EntityId::from(1);
+        let second = EntityId::from(2);
+        invalidator.invalidate_scroll_views([first]);
+        let (epoch, old) = invalidator.pending_placement().unwrap();
+        invalidator.invalidate_scroll_views([second]);
+        assert!(!invalidator.commit_placement(epoch, &old));
+        let (current, owners) = invalidator.pending_placement().unwrap();
+        assert_eq!(owners.as_slice(), &[first, second]);
+        assert!(invalidator.commit_placement(current, &owners));
+        assert!(!invalidator.is_dirty());
     }
 
     #[test]

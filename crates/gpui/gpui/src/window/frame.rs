@@ -295,19 +295,26 @@ impl Frame {
     /// Commit the already validated placement without swapping the Frame.
     /// All non-Paint CPU owners stay resident, including noncloneable
     /// listener/state records and the existing layout ordering tree.
-    pub(super) fn commit_scroll_placement(
-        &mut self, paint: Arc<Paint>, hitboxes: Range<usize>, delta: Point<Pixels>,
+    pub(super) fn commit_scroll_placements(
+        &mut self, paint: Arc<Paint>,
+        placements: impl IntoIterator<Item = (Range<usize>, Point<Pixels>)>,
     ) {
-        self.hitboxes.translate_committed(hitboxes.clone(), delta);
-        if !hitboxes.is_empty() {
-            self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
-            for layer in &mut self.layer_inputs {
-                if layer.hitboxes.start < hitboxes.end && hitboxes.start < layer.hitboxes.end {
-                    // The fixed clip remains valid, but the enclosing
-                    // offset proof no longer describes every child.
-                    layer.geometry = None;
+        let mut input_changed = false;
+        for (hitboxes, delta) in placements {
+            self.hitboxes.translate_committed(hitboxes.clone(), delta);
+            if !hitboxes.is_empty() {
+                input_changed = true;
+                for layer in &mut self.layer_inputs {
+                    if layer.hitboxes.start < hitboxes.end && hitboxes.start < layer.hitboxes.end {
+                        // The fixed clip remains valid, but the enclosing
+                        // offset proof no longer describes every child.
+                        layer.geometry = None;
+                    }
                 }
             }
+        }
+        if input_changed {
+            self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
         }
         self.retained_paint = Arc::clone(&paint.retained_paint);
         self.paint = Some(paint);

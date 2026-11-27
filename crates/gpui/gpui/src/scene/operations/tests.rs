@@ -10,6 +10,25 @@ fn operations(count: usize) -> Operations {
 }
 
 #[test]
+fn whole_operation_stream_shares_descriptors_and_detaches_on_append() {
+    let mut source = operations(16);
+    let mut target = Operations::default();
+    target.share(&source, 0..source.len());
+    assert!(target.segments.shares_storage(&source.segments));
+    assert!(target.same_physical_ranges(&source));
+    target.push(PaintOperation::EndLayer);
+    target.finish();
+    assert!(!target.segments.shares_storage(&source.segments));
+    assert_eq!(target.len(), 17);
+    assert_eq!(source.len(), 16);
+    let mut alias = Operations::default();
+    alias.share(&source, 0..source.len());
+    source.clear();
+    assert_eq!(alias.len(), 16);
+    assert!(matches!(alias.view(0), Some(PaintOperationRef::Primitive(_))));
+}
+
+#[test]
 fn borrowed_runs_preserve_payload_identity_and_shared_comparison() {
     let source = operations(16);
     let mut target = Operations::default();
