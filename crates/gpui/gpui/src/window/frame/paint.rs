@@ -78,6 +78,17 @@ impl Paint {
         live.extend(self.fallback_atlas_tiles.iter().copied());
     }
 
+    /// Static image eviction needs polychrome sprites and frozen overscan
+    /// dependencies, not the root monochrome glyph stream.
+    pub(in crate::window) fn collect_image_tile_ids_into(
+        &self,
+        live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>,
+    ) {
+        self.scene.collect_polychrome_tile_ids_into(live);
+        self.layers.collect_atlas_tile_ids_into(live);
+        live.extend(self.fallback_atlas_tiles.iter().copied());
+    }
+
     /// Ordinary Paint has no deferred work. Only a real deferred publication
     /// allocates a materialized root, and subsequent owner retries reuse it.
     pub(crate) fn owner_fallback(&self) -> crate::Result<Option<Arc<Self>>> {

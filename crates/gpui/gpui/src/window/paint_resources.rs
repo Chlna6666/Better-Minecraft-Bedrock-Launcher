@@ -136,18 +136,31 @@ impl Window {
         &self,
         live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>,
     ) {
-        self.rendered_frame.scene().collect_polychrome_tile_ids_into(live);
-        self.next_frame.painter.collect_polychrome_tile_ids_into(live);
-        self.next_frame.painter.collect_scroll_capture_tile_ids_into(live);
-        // Both committed and candidate captures can later project images
-        // that are outside the current viewport. Their dependency sets
-        // were collected once when each immutable source was created.
+        // The UI and presentation state often own the very same immutable
+        // Paint. Visit each publication once, without a heap set or Arc clone.
+        // Include both UI generations even if the previous one has already
+        // left the presentation queue.
+        let mut visited = SmallVec::<[&crate::window::Paint; 4]>::new();
         for frame in [&self.rendered_frame, &self.next_frame] {
+            if let Some(paint) = frame.published_paint_ref() {
+                if !visited.iter().any(|&old| std::ptr::eq(old, paint)) {
+                    paint.collect_image_tile_ids_into(live);
+                    visited.push(paint);
+                }
+            } else {
+                frame.painter.collect_polychrome_tile_ids_into(live);
+            }
+            // Both committed and candidate captures can later project images
+            // outside the current viewport, independently of the root Paint.
             frame.scroll_views.collect_atlas_tile_ids_into(live);
             frame.scroll_rows.collect_atlas_tile_ids_into(live);
         }
+        self.next_frame.painter.collect_scroll_capture_tile_ids_into(live);
         for paint in self.presentation_state.committed_paints() {
-            paint.collect_atlas_tile_ids_into(live);
+            if !visited.iter().any(|&old| std::ptr::eq(old, paint)) {
+                paint.collect_image_tile_ids_into(live);
+                visited.push(paint);
+            }
         }
     }
 

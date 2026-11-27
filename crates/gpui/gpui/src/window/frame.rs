@@ -250,6 +250,11 @@ impl Frame {
             .map_or(&self.painter.scene, |paint| &paint.scene)
     }
 
+    /// Borrow a completed publication without allocating or cloning its Arc.
+    pub(super) fn published_paint_ref(&self) -> Option<&Paint> {
+        self.paint.as_deref()
+    }
+
     /// Shares only a completed payload; mutable construction state never crosses this boundary.
     pub(crate) fn published_paint(&self) -> Arc<Paint> {
         match &self.paint {
