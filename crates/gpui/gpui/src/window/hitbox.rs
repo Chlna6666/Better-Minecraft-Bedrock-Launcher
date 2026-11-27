@@ -98,7 +98,7 @@ impl HitboxId {
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
-        if window.last_input_was_keyboard() {
+        if window.last_input_was_keyboard() || window.scroll_view_hover_suppressed() {
             return false;
         }
         self.hit_test(window)

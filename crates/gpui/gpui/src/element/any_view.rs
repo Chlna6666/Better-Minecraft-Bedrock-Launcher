@@ -490,7 +490,7 @@ impl Element for ViewElement {
                 };
                 let start = window.paint_index();
                 if let Some(key) = reused.scrolled {
-                    window.paint_scrolled_view(key, admission, &reused.context);
+                    window.paint_scrolled_view(key, admission, &reused.context, cx);
                 } else {
                     window.replay_retained_view_paint(entity_id, admission);
                 }
@@ -695,6 +695,7 @@ mod tests {
                 div().relative().w(px(200.)).h(px(512.)).flex_shrink_0().child(
                     div().id("target").absolute().left(px(20.)).top(px(128.))
                         .size(px(32.)).bg(crate::red())
+                        .hover(|style| style.bg(crate::green()))
                         .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
                 )
             }
@@ -708,31 +709,47 @@ mod tests {
         }
         let builds = Rc::new(Cell::new(0));
         let clicks = Rc::new(Cell::new(0));
+        let executor = cx.executor();
         let (_, cx) = cx.add_window_view(|_, cx| Scroller(cx.new(|_| Page {
             builds: builds.clone(),
             clicks: clicks.clone(),
         })));
-        let wheel = || PlatformInput::ScrollWheel(ScrollWheelEvent {
-            position: point(px(4.), px(4.)),
-            delta: ScrollDelta::Pixels(point(px(0.), px(-32.))),
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(30.), px(71.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
             ..Default::default()
         });
         cx.update(|window, app| {
             window.draw(app).clear();
-            window.dispatch_event(wheel(), app);
+            window.dispatch_event(wheel(-32.), app);
             window.draw(app).clear();
             let after_capture = builds.get();
-            window.dispatch_event(wheel(), app);
+            window.dispatch_event(wheel(-32.), app);
             window.draw(app).clear();
             assert_eq!(builds.get(), after_capture, "pure scroll must bypass Render");
 
             let scale = window.scale_factor();
             let scene = window.rendered_frame.scene();
             let red = scene.quads.iter().find(|quad| quad.background == crate::red().into())
-                .expect("projected page button");
+                .expect("the translated button leaves hover held during a wheel sequence");
             assert_eq!(red.bounds.origin.y, px(64.).scale(scale));
+        });
 
-            let position = point(px(30.), px(71.));
+        cx.run_until_parked();
+        executor.advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            let scale = window.scale_factor();
+            let scene = window.rendered_frame.scene();
+            let green = scene.quads.iter().find(|quad| quad.background == crate::green().into())
+                .expect("hover returns when the wheel sequence ends");
+            assert_eq!(green.bounds.origin.y, px(64.).scale(scale));
+
+            window.dispatch_event(wheel(-16.), app);
+            window.draw(app).clear();
+            let after_capture = builds.get();
+            let position = point(px(30.), px(55.));
             window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent {
                 button: MouseButton::Left, position, click_count: 1,
                 modifiers: Default::default(), first_mouse: false,

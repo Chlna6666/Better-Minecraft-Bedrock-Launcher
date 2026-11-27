@@ -149,7 +149,8 @@ impl StateInner {
                         let read_start = retained_rows.map(|_| cx.entities.state_read_index());
                         let mut element = render_item(item_index, window, cx);
                         let read_start = read_start.filter(|_| {
-                            visible_height < available_height && element.can_capture_scroll_paint()
+                            visible_height < available_height
+                                && retained_rows.is_some_and(|(plan, _)| plan.can_capture(&mut element))
                         });
                         measured_item_count += 1;
                         let element_size = element.layout_as_root(available_item_space, window, cx);

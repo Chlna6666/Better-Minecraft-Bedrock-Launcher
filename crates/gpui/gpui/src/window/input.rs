@@ -428,7 +428,9 @@ impl Window {
         }
 
         self.invalidate_input_reads(previous_input);
-        if !matches!(&event, PlatformInput::ScrollWheel(_)) {
+        if matches!(&event, PlatformInput::ScrollWheel(_)) {
+            self.note_scroll_wheel_for_hover(cx);
+        } else {
             self.refresh_scrolled_view_input(cx);
         }
         let binding_handled = if let Some(any_mouse_event) = event.mouse_event() {

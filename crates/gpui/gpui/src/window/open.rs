@@ -580,6 +580,7 @@ impl Window {
                 cx.platform.gesture_tuning(),
             ),
             long_press_timer: None,
+            scroll_hover: Default::default(),
             animation_time: Cell::new(now),
             frame_clock,
             inactive_frame_clock: Rc::new(Cell::new(inactive_frame_clock)),

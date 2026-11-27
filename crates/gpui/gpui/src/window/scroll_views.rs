@@ -2,14 +2,24 @@
 //! Adapted from GPUI Fast's scroll-layer paint/reuse phases.
 
 use super::{
-    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_rows::ScrollPaint,
+    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::ScrollPaint,
 };
 use crate::{
     AnyElement, App, Bounds, ContentMask, EntityId, Pixels, Point, StateRead, StateReadStatus,
-    Window,
+    Task, Window,
 };
-use collections::FxHashMap;
-use std::{ops::Range, rc::Rc};
+use collections::{FxHashMap, FxHashSet};
+use std::{ops::Range, rc::Rc, time::{Duration, Instant}};
+
+const SCROLL_HOVER_DELAY: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+pub(super) struct ScrollHover {
+    deadline: Option<Instant>,
+    timer: Option<Task<()>>,
+    pub(super) painting: bool,
+    pub(super) row_owners: FxHashSet<EntityId>,
+}
 
 #[derive(Default)]
 pub(super) struct ScrollViews {
@@ -67,7 +77,6 @@ impl Window {
             && self.visual_scale() == 1.
             && self.element_visual_transform.translation == Point::default()
             && self.content_mask() == viewport
-            && viewport.corner_radii == Default::default()
             && !viewport.bounds.is_empty()
             && offset.x == Pixels::ZERO
         {
@@ -156,7 +165,7 @@ impl Window {
             return None;
         }
         let moved_hitboxes = &self.rendered_frame.hitboxes[hitboxes(&previous.prepaint_range)];
-        if self.hits_scroll_row(moved_hitboxes, delta) {
+        if !self.scroll_hover_is_held(cx) && self.hits_scroll_row(moved_hitboxes, delta) {
             return None;
         }
         let start = self.prepaint_index();
@@ -222,16 +231,20 @@ impl Window {
         cx: &mut App,
     ) {
         let input = &self.next_frame.hitboxes[hitboxes(prepaint)];
+        let suppress_hover = !input.is_empty() && self.scroll_hover_is_held(cx);
         if self.visual_content_mask() != capture.viewport
             || self.scene_animation.is_some()
             || self.next_frame.painter.is_capturing_blur()
-            || self.hits_scroll_row(input, Point::default())
+            || (!suppress_hover && self.hits_scroll_row(input, Point::default()))
         {
             element.paint(self, cx);
             return;
         }
         let read_start = cx.entities.state_read_index();
-        let source = self.capture_scroll_paint(context.element_offset, element, cx);
+        let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover, cx);
+        if suppress_hover {
+            self.schedule_scroll_hover_restore(cx);
+        }
         let paint_reads = cx.entities.state_reads_since(read_start);
         let reads = if paint_reads.is_empty() {
             capture.reads
@@ -251,7 +264,7 @@ impl Window {
                 viewport: capture.viewport,
                 source,
                 reads,
-                stale_input: false,
+                stale_input: suppress_hover,
             },
         );
     }
@@ -261,6 +274,7 @@ impl Window {
         key: u64,
         previous: &RetainedViewRecord,
         context: &RetainedPaintContext,
+        cx: &App,
     ) {
         let mut source = self.rendered_frame.scroll_views.views[&key].clone();
         let scale = self.scale_factor();
@@ -274,6 +288,10 @@ impl Window {
             delta,
         );
         self.replay_validated_paint_records(&previous.paint_range);
+        if !hitboxes(&previous.prepaint_range).is_empty() && self.scroll_hover_is_held(cx) {
+            source.stale_input = true;
+            self.schedule_scroll_hover_restore(cx);
+        }
         source.stale_input |= delta != Point::default()
             && previous.paint_range.start.mouse_listeners_index
                 != previous.paint_range.end.mouse_listeners_index;
@@ -284,14 +302,64 @@ impl Window {
     /// Restore those callbacks before dispatching positional input. Native
     /// wheels remain on the enclosing scroller and use translated hitboxes.
     pub(super) fn refresh_scrolled_view_input(&mut self, cx: &mut App) {
-        let mut dirty = false;
-        for source in self.rendered_frame.scroll_views.views.values() {
-            if source.stale_input {
-                dirty |= self.invalidator.invalidate_owned_view(source.owner);
-            }
-        }
-        if dirty {
+        self.scroll_hover.deadline = None;
+        self.scroll_hover.timer.take();
+        if self.invalidate_scrolled_view_input() {
             self.draw(cx).clear();
         }
+    }
+
+    pub(super) fn note_scroll_wheel_for_hover(&mut self, cx: &App) {
+        self.scroll_hover.deadline = Some(cx.background_executor().now() + SCROLL_HOVER_DELAY);
+    }
+
+    pub(super) fn scroll_view_hover_suppressed(&self) -> bool {
+        self.scroll_hover.painting
+    }
+
+    pub(super) fn scroll_hover_is_held(&self, cx: &App) -> bool {
+        self.invalidator.scroll_content_revision().1
+            && self.scroll_hover.deadline.is_some_and(|end| cx.background_executor().now() < end)
+    }
+
+    fn invalidate_scrolled_view_input(&mut self) -> bool {
+        let row_owners = self.scroll_hover.row_owners.drain();
+        self.invalidator.invalidate_dependent_views(
+            self.rendered_frame.scroll_views.views.values()
+                .filter(|view| view.stale_input)
+                .map(|view| view.owner)
+                .chain(row_owners),
+        )
+    }
+
+    pub(super) fn schedule_scroll_hover_restore(&mut self, cx: &App) {
+        if self.scroll_hover.timer.is_some() || self.scroll_hover.deadline.is_none() {
+            return;
+        }
+        // One timer per window. Later wheel events extend its deadline without
+        // allocating another task. Only committed captured views need repaint.
+        self.scroll_hover.timer = Some(self.spawn(cx, async |cx| {
+            let mut delay = SCROLL_HOVER_DELAY;
+            loop {
+                cx.background_executor.timer(delay).await;
+                let Ok(Some(remaining)) = cx.update(|window, cx| {
+                    let deadline = window.scroll_hover.deadline?;
+                    if let Some(remaining) = deadline.checked_duration_since(cx.background_executor().now())
+                        && !remaining.is_zero()
+                    {
+                        return Some(remaining);
+                    }
+                    window.scroll_hover.deadline = None;
+                    window.scroll_hover.timer.take();
+                    if window.invalidate_scrolled_view_input() {
+                        window.schedule_dirty_frame();
+                    }
+                    None
+                }) else {
+                    break;
+                };
+                delay = remaining;
+            }
+        }));
     }
 }

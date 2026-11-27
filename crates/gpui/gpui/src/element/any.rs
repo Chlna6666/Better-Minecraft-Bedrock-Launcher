@@ -12,6 +12,14 @@ use super::{
     lifecycle::{Drawable, ElementObject},
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollCapture {
+    Row,
+    RoundedViewport,
+    ClippedRow,
+    View,
+}
+
 /// An element for rendering components. An implementation detail of the [`IntoElement`] derive macro
 /// for [`RenderOnce`]
 #[doc(hidden)]
@@ -172,19 +180,19 @@ impl AnyElement {
     }
 
     pub(crate) fn can_capture_scroll_paint(&mut self) -> bool {
-        self.can_capture_scrolling_subtree(false)
+        self.can_capture_scrolling_subtree(ScrollCapture::Row)
     }
 
     pub(crate) fn can_capture_scrolling_view(&mut self) -> bool {
-        self.can_capture_scrolling_subtree(true)
+        self.can_capture_scrolling_subtree(ScrollCapture::View)
     }
 
-    fn can_capture_scrolling_subtree(&mut self, restore_input: bool) -> bool {
+    pub(crate) fn can_capture_scrolling_subtree(&mut self, capture: ScrollCapture) -> bool {
         let element = self.0.inner_element();
         if let Some(div) = element.downcast_mut::<crate::Div>() {
-            div.can_capture_scrolling_subtree(restore_input)
+            div.can_capture_scrolling_subtree(capture)
         } else if let Some(div) = element.downcast_mut::<crate::Stateful<crate::Div>>() {
-            div.element.can_capture_scrolling_subtree(restore_input)
+            div.element.can_capture_scrolling_subtree(capture)
         } else {
             element.is::<crate::SharedString>()
                 || element.is::<&'static str>()

@@ -1,5 +1,5 @@
 use crate::{
-    Bounds, Context, IntoElement, Pixels, Render, Styled, TestAppContext, UniformListScrollHandle,
+    Bounds, Context, IntoElement, ParentElement, Pixels, Render, Styled, TestAppContext, UniformListScrollHandle,
     Window, canvas, point, px, uniform_list,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -72,9 +72,10 @@ struct FixedRows {
 
 impl Render for FixedRows {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use crate::FluentBuilder;
         let calls = self.calls.clone();
         let hover = self.hover;
-        uniform_list("fixed-rows", 100, move |range, _, _| {
+        let rows = uniform_list("fixed-rows", 100, move |range, _, _| {
             use crate::{FluentBuilder, InteractiveElement};
             calls.borrow_mut().push(range.clone());
             range
@@ -84,15 +85,19 @@ impl Render for FixedRows {
                         .w_full()
                         .h(px(24.))
                         .bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
-                        .when(hover, |row| row.hover(|style| style.bg(crate::green())))
+                        .when(hover, |row| {
+                            row.hover(|style| style.bg(crate::green()))
+                                .child(crate::div().overflow_hidden().child("price"))
+                        })
                 })
                 .collect()
         })
         .with_sizing_behavior(crate::ListSizingBehavior::Auto)
-        .with_item_height(px(24.))
+        .when(!hover, |rows| rows.with_item_height(px(24.)))
         .track_scroll(self.scroll_handle.clone())
         .w(px(240.))
-        .h(px(120.))
+        .h(px(120.));
+        crate::div().w(px(240.)).h(px(120.)).rounded_lg().overflow_hidden().child(rows)
     }
 }
 
@@ -175,7 +180,11 @@ fn native_scroll_repositions_retained_hover_hitboxes(cx: &mut TestAppContext) {
         calls.borrow_mut().clear();
         window.dispatch_event(wheel(), app);
         window.draw(app).clear();
-        assert_eq!(&*calls.borrow(), &[2..3, 6..7]);
+        assert_eq!(&*calls.borrow(), &[6..7]);
+        let scene = window.rendered_frame.scene();
+        assert!(scene.quads.iter().all(|quad| quad.background != crate::green().into()));
+        let row = scene.quads.iter().find(|quad| quad.background == crate::red().into()).unwrap();
+        assert_ne!(row.content_mask.corner_radii, Default::default());
 
         let position = point(px(4.), px(50.));
         window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {

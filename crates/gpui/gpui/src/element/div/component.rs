@@ -1,7 +1,7 @@
 use crate::{
     AnyElement, App, Bounds, Display, Element, ElementId, Fill, GlobalElementId,
     Hitbox, HitboxBehavior, ImageCacheProvider,
-    InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels, Point, Style,
+    InspectorElementId, IntoElement, LayoutId, Overflow, ParentElement, Pixels, Point, ScrollCapture, Style,
     StyleRefinement, Styled, Visibility, Window, point,
 };
 use smallvec::SmallVec;
@@ -48,19 +48,21 @@ pub struct Div {
 impl Div {
     /// All coordinates and clips emitted by these built-in children can be
     /// projected from an overscanned row into its actual viewport.
-    pub(crate) fn can_capture_scrolling_subtree(&mut self, restore_input: bool) -> bool {
+    pub(crate) fn can_capture_scrolling_subtree(&mut self, capture: ScrollCapture) -> bool {
+        let base = &self.interactivity.base_style;
+        let descendants = if capture == ScrollCapture::RoundedViewport && clips_content(base) {
+            ScrollCapture::ClippedRow
+        } else {
+            capture
+        };
         self.prepaint_listener.is_none()
-            && self.interactivity_can_move(restore_input)
-            && capture_style(&self.interactivity.base_style, restore_input)
-            && self.interactivity.hover_style.as_deref().is_none_or(|style| capture_style(style, restore_input))
-            && self.interactivity.active_style.as_deref().is_none_or(|style| capture_style(style, restore_input))
-            && self.children.iter_mut().all(|child| {
-                if restore_input {
-                    child.can_capture_scrolling_view()
-                } else {
-                    child.can_capture_scroll_paint()
-                }
-            })
+            && self.interactivity_can_move(capture == ScrollCapture::View)
+            && (descendants != ScrollCapture::ClippedRow
+                || (self.interactivity.hover_style.is_none() && base.mouse_cursor.is_none()))
+            && capture_style(base, capture)
+            && self.interactivity.hover_style.as_deref().is_none_or(|style| capture_style(style, capture))
+            && self.interactivity.active_style.as_deref().is_none_or(|style| capture_style(style, capture))
+            && self.children.iter_mut().all(|child| child.can_capture_scrolling_subtree(descendants))
     }
 
     /// Animate this leaf decoration's top/bottom presentation offsets in logical pixels.
@@ -174,16 +176,27 @@ impl Div {
     }
 }
 
-fn capture_style(style: &StyleRefinement, restore_input: bool) -> bool {
+fn clips_content(style: &StyleRefinement) -> bool {
+    style.overflow.x.is_some_and(|overflow| overflow != Overflow::Visible)
+        || style.overflow.y.is_some_and(|overflow| overflow != Overflow::Visible)
+}
+
+fn capture_style(style: &StyleRefinement, capture: ScrollCapture) -> bool {
     style.background_blur.is_none()
         && style.filter_blur.is_none()
         && style.transition.is_none()
         && style.scale.is_none_or(|scale| scale == 1.)
         // A moving descendant clip can happen to match the viewport at
         // capture time. Its hits cannot be restored from that intersection.
-        && (!restore_input
-            || (style.overflow.x.is_none_or(|overflow| overflow == Overflow::Visible)
-                && style.overflow.y.is_none_or(|overflow| overflow == Overflow::Visible)))
+        && (!clips_content(style) || match capture {
+            ScrollCapture::View => false,
+            ScrollCapture::Row => true,
+            ScrollCapture::RoundedViewport | ScrollCapture::ClippedRow => {
+                let corners = &style.corner_radii;
+                [corners.top_left, corners.top_right, corners.bottom_right, corners.bottom_left]
+                    .into_iter().all(|radius| radius.is_none_or(|radius| radius.is_zero()))
+            }
+        })
         && {
             #[cfg(debug_assertions)]
             { !style.debug.unwrap_or(false) && !style.debug_below.unwrap_or(false) }

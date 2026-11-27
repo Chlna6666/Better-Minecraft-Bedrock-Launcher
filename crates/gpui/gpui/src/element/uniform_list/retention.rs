@@ -55,7 +55,7 @@ pub(super) fn prepaint(
         window.with_content_mask(Some(content_mask), |window| {
             for (mut item, index) in items.into_iter().zip(row..next) {
                 let origin = row_origin(index);
-                let capture = item.can_capture_scroll_paint();
+                let capture = plan.can_capture(&mut item);
                 let before =
                     capture.then(|| (window.prepaint_index(), cx.entities.state_read_index()));
                 window.with_list_item_layout_key(index, |window| {

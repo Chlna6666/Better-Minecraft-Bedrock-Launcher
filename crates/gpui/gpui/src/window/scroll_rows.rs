@@ -2,19 +2,18 @@
 //! Capture paint past the viewport so a translated row can reveal pixels
 //! that the prior frame never submitted.
 
-use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext};
+use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::ScrollPaint};
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, GlobalElementId, Hitbox, Pixels, Point,
-    ScaledPixels, Size, StateRead, StateReadStatus, Window, point,
-    scene::{Operations, PaintOperation, Painter, Primitive},
+    AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
+    ScrollCapture, Size, StateRead, StateReadStatus, Window,
 };
 use collections::FxHashMap;
-use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
 #[derive(Default)]
 pub(super) struct ScrollRows {
     rows: FxHashMap<(u64, usize), RowRecord>,
+    measurements: FxHashMap<GlobalElementId, Rc<RowMeasurement>>,
     pub(super) enabled: bool,
     blocked: bool,
 }
@@ -22,6 +21,7 @@ pub(super) struct ScrollRows {
 impl ScrollRows {
     pub(super) fn clear(&mut self) {
         self.rows.clear();
+        self.measurements.clear();
         self.enabled = false;
         self.blocked = false;
     }
@@ -30,6 +30,10 @@ impl ScrollRows {
         let target = current.rows.len().max(32);
         if self.rows.capacity() > target.saturating_mul(4) {
             self.rows.shrink_to(target);
+        }
+        let target = current.measurements.len().max(4);
+        if self.measurements.capacity() > target * 4 {
+            self.measurements.shrink_to(target);
         }
     }
 }
@@ -52,7 +56,18 @@ pub(crate) struct RowPlan {
     key: u64,
     revision: u64,
     context: Rc<ListContext>,
+    hover_held: bool,
     pub(crate) prepainted: FxHashMap<usize, RowPrepaint>,
+}
+
+impl RowPlan {
+    pub(crate) fn can_capture(&self, item: &mut AnyElement) -> bool {
+        if self.context.inherited.visual_content_mask.corner_radii == Default::default() {
+            item.can_capture_scroll_paint()
+        } else {
+            item.can_capture_scrolling_subtree(ScrollCapture::RoundedViewport)
+        }
+    }
 }
 
 pub(crate) struct RowPrepaint {
@@ -69,16 +84,62 @@ struct RowRecord {
     content: Rc<ScrollPaint>,
 }
 
-pub(super) struct ScrollPaint {
-    origin: Point<Pixels>,
-    coverage: Bounds<ScaledPixels>,
-    operations: Operations,
+struct RowMeasurement {
+    revision: u64,
+    index: usize,
+    count: usize,
+    context: RetainedPaintContext,
+    reads: Rc<[StateRead]>,
+    size: Size<Pixels>,
 }
 
 impl Window {
     pub(crate) fn scroll_row_replay_is_enabled(&self) -> bool {
         let rows = &self.next_frame.scroll_rows;
         rows.enabled && !rows.blocked
+    }
+
+    /// A uniform list need only rebuild its measurement sample when its
+    /// content or inherited measurement context changes. Adapted from GPUI
+    /// Fast's uniform-list measurement record.
+    pub(crate) fn measure_uniform_row(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        index: usize,
+        count: usize,
+        cx: &mut App,
+        measure: impl FnOnce(&mut Self, &mut App) -> (Size<Pixels>, bool),
+    ) -> Size<Pixels> {
+        let Some(id) = id.filter(|_| self.scroll_row_replay_is_enabled() && !self.force_view_cache_refresh) else {
+            return measure(self, cx).0;
+        };
+        let revision = self.invalidator.scroll_content_revision().0;
+        let context = self.current_retained_paint_context();
+        if let Some(previous) = self.rendered_frame.scroll_rows.measurements.get(id)
+            && previous.revision == revision
+            && previous.index == index
+            && previous.count == count
+            && previous.context == context
+            && previous.reads.iter().all(|read| read.status() == StateReadStatus::Unchanged)
+        {
+            let size = previous.size;
+            self.next_frame.scroll_rows.measurements.insert(id.clone(), previous.clone());
+            self.replayed_view_owners.insert(self.current_view());
+            return size;
+        }
+        let start = cx.entities.state_read_index();
+        let (size, cacheable) = measure(self, cx);
+        if cacheable {
+            self.next_frame.scroll_rows.measurements.insert(id.clone(), Rc::new(RowMeasurement {
+                revision,
+                index,
+                count,
+                context,
+                reads: cx.entities.state_reads_since(start),
+                size,
+            }));
+        }
+        size
     }
 
     /// A paint-only effect can change what a retained row emits without
@@ -112,7 +173,6 @@ impl Window {
             || self.content_mask() != viewport
             || self.element_visual_transform.translation != Point::default()
             || viewport.bounds.is_empty()
-            || viewport.corner_radii != Default::default()
             || cx.has_active_drag()
         {
             return None;
@@ -133,6 +193,7 @@ impl Window {
         Some(RowPlan {
             key,
             revision,
+            hover_held: self.scroll_hover_is_held(cx),
             prepainted: FxHashMap::default(),
             context: Rc::new(ListContext {
                 identity,
@@ -162,12 +223,11 @@ impl Window {
         let Some(delta) = record.content.translation(origin, scale) else {
             return false;
         };
-        let coverage = moved(record.content.coverage, delta);
         let logical_delta = origin - record.prepaint.origin;
         let hitboxes = &self.rendered_frame.hitboxes[hitbox_range(&record.prepaint)];
         record.revision == plan.revision
             && *record.context == *plan.context
-            && coverage.intersect(&viewport) == viewport
+            && record.content.covers(viewport, delta)
             && record
                 .prepaint
                 .reads
@@ -175,7 +235,7 @@ impl Window {
                 .all(|read| read.status() == StateReadStatus::Unchanged)
             && self.can_reuse_prepaint(&record.prepaint.records)
             && self.can_reuse_paint(&record.paint)
-            && !self.hits_scroll_row(hitboxes, logical_delta)
+            && (plan.hover_held || !self.hits_scroll_row(hitboxes, logical_delta))
     }
 
     pub(crate) fn reuse_scroll_row(
@@ -227,7 +287,7 @@ impl Window {
             (Some(mut item), Some((plan, prepaint))) => {
                 self.paint_scroll_row(plan, row, &mut item, prepaint, cx)
             }
-            (None, Some((plan, prepaint))) => self.paint_reused_scroll_row(plan, row, prepaint),
+            (None, Some((plan, prepaint))) => self.paint_reused_scroll_row(plan, row, prepaint, cx),
             (Some(mut item), None) => item.paint(self, cx),
             (None, None) => unreachable!("retained scroll row owns its prepaint records"),
         }
@@ -245,19 +305,23 @@ impl Window {
         // child would emit. Leave those paths on their regular painter.
         let viewport = self.visual_content_mask();
         let hitboxes = &self.next_frame.hitboxes[hitbox_range(&prepaint)];
+        let suppress_hover = plan.hover_held && !hitboxes.is_empty();
         if self.next_frame.painter.is_capturing_blur()
             || self.scene_animation.is_some()
             || hitboxes
                 .iter()
                 .any(|hitbox| hitbox.content_mask != viewport)
-            || self.hits_scroll_row(hitboxes, Point::default())
+            || (!suppress_hover && self.hits_scroll_row(hitboxes, Point::default()))
         {
             item.paint(self, cx);
             return;
         }
         let read_start = cx.entities.state_read_index();
         let start = self.paint_index();
-        let content = self.capture_scroll_paint(prepaint.origin, item, cx);
+        let content = self.capture_scroll_paint(prepaint.origin, item, suppress_hover, cx);
+        if suppress_hover {
+            self.restore_scroll_row_after_wheel(cx);
+        }
         let paint = start..self.paint_index();
         let paint_reads = cx.entities.state_reads_since(read_start);
         if !paint_reads.is_empty() {
@@ -271,7 +335,7 @@ impl Window {
         self.remember_scroll_row(plan, row, prepaint, paint, content);
     }
 
-    fn paint_reused_scroll_row(&mut self, plan: &RowPlan, row: usize, prepaint: RowPrepaint) {
+    fn paint_reused_scroll_row(&mut self, plan: &RowPlan, row: usize, prepaint: RowPrepaint, cx: &App) {
         let previous = &self.rendered_frame.scroll_rows.rows[&(plan.key, row)];
         let content = previous.content.clone();
         let old_paint = previous.paint.clone();
@@ -281,8 +345,20 @@ impl Window {
         let delta = prepaint.origin.scale(scale) - content.origin.scale(scale);
         content.replay(&mut self.next_frame.painter, viewport, delta);
         self.replay_validated_paint_records(&old_paint);
+        if !hitbox_range(&prepaint).is_empty()
+            && (plan.hover_held || (delta != Point::default()
+                && old_paint.start.mouse_listeners_index != old_paint.end.mouse_listeners_index))
+        {
+            self.restore_scroll_row_after_wheel(cx);
+        }
         let paint = start..self.paint_index();
         self.remember_scroll_row(plan, row, prepaint, paint, content);
+    }
+
+    fn restore_scroll_row_after_wheel(&mut self, cx: &App) {
+        let owner = self.current_view();
+        self.scroll_hover.row_owners.insert(owner);
+        self.schedule_scroll_hover_restore(cx);
     }
 
     fn remember_scroll_row(
@@ -313,142 +389,8 @@ impl Window {
                         .contains(&self.mouse_position)
             })
     }
-
-    pub(super) fn capture_scroll_paint(
-        &mut self,
-        origin: Point<Pixels>,
-        item: &mut AnyElement,
-        cx: &mut App,
-    ) -> Rc<ScrollPaint> {
-        let viewport = self.visual_content_mask();
-        let height = viewport.bounds.size.height;
-        let capture = ContentMask::new(Bounds::new(
-            viewport.bounds.origin - point(Pixels::ZERO, height),
-            crate::size(viewport.bounds.size.width, height * 3.),
-        ));
-        self.next_frame.painter.begin_scroll_capture();
-        self.content_mask_stack.push(capture);
-        self.visual_content_mask_stack.push(capture);
-        item.paint(self, cx);
-        self.visual_content_mask_stack.pop();
-        self.content_mask_stack.pop();
-        let operations = self.next_frame.painter.end_scroll_capture();
-        let scale = self.scale_factor();
-        let content = Rc::new(ScrollPaint {
-            origin,
-            coverage: capture.scale(scale).bounds,
-            operations,
-        });
-        content.replay(
-            &mut self.next_frame.painter,
-            viewport.scale(scale),
-            Point::default(),
-        );
-        content
-    }
 }
 
 fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
     prepaint.records.start.hitboxes_index..prepaint.records.end.hitboxes_index
-}
-
-impl ScrollPaint {
-    pub(super) fn translation(
-        &self,
-        origin: Point<Pixels>,
-        scale: f32,
-    ) -> Option<Point<ScaledPixels>> {
-        let delta = origin.scale(scale) - self.origin.scale(scale);
-        [delta.x.0, delta.y.0]
-            .into_iter()
-            .all(|v| v.is_finite() && v.fract() == 0.)
-            .then_some(delta)
-    }
-
-    pub(super) fn covers(
-        &self,
-        viewport: Bounds<ScaledPixels>,
-        delta: Point<ScaledPixels>,
-    ) -> bool {
-        moved(self.coverage, delta).intersect(&viewport) == viewport
-    }
-
-    pub(super) fn replay(
-        &self,
-        painter: &mut Painter,
-        viewport: ContentMask<ScaledPixels>,
-        delta: Point<ScaledPixels>,
-    ) {
-        let mut layers = SmallVec::<[bool; 8]>::new();
-        let source_viewport = Bounds::new(viewport.bounds.origin - delta, viewport.bounds.size);
-        for operation in self.operations.iter() {
-            match operation {
-                PaintOperation::StartLayer(bounds) => {
-                    let bounds = moved(*bounds, delta).intersect(&viewport.bounds);
-                    layers.push(!bounds.is_empty());
-                    if !bounds.is_empty() {
-                        painter.push_layer(bounds);
-                    }
-                }
-                PaintOperation::EndLayer => {
-                    if layers.pop() == Some(true) {
-                        painter.pop_layer();
-                    }
-                }
-                PaintOperation::Primitive(primitive) => {
-                    if primitive.visual_bounds().intersects(&source_viewport) {
-                        painter.insert_primitive(project_primitive(
-                            primitive,
-                            delta,
-                            viewport.bounds,
-                        ));
-                    }
-                }
-                PaintOperation::StartBlur(_) | PaintOperation::EndBlur => {
-                    unreachable!("scroll row capture admits only built-in unfiltered paint")
-                }
-            }
-        }
-    }
-}
-
-fn moved(bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels>) -> Bounds<ScaledPixels> {
-    Bounds::new(bounds.origin + delta, bounds.size)
-}
-
-fn project_primitive(
-    primitive: &Primitive,
-    delta: Point<ScaledPixels>,
-    viewport: Bounds<ScaledPixels>,
-) -> Primitive {
-    // Based on GPUI Fast fast/layers/scene.rs move_primitive. The row clip
-    // moves with the content, then intersects the stationary viewport.
-    let mask = |mut mask: ContentMask<ScaledPixels>| {
-        mask.bounds = moved(mask.bounds, delta).intersect(&viewport);
-        if mask.corner_radii != Default::default() {
-            mask.corner_bounds = moved(mask.corner_bounds, delta);
-        }
-        mask
-    };
-    macro_rules! project {
-        ($primitive:ident, $kind:ident) => {{
-            let mut primitive = *$primitive;
-            primitive.bounds = moved(primitive.bounds, delta);
-            primitive.content_mask = mask(primitive.content_mask);
-            Primitive::$kind(primitive)
-        }};
-    }
-    match primitive {
-        Primitive::Quad(quad) => project!(quad, Quad),
-        Primitive::Underline(underline) => project!(underline, Underline),
-        Primitive::MonochromeSprite(sprite) => project!(sprite, MonochromeSprite),
-        Primitive::PolychromeSprite(sprite) => project!(sprite, PolychromeSprite),
-        Primitive::Shadow(shadow) => {
-            let mut shadow = *shadow;
-            shadow.bounds = moved(shadow.bounds, delta);
-            shadow.content_mask = mask(shadow.content_mask);
-            Primitive::Shadow(shadow)
-        }
-        _ => unreachable!("unsupported primitive in built-in scroll row"),
-    }
 }

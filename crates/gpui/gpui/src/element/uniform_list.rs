@@ -127,7 +127,7 @@ impl Element for UniformList {
             // to be constructed, measured, or dropped before visible rows.
             size(Pixels::ZERO, height)
         } else {
-            self.measure_item(None, window, cx)
+            self.measure_item(global_id, window, cx)
         };
         let layout_id = self.interactivity.request_layout(
             global_id,
@@ -488,7 +488,7 @@ impl IntoElement for UniformList {
 impl UniformList {
     fn measure_item(
         &self,
-        list_width: Option<Pixels>,
+        global_id: Option<&GlobalElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> Size<Pixels> {
@@ -497,16 +497,14 @@ impl UniformList {
         }
 
         let item_ix = cmp::min(self.item_to_measure_index, self.item_count - 1);
-        let mut items = (self.render_items)(item_ix..item_ix + 1, window, cx);
-        let Some(mut item_to_measure) = items.pop() else {
-            return Size::default();
-        };
-        let available_space = size(
-            list_width.map_or(AvailableSpace::MinContent, |width| {
-                AvailableSpace::Definite(width)
-            }),
-            AvailableSpace::MinContent,
-        );
-        item_to_measure.layout_as_root(available_space, window, cx)
+        window.measure_uniform_row(global_id, item_ix, self.item_count, cx, |window, cx| {
+            let mut items = (self.render_items)(item_ix..item_ix + 1, window, cx);
+            let Some(mut item) = items.pop() else {
+                return (Size::default(), false);
+            };
+            let cacheable = window.scroll_row_replay_is_enabled() && item.can_capture_scroll_paint();
+            let available_space = size(AvailableSpace::MinContent, AvailableSpace::MinContent);
+            (item.layout_as_root(available_space, window, cx), cacheable)
+        })
     }
 }

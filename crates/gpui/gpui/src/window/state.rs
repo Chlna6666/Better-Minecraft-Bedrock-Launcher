@@ -564,6 +564,7 @@ pub struct Window {
     pub(super) active_dirty_to_present_started_at: Option<Instant>,
     pub(super) touch_gestures: crate::gestures::TouchGestureRecognizer,
     pub(super) long_press_timer: Option<Task<()>>,
+    pub(super) scroll_hover: super::scroll_views::ScrollHover,
     pub(super) animation_time: Cell<Instant>,
     pub(super) frame_clock: FrameClock,
     /// Child-window inheritance sees the latest value without borrowing a
