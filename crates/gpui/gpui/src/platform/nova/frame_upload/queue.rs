@@ -31,6 +31,64 @@ pub(in crate::platform::nova) struct PendingAtlasUpload {
     len: usize,
 }
 
+impl PendingAtlasUpload {
+    // Only merge exact rectangles whose encoded rows already have the
+    // combined layout. Do not reorder writes or allocate a staging copy.
+    fn append(&mut self, next: &Self) -> bool {
+        if self.texture_id != next.texture_id
+            || self.offset.checked_add(self.len) != Some(next.offset)
+        {
+            return false;
+        }
+        let width = self.size.width();
+        let height = self.size.height();
+        let next_width = next.size.width();
+        let next_height = next.size.height();
+        let bpp = atlas_bytes_per_pixel(self.texture_id.kind) as u32;
+        if width.checked_mul(bpp) != Some(self.bytes_per_row)
+            || next_width.checked_mul(bpp) != Some(next.bytes_per_row)
+            || (self.bytes_per_row as usize).checked_mul(height as usize) != Some(self.len)
+            || (next.bytes_per_row as usize).checked_mul(next_height as usize) != Some(next.len)
+        {
+            return false;
+        }
+
+        let (combined_width, combined_height, pitch) = if self.origin.x == next.origin.x
+            && width == next_width
+            && self.origin.y.checked_add(height) == Some(next.origin.y)
+        {
+            let Some(combined_height) = height.checked_add(next_height) else {
+                return false;
+            };
+            (width, combined_height, self.bytes_per_row)
+        } else if height == 1 && next_height == 1
+            && self.origin.y == next.origin.y
+            && self.origin.x.checked_add(width) == Some(next.origin.x)
+        {
+            let Some(combined_width) = width.checked_add(next_width) else {
+                return false;
+            };
+            let Some(pitch) = combined_width.checked_mul(bpp) else {
+                return false;
+            };
+            (combined_width, 1, pitch)
+        } else {
+            return false;
+        };
+
+        let Ok(size) = Extent2d::new(combined_width, combined_height) else {
+            return false;
+        };
+        let Some(len) = self.len.checked_add(next.len) else {
+            return false;
+        };
+        self.size = size;
+        self.bytes_per_row = pitch;
+        self.len = len;
+        true
+    }
+}
+
 #[derive(Default)]
 pub(in crate::platform::nova) struct AtlasUploadBatch {
     bytes: Vec<u8>,
@@ -112,7 +170,11 @@ impl NovaAtlas {
         }
         let result = (|| {
             let mut writes = Vec::with_capacity(batch.uploads.len());
-            for pending_upload in &batch.uploads {
+            let mut pending = batch.uploads.iter().copied().peekable();
+            while let Some(mut pending_upload) = pending.next() {
+                while pending.peek().is_some_and(|next| pending_upload.append(next)) {
+                    pending.next();
+                }
                 let end = pending_upload
                     .offset
                     .checked_add(pending_upload.len)

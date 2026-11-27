@@ -97,6 +97,96 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_rows_share_one_native_write_without_copying() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let texture = AtlasTextureId {
+            index: 0,
+            kind: AtlasTextureKind::Rgba,
+        };
+        {
+            let mut state = atlas.state.lock().expect("test atlas mutex");
+            for (y, value) in [(10, 7), (12, 9)] {
+                assert!(state.enqueue_tile_upload(
+                    texture,
+                    AtlasTextureKind::Rgba,
+                    crate::point(DevicePixels(5), DevicePixels(y)),
+                    crate::size(DevicePixels(3), DevicePixels(2)),
+                    &[value; 24],
+                    0,
+                ));
+            }
+        }
+        let batch = AtlasUpload::new(&atlas);
+        let original_ptr = batch.batch().bytes.as_ptr();
+        let stats = batch
+            .upload(
+                |_| Ok(TextureId::from_parts(0, 0)),
+                |writes| {
+                    assert_eq!(writes.len(), 1);
+                    assert_eq!(writes[0].descriptor.origin, Origin2d { x: 5, y: 10 });
+                    assert_eq!(writes[0].descriptor.size, Extent2d::new(3, 4).unwrap());
+                    assert_eq!(writes[0].data.as_ptr(), original_ptr);
+                    assert_eq!(&writes[0].data[..24], &[7; 24]);
+                    assert_eq!(&writes[0].data[24..], &[9; 24]);
+                    Ok(())
+                },
+            )
+            .expect("merged atlas upload");
+        assert_eq!(stats.upload_count, 1);
+        assert_eq!(stats.uploaded_bytes, 48);
+    }
+
+    #[test]
+    fn adjacent_single_row_uploads_merge_but_gaps_do_not() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        queue(&atlas, 1, 10);
+        queue(&atlas, 2, 11);
+        queue(&atlas, 3, 13);
+        let stats = AtlasUpload::new(&atlas)
+            .upload(
+                |_| Ok(TextureId::from_parts(0, 0)),
+                |writes| {
+                    assert_eq!(writes.len(), 2);
+                    assert_eq!(writes[0].data, &[1, 1, 1, 1, 2, 2, 2, 2]);
+                    assert_eq!(writes[1].data, &[3; 4]);
+                    Ok(())
+                },
+            )
+            .expect("merged atlas row");
+        assert_eq!(stats.upload_count, 2);
+        assert_eq!(stats.uploaded_bytes, 12);
+    }
+
+    #[test]
+    fn failed_merged_upload_restores_original_descriptors() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        queue(&atlas, 1, 10);
+        queue(&atlas, 2, 11);
+        let batch = AtlasUpload::new(&atlas);
+        queue(&atlas, 3, 10);
+        assert!(batch.upload(
+            |_| Ok(TextureId::from_parts(0, 0)),
+            |writes| {
+                assert_eq!(writes.len(), 1);
+                anyhow::bail!("injected upload failure")
+            },
+        ).is_err());
+        assert_eq!(atlas.pending_upload_count_for_test(), 3);
+        AtlasUpload::new(&atlas).upload(
+            |_| Ok(TextureId::from_parts(0, 0)),
+            |writes| {
+                assert_eq!(writes.len(), 2);
+                assert_eq!(writes[0].data, &[1, 1, 1, 1, 2, 2, 2, 2]);
+                assert_eq!(writes[1].data, &[3; 4]);
+                Ok(())
+            },
+        ).expect("retry preserves newer writes");
+    }
+
+    #[test]
     fn snapshot_upload_excludes_later_writes_and_their_generation() {
         let atlas = NovaAtlas::new();
         atlas.clear_pending_uploads_for_test();
