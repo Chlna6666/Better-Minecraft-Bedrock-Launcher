@@ -11,6 +11,8 @@ pub mod memory_profile;
 pub mod performance_metrics;
 /// Process memory snapshots.
 pub mod process_memory;
+/// Placement-only scroll transaction outcomes.
+pub mod scroll_placement;
 /// Text operation timing and backend metrics.
 pub mod text;
 

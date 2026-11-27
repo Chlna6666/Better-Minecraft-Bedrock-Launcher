@@ -149,6 +149,7 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
 struct LabReport {
     window_metrics: Vec<gpui::diagnostics::performance_metrics::window::MetricsSnapshot>,
     text_metrics: Vec<gpui::diagnostics::text::TextOperationMetricsSnapshot>,
+    scroll_placement: BTreeMap<&'static str, u64>,
     gpu_owner: gpui::diagnostics::gpu_owner::GpuOwnerMetricsSnapshot,
     gpu_owner_samples: Vec<gpui::diagnostics::gpu_owner::GpuOwnerJobSample>,
     memory: gpui::GpuiMemorySnapshot,
@@ -847,6 +848,7 @@ fn print_report(
     let report = LabReport {
         window_metrics,
         text_metrics: text::snapshot(),
+        scroll_placement: gpui::diagnostics::scroll_placement::snapshot(),
         schema_version: 6,
         gpu_owner,
         gpu_owner_samples,
