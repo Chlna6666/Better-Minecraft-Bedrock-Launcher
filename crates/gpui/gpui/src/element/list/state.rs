@@ -160,18 +160,44 @@ impl ListState {
         }
         let mut replacements = std::mem::take(&mut state.measured_items_scratch);
         replacements.clear();
-        {
-            let mut cursor = state.items.cursor::<Count>(());
-            for range in ranges {
-                cursor.seek_forward(&Count(range.start), Bias::Right);
-                for index in range.clone() {
-                    let item = cursor.item().expect("validated list range");
-                    if item.size().is_some() {
+        let measured = state.items.summary().rendered_count;
+        let requested: usize = ranges.iter().map(|range| range.end - range.start).sum();
+        if measured != 0 {
+            if requested > measured.saturating_mul(2) {
+                // A large invalidation over a mostly unmeasured virtual
+                // list must not visit every logical item. Traverse only
+                // measured native subtrees and intersect the sorted ranges.
+                let mut cursor = state.items.filter::<_, Count>((), |summary| summary.rendered_count != 0);
+                let mut ranges = ranges.iter().peekable();
+                cursor.next();
+                while let Some(item) = cursor.item() {
+                    let index = cursor.start().0;
+                    while ranges.peek().is_some_and(|range| range.end <= index) {
+                        ranges.next();
+                    }
+                    let Some(range) = ranges.peek() else { break; };
+                    if range.contains(&index) {
                         replacements.push_back((index, ListItem::Unmeasured {
                             focus_handle: item.focus_handle(),
                         }));
                     }
                     cursor.next();
+                }
+            } else {
+                // Small and dense selections still use the direct seeks.
+                let mut cursor = state.items.cursor::<Count>(());
+                for range in ranges {
+                    if range.is_empty() { continue; }
+                    cursor.seek_forward(&Count(range.start), Bias::Right);
+                    for index in range.clone() {
+                        let item = cursor.item().expect("validated list range");
+                        if item.size().is_some() {
+                            replacements.push_back((index, ListItem::Unmeasured {
+                                focus_handle: item.focus_handle(),
+                            }));
+                        }
+                        cursor.next();
+                    }
                 }
             }
         }

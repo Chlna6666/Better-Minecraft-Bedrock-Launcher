@@ -343,3 +343,36 @@ fn disjoint_item_invalidation_keeps_scroll_anchor_and_other_measurements() {
     new.seek(&Count(3500), Bias::Right);
     assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()));
 }
+
+
+#[test]
+fn broad_sparse_item_invalidation_preserves_unselected_measured_and_unmeasured_nodes() {
+    use super::{state::ListItem, tree::Count};
+    use crate::{ListAlignment, ListOffset, ListState, px, size};
+    use sum_tree::{Bias, SumTree};
+    let list = ListState::new(8192, ListAlignment::Top, px(0.));
+    let top = ListOffset { item_ix: 4000, offset_in_item: px(3.) };
+    {
+        let mut state = list.0.borrow_mut();
+        state.items = SumTree::from_iter((0..8192).map(|index| {
+            if [10, 2000, 4000, 7000].contains(&index) {
+                ListItem::Measured { size: size(px(100.), px(20.)), focus_handle: None }
+            } else {
+                ListItem::Unmeasured { focus_handle: None }
+            }
+        }), ());
+        state.logical_scroll_top = Some(top);
+    }
+    let previous = list.0.borrow().items.clone();
+    list.invalidate_items(&[0..3500, 3500..3500, 6500..8192]);
+    let state = list.0.borrow();
+    assert_eq!(state.logical_scroll_top, Some(top));
+    assert_eq!(state.items.summary().count, 8192);
+    assert_eq!(state.items.summary().rendered_count, 1);
+    assert_eq!(state.items.summary().height, px(20.));
+    let mut old = previous.cursor::<Count>(());
+    let mut new = state.items.cursor::<Count>(());
+    old.seek(&Count(4000), Bias::Right);
+    new.seek(&Count(4000), Bias::Right);
+    assert!(std::ptr::eq(old.item().unwrap(), new.item().unwrap()));
+}

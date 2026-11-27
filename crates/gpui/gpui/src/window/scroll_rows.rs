@@ -14,6 +14,87 @@ use super::lifecycle::{RowNotification, WindowInvalidator};
 
 type RowKey = (u64, usize);
 
+/// Exact captured row membership, compacted by logical list and contiguous
+/// row index. Unlike a viewport range this excludes uncaptured rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowRun {
+    list: u64,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Default)]
+struct RowRuns {
+    runs: Vec<RowRun>,
+}
+
+impl RowRuns {
+    fn record(&mut self, (list, row): RowKey) {
+        if let Some(last) = self.runs.last_mut()
+            && last.list == list
+            && last.end == row
+        {
+            last.end += 1;
+            return;
+        }
+        self.runs.push(RowRun { list, start: row, end: row + 1 });
+    }
+
+    fn normalize(&mut self) {
+        if !self.runs.windows(2).all(|pair| {
+            pair[0].list < pair[1].list
+                || (pair[0].list == pair[1].list && pair[0].end < pair[1].start)
+        }) {
+            // Paint order need not be the order of list identities. Sort
+            // runs, not individual rows, and coalesce any repeated ranges.
+            self.runs.sort_unstable_by_key(|run| (run.list, run.start));
+            let mut written = 0;
+            for index in 0..self.runs.len() {
+                let run = self.runs[index];
+                if written != 0 {
+                    let last = &mut self.runs[written - 1];
+                    if last.list == run.list && run.start <= last.end {
+                        last.end = last.end.max(run.end);
+                        continue;
+                    }
+                }
+                self.runs[written] = run;
+                written += 1;
+            }
+            self.runs.truncate(written);
+        }
+    }
+
+    /// Old minus new, expressed as ranges. Never enumerate kept row keys.
+    fn visit_retired(&self, next: &Self, mut visit: impl FnMut(RowRun)) {
+        let mut j = 0;
+        for old in &self.runs {
+            let mut start = old.start;
+            while let Some(kept) = next.runs.get(j) {
+                if kept.list < old.list || (kept.list == old.list && kept.end <= start) {
+                    j += 1;
+                    continue;
+                }
+                if kept.list != old.list || kept.start >= old.end {
+                    break;
+                }
+                if start < kept.start {
+                    visit(RowRun { list: old.list, start, end: kept.start });
+                }
+                start = start.max(kept.end);
+                if start >= old.end {
+                    // This kept interval may also overlap the next old run.
+                    break;
+                }
+                j += 1;
+            }
+            if start < old.end {
+                visit(RowRun { list: old.list, start, end: old.end });
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum RowDependencyKey {
     Entity(crate::EntityId),
@@ -327,16 +408,19 @@ impl RowNotificationRouting {
 
     fn reconcile(
         &mut self, old: &FxHashMap<RowKey, RowRecord>,
-        new: &FxHashMap<RowKey, RowRecord>, changed: &[RowKey], oldest: u64,
+        new: &FxHashMap<RowKey, RowRecord>, old_runs: &RowRuns, new_runs: &RowRuns,
+        changed: &[RowKey], oldest: u64,
     ) {
-        for (&key, row) in old {
-            if !new.contains_key(&key) {
+        old_runs.visit_retired(new_runs, |run| {
+            for index in run.start..run.end {
+                let key = (run.list, index);
+                let row = &old[&key];
                 self.update(key, Some(&row.prepaint.reads), None);
                 self.state_dirty.remove(&key);
             }
-        }
+        });
         // The candidate records actual dependency changes as rows are
-        // published. Only retirement still requires the old row traversal.
+        // published. Kept runs never need per-row retirement lookups.
         for &key in changed {
             let Some(row) = new.get(&key) else { continue; };
             let previous = old.get(&key);
@@ -370,6 +454,7 @@ pub(super) struct ScrollRows {
     rows: FxHashMap<RowKey, RowRecord>,
     notification_routing: RefCell<RowNotificationRouting>,
     changed_rows: Vec<RowKey>,
+    membership: RowRuns,
     oldest_notification_epoch: Option<u64>,
     measurements: FxHashMap<GlobalElementId, (u64, Rc<RowMeasurement>)>,
     pub(super) enabled: bool,
@@ -387,6 +472,7 @@ impl ScrollRows {
         self.rows.clear();
         *self.notification_routing.get_mut() = Default::default();
         self.changed_rows.clear();
+        self.membership.runs.clear();
         self.oldest_notification_epoch = None;
         self.measurements.clear();
         self.enabled = false;
@@ -396,13 +482,16 @@ impl ScrollRows {
     /// Transfer an already-built index only after successful publication.
     /// Candidate frames cannot mutate the previous frame's reverse edges.
     pub(super) fn inherit_notification_routing(&mut self, previous: &mut Self, now: u64) {
+        // Normalize even when the index is not yet allocated: the committed
+        // frame may lazily build it at the next notification.
+        self.membership.normalize();
         if self.rows.len() < RowNotificationRouting::MIN_ROWS {
             return;
         }
         let mut routing = std::mem::take(previous.notification_routing.get_mut());
         if routing.cursor.is_some() {
-            routing.reconcile(&previous.rows, &self.rows, &self.changed_rows,
-                self.oldest_notification_epoch.unwrap_or(now));
+            routing.reconcile(&previous.rows, &self.rows, &previous.membership,
+                &self.membership, &self.changed_rows, self.oldest_notification_epoch.unwrap_or(now));
             *self.notification_routing.get_mut() = routing;
         }
     }
@@ -414,6 +503,10 @@ impl ScrollRows {
         }
         if self.changed_rows.capacity() > target.saturating_mul(4) {
             self.changed_rows.shrink_to(target);
+        }
+        let run_target = current.membership.runs.len().max(4);
+        if self.membership.runs.capacity() > run_target.saturating_mul(4) {
+            self.membership.runs.shrink_to(run_target);
         }
         let target = current.measurements.len().max(4);
         if self.measurements.capacity() > target * 4 {
@@ -908,21 +1001,46 @@ impl Window {
         &mut self,
         plan: &RowPlan,
         row: usize,
-        prepaint: RowPrepaint,
+        mut prepaint: RowPrepaint,
         paint: Range<PaintIndex>,
         content: Arc<ScrollPaint>,
     ) {
         let key = (plan.key, row);
         let previous = &self.rendered_frame.scroll_rows;
         let next = &mut self.next_frame.scroll_rows;
+        let old = previous.rows.get(&key);
+        if let Some(old) = old {
+            let reads = &old.prepaint.reads;
+            if !Rc::ptr_eq(&reads.entities, &prepaint.reads.entities)
+                && reads.entities == prepaint.reads.entities
+            {
+                prepaint.reads.entities = reads.entities.clone();
+            }
+            if !Rc::ptr_eq(&reads.globals, &prepaint.reads.globals)
+                && reads.globals == prepaint.reads.globals
+            {
+                prepaint.reads.globals = reads.globals.clone();
+            }
+            // Equal state observations are immutable and carry the same
+            // proof. Adopt the old allocation even after a fresh capture.
+            if !Rc::ptr_eq(&reads.states, &prepaint.reads.states)
+                && reads.states == prepaint.reads.states
+            {
+                prepaint.reads.states = reads.states.clone();
+                prepaint.validation = old.prepaint.validation.clone();
+            }
+        }
+        let context = old.filter(|old| plan.matches_context(&old.context))
+            .map_or_else(|| plan.context.clone(), |old| old.context.clone());
         if previous.rows.len() >= RowNotificationRouting::MIN_ROWS
-            && !previous.rows.get(&key).is_some_and(|old| {
+            && !old.is_some_and(|old| {
                 old.prepaint.reads.same_routes(&prepaint.reads)
                     && Rc::ptr_eq(&old.prepaint.reads.states, &prepaint.reads.states)
             })
         {
             next.changed_rows.push(key);
         }
+        next.membership.record(key);
         if RowNotificationRouting::has_reads(&prepaint.reads) {
             let now = self.invalidator.row_notification_epoch();
             let epoch = plan.notification_epoch;
@@ -937,7 +1055,7 @@ impl Window {
             RowRecord {
                 revision: plan.revision,
                 notification_epoch: plan.notification_epoch,
-                context: plan.context.clone(),
+                context,
                 prepaint,
                 paint,
                 content,
@@ -958,6 +1076,56 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn row_run_retirement_matches_exhaustive_membership_difference() {
+        fn runs(mask: u32) -> RowRuns {
+            let mut runs = RowRuns::default();
+            for index in 0..6 {
+                if mask & (1 << index) != 0 {
+                    runs.record((1, index));
+                }
+            }
+            runs.normalize();
+            runs
+        }
+        for old in 0..64 {
+            for new in 0..64 {
+                let mut retired = 0;
+                runs(old).visit_retired(&runs(new), |run| {
+                    assert_eq!(run.list, 1);
+                    for index in run.start..run.end {
+                        assert_eq!(retired & (1 << index), 0);
+                        retired |= 1 << index;
+                    }
+                });
+                assert_eq!(retired, old & !new);
+            }
+        }
+    }
+
+    #[test]
+    fn row_run_retirement_preserves_holes_and_multiple_list_identities() {
+        let mut old = RowRuns::default();
+        for key in [(9, 5), (9, 6), (3, 1), (3, 3), (3, 2), (9, 8), (3, 3)] {
+            old.record(key);
+        }
+        old.normalize();
+        assert_eq!(old.runs, [
+            RowRun { list: 3, start: 1, end: 4 },
+            RowRun { list: 9, start: 5, end: 7 },
+            RowRun { list: 9, start: 8, end: 9 },
+        ]);
+        let mut new = RowRuns::default();
+        for key in [(9, 6), (3, 2), (9, 7), (9, 8)] {
+            new.record(key);
+        }
+        new.normalize();
+        let mut retired = Vec::new();
+        old.visit_retired(&new, |run| retired.extend((run.start..run.end).map(|row| (run.list, row))));
+        assert_eq!(retired, [(3, 1), (3, 3), (9, 5)]);
+        old.visit_retired(&old, |_| panic!("identical membership has no retirements"));
+    }
 
     #[test]
     fn state_identity_routes_share_edges_across_versions_and_retire() {
