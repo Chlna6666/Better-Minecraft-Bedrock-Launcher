@@ -102,7 +102,9 @@ fn clear_active_tooltip_if_not_hoverable(
 ) {
     let should_clear = match active_tooltip.borrow().as_ref() {
         None => false,
-        Some(ActiveTooltip::WaitingForShow { .. }) => false,
+        // GPUI Fast #174: a press/scroll cancels a pending show before
+        // it can appear over newly opened content.
+        Some(ActiveTooltip::WaitingForShow { .. }) => true,
         Some(ActiveTooltip::Visible { is_hoverable, .. }) => !is_hoverable,
         Some(ActiveTooltip::WaitingForHide { .. }) => false,
     };

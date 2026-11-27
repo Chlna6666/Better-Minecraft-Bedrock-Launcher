@@ -114,12 +114,11 @@ impl Window {
             return measure(self, cx).0;
         };
         let revision = self.invalidator.scroll_content_revision().0;
-        let context = self.current_retained_paint_context();
         if let Some(previous) = self.rendered_frame.scroll_rows.measurements.get(id)
             && previous.revision == revision
             && previous.index == index
             && previous.count == count
-            && previous.context == context
+            && self.retained_paint_context_matches(&previous.context)
             && previous.reads.iter().all(|read| read.status() == StateReadStatus::Unchanged)
         {
             let size = previous.size;
@@ -127,6 +126,8 @@ impl Window {
             self.replayed_view_owners.insert(self.current_view());
             return size;
         }
+        // Do not clone the inherited text style on a measurement hit.
+        let context = self.current_retained_paint_context();
         let start = cx.entities.state_read_index();
         let (size, cacheable) = measure(self, cx);
         if cacheable {
@@ -339,11 +340,19 @@ impl Window {
         let previous = &self.rendered_frame.scroll_rows.rows[&(plan.key, row)];
         let content = previous.content.clone();
         let old_paint = previous.paint.clone();
+        let same_placement = previous.prepaint.origin == prepaint.origin;
         let start = self.paint_index();
         let scale = self.scale_factor();
         let viewport = self.visual_content_mask().scale(scale);
         let delta = prepaint.origin.scale(scale) - content.origin.scale(scale);
-        content.replay(&mut self.next_frame.painter, viewport, delta);
+        if same_placement {
+            // Prepaint already proved identical context and valid ranges.
+            // Reuse the committed visible scene, including native immutable
+            // spans, rather than clipping and projecting the overscan again.
+            self.replay_validated_scene(old_paint.start.scene_index..old_paint.end.scene_index);
+        } else {
+            content.replay(&mut self.next_frame.painter, viewport, delta);
+        }
         self.replay_validated_paint_records(&old_paint);
         if !hitbox_range(&prepaint).is_empty()
             && (plan.hover_held || (delta != Point::default()

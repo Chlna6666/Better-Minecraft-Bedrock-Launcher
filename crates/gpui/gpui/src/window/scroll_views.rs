@@ -282,11 +282,17 @@ impl Window {
             .source
             .translation(context.element_offset, scale)
             .expect("prepaint proved integral scroll");
-        source.source.replay(
-            &mut self.next_frame.painter,
-            source.viewport.scale(scale),
-            delta,
-        );
+        if previous.context.element_offset == context.element_offset {
+            self.replay_validated_scene(
+                previous.paint_range.start.scene_index..previous.paint_range.end.scene_index,
+            );
+        } else {
+            source.source.replay(
+                &mut self.next_frame.painter,
+                source.viewport.scale(scale),
+                delta,
+            );
+        }
         self.replay_validated_paint_records(&previous.paint_range);
         if !hitboxes(&previous.prepaint_range).is_empty() && self.scroll_hover_is_held(cx) {
             source.stale_input = true;
