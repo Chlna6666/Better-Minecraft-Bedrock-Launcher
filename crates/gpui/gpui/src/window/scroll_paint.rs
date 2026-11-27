@@ -394,11 +394,16 @@ impl ScrollPlacement {
 
     pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }
 
-    pub(crate) fn same_paint(&self, other: &Self) -> bool {
+    /// A changed translation is a new paint, but does not change the
+    /// immutable content, clip, native source identity or draw topology.
+    pub(crate) fn same_source_placement_domain(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.source, &other.source)
             && self.viewport == other.viewport
-            && self.delta == other.delta
             && self.native == other.native
+    }
+
+    pub(crate) fn same_paint(&self, other: &Self) -> bool {
+        self.same_source_placement_domain(other) && self.delta == other.delta
     }
 
     /// The viewport is a conservative damage bound for every projected
@@ -529,6 +534,48 @@ mod tests {
         let union = left.union(right);
         assert!(union.intersects(PaintBlockBounds::new(bounds(0.5, 0.25))));
         assert!(!union.contained_by(right));
+    }
+
+    #[test]
+    fn placement_only_variant_preserves_ordinary_pages_without_requalifying_payload() {
+        let coverage = Bounds::new(point(crate::px(0.), crate::px(-64.)),
+            crate::size(crate::px(40.), crate::px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(crate::px(0.), crate::px(0.)),
+            crate::size(crate::px(40.), crate::px(64.))));
+        let mut source_ops = Operations::default();
+        source_ops.push(crate::scene::PaintOperation::Primitive(Primitive::Quad(crate::Quad {
+            bounds: coverage, content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, source_ops));
+        let first = source.native_placement(viewport, 1., Point::default()).unwrap();
+        let next = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
+        let mut static_ops = Operations::default();
+        for _ in 0..128 {
+            static_ops.push(crate::scene::PaintOperation::Primitive(Primitive::Quad(crate::Quad::default())));
+        }
+        static_ops.finish();
+        let build = |placement: ScrollPlacement| {
+            let mut ops = Operations::default();
+            ops.share(&static_ops, 0..64);
+            ops.push(crate::scene::PaintOperation::DeferredScroll(placement));
+            ops.share(&static_ops, 64..128);
+            ops.finish();
+            ops
+        };
+        let previous = build(first.clone());
+        let changed = build(next.clone());
+        assert_eq!(changed.placement_storage_matches(&previous), Some(false));
+        assert_eq!(build(first).placement_storage_matches(&previous), Some(true));
+        assert_eq!(previous.storage_identity(0), changed.storage_identity(0));
+        assert_eq!(previous.storage_identity(128), changed.storage_identity(128));
+        let mut unrelated = Operations::default();
+        unrelated.share(&static_ops, 0..64);
+        unrelated.push(crate::scene::PaintOperation::DeferredScroll(next));
+        // Mixed marker/payload owner is deliberately not a storage proof.
+        unrelated.push(crate::scene::PaintOperation::Primitive(Primitive::Quad(crate::Quad::default())));
+        unrelated.share(&static_ops, 65..128);
+        unrelated.finish();
+        assert_eq!(unrelated.placement_storage_matches(&previous), None);
     }
 
     #[test]

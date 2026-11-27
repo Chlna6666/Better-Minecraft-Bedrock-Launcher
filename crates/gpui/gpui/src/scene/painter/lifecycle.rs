@@ -99,24 +99,36 @@ impl Painter {
         // Prove identity before compaction can replace immutable pages.
         // A stable replay of the previously compacted allocation set has
         // exactly the same live coverage, so rebuilding maps is pure waste.
-        let same_physical = previous.is_some_and(|previous| {
-            previous.revision != 0
-                && self.scene.paint_operations.same_physical_ranges(&previous.paint_operations)
-                && self.scene.shadows.same_physical_ranges(&previous.shadows)
-                && self.scene.quads.same_physical_ranges(&previous.quads)
-                && self.scene.monochrome_sprites.same_physical_ranges(&previous.monochrome_sprites)
-                && self.scene.polychrome_sprites.same_physical_ranges(&previous.polychrome_sprites)
+        let physical_reuse = previous.and_then(|previous| {
+            if previous.revision == 0 { return None; }
+            let same_operations = self.scene.paint_operations.same_physical_ranges(&previous.paint_operations);
+            // Do not add draw-stream identity work for unrelated fresh frames.
+            if !same_operations && !self.scene.paint_operations.has_deferred_scroll() { return None; }
+            if !self.scene.shadows.same_physical_ranges(&previous.shadows)
+                || !self.scene.quads.same_physical_ranges(&previous.quads)
+                || !self.scene.monochrome_sprites.same_physical_ranges(&previous.monochrome_sprites)
+                || !self.scene.polychrome_sprites.same_physical_ranges(&previous.polychrome_sprites)
+            {
+                return None;
+            }
+            if same_operations { Some(true) }
+            else {
+                self.scene.paint_operations.placement_storage_matches(&previous.paint_operations)
+            }
         });
         let reuse = previous.map(|previous| {
-            if same_physical {
-                (true, true)
+            if let Some(same_paint) = physical_reuse {
+                // Deferred markers do not contribute ordinary draw batches.
+                // Layer ordering and coverage are separately certified by
+                // SceneLayers when the resulting Paint is published.
+                (same_paint, true)
             } else {
                 self.scene.paint_operations.scene_reuse_matches(
                     &previous.paint_operations, self.scene.replayed_primitives > 0,
                 )
             }
         });
-        if !same_physical {
+        if physical_reuse.is_none() {
             self.scene.paint_operations.compact_with_draws(
                 &mut self.scene.shadows,
                 &mut self.scene.quads,

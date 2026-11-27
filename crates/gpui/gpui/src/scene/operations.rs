@@ -412,6 +412,45 @@ impl Operations {
             })
     }
 
+    /// A placement-only variant retains exactly the same ordinary storage.
+    /// New marker pages must contain only scroll records; otherwise skipping
+    /// compaction could pin unrelated primitive payload from an old frame.
+    /// Returns whether the actual placements are unchanged as well.
+    pub(crate) fn placement_storage_matches(&self, previous: &Self) -> Option<bool> {
+        if !self.pending.is_empty() || !previous.pending.is_empty()
+            || self.len != previous.len || !self.has_deferred_scroll()
+            || !previous.has_deferred_scroll()
+        {
+            return None;
+        }
+        let mut left = self.all().runs();
+        let mut right = previous.all().runs();
+        let mut a = left.next().unwrap_or_default();
+        let mut b = right.next().unwrap_or_default();
+        let mut same_paint = true;
+        while !a.is_empty() && !b.is_empty() {
+            let count = a.len().min(b.len());
+            let current = a.range(0..count);
+            let old = b.range(0..count);
+            if !current.same_storage(old) {
+                if !current.owner.is_some_and(OperationPage::is_scroll_only)
+                    || !old.owner.is_some_and(OperationPage::is_scroll_only)
+                {
+                    return None;
+                }
+                for (current, old) in current.iter().zip(old.iter()) {
+                    let (PaintOperationRef::DeferredScroll(current), PaintOperationRef::DeferredScroll(old)) =
+                        (current, old) else { return None; };
+                    if !current.same_source_placement_domain(old) { return None; }
+                    same_paint &= current.same_paint(old);
+                }
+            }
+            a = if count == a.len() { left.next().unwrap_or_default() } else { a.range(count..a.len()) };
+            b = if count == b.len() { right.next().unwrap_or_default() } else { b.range(count..b.len()) };
+        }
+        (a.is_empty() && b.is_empty()).then_some(same_paint)
+    }
+
     /// Compact operation indices first, then compact each typed allocation
     /// from the union of operation and draw coverage. The two views receive
     /// the exact same replacement allocation and physical slot mapping.

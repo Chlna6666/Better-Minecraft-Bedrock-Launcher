@@ -176,6 +176,9 @@ pub(super) struct OperationPage {
 impl OperationPage {
     pub(super) fn len(&self) -> usize { self.indices.len() }
     pub(super) fn is_empty(&self) -> bool { self.indices.is_empty() }
+    pub(super) fn is_scroll_only(&self) -> bool {
+        self.indices.len() == self.scrolls.len()
+    }
     pub(super) fn capacity(&self) -> usize { self.indices.capacity() }
 
     /// Publication preserves logical operation order while draw streams borrow
