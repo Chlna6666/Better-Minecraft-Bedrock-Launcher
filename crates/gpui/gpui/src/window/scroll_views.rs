@@ -9,7 +9,8 @@ use crate::{
     Task, Window,
 };
 use collections::{FxHashMap, FxHashSet};
-use std::{ops::Range, rc::Rc, sync::Arc, time::{Duration, Instant}};
+use std::{ops::Range, rc::{Rc, Weak}, sync::Arc, time::{Duration, Instant}};
+use super::scroll_dependencies::ScrollOffset;
 
 const SCROLL_HOVER_DELAY: Duration = Duration::from_millis(100);
 
@@ -23,7 +24,7 @@ pub(super) struct ScrollHover {
 
 #[derive(Default)]
 pub(super) struct ScrollViews {
-    viewport: Option<ContentMask<Pixels>>,
+    viewport: Option<ScrollViewport>,
     views: FxHashMap<u64, ScrollView>,
 }
 
@@ -46,10 +47,48 @@ impl ScrollViews {
     }
 }
 
+/// A viewport is not a scroll source identity. Two overlapping or
+/// replacement scrollers can have exactly the same clip and position.
+#[derive(Clone)]
+struct ScrollBinding {
+    offset: Weak<ScrollOffset>,
+    sampled: Point<Pixels>,
+}
+
+impl ScrollBinding {
+    fn new(offset: Weak<ScrollOffset>, sampled: Point<Pixels>) -> Option<Self> {
+        let current = offset.upgrade()?;
+        if *current.borrow() != sampled
+            || !sampled.x.0.is_finite() || !sampled.y.0.is_finite()
+        {
+            return None;
+        }
+        Some(Self { offset, sampled })
+    }
+
+    fn same_source(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.offset, &other.offset)
+    }
+
+    fn delta_from(&self, previous: &Self) -> Option<Point<Pixels>> {
+        self.same_source(previous).then_some(self.sampled - previous.sampled)
+    }
+
+    fn sample_still_current(&self) -> bool {
+        self.offset.upgrade().is_some_and(|offset| *offset.borrow() == self.sampled)
+    }
+}
+
+struct ScrollViewport {
+    clip: ContentMask<Pixels>,
+    binding: ScrollBinding,
+}
+
 pub(crate) struct ScrollViewCapture {
     key: u64,
     revision: u64,
     viewport: ContentMask<Pixels>,
+    binding: ScrollBinding,
     reads: Rc<[StateRead]>,
 }
 
@@ -58,6 +97,7 @@ struct ScrollView {
     capture_revision: u64,
     owner: EntityId,
     viewport: ContentMask<Pixels>,
+    binding: ScrollBinding,
     source: Arc<ScrollPaint>,
     reads: Rc<[StateRead]>,
     stale_input: bool,
@@ -70,13 +110,13 @@ fn hitboxes(range: &Range<PrepaintStateIndex>) -> Range<usize> {
 impl Window {
     pub(crate) fn with_scroll_viewport<R>(
         &mut self,
-        vertical_scroll: bool,
+        scroll_source: Option<Weak<ScrollOffset>>,
         offset: Point<Pixels>,
         prepaint: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if !vertical_scroll || !self.scroll_row_replay_is_enabled() {
+        let Some(scroll_source) = scroll_source.filter(|_| self.scroll_row_replay_is_enabled()) else {
             return prepaint(self);
-        }
+        };
         let viewport = self.visual_content_mask();
         let previous = self.next_frame.scroll_views.viewport.take();
         if previous.is_none()
@@ -85,16 +125,18 @@ impl Window {
             && self.content_mask() == viewport
             && !viewport.bounds.is_empty()
             && offset.x == Pixels::ZERO
+            && let Some(binding) = ScrollBinding::new(scroll_source, offset)
         {
-            self.next_frame.scroll_views.viewport = Some(viewport);
+            self.next_frame.scroll_views.viewport = Some(ScrollViewport { clip: viewport, binding });
         }
         let result = prepaint(self);
         self.next_frame.scroll_views.viewport = previous;
         result
     }
 
-    fn scroll_viewport(&self, cx: &App) -> Option<ContentMask<Pixels>> {
+    fn scroll_viewport(&self, cx: &App) -> Option<&ScrollViewport> {
         if !self.scroll_row_replay_is_enabled()
+            || !self.invalidator.scroll_content_revision().1
             || self.force_view_cache_refresh
             || cx.has_active_drag()
             || self.is_inspector_picking(cx)
@@ -115,8 +157,8 @@ impl Window {
         }
         self.next_frame
             .scroll_views
-            .viewport
-            .filter(|&clip| clip == self.visual_content_mask())
+            .viewport.as_ref()
+            .filter(|scope| scope.clip == self.visual_content_mask())
     }
 
     /// The request-layout proof still holds for a view whose only inherited
@@ -128,7 +170,7 @@ impl Window {
         bounds: Bounds<Pixels>,
         cx: &App,
     ) -> Option<Point<Pixels>> {
-        let viewport = self.scroll_viewport(cx)?;
+        let viewport = self.scroll_viewport(cx)?.clip;
         let offset = current.element_offset - previous.context.element_offset;
         if offset.x != Pixels::ZERO
             || bounds.size != previous.bounds.size
@@ -150,10 +192,17 @@ impl Window {
         current: &RetainedPaintContext,
         bounds: Bounds<Pixels>,
         cx: &App,
-    ) -> Option<Range<PrepaintStateIndex>> {
+    ) -> Option<(Range<PrepaintStateIndex>, Point<Pixels>)> {
         let delta = self.scroll_view_translation(previous, current, bounds, cx)?;
+        let binding = &self.scroll_viewport(cx)?.binding;
         let viewport = current.visual_content_mask;
         let source = self.rendered_frame.scroll_views.views.get(&key)?;
+        // Reject a new scroll handle or movement not explained by the
+        // exact committed offset. Parent placement is not a scroll delta.
+        if binding.delta_from(&source.binding) != Some(delta) {
+            return None;
+        }
+        let sampled_offset = binding.sampled;
         let scale = self.scale_factor();
         let physical = source.source.translation(current.element_offset, scale)?;
         if source.owner != owner
@@ -183,7 +232,7 @@ impl Window {
         }
         let parent = self.next_frame.dispatch_tree.active_node_id();
         self.replay_prepaint_records(previous.prepaint_range.clone(), |_| parent);
-        Some(start..self.prepaint_index())
+        Some((start..self.prepaint_index(), sampled_offset))
     }
 
     pub(crate) fn plan_scroll_view_capture(
@@ -195,7 +244,8 @@ impl Window {
         read_start: usize,
         cx: &App,
     ) -> Option<Box<ScrollViewCapture>> {
-        let viewport = self.scroll_viewport(cx)?;
+        let scope = self.scroll_viewport(cx)?;
+        let viewport = scope.clip;
         // A small view within a long page leaves useful retention to the
         // enclosing view that covers the scrolling viewport.
         if bounds.size.height < viewport.bounds.size.height
@@ -209,6 +259,7 @@ impl Window {
             key: key?,
             revision: self.invalidator.scroll_content_revision().0,
             viewport,
+            binding: scope.binding.clone(),
             reads: cx.entities.state_reads_since(read_start),
         }))
     }
@@ -237,6 +288,7 @@ impl Window {
         let input = hitboxes(prepaint);
         let suppress_hover = !input.is_empty() && self.scroll_hover_is_held(cx);
         if self.visual_content_mask() != capture.viewport
+            || !capture.binding.sample_still_current()
             || self.scene_animation.is_some()
             || self.next_frame.painter.is_capturing_blur()
             || (!suppress_hover && self.hits_scroll_row(&self.next_frame.hitboxes, input, Point::default()))
@@ -246,7 +298,8 @@ impl Window {
         }
         let read_start = cx.entities.state_read_index();
         let previous_source = self.rendered_frame.scroll_views.views.get(&capture.key)
-            .filter(|previous| previous.owner == owner && previous.viewport == capture.viewport)
+            .filter(|previous| previous.owner == owner && previous.viewport == capture.viewport
+                && previous.binding.same_source(&capture.binding))
             .map(|previous| Arc::clone(&previous.source));
         let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover,
             previous_source.as_deref(), false, cx);
@@ -270,6 +323,7 @@ impl Window {
                 capture_revision: capture.revision,
                 owner,
                 viewport: capture.viewport,
+                binding: capture.binding,
                 source,
                 reads,
                 stale_input: suppress_hover,
@@ -280,11 +334,15 @@ impl Window {
     pub(crate) fn paint_scrolled_view(
         &mut self,
         key: u64,
+        sampled_offset: Point<Pixels>,
         previous: &RetainedViewRecord,
         context: &RetainedPaintContext,
         cx: &App,
     ) {
         let mut source = self.rendered_frame.scroll_views.views[&key].clone();
+        // Use the placement proven in Prepaint, not a fresh read after
+        // application callbacks may have mutated the scroll handle.
+        source.binding.sampled = sampled_offset;
         let scale = self.scale_factor();
         let delta = source
             .source
@@ -385,5 +443,29 @@ impl Window {
                 delay = remaining;
             }
         }));
+    }
+}
+
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use crate::{point, px};
+
+    #[test]
+    fn placement_requires_the_same_live_source_and_exact_sample() {
+        let first = Rc::new(ScrollOffset::default());
+        let second = Rc::new(ScrollOffset::default());
+        let old = ScrollBinding::new(Rc::downgrade(&first), Point::default()).unwrap();
+        let replacement = ScrollBinding::new(Rc::downgrade(&second), Point::default()).unwrap();
+        assert_eq!(replacement.delta_from(&old), None);
+        *first.borrow_mut() = point(px(0.), px(-20.));
+        assert!(!old.sample_still_current());
+        assert!(ScrollBinding::new(Rc::downgrade(&first), Point::default()).is_none());
+        let new = ScrollBinding::new(Rc::downgrade(&first), point(px(0.), px(-20.))).unwrap();
+        assert_eq!(new.delta_from(&old), Some(point(px(0.), px(-20.))));
+        assert!(new.sample_still_current());
+        drop(first);
+        assert!(!new.sample_still_current());
     }
 }

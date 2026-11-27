@@ -115,7 +115,7 @@ struct RowMeasurement {
 impl Window {
     pub(crate) fn scroll_row_replay_is_enabled(&self) -> bool {
         let rows = &self.next_frame.scroll_rows;
-        rows.enabled && !rows.blocked && self.invalidator.scroll_content_revision().1
+        rows.enabled && !rows.blocked
     }
 
     /// A uniform list need only rebuild its measurement sample when its
@@ -132,7 +132,8 @@ impl Window {
         let Some(id) = id.filter(|_| self.scroll_row_replay_is_enabled() && !self.force_view_cache_refresh) else {
             return measure(self, cx).0;
         };
-        let revision = self.invalidator.scroll_content_revision().0;
+        let (revision, placement_only) = self.invalidator.scroll_content_revision();
+        if !placement_only { return measure(self, cx).0; }
         if let Some(previous) = self.rendered_frame.scroll_rows.measurements.get(id)
             && previous.revision == revision
             && previous.index == index
@@ -185,9 +186,9 @@ impl Window {
         available_space: Size<AvailableSpace>,
         cx: &App,
     ) -> Option<RowPlan> {
-        let (revision, _) = self.invalidator.scroll_content_revision();
+        let (revision, placement_only) = self.invalidator.scroll_content_revision();
         let viewport = self.visual_content_mask();
-        if !self.scroll_row_replay_is_enabled()
+        if !placement_only || !self.scroll_row_replay_is_enabled()
             || self.force_view_cache_refresh
             || self.visual_scale() != 1.
             || self.content_mask() != viewport

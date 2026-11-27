@@ -406,6 +406,11 @@ impl Element for Div {
         }
 
         let interactivity_transparent = self.interactivity_is_reconciliation_transparent();
+        // Only vertical scroll capture consumes the weak identity. Avoid
+        // creating ownership or reading the offset for ordinary Divs.
+        let scroll_source = if global_id.is_some() && window.scroll_row_replay_is_enabled() {
+            self.interactivity.scroll_offset.as_ref().map(std::rc::Rc::downgrade)
+        } else { None };
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -428,7 +433,7 @@ impl Element for Div {
                         let scrolls = global_id.is_some()
                             && style.overflow.y == Overflow::Scroll
                             && style.overflow.x != Overflow::Scroll;
-                        window.with_scroll_viewport(scrolls, scroll_offset, |window| {
+                        window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, |window| {
                             window.with_element_offset(scroll_offset, |window| {
                                 for child in &mut self.children {
                                     child.prepaint(window, cx);

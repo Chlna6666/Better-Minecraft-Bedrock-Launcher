@@ -197,7 +197,7 @@ struct RetentionDraft {
 struct ReusedView {
     prepaint_range: Range<crate::window::PrepaintStateIndex>,
     context: Rc<crate::window::RetainedPaintContext>,
-    scrolled: Option<u64>,
+    scrolled: Option<(u64, crate::Point<crate::Pixels>)>,
 }
 
 impl Element for ViewElement {
@@ -343,11 +343,11 @@ impl Element for ViewElement {
                     }
                     if *allow_reuse
                         && let Some(key) = key
-                        && let Some(prepaint_range) = window.prepaint_scrolled_view(
+                        && let Some((prepaint_range, sampled_offset)) = window.prepaint_scrolled_view(
                             key, entity_id, admission, &context, bounds, cx,
                         )
                     {
-                        *reused = Some(ReusedView { prepaint_range, context, scrolled: Some(key) });
+                        *reused = Some(ReusedView { prepaint_range, context, scrolled: Some((key, sampled_offset)) });
                         return;
                     }
                     // The committed layout no longer describes what this view inherits. Give the
@@ -489,8 +489,8 @@ impl Element for ViewElement {
                     return;
                 };
                 let start = window.paint_index();
-                if let Some(key) = reused.scrolled {
-                    window.paint_scrolled_view(key, admission, &reused.context, cx);
+                if let Some((key, sampled_offset)) = reused.scrolled {
+                    window.paint_scrolled_view(key, sampled_offset, admission, &reused.context, cx);
                 } else {
                     window.replay_retained_view_paint(entity_id, admission);
                 }
