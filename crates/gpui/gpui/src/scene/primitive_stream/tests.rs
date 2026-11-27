@@ -92,6 +92,12 @@ fn every_segmented_range_matches_a_flat_sorted_reference() {
         expected.sort_unstable();
         current.finish();
         current.compact();
+        for threshold in 0..=26 {
+            assert_eq!(
+                current.partition_point(|quad| quad.order < threshold),
+                expected.partition_point(|&order| order < threshold),
+            );
+        }
         for first in 0..=expected.len() {
             for end in first..=expected.len() {
                 let actual: Vec<_> = current
@@ -103,6 +109,30 @@ fn every_segmented_range_matches_a_flat_sorted_reference() {
             }
         }
     }
+}
+
+#[test]
+fn partition_across_shared_runs_and_pending_tail() {
+    let mut source = PrimitiveStream::default();
+    for order in [1, 3, 5, 7] {
+        source.push(quad(order));
+    }
+    source.finish();
+    let mut stream = PrimitiveStream::default();
+    stream.share(&source, 0..source.len());
+    stream.push(quad(9));
+    stream.push(quad(11));
+    let flat = [1, 3, 5, 7, 9, 11];
+    for threshold in 0..=12 {
+        assert_eq!(
+            stream.partition_point(|quad| quad.order < threshold),
+            flat.partition_point(|&order| order < threshold),
+        );
+    }
+    let mut empty = PrimitiveStream::<Quad>::default();
+    assert_eq!(empty.partition_point(|_| true), 0);
+    empty.push(quad(5));
+    assert_eq!(empty.partition_point(|quad| quad.order < 6), 1);
 }
 
 #[test]

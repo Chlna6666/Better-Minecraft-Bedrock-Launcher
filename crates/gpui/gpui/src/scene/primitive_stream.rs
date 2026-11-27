@@ -222,16 +222,17 @@ impl<T: Ordered> PrimitiveStream<T> {
             .or_else(|| self.segments.last()?.slice().last())
     }
     pub(crate) fn partition_point(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
-        let (mut first, mut end) = (0, self.len);
-        while first < end {
-            let middle = first + (end - first) / 2;
-            if predicate(&self[middle]) {
-                first = middle + 1;
-            } else {
-                end = middle;
-            }
+        // Partition the immutable runs first, then the one candidate run.
+        // Indexing the logical stream at every binary-search step would
+        // repeat a second binary search over the same segment descriptors.
+        let slot = self.segments.partition_point(|segment| {
+            predicate(segment.slice().last().expect("nonempty Paint segment"))
+        });
+        if let Some(segment) = self.segments.get(slot) {
+            segment.start() + segment.slice().partition_point(predicate)
+        } else {
+            self.len - self.pending.len() + self.pending.partition_point(predicate)
         }
-        first
     }
     /// Borrows every contiguous payload portion in a logical sorted range.
     pub(crate) fn slices(&self, range: Range<usize>) -> impl Iterator<Item = &[T]> {
@@ -261,6 +262,18 @@ impl<T: Ordered> PrimitiveStream<T> {
         // Preserve insertion order for equal DrawOrder when new Paint lies
         // between two replayed ranges in the same layer.
         self.freeze_pending();
+        // A complete immutable stream already has the correct segment
+        // boundaries, ordering and cumulative offsets. In an empty target
+        // adopt its descriptors directly without re-running append checks.
+        if self.len == 0 && range.start == 0 && range.end == previous.len {
+            self.segments.extend(previous.segments.iter().map(|segment| Segment {
+                owner: Arc::clone(&segment.owner),
+                range: segment.range.clone(),
+                end: segment.end,
+            }));
+            self.len = previous.len;
+            return;
+        }
         let first = previous
             .segments
             .partition_point(|segment| segment.end <= range.start);

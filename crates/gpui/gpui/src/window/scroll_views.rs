@@ -828,7 +828,10 @@ mod binding_tests {
             let before = builds.get();
             assert!(window.test_present().is_accepted());
             window.dispatch_event(wheel(-250.), app);
-            assert!(window.prepare_scroll_placement(app).is_err(), "coverage miss must fall back");
+            assert!(matches!(
+                window.prepare_scroll_placement(app),
+                Err(Outcome::Coverage)
+            ), "coverage miss must be classified before falling back");
             window.draw(app).clear();
             assert!(builds.get() > before);
 
