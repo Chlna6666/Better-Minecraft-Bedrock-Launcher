@@ -339,16 +339,27 @@ impl Window {
             .source
             .translation(context.element_offset, scale)
             .expect("prepaint proved integral scroll");
-        if previous.context.element_offset == context.element_offset {
-            self.replay_validated_scene(
-                previous.paint_range.start.scene_index..previous.paint_range.end.scene_index,
-            );
-        } else {
-            source.source.replay(
-                &mut self.next_frame.painter,
-                source.viewport.scale(scale),
-                delta,
-            );
+        let unchanged = previous.context.element_offset == context.element_offset;
+        let old_range = previous.paint_range.start.scene_index..previous.paint_range.end.scene_index;
+        let was_deferred = old_range.len() == 1 && matches!(
+            self.rendered_frame.scene().paint_operations.get(old_range.start),
+            Some(crate::PaintOperation::DeferredScroll(_))
+        );
+        let viewport = source.viewport.scale(scale);
+        // Only Nova consumes logical roots. An independently ordered
+        // frozen source can be emitted without projecting any primitives.
+        let deferred = (!unchanged || was_deferred)
+            && self.platform_window.supports_deferred_scroll()
+            && self.scene_animation.is_none()
+            && source.source.placement(viewport, delta)
+                .filter(ScrollPlacement::has_static_order)
+                .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
+        if !deferred {
+            if unchanged && !was_deferred {
+                self.replay_validated_scene(old_range);
+            } else {
+                source.source.replay(&mut self.next_frame.painter, viewport, delta);
+            }
         }
         self.replay_validated_paint_records(&previous.paint_range);
         if !hitboxes(&previous.prepaint_range).is_empty() && self.scroll_hover_is_held(cx) {

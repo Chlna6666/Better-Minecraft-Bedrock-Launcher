@@ -139,12 +139,16 @@ impl Operations {
         self.boundaries.last().is_some_and(|boundary| boundary.deferred_scrolls != 0)
     }
 
-    pub(crate) fn deferred_scrolls(&self) -> impl Iterator<Item = &crate::window::scroll_paint::ScrollPlacement> {
+    pub(crate) fn deferred_scroll_indices(&self) -> impl Iterator<Item = usize> + '_ {
         self.boundaries.iter().scan(0, |previous, boundary| {
             let changed = boundary.deferred_scrolls != *previous;
             *previous = boundary.deferred_scrolls;
             Some(changed.then_some(boundary.after - 1))
-        }).flatten().filter_map(|index| match self.get(index) {
+        }).flatten()
+    }
+
+    pub(crate) fn deferred_scrolls(&self) -> impl Iterator<Item = &crate::window::scroll_paint::ScrollPlacement> {
+        self.deferred_scroll_indices().filter_map(|index| match self.get(index) {
             Some(PaintOperation::DeferredScroll(placement)) => Some(placement),
             _ => None,
         })

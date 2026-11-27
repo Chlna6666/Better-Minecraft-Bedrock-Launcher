@@ -364,6 +364,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// for a presentation thread. Every platform must explicitly declare its owner; platforms
     /// sampled by the UI return false.
     fn owns_scene_animations(&self) -> bool;
+    /// The platform renderer consumes logical scroll operations and owns
+    /// ordinary Scene fallback when direct tile composition is unavailable.
+    fn supports_deferred_scroll(&self) -> bool { false }
     fn set_animation_completion_sender(&self, _sender: SceneAnimationCompletionSender) {}
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;

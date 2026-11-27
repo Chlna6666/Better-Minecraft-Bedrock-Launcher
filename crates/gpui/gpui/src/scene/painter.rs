@@ -91,6 +91,20 @@ impl Painter {
         }
     }
 
+    /// Record a logical placement without visiting the frozen source.
+    /// The root ordering tree is provisional until the owner chooses
+    /// composition or reconstructs the ordinary Scene. Do not import
+    /// native ordering proofs from across this boundary.
+    pub(crate) fn push_deferred_scroll(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) -> bool {
+        if self.scroll_capture.is_some() || !self.blur_captures.is_empty() || !self.layer_stack.is_empty() {
+            return false;
+        }
+        self.scene.revision = 0;
+        self.retained_prefix_invalid = true;
+        self.scene.paint_operations.push(PaintOperation::DeferredScroll(placement));
+        true
+    }
+
     pub(crate) fn construction_capacity(&self) -> usize {
         self.primitive_bounds.retained_capacity()
             + self.layer_stack.capacity()

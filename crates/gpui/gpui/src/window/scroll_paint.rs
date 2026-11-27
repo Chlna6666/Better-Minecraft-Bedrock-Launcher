@@ -15,6 +15,7 @@ pub(in crate::window) struct ScrollPaint {
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
     raster_eligible: bool,
+    static_order: bool,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
@@ -98,6 +99,8 @@ impl ScrollPaint {
         operations.finish();
         // Qualify once, not on each scrolled frame or GPU owner request.
         let mut atlas_tiles = collections::FxHashSet::default();
+        let mut order = super::frame::StaticPaintOrder::default();
+        let mut static_order = true;
         let mut raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len());
         // Residency belongs to the frozen source even when GPU raster
@@ -115,6 +118,7 @@ impl ScrollPaint {
             }
             raster_eligible = raster_eligible
                 && super::frame::static_scroll_raster_operation(operation, coverage);
+            static_order = static_order && order.accept(operation);
         }
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
             Self::blocks(&operations).map(Self::block_bounds).collect()
@@ -126,6 +130,7 @@ impl ScrollPaint {
             coverage,
             operations: Arc::new(operations),
             raster_eligible,
+            static_order: raster_eligible && static_order && order.complete(),
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             block_bounds,
         }
@@ -261,6 +266,10 @@ impl ScrollPlacement {
         Point<ScaledPixels>, &Arc<[(crate::AtlasTextureId, u32)]>) {
         (&self.source.operations, self.source.coverage, self.delta, &self.source.atlas_tiles)
     }
+
+    pub(in crate::window) fn viewport(&self) -> ContentMask<ScaledPixels> { self.viewport }
+
+    pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
 
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.source, &other.source)
@@ -418,9 +427,16 @@ mod tests {
         let outside = |y| Quad { bounds: bounds(y), content_mask: viewport, ..Default::default() };
         let mut deferred = Painter::default();
         deferred.insert_primitive(outside(0.));
-        deferred.scene.paint_operations.push(PaintOperation::DeferredScroll(placement.clone()));
+        assert!(placement.has_static_order());
+        assert!(deferred.push_deferred_scroll(placement.clone()));
         deferred.insert_primitive(outside(32.));
         deferred.finish();
+        let mut ui_replay = Painter::default();
+        ui_replay.replay_with_ordering(0..deferred.len(), &deferred.scene, std::iter::empty(), Some(&deferred));
+        ui_replay.finish();
+        assert_eq!(ui_replay.len(), 3);
+        assert_eq!(ui_replay.quads.len(), 2);
+        assert!(ui_replay.paint_operations.has_deferred_scroll());
         let scene = deferred.into_scene();
         assert_eq!(scene.len(), 3);
         assert!(scene.paint_operations.has_deferred_scroll());

@@ -301,10 +301,13 @@ impl Painter {
                     }
                 }
                 PaintOperation::DeferredScroll(placement) => {
-                    // Expanded operations have new native indices and
-                    // ordering. Never adopt the old retained prefix.
+                    // UI retention carries the one-operation placement.
+                    // The ordinary owner reconstruction deliberately has
+                    // no previous UI Painter and expands it instead.
                     self.retained_prefix_invalid = true;
-                    placement.replay(self);
+                    if previous_painter.is_none() || !self.push_deferred_scroll(placement.clone()) {
+                        placement.replay(self);
+                    }
                 }
                 PaintOperation::StartLayer(bounds) => {
                     if let Some(capture) = self.blur_captures.last_mut() {

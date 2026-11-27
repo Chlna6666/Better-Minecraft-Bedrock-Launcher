@@ -34,8 +34,7 @@ pub(crate) enum PrimitiveKind {
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
     /// One logical operation owns the immutable source and its placement.
-    /// Production emission is gated on complete renderer/root-order support.
-    #[allow(dead_code)]
+    /// Root-order certification gates native tile composition.
     DeferredScroll(crate::window::scroll_paint::ScrollPlacement),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,

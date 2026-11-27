@@ -1130,6 +1130,8 @@ impl Drop for MacWindow {
 }
 
 impl PlatformWindow for MacWindow {
+    fn supports_deferred_scroll(&self) -> bool { cfg!(all(not(feature = "macos-blade"), feature = "nova-gfx-metal")) }
+
     fn owns_scene_animations(&self) -> bool {
         cfg!(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))
     }

@@ -5,7 +5,7 @@ mod paint;
 mod retained_scene_index;
 mod layers;
 pub(crate) use layers::{LayerFrame, SceneLayers};
-pub(super) use layers::static_scroll_raster_operation;
+pub(super) use layers::{StaticPaintOrder, static_scroll_raster_operation};
 use layers::LayerPart;
 pub(crate) use paint::{Paint, PaintGeometry};
 use retained_scene_index::Entry;

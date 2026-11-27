@@ -1795,6 +1795,8 @@ impl PlatformWindow for WaylandWindow {
         self.0.present_active_frame(now, None)
     }
 
+    fn supports_deferred_scroll(&self) -> bool { true }
+
     fn owns_scene_animations(&self) -> bool {
         true
     }

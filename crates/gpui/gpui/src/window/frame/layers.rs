@@ -504,6 +504,72 @@ impl LayerFrame {
     }
 }
 
+/// Prove painter order by geometry rather than relying on DrawOrder from
+/// an incomplete root. Each independent ordering leaf (a primitive or a
+/// flat scope) covers every pixel it can produce. Overlapping leaves are
+/// therefore ordered by BoundsTree insertion; disjoint leaves commute.
+/// Within one scope the native kind order must also agree with raw paint.
+#[derive(Default)]
+pub(in crate::window) struct StaticPaintOrder {
+    scope: Option<Bounds<ScaledPixels>>,
+    kind: Option<u8>,
+    unstable_bounds: Option<Bounds<ScaledPixels>>,
+}
+
+impl StaticPaintOrder {
+    pub(in crate::window) fn accept(&mut self, operation: &PaintOperation) -> bool {
+        match operation {
+            PaintOperation::StartLayer(bounds) => {
+                if self.scope.is_some() || ![bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0].into_iter().all(f32::is_finite) {
+                    return false;
+                }
+                self.scope = Some(*bounds);
+                self.kind = None;
+                self.unstable_bounds = None;
+                true
+            }
+            PaintOperation::EndLayer => self.scope.take().is_some(),
+            PaintOperation::DeferredScroll(placement) => self.scope.is_none() && placement.has_static_order(),
+            PaintOperation::Primitive(primitive) => {
+                if static_raster_bounds(primitive).is_none() {
+                    return false;
+                }
+                // An offscreen shadow's visible fringe can survive tile
+                // rasterization after eager projection drops its base.
+                let kind = match primitive {
+                    Primitive::Shadow(shadow) if shadow.blur_radius.0 == 0. => 0,
+                    Primitive::Quad(_) => 1,
+                    Primitive::Underline(_) => 3,
+                    Primitive::MonochromeSprite(_) => 4,
+                    Primitive::PolychromeSprite(_) => 5,
+                    _ => return false,
+                };
+                let visual = primitive.visual_bounds();
+                let ordering = self.scope.unwrap_or_else(|| primitive.bounds().intersect(&primitive.content_mask().bounds));
+                if !visual.is_empty() && ordering.intersect(&visual) != visual {
+                    return false;
+                }
+                if self.scope.is_some() {
+                    if self.kind.is_some_and(|old| old > kind) { return false; }
+                    if self.kind != Some(kind) { self.unstable_bounds = None; }
+                    // Sprite and underline streams use unstable native
+                    // sorting. Atlas relocation can also change sort keys.
+                    // Equal-kind overlapping geometry is not a proof.
+                    if kind >= 3 && !visual.is_empty() {
+                        if self.unstable_bounds.is_some_and(|old| old.intersects(&visual)) { return false; }
+                        self.unstable_bounds = Some(self.unstable_bounds.map_or(visual, |old| old.union(&visual)));
+                    }
+                    self.kind = Some(kind);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(in crate::window) fn complete(&self) -> bool { self.scope.is_none() }
+}
+
 // A raw paint-order split is valid only if the native quad stream has
 // that same order. Scope markers themselves draw nothing, but inherited
 // DrawOrder can reorder nested layers. Reject inversions rather than
@@ -513,6 +579,10 @@ fn ordered_static_root(scene: &Scene) -> bool {
         || !scene.blurs.is_empty() || !scene.backdrop_blurs.is_empty()
     {
         return false;
+    }
+    if scene.paint_operations.has_deferred_scroll() {
+        let mut proof = StaticPaintOrder::default();
+        return scene.paint_operations.iter().all(|operation| proof.accept(operation)) && proof.complete();
     }
     let mut previous = None;
     for operation in scene.paint_operations.iter() {
@@ -687,17 +757,31 @@ impl SceneLayers {
         let mut frames = Vec::new();
         // Evaluate at most once per published root, regardless of candidate count.
         let mut ordered_root = None;
-        let sources = scroll_views.raster_sources(view_records);
+        let mut sources = None;
+        let deferred_root = scene.paint_operations.has_deferred_scroll();
         for record in records {
             let (Some(key), Some(paint)) = (record.layout_key, record.paint.as_ref()) else { continue; };
             if duplicates.contains(&key) { continue; }
             let range = paint.start.scene_index..paint.end.scene_index;
             // Derive the physical scale from the owning retained view, not the
             // current native drawable (which can already have resized).
-            let placement = if record.rows.is_empty() && !range.is_empty() {
-                sources.get(&(range.start, range.end)).and_then(|candidates|
-                    scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
+            // The native operation owns the placement. Only an exact
+            // singleton span can replace it; surrounding ordinary paint
+            // must stay in the root, even if an enclosing record exists.
+            let native_placement = if record.rows.is_empty() && range.len() == 1 {
+                match scene.paint_operations.get(range.start) {
+                    Some(PaintOperation::DeferredScroll(placement))
+                        if placement.viewport() == record.source_viewport => Some(placement.clone()),
+                    _ => None,
+                }
             } else { None };
+            let native = native_placement.is_some();
+            let placement = if native { native_placement }
+                else if record.rows.is_empty() && !range.is_empty() && !deferred_root {
+                    sources.get_or_insert_with(|| scroll_views.raster_sources(view_records))
+                        .get(&(range.start, range.end)).and_then(|candidates|
+                            scroll_views.raster_source(candidates, &range, record.viewport, record.source_viewport))
+                } else { None };
             let direct = if let Some(placement) = &placement {
                 let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
                 LayerContent::from_scroll(operations, coverage, delta, record.translation,
@@ -706,7 +790,8 @@ impl SceneLayers {
                 LayerContent::from_visible_rows(scene, range.clone(), &record.rows,
                     record.source_viewport, record.translation)
             } else { None };
-            let static_root_span = if direct.as_ref().is_some_and(|content| content.raster.is_some())
+            let static_root_span = if (!deferred_root || native)
+                && direct.as_ref().is_some_and(|content| content.raster.is_some())
                 && scene.can_reuse_range_bounds(range.clone())
                 && *ordered_root.get_or_insert_with(|| ordered_static_root(scene))
             {

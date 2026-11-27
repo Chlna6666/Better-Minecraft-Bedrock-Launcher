@@ -282,6 +282,14 @@ fn layer_plan<'a>(layers: &'a [crate::window::LayerFrame], scene_len: usize, siz
     candidates
 }
 
+fn all_deferred_scrolls_planned(scene: &crate::Scene, plans: &[LayerPlan<'_>]) -> bool {
+    let mut plans = plans.iter().peekable();
+    scene.paint_operations.deferred_scroll_indices().all(|index| {
+        while plans.peek().is_some_and(|plan| plan.span.end <= index) { plans.next(); }
+        plans.next().is_some_and(|plan| plan.span.start == index && plan.span.end == index + 1)
+    })
+}
+
 fn outside_ranges(plans: &[LayerPlan<'_>], scene_len: usize) -> Option<Vec<std::ops::Range<usize>>> {
     let mut ranges = Vec::with_capacity(plans.len() + 1);
     let mut start = 0;
@@ -466,6 +474,14 @@ impl NovaRenderer {
         }
         let plans = layer_plan(&packet.paint.layers.frames, packet.paint.scene.len(), self.active_size);
         if plans.is_empty() { return Ok(None); }
+        // All logical operations must be covered by exact admitted plans.
+        // A nested overlap, tile budget limit or uncovered viewport must
+        // fall back before any writer or present is issued.
+        if packet.paint.scene.paint_operations.has_deferred_scroll()
+            && !all_deferred_scrolls_planned(&packet.paint.scene, &plans)
+        {
+            return Ok(None);
+        }
         // Keep the normal atlas retirement path reachable even during a long
         // run of direct presentations. Only scan dependencies when removals exist.
         if self.atlas.has_pending_removals() {
