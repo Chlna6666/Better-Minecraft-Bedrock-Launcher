@@ -987,11 +987,22 @@ impl NovaRenderer {
         let text_raster = self.retained_upload.text_raster_token();
         let residency_paint = logical_paint.unwrap_or(&packet.paint);
         self.reconcile_scroll_residency(residency_paint);
-        if self.raster_tiles.bytes() != 0 {
-            if self.submitted_frames % 120 == 0 {
-                if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, Some(120)) {
-                    log::debug!("failed to trim idle scroll tiles: {error}");
-                }
+        let no_scroll_layers = residency_paint.layers.frames.is_empty();
+        if self.raster_tiles.bytes() != 0 && (no_scroll_layers || self.submitted_frames % 120 == 0) {
+            // A root without scroll sources cannot reuse any old tile.
+            // Retire only idle allocations; busy readers keep their native
+            // ownership and are checked again on subsequent ordinary frames.
+            let age = if no_scroll_layers { 0 } else { 120 };
+            if let Err(error) = lock_backend(&self.backend).trim_raster_tiles(&mut self.raster_tiles, Some(age)) {
+                log::debug!("failed to trim idle scroll tiles: {error}");
+            }
+        }
+        if no_scroll_layers {
+            self.scroll_outside_root = None;
+            // This is nonblocking; the helper rejects outstanding native
+            // users and must retire tile descriptors before slot buffers.
+            if self.raster_tiles.bytes() == 0 {
+                self.destroy_scroll_composite_slots();
             }
         }
         let text_raster_changed = self.submitted_text_raster != text_raster;

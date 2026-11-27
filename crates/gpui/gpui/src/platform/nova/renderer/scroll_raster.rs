@@ -1125,6 +1125,13 @@ impl NovaRenderer {
         let scale = paint.geometry.scale_factor;
         let context = self.scroll_tile_context(scale);
         self.raster_tiles.begin_frame();
+        if paint.layers.frames.is_empty() {
+            if self.raster_tiles.bytes() != 0 {
+                self.raster_tiles.invalidate_all();
+            }
+            self.raster_tile_context = Some(context);
+            return;
+        }
         if self.raster_tiles.bytes() != 0 {
             let dirty = match self.raster_tile_context {
                 Some(previous) if previous.1 == context.1 && previous.2 == context.2 => {
