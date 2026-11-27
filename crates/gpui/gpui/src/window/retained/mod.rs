@@ -12,7 +12,9 @@ mod lifecycle;
 /// GPU consumers borrow prepared ranges without owning Paint payloads or UI Fragment state.
 #[derive(Default)]
 pub(crate) struct RetainedPaint {
-    retained_chunk_candidates: Vec<RetainedChunkCandidate>,
+    retained_chunk_candidates: Option<Arc<Vec<RetainedChunkCandidate>>>,
+    // Only newly recorded candidates need promotion at the next placement.
+    has_fresh_candidates: bool,
     prepared: Option<Arc<PreparedChunks>>,
     finished: bool,
     revision: u64,
@@ -29,6 +31,14 @@ struct PreparedChunks {
 }
 
 impl RetainedPaint {
+    fn candidates(&self) -> &[RetainedChunkCandidate] {
+        self.retained_chunk_candidates.as_deref().map_or(&[], Vec::as_slice)
+    }
+
+    fn candidates_mut(&mut self) -> &mut Vec<RetainedChunkCandidate> {
+        Arc::make_mut(self.retained_chunk_candidates.get_or_insert_with(Arc::default))
+    }
+
     fn prepared_mut(&mut self) -> &mut PreparedChunks {
         if self.prepared.as_mut().and_then(Arc::get_mut).is_none() {
             self.prepared = Some(Arc::default());

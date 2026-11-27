@@ -4,7 +4,12 @@ use std::sync::Arc;
 impl RetainedPaint {
     /// Resets unique Window scratch metadata after presentation has released its snapshot.
     pub(crate) fn clear(&mut self) {
-        self.retained_chunk_candidates.clear();
+        if let Some(candidates) = self.retained_chunk_candidates.as_mut().and_then(Arc::get_mut) {
+            candidates.clear();
+        } else {
+            self.retained_chunk_candidates = None;
+        }
+        self.has_fresh_candidates = false;
         if let Some(table) = self.prepared.as_mut().and_then(Arc::get_mut) {
             table.quads.clear();
             table.sprites.clear();
@@ -18,7 +23,7 @@ impl RetainedPaint {
     }
 
     pub(crate) fn retained_capacity(&self) -> usize {
-        self.retained_chunk_candidates.capacity()
+        self.retained_chunk_candidates.as_deref().map_or(0, Vec::capacity)
             + self.prepared.as_deref().map_or(0, |table| {
                 table.quads.capacity() + table.sprites.capacity() + table.replay_quad_indices.capacity()
             })
@@ -26,9 +31,11 @@ impl RetainedPaint {
 
     /// Adapts empty scratch allocations to the current frame without touching shared snapshots.
     pub(crate) fn trim_for_reuse(&mut self, current: &Self) {
-        let candidate_floor = current.retained_chunk_candidates.len().max(24);
-        if self.retained_chunk_candidates.capacity() > candidate_floor.saturating_mul(2) {
-            self.retained_chunk_candidates.shrink_to(candidate_floor);
+        let candidate_floor = current.candidates().len().max(24);
+        if let Some(candidates) = self.retained_chunk_candidates.as_mut().and_then(Arc::get_mut) {
+            if candidates.capacity() > candidate_floor.saturating_mul(2) {
+                candidates.shrink_to(candidate_floor);
+            }
         }
         let Some(table) = self.prepared.as_mut().and_then(Arc::get_mut) else { return; };
         let prepared_floor = current.prepared.as_deref().map_or(0, |table| table.quads.len()).max(24);

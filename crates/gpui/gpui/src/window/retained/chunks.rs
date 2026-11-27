@@ -57,19 +57,20 @@ impl RetainedPaint {
         // Preserve one candidate authority and sort it in place. Recording
         // remains cheap append-only during Paint; finished retention permits
         // O(log chunks + locally overlapping chunks) replay lookups.
-        self.retained_chunk_candidates
-            .sort_unstable_by(|left, right| {
+        if let Some(candidates) = &mut self.retained_chunk_candidates {
+            Arc::make_mut(candidates).sort_unstable_by(|left, right| {
                 left.scene_range
                     .start
                     .cmp(&right.scene_range.start)
                     .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
                     .then_with(|| left.id.depth.cmp(&right.id.depth))
             });
+        }
         // Validate the once-per-finish ordering contract here, not on every
         // retained replay. A debug-build full candidate scan per fragment
         // defeats the binary-search fast path with many retained siblings.
         debug_assert!(
-            self.retained_chunk_candidates
+            self.candidates()
                 .windows(2)
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
@@ -94,8 +95,8 @@ impl RetainedPaint {
         if !previous.finished
             || scene.revision == 0
             || (!placement_only && scene.revision != previous.revision)
-            || self.retained_chunk_candidates.len() != previous.retained_chunk_candidates.len()
-            || !self.retained_chunk_candidates.iter().zip(&previous.retained_chunk_candidates)
+            || self.candidates().len() != previous.candidates().len()
+            || !self.candidates().iter().zip(previous.candidates())
                 .all(|(current, old)| current.replayed
                     && current.id == old.id
                     && current.scene_range == old.scene_range)
@@ -103,9 +104,15 @@ impl RetainedPaint {
             return false;
         }
 
+        self.inherit_replayed_chunks(previous);
+        true
+    }
+
+    // The caller has already established the candidate/order proof.
+    fn inherit_replayed_chunks(&mut self, previous: &Self) {
         let Some(old) = previous.prepared.as_ref() else {
             self.prepared = None;
-            return true;
+            return;
         };
         if old.all_replayed {
             self.prepared = Some(Arc::clone(old));
@@ -124,22 +131,36 @@ impl RetainedPaint {
             table.replay_quad_indices.clone_from(&old.replay_quad_indices);
             table.all_replayed = true;
         }
-        true
     }
 
     /// An independently constructed placement-only Scene preserves every
     /// candidate and the exclusive ordinary draw-order domain. No planner
     /// or candidate sorting is necessary; the old publication stays live.
     pub(crate) fn placement_variant(&self, old: &Scene, current: &Scene) -> Option<Self> {
-        if !self.finished || self.revision != old.revision || old.revision == current.revision {
+        if !self.finished || self.revision != old.revision || current.revision == 0
+            || old.revision == current.revision
+        {
             return None;
         }
+        // Only the Scene's certified marker replacement calls this path.
+        // Candidate identity, range and exclusive primitive order are unchanged
+        // by construction, not by comparing every candidate again.
+        let candidates = if self.has_fresh_candidates {
+            let mut candidates = self.retained_chunk_candidates.clone();
+            if let Some(candidates) = &mut candidates {
+                for candidate in Arc::make_mut(candidates) {
+                    candidate.replayed = true;
+                }
+            }
+            candidates
+        } else {
+            self.retained_chunk_candidates.clone()
+        };
         let mut result = Self {
-            retained_chunk_candidates: self.retained_chunk_candidates.iter().cloned()
-                .map(|mut candidate| { candidate.replayed = true; candidate }).collect(),
+            retained_chunk_candidates: candidates,
             ..Self::default()
         };
-        if !result.reuse_prepared_chunks(current, self, true) { return None; }
+        result.inherit_replayed_chunks(self);
         result.finished = true;
         result.revision = current.revision;
         Some(result)
@@ -198,7 +219,7 @@ impl RetainedPaint {
 
     /// Carries only candidates fully contained in a draw-order-preserving Paint replay.
     pub(crate) fn replay(&mut self, range: Range<usize>, previous: &Self, replay_start: usize) {
-        let candidates = &previous.retained_chunk_candidates;
+        let candidates = previous.candidates();
         // Completed retention sorts its existing candidate storage by
         // paint-operation start. Retained fragment replays only inspect
         // candidates starting inside their own source range rather than
@@ -210,7 +231,7 @@ impl RetainedPaint {
         } else {
             // Unfinished retention has not reached finish() yet and
             // may still have candidates in their original append order.
-            candidates.as_slice()
+            candidates
         };
         for chunk in candidates {
             if chunk.scene_range.start < range.start || chunk.scene_range.end > range.end {
@@ -218,7 +239,7 @@ impl RetainedPaint {
             }
             let start = replay_start + chunk.scene_range.start - range.start;
             let end = replay_start + chunk.scene_range.end - range.start;
-            self.retained_chunk_candidates.push(RetainedChunkCandidate {
+            self.candidates_mut().push(RetainedChunkCandidate {
                 id: chunk.id,
                 scene_range: start..end,
                 replayed: true,
@@ -238,7 +259,8 @@ impl RetainedPaint {
             return;
         }
         self.finished = false;
-        self.retained_chunk_candidates.push(RetainedChunkCandidate {
+        self.has_fresh_candidates = true;
+        self.candidates_mut().push(RetainedChunkCandidate {
             id: RetainedChunkId::fresh(identity.0.len()),
             scene_range,
             replayed: false,
@@ -278,7 +300,7 @@ impl RetainedPaint {
     }
 
     fn prepare_retained_chunks(&mut self, scene: &Scene, previous: Option<(&Scene, &Self)>) {
-        if self.retained_chunk_candidates.is_empty() {
+        if self.candidates().is_empty() {
             self.prepared = None;
             return;
         }
@@ -291,8 +313,8 @@ impl RetainedPaint {
         // single qualified enclosing run owns its exclusive primitive-order
         // interval, so nested candidates cannot improve the final selection.
         let mut qualified_until = 0usize;
-        let mut planner = RetainedChunkPlanner::new(scene, self.retained_chunk_candidates.len());
-        for candidate in &self.retained_chunk_candidates {
+        let mut planner = RetainedChunkPlanner::new(scene, self.candidates().len());
+        for candidate in self.candidates() {
             if candidate.scene_range.end <= qualified_until {
                 continue;
             }
@@ -450,6 +472,42 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_placement_variants_share_candidate_and_qualification_storage() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(32.), ScaledPixels(32.)),
+        );
+        let mut original = crate::window::retained::PaintFixture::default();
+        for _ in 0..32 {
+            original.insert_primitive(Quad {
+                bounds, content_mask: crate::ContentMask::new(bounds), ..Quad::default()
+            });
+        }
+        original.record(GlobalElementId::from_path(&["placement".into()]), 1, 0..32);
+        original.finish();
+        assert_eq!(original.chunks().len(), 1);
+        // Exercise the metadata operation in isolation. Scene marker and
+        // physical storage qualification is covered by scroll_paint tests.
+        let mut next_scene = Scene::default();
+        next_scene.revision = original.paint.scene.revision.wrapping_add(1);
+        let first = original.retention.placement_variant(&original.paint.scene, &next_scene).unwrap();
+        assert!(!original.retention.candidates()[0].replayed);
+        assert!(first.candidates()[0].replayed);
+        assert!(!original.chunks()[0].replayed);
+        assert!(first.chunks_for(&next_scene)[0].replayed);
+        let mut last_scene = Scene::default();
+        last_scene.revision = next_scene.revision.wrapping_add(1);
+        let mut second = first.placement_variant(&next_scene, &last_scene).unwrap();
+        assert!(Arc::ptr_eq(first.retained_chunk_candidates.as_ref().unwrap(),
+            second.retained_chunk_candidates.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(first.prepared.as_ref().unwrap(), second.prepared.as_ref().unwrap()));
+        second.clear();
+        assert_eq!(first.candidates().len(), 1);
+        assert_eq!(first.chunks_for(&next_scene).len(), 1);
+        assert!(second.candidates().is_empty());
+    }
+
+    #[test]
     fn shared_quad_qualification_rechecks_destination_order_coverage() {
         let bounds = Bounds::new(
             crate::point(ScaledPixels(0.), ScaledPixels(0.)),
@@ -468,7 +526,7 @@ mod tests {
         current.insert_primitive(Quad { background: crate::Hsla::white().into(), ..quad });
         assert!(!current.paint.finish_against(&previous.paint));
         let mut planner = RetainedChunkPlanner::new(&current.paint.scene, 1);
-        let candidate = &current.retention.retained_chunk_candidates[0];
+        let candidate = &current.retention.candidates()[0];
         let proof = RetainedPaint::shared_quad_proof(candidate, &current.paint.scene,
             Some((&previous.paint.scene, &previous.retention)), &mut planner);
         assert!(matches!(proof, Some(RetainedChunkProof::Quad(_))));
@@ -486,7 +544,7 @@ mod tests {
         conflicting.insert_primitive(Quad { bounds: other, content_mask: crate::ContentMask::new(other), ..quad });
         assert!(!conflicting.paint.finish_against(&previous.paint));
         let mut planner = RetainedChunkPlanner::new(&conflicting.paint.scene, 1);
-        assert!(RetainedPaint::shared_quad_proof(&conflicting.retention.retained_chunk_candidates[0],
+        assert!(RetainedPaint::shared_quad_proof(&conflicting.retention.candidates()[0],
             &conflicting.paint.scene, Some((&previous.paint.scene, &previous.retention)), &mut planner).is_none());
         conflicting.retention.finish_against(&mut conflicting.paint.scene, &previous.paint.scene, &previous.retention, false, false);
         assert!(conflicting.chunks().is_empty());
@@ -528,11 +586,11 @@ mod tests {
         assert!(
             previous
                 .retention
-                .retained_chunk_candidates
+                .candidates()
                 .windows(2)
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
-        assert_eq!(previous.retention.retained_chunk_candidates.len(), 17);
+        assert_eq!(previous.retention.candidates().len(), 17);
 
         let split = ranges[7].end;
         let mut replayed = crate::window::retained::PaintFixture::default();
@@ -541,11 +599,11 @@ mod tests {
         assert_eq!(replayed.len(), previous.len());
         // The outer candidate crosses both replay calls, so only the sixteen
         // complete child chunks are replayed. No second ID index is stored.
-        assert_eq!(replayed.retention.retained_chunk_candidates.len(), 16);
+        assert_eq!(replayed.retention.candidates().len(), 16);
         assert!(
             replayed
                 .retention
-                .retained_chunk_candidates
+                .candidates()
                 .iter()
                 .all(|chunk| chunk.replayed)
         );
@@ -582,7 +640,7 @@ mod tests {
         assert_eq!(
             replayed_unfinished
                 .retention
-                .retained_chunk_candidates
+                .candidates()
                 .len(),
             1
         );
