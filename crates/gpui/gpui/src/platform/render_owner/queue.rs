@@ -149,13 +149,20 @@ impl Queue {
         // Profiling includes producer lock contention, while replacement keeps backlog age.
         let mut first_enqueued_at = enqueued_at;
         let mut coalesced_count = 0_u64;
+        // Defer potentially large immutable Scene destruction until after
+        // releasing the producer/owner queue mutex. Usually at most one old
+        // draw is superseded, so the retirement list stays on the stack.
+        let mut retired_paints = smallvec::SmallVec::<[std::sync::Arc<crate::window::Paint>; 2]>::new();
+        let retired_commands;
         let mut state = self.0.lock();
         if state.closing {
             return Err(anyhow!("GPU renderer is closing"));
         }
         if matches!(command, Command::Shutdown(_)) {
             state.closing = true;
-            state.commands.clear();
+            retired_commands = std::mem::take(&mut state.commands);
+        } else {
+            retired_commands = VecDeque::new();
         }
         // A live resize frame owns both its geometry and the Scene laid out for
         // that geometry. Replace queued presentation work as one transaction so
@@ -187,7 +194,10 @@ impl Queue {
                         packet: previous,
                         reply: None,
                         ..
-                    } => packet.merge_pending_damage_from(&previous),
+                    } => {
+                        packet.merge_pending_damage_from(&previous);
+                        retired_paints.push(previous.paint);
+                    }
                     _ => unreachable!("live resize compaction must not cross a control barrier"),
                 }
             }
@@ -237,6 +247,7 @@ impl Queue {
                             packet: previous, ..
                         } => {
                             packet.merge_pending_damage_from(&previous);
+                            retired_paints.push(previous.paint);
                         }
                         Command::Cover { size } => newest_cover = Some(size),
                         Command::Tick(..) | Command::Continue(..) => {}
@@ -328,6 +339,7 @@ impl Queue {
                         unreachable!()
                     };
                     packet.merge_pending_damage_from(&previous);
+                    retired_paints.push(previous.paint);
                 }
             }
             Command::Tick(..) | Command::Continue(..) => {
@@ -373,6 +385,9 @@ impl Queue {
             wake()?;
             state.scheduled = true;
         }
+        drop(state);
+        drop(retired_paints);
+        drop(retired_commands);
         Ok(())
     }
 
@@ -435,9 +450,14 @@ impl Queue {
     }
 
     pub(super) fn close(&self) {
-        let mut state = self.0.lock();
-        state.closing = true;
-        state.commands.clear();
+        let retired = {
+            let mut state = self.0.lock();
+            state.closing = true;
+            std::mem::take(&mut state.commands)
+        };
+        // Call closures can own application resources with arbitrary Drop
+        // implementations. Never execute them while the queue is locked.
+        drop(retired);
     }
 
     pub(super) fn is_closed(&self) -> bool {

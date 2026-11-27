@@ -940,3 +940,33 @@ fn live_resize_compaction_preserves_latest_native_cover() {
     ));
     assert!(queue.take().is_none());
 }
+
+
+#[test]
+fn shutdown_destroys_cancelled_control_payload_without_holding_queue_lock() {
+    struct CheckUnlocked {
+        queue: std::sync::Weak<Queue>,
+        checked: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for CheckUnlocked {
+        fn drop(&mut self) {
+            let queue = self.queue.upgrade().unwrap();
+            assert!(queue.0.try_lock().is_some(), "cancelled payload destroyed inside queue lock");
+            self.checked.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    for shutdown_command in [true, false] {
+        let queue = Arc::new(Queue::default());
+        let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sentinel = CheckUnlocked { queue: Arc::downgrade(&queue), checked: checked.clone() };
+        queue.enqueue(Command::Call(Box::new(move |_| drop(sentinel))), || Ok(())).unwrap();
+        if shutdown_command {
+            let (reply, _receiver) = std::sync::mpsc::sync_channel(1);
+            queue.enqueue(Command::Shutdown(reply), || Ok(())).unwrap();
+        } else {
+            queue.close();
+        }
+        assert!(checked.load(std::sync::atomic::Ordering::Acquire));
+    }
+}
