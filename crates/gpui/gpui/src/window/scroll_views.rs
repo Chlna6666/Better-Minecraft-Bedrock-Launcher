@@ -2,7 +2,8 @@
 //! Adapted from GPUI Fast's scroll-layer paint/reuse phases.
 
 use super::{
-    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord, scroll_paint::ScrollPaint,
+    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord,
+    scroll_paint::{ScrollPaint, ScrollPaintTarget},
 };
 use crate::{
     AnyElement, App, Bounds, ContentMask, EntityId, Pixels, Point, StateRead, StateReadStatus,
@@ -56,11 +57,30 @@ impl ScrollViews {
 /// A viewport is not a scroll source identity. Two overlapping or
 /// replacement scrollers can have exactly the same clip and position.
 #[derive(Clone)]
-struct ScrollBinding {
+pub(crate) struct ScrollBinding {
     offset: Weak<ScrollOffset>,
     sampled: Point<Pixels>,
-    // (native scroller owner, sole direct child view)
-    direct: Option<(EntityId, EntityId)>,
+    direct: Option<DirectScroll>,
+}
+
+#[derive(Clone)]
+struct DirectScroll {
+    owner: EntityId,
+    child: EntityId,
+    range: Option<TrackedScrollRange>,
+}
+
+/// The exact bounds version sampled after the scroller clamps its offset.
+#[derive(Clone)]
+pub(crate) struct TrackedScrollRange {
+    min_y: Pixels,
+    geometry: StateRead,
+}
+
+impl TrackedScrollRange {
+    pub(crate) fn new(min_y: Pixels, version: &crate::StateVersion) -> Self {
+        Self { min_y, geometry: StateRead::new(version) }
+    }
 }
 
 impl ScrollBinding {
@@ -135,15 +155,17 @@ struct PlacementTransaction {
 }
 
 impl Window {
-    /// The narrow first direct-commit path: one native vertical scroller
+    /// Direct commit for one native vertical scroller
     /// and one complete retained child with unchanged logical operation
-    /// indices. No virtual-list rows, tracked handles, external effects,
+    /// indices. No virtual-list rows, external effects,
     /// changed dependencies or partially captured content are admitted.
     fn prepare_scroll_placement(&self, cx: &App) -> Option<PlacementTransaction> {
         let (epoch, scroll_owner) = self.invalidator.pending_placement()?;
+        // Scheduling an ordinary wheel frame sets refreshing. Its pending
+        // placement epoch, rather than the scheduling flag, proves the work.
         if !self.has_completed_rendered_frame || self.force_full_redraw.get()
             || self.force_view_cache_refresh || self.recovering_degraded_draw
-            || self.live_resize_active || self.refreshing
+            || self.live_resize_active
             || self.viewport_epoch != self.committed_epoch
             || self.scale_factor != self.committed_scale_factor
             || !self.dirty_views.is_empty() || !self.direct_dirty_views.is_empty()
@@ -172,12 +194,15 @@ impl Window {
         let frame = &self.rendered_frame;
         let old_paint = frame.published_paint_ref()?;
         let mut moved = frame.scroll_views.views.iter().filter_map(|(&key, view)| {
-            if view.binding.direct != Some((scroll_owner, view.owner)) { return None; }
+            let direct = view.binding.direct.as_ref()?;
+            if direct.owner != scroll_owner || direct.child != view.owner {
+                return None;
+            }
             let offset = view.binding.offset.upgrade()?;
             let sampled = *offset.borrow();
-            (sampled != view.binding.sampled).then_some((key, view, offset, sampled))
+            (sampled != view.binding.sampled).then_some((key, view, direct, offset, sampled))
         });
-        let (key, view, offset, sampled) = moved.next()?;
+        let (key, view, direct, offset, sampled) = moved.next()?;
         if moved.next().is_some() || view.capture_revision != epoch.content
             || view.reads.iter().any(|read| read.status() != StateReadStatus::Unchanged)
         {
@@ -195,6 +220,11 @@ impl Window {
         let delta = sampled - view.binding.sampled;
         if delta.x != Pixels::ZERO || delta.y == Pixels::ZERO
             || !sampled.y.0.is_finite() || !delta.y.0.is_finite() || sampled.y > Pixels::ZERO
+            || direct.range.as_ref().is_some_and(|range| {
+                range.geometry.status() != StateReadStatus::Unchanged
+                    || !range.min_y.0.is_finite()
+                    || sampled.y < range.min_y
+            })
         {
             return None;
         }
@@ -235,10 +265,10 @@ impl Window {
             old_paint.scene.paint_operations.view(marker)? else { return None; };
         let scale = self.scale_factor();
         let old_delta = view.source.translation(record.context.element_offset, scale)?;
-        let old_expected = view.source.native_placement(view.viewport, scale, old_delta)?;
+        let old_expected = view.source.placement(view.viewport, scale, old_delta)?;
         if !old.same_paint(&old_expected) { return None; }
         let physical = view.source.translation(record.context.element_offset + delta, scale)?;
-        let placement = view.source.native_placement(view.viewport, scale, physical)?;
+        let placement = view.source.placement(view.viewport, scale, physical)?;
         let damage = placement.visual_bounds();
         // The View and enclosing damage records keep the same fixed
         // viewport. No stale damage bounds may survive the transaction.
@@ -305,6 +335,7 @@ impl Window {
         self.backdrop_blur_damage = Default::default();
         self.presentation_state.publish_pending(transaction.paint, Vec::new());
         self.needs_present.set(true);
+        self.refreshing = false;
         self.dirty_frame_scheduled = false;
         self.draw_was_degraded = false;
         self.frame_can_degrade = false;
@@ -328,7 +359,7 @@ impl Window {
         &mut self,
         scroll_source: Option<Weak<ScrollOffset>>,
         offset: Point<Pixels>,
-        direct_child: Option<EntityId>,
+        direct_child: Option<(EntityId, Option<TrackedScrollRange>)>,
         prepaint: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let Some(scroll_source) = scroll_source.filter(|_| self.scroll_row_replay_is_enabled()) else {
@@ -345,7 +376,8 @@ impl Window {
             && let Some(mut binding) = ScrollBinding::new(scroll_source, offset)
         {
             let owner = self.current_view();
-            binding.direct = direct_child.filter(|child| *child != owner).map(|child| (owner, child));
+            binding.direct = direct_child.filter(|(child, _)| *child != owner)
+                .map(|(child, range)| DirectScroll { owner, child, range });
             self.next_frame.scroll_views.viewport = Some(ScrollViewport { clip: viewport, binding });
         }
         let result = prepaint(self);
@@ -411,7 +443,7 @@ impl Window {
         current: &RetainedPaintContext,
         bounds: Bounds<Pixels>,
         cx: &App,
-    ) -> Option<(Range<PrepaintStateIndex>, Point<Pixels>, Option<EntityId>)> {
+    ) -> Option<(Range<PrepaintStateIndex>, ScrollBinding)> {
         let delta = self.scroll_view_translation(previous, current, bounds, cx)?;
         let binding = &self.scroll_viewport(cx)?.binding;
         let viewport = current.visual_content_mask;
@@ -421,8 +453,6 @@ impl Window {
         if binding.delta_from(&source.binding) != Some(delta) {
             return None;
         }
-        let sampled_offset = binding.sampled;
-        let direct_owner = binding.direct.filter(|(_, child)| *child == owner).map(|(owner, _)| owner);
         let scale = self.scale_factor();
         let physical = source.source.translation(current.element_offset, scale)?;
         if source.owner != owner
@@ -445,6 +475,8 @@ impl Window {
         {
             return None;
         }
+        let mut binding = binding.clone();
+        binding.direct = binding.direct.filter(|direct| direct.child == owner);
         let start = self.prepaint_index();
         if !moved_hitboxes.is_empty() {
             self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
@@ -452,7 +484,7 @@ impl Window {
         }
         let parent = self.next_frame.dispatch_tree.active_node_id();
         self.replay_prepaint_records(previous.prepaint_range.clone(), |_| parent);
-        Some((start..self.prepaint_index(), sampled_offset, direct_owner))
+        Some((start..self.prepaint_index(), binding))
     }
 
     pub(crate) fn plan_scroll_view_capture(
@@ -476,7 +508,7 @@ impl Window {
             return None;
         }
         let mut binding = scope.binding.clone();
-        binding.direct = binding.direct.filter(|(_, child)| *child == self.current_view());
+        binding.direct = binding.direct.filter(|direct| direct.child == self.current_view());
         Some(Box::new(ScrollViewCapture {
             key: key?,
             revision: self.invalidator.scroll_content_revision().0,
@@ -523,8 +555,13 @@ impl Window {
             .filter(|previous| previous.owner == owner && previous.viewport == capture.viewport
                 && previous.binding.same_source(&capture.binding))
             .map(|previous| Arc::clone(&previous.source));
+        let target = if capture.binding.direct.is_some() {
+            ScrollPaintTarget::DirectView
+        } else {
+            ScrollPaintTarget::View
+        };
         let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover,
-            previous_source.as_deref(), false, cx);
+            previous_source.as_deref(), target, cx);
         if suppress_hover {
             self.schedule_scroll_hover_restore(cx);
         }
@@ -556,8 +593,7 @@ impl Window {
     pub(crate) fn paint_scrolled_view(
         &mut self,
         key: u64,
-        sampled_offset: Point<Pixels>,
-        direct_owner: Option<EntityId>,
+        binding: ScrollBinding,
         previous: &RetainedViewRecord,
         context: &RetainedPaintContext,
         cx: &App,
@@ -565,8 +601,7 @@ impl Window {
         let mut source = self.rendered_frame.scroll_views.views[&key].clone();
         // Use the placement proven in Prepaint, not a fresh read after
         // application callbacks may have mutated the scroll handle.
-        source.binding.sampled = sampled_offset;
-        source.binding.direct = direct_owner.map(|owner| (owner, source.owner));
+        source.binding = binding;
         let scale = self.scale_factor();
         let delta = source
             .source
@@ -579,12 +614,17 @@ impl Window {
             Some(crate::scene::PaintOperationRef::DeferredScroll(_))
         );
         let viewport = source.viewport.scale(scale);
+        let target = if source.binding.direct.is_some() {
+            ScrollPaintTarget::DirectView
+        } else {
+            ScrollPaintTarget::View
+        };
         // Only Nova consumes logical roots. An independently ordered
         // frozen source can be emitted without projecting any primitives.
         let deferred = (!unchanged || was_deferred)
             && self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
-            && source.source.native_placement(source.viewport, scale, delta)
+            && target.placement(&source.source, source.viewport, scale, delta)
                 .is_some_and(|placement| self.next_frame.painter.push_scroll_placement_against(
                     self.rendered_frame.scene(), old_range.clone(), placement,
                 ));
@@ -679,9 +719,9 @@ mod binding_tests {
     use crate::{point, px};
 
     #[gpui::test]
-    fn native_placement_transaction_skips_the_entire_root_lifecycle(cx: &mut crate::TestAppContext) {
+    fn logical_placement_skips_root_when_shadow_requires_owner_replay(cx: &mut crate::TestAppContext) {
         use crate::{AppContext as _, Context, Entity, InteractiveElement, IntoElement,
-            ParentElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent,
+            ParentElement, PlatformInput, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
             StatefulInteractiveElement, Styled, div, point, px};
         use std::cell::Cell;
 
@@ -689,22 +729,28 @@ mod binding_tests {
         impl Render for Page {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 div().relative().w(px(200.)).h(px(512.)).flex_shrink_0().child(
-                    div().absolute().left(px(20.)).top(px(128.)).size(px(32.)).bg(crate::red())
+                    div().absolute().left(px(20.)).top(px(128.)).size(px(32.)).bg(crate::red()).shadow_sm()
                 )
             }
         }
-        struct Scroller { child: Entity<Page>, builds: Rc<Cell<usize>> }
+        struct Scroller {
+            child: Entity<Page>,
+            builds: Rc<Cell<usize>>,
+            scroll: ScrollHandle,
+        }
         impl Render for Scroller {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 self.builds.set(self.builds.get() + 1);
                 div().id("direct-scroller").w(px(200.)).h(px(128.)).overflow_y_scroll()
-                    .child(self.child.clone())
+                    .track_scroll(&self.scroll)
+                    .child(div().w_full().pt(px(12.)).child(self.child.clone()))
             }
         }
         let builds = Rc::new(Cell::new(0));
+        let scroll = ScrollHandle::new();
         let (_, cx) = cx.add_window_view(|window, cx| {
             window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
-            Scroller { child: cx.new(|_| Page), builds: builds.clone() }
+            Scroller { child: cx.new(|_| Page), builds: builds.clone(), scroll: scroll.clone() }
         });
         let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: point(px(30.), px(71.)),
@@ -719,7 +765,9 @@ mod binding_tests {
             assert!(window.test_present().is_accepted());
             let before = builds.get();
             let old = window.rendered_frame.published_paint();
+            assert!(old.layers.frames.is_empty(), "blurred shadow needs owner replay");
             window.dispatch_event(wheel(-32.), app);
+            assert!(window.refreshing, "the native wheel scheduled a frame");
             assert!(window.prepare_scroll_placement(app).is_some(), "complete source must admit placement");
             window.draw(app).clear();
             let new = window.rendered_frame.published_paint();
@@ -728,12 +776,35 @@ mod binding_tests {
             assert_eq!(window.last_generation_stats.paint_elapsed, Duration::ZERO);
             assert_ne!(old.scene.revision, new.scene.revision);
             assert!(!window.invalidator.is_dirty());
+            assert!(!window.refreshing);
             assert_eq!(old.scene.len(), new.scene.len());
+            assert!(new.layers.frames.is_empty());
+            let old_raster = old.owner_fallback().unwrap().unwrap();
+            let new_raster = new.owner_fallback().unwrap().unwrap();
+            assert!(!old_raster.scene.shadows.is_empty());
+            assert_eq!(old_raster.scene.shadows.len(), new_raster.scene.shadows.len());
+            for (old, new) in old_raster.scene.shadows.iter().zip(new_raster.scene.shadows.iter()) {
+                assert_eq!(
+                    new.bounds.origin.y - old.bounds.origin.y,
+                    px(-32.).scale(window.scale_factor()),
+                );
+            }
+            let before = builds.get();
             assert!(window.test_present().is_accepted());
             window.dispatch_event(wheel(-250.), app);
             assert!(window.prepare_scroll_placement(app).is_none(), "coverage miss must fall back");
             window.draw(app).clear();
             assert!(builds.get() > before);
+
+            // A scroll request which must run during prepaint revokes the
+            // prior position proof even if the same wheel listener moves.
+            window.dispatch_event(wheel(20.), app);
+            window.draw(app).clear();
+            scroll.scroll_to_top_of_item(0);
+            window.dispatch_event(wheel(12.), app);
+            assert!(window.prepare_scroll_placement(app).is_none());
+            window.draw(app).clear();
+            assert_eq!(scroll.offset().y, Pixels::ZERO);
         });
     }
 

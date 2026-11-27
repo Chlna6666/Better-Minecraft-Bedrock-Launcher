@@ -548,6 +548,7 @@ pub(crate) struct SceneLayers {
     // A positive proof belongs only to this immutable root publication.
     ordered: bool,
     flat_root: bool,
+    window_opaque: bool,
 }
 
 impl SceneLayers {
@@ -609,23 +610,36 @@ impl SceneLayers {
 
     /// The caller has certified that precisely one marker's translation
     /// changed, with identical source, visual bounds and operation order.
-    /// A sole qualified layer has no sibling identity or underlay changes.
-    /// Inherit its root proof instead of scanning the root or allocating
-    /// capture identity tables. More complex roots keep the general path.
-    pub(in crate::window) fn single_scroll_placement(
+    /// Root order and LCD underlays depend on marker bounds. With bounds
+    /// and window opacity unchanged, sibling layer proofs still hold.
+    pub(in crate::window) fn with_scroll_placement(
         &self,
         index: usize,
         placement: &crate::window::scroll_paint::ScrollPlacement,
         window_opaque: bool,
     ) -> Option<Self> {
-        if !self.ordered || self.frames.len() != 1 {
+        if self.window_opaque != window_opaque {
             return None;
         }
-        let old = &self.frames[0];
+        if !self.ordered && self.frames.is_empty() && !placement.has_static_order() {
+            // The same logical source still requires owner-side expansion.
+            // There are no raster layers or opaque underlays to recapture.
+            return Some(Self {
+                frames: Vec::new(),
+                ordered: false,
+                flat_root: self.flat_root,
+                window_opaque,
+            });
+        }
+        if !self.ordered {
+            return None;
+        }
+        let span = index..index + 1;
+        let slot = self.frames.iter().position(|layer| layer.root_static_span() == Some(&span))?;
+        let old = &self.frames[slot];
         let geometry = placement.native_geometry();
         let viewport = placement.viewport();
-        if old.root_static_span() != Some(&(index..index + 1))
-            || old.source_id != geometry.id
+        if old.source_id != geometry.id
             || old.generation != geometry.generation
             || old.source_viewport != viewport
             || old.scale != geometry.scale
@@ -644,12 +658,14 @@ impl SceneLayers {
         if !Arc::ptr_eq(&content, &old.content) {
             return None;
         }
-        let mut frame = old.clone();
-        frame.translation = translation;
-        // Match the ordinary capture's same-generation adoption policy.
-        frame.damage = LayerDamage::Full;
-        frame.previous_coverage = None;
-        Some(Self { frames: vec![frame], ordered: true, flat_root: self.flat_root })
+        let mut frames = self.frames.clone();
+        frames[slot].translation = translation;
+        // Match the general capture's same-generation adoption policy.
+        for frame in &mut frames {
+            frame.damage = LayerDamage::Full;
+            frame.previous_coverage = None;
+        }
+        Some(Self { frames, ordered: true, flat_root: self.flat_root, window_opaque })
     }
 
     pub(in crate::window) fn capture_against(
@@ -690,6 +706,9 @@ impl SceneLayers {
             let Some(PaintOperationRef::DeferredScroll(placement)) = scene.paint_operations.view(index) else {
                 return Self::default();
             };
+            if !placement.has_static_order() {
+                continue;
+            }
             let geometry = placement.native_geometry();
             // A source may not be instanced twice in one root using the
             // same cache identity. Reject the entire native plan.
@@ -750,7 +769,7 @@ impl SceneLayers {
                 }),
             });
         }
-        Self { frames, ordered, flat_root }
+        Self { frames, ordered, flat_root, window_opaque }
     }
 
 

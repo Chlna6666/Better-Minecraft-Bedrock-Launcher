@@ -2,7 +2,7 @@
 //! Capture paint past the viewport so a translated row can reveal pixels
 //! that the prior frame never submitted.
 
-use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::ScrollPaint};
+use super::{PaintIndex, PrepaintStateIndex, RetainedPaintContext, scroll_paint::{ScrollPaint, ScrollPaintTarget}};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, GlobalElementId, Hitbox, Pixels, Point,
     ScrollCapture, Size, StateRead, StateReadStatus, Window,
@@ -333,7 +333,7 @@ impl Window {
         let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
             .map(|previous| Arc::clone(&previous.content));
         let content = self.capture_scroll_paint(prepaint.origin, item, suppress_hover,
-            previous_source.as_deref(), true, cx);
+            previous_source.as_deref(), ScrollPaintTarget::Row, cx);
         if suppress_hover {
             self.restore_scroll_row_after_wheel(cx);
         }

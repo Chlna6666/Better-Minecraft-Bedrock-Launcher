@@ -55,20 +55,13 @@ impl Paint {
         &self, index: usize, placement: crate::window::scroll_paint::ScrollPlacement,
         window_opaque: bool,
     ) -> Option<Arc<Self>> {
-        let range = index..index + 1;
-        if !self.layers.frames.iter().any(|layer| layer.root_static_span() == Some(&range)) {
-            return None;
-        }
         let scene = self.scene.with_scroll_placement(index, placement.clone())?;
         let retention = Arc::new(self.retained_paint.placement_variant(&self.scene, &scene)?);
         let mut result = Self::new(scene, retention, self.geometry);
-        result.layers = self.layers.single_scroll_placement(index, &placement, window_opaque)
+        result.layers = self.layers.with_scroll_placement(index, &placement, window_opaque)
             .unwrap_or_else(|| SceneLayers::capture_against(
                 &result.scene, Some((&self.scene, &self.layers)), window_opaque,
             ));
-        if !result.layers.frames.iter().any(|layer| layer.root_static_span() == Some(&range)) {
-            return None;
-        }
         Some(Arc::new(result))
     }
 

@@ -5,6 +5,8 @@ use crate::{
     StyleRefinement, Styled, Visibility, Window, point,
 };
 use smallvec::SmallVec;
+use refineable::Refineable as _;
+use crate::window::scroll_views::TrackedScrollRange;
 
 #[cfg(feature = "stacker")]
 type StackSafe<T> = stacksafe::StackSafe<T>;
@@ -46,6 +48,40 @@ pub struct Div {
 }
 
 impl Div {
+    // A single retained View can own all of the moving paint through any
+    // number of layout-only Divs. A wrapper with its own paint, input or
+    // clipping would need its own position update and breaks this proof.
+    fn scroll_child_view(&mut self, window: &Window, cx: &App) -> Option<crate::EntityId> {
+        let mut container = self;
+        loop {
+            let [child] = container.children.as_mut_slice() else {
+                return None;
+            };
+            if let Some(view) = child.downcast_mut::<crate::ViewElement>() {
+                return match view.id() {
+                    Some(ElementId::View(id)) => Some(id),
+                    _ => None,
+                };
+            }
+            let wrapper = child.downcast_mut::<Self>()?;
+            if wrapper.prepaint_listener.is_some()
+                || wrapper.interactivity.element_id.is_some()
+                || !wrapper.interactivity_is_reconciliation_transparent()
+            {
+                return None;
+            }
+            let mut style = Style::default();
+            style.refine(&wrapper.interactivity.base_style);
+            if style.background.is_some()
+                || style.mouse_cursor.is_some()
+                || !style_is_reconciliation_transparent(&style, window, cx)
+            {
+                return None;
+            }
+            container = wrapper;
+        }
+    }
+
     /// All coordinates and clips emitted by these built-in children can be
     /// projected from an overscanned row into its actual viewport.
     pub(crate) fn can_capture_scrolling_subtree(&mut self, capture: ScrollCapture) -> bool {
@@ -411,22 +447,13 @@ impl Element for Div {
         let scroll_source = if global_id.is_some() && window.scroll_row_replay_is_enabled() {
             self.interactivity.scroll_offset.as_ref().map(std::rc::Rc::downgrade)
         } else { None };
-        // Only a sole direct retained View owns every moving child.
-        // Tracked handles can additionally drive application scrollbars,
-        // active-item requests and geometry observers; keep them on the
-        // complete lifecycle until those dependencies are certified.
         let direct_child = if scroll_source.is_some()
-            && self.interactivity.tracked_scroll_handle.is_none()
             && self.prepaint_listener.is_none()
             && self.image_cache.is_none()
-            && self.children.len() == 1
         {
-            self.children[0].downcast_mut::<crate::ViewElement>()
-                .and_then(|view| match view.id() {
-                    Some(crate::ElementId::View(id)) => Some(id),
-                    _ => None,
-                })
+            self.scroll_child_view(window, cx)
         } else { None };
+        let tracked_scroll = direct_child.and_then(|_| self.interactivity.tracked_scroll_handle.clone());
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -449,6 +476,18 @@ impl Element for Div {
                         let scrolls = global_id.is_some()
                             && style.overflow.y == Overflow::Scroll
                             && style.overflow.x != Overflow::Scroll;
+                        let direct_child = direct_child.filter(|_| scrolls).and_then(|child| {
+                            let range = if let Some(handle) = &tracked_scroll {
+                                let state = handle.0.borrow();
+                                if state.active_item.is_some() || state.scroll_to_bottom {
+                                    return None;
+                                }
+                                Some(TrackedScrollRange::new(-state.max_offset.height, &state.version))
+                            } else {
+                                None
+                            };
+                            Some((child, range))
+                        });
                         window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, direct_child, |window| {
                             window.with_element_offset(scroll_offset, |window| {
                                 for child in &mut self.children {

@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use crate::layout::LayoutClaimBlocks;
-use crate::window::scroll_views::ScrollViewCapture;
+use crate::window::scroll_views::{ScrollBinding, ScrollViewCapture};
 use std::{any::TypeId, fmt, ops::Range, rc::Rc};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
@@ -197,7 +197,7 @@ struct RetentionDraft {
 struct ReusedView {
     prepaint_range: Range<crate::window::PrepaintStateIndex>,
     context: Rc<crate::window::RetainedPaintContext>,
-    scrolled: Option<(u64, crate::Point<crate::Pixels>, Option<crate::EntityId>)>,
+    scrolled: Option<(u64, ScrollBinding)>,
 }
 
 impl Element for ViewElement {
@@ -343,11 +343,11 @@ impl Element for ViewElement {
                     }
                     if *allow_reuse
                         && let Some(key) = key
-                        && let Some((prepaint_range, sampled_offset, direct_owner)) = window.prepaint_scrolled_view(
+                        && let Some((prepaint_range, binding)) = window.prepaint_scrolled_view(
                             key, entity_id, admission, &context, bounds, cx,
                         )
                     {
-                        *reused = Some(ReusedView { prepaint_range, context, scrolled: Some((key, sampled_offset, direct_owner)) });
+                        *reused = Some(ReusedView { prepaint_range, context, scrolled: Some((key, binding)) });
                         return;
                     }
                     // The committed layout no longer describes what this view inherits. Give the
@@ -482,15 +482,15 @@ impl Element for ViewElement {
         let rebuild = state.rebuild.clone();
         window.with_rendered_view(entity_id, |window| match &mut state.kind {
             ViewRequestLayoutKind::Retained { admission, layout_claims, layout_state_range, retention, reused, .. } => {
-                let Some(reused) = reused.as_ref() else {
+                let Some(reused) = reused.as_mut() else {
                     unreachable!("an admitted view is either drawn again or rebuilt in prepaint")
                 };
                 let Some(slot) = retention.slot.as_ref() else {
                     return;
                 };
                 let start = window.paint_index();
-                if let Some((key, sampled_offset, direct_owner)) = reused.scrolled {
-                    window.paint_scrolled_view(key, sampled_offset, direct_owner, admission, &reused.context, cx);
+                if let Some((key, binding)) = reused.scrolled.take() {
+                    window.paint_scrolled_view(key, binding, admission, &reused.context, cx);
                 } else {
                     window.replay_retained_view_paint(entity_id, admission);
                 }

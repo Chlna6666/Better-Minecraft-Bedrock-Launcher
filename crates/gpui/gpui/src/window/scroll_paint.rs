@@ -14,6 +14,7 @@ pub(in crate::window) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
+    replayable: bool,
     static_order: bool,
     scoped_order: bool,
     // Optional compact, immutable row texture in captured physical pixels.
@@ -26,6 +27,28 @@ pub(in crate::window) struct ScrollPaint {
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     has_lcd_glyphs: bool,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
+}
+
+pub(super) enum ScrollPaintTarget {
+    Row,
+    View,
+    DirectView,
+}
+
+impl ScrollPaintTarget {
+    pub(super) fn placement(
+        self,
+        source: &Arc<ScrollPaint>,
+        viewport: ContentMask<Pixels>,
+        scale: f32,
+        delta: Point<ScaledPixels>,
+    ) -> Option<ScrollPlacement> {
+        match self {
+            Self::Row => source.native_row_placement(viewport, scale, delta),
+            Self::View => source.native_placement(viewport, scale, delta),
+            Self::DirectView => source.placement(viewport, scale, delta),
+        }
+    }
 }
 
 /// Exact corners avoid inward rounding when aggregating widely separated
@@ -71,7 +94,7 @@ impl Window {
         item: &mut AnyElement,
         suppress_hover: bool,
         previous: Option<&ScrollPaint>,
-        row: bool,
+        target: ScrollPaintTarget,
         cx: &mut App,
     ) -> Arc<ScrollPaint> {
         let viewport = self.visual_content_mask();
@@ -97,8 +120,7 @@ impl Window {
         let content = Arc::new(content);
         let deferred = self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
-            && (if row { content.native_row_placement(viewport, scale, Point::default()) }
-                else { content.native_placement(viewport, scale, Point::default()) })
+            && target.placement(&content, viewport, scale, Point::default())
                 .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
         if !deferred {
             content.replay(&mut self.next_frame.painter, viewport.scale(scale), Point::default());
@@ -118,12 +140,18 @@ impl ScrollPaint {
         let mut scoped = super::frame::StaticPaintOrder::default();
         let mut scoped_order = scoped.accept(PaintOperationRef::StartLayer(&coverage));
         let mut visual: Option<PaintBlockBounds> = None;
-        let mut raster_eligible = operations.len() != 0
+        let mut replayable = operations.len() != 0
             && operations.range_is_replayable(0..operations.len());
+        let mut raster_eligible = replayable;
         // Residency belongs to the frozen source even when GPU raster
         // admission fails. Do not stop gathering dependencies at the first
         // unsupported operation: later offscreen images can scroll into view.
         for operation in operations.views() {
+            replayable &= matches!(operation,
+                PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer |
+                PaintOperationRef::Primitive(PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_)
+                    | PrimitiveRef::Underline(_) | PrimitiveRef::MonochromeSprite(_)
+                    | PrimitiveRef::PolychromeSprite(_)));
             match operation {
                 PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) => {
                     has_lcd_glyphs |= sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel;
@@ -162,6 +190,7 @@ impl ScrollPaint {
             origin,
             coverage,
             operations: Arc::new(operations),
+            replayable,
             static_order,
             scoped_order,
             row_raster_bounds,
@@ -253,7 +282,15 @@ impl ScrollPaint {
     /// scroll container identity or measured paint range is required.
     pub(super) fn native_placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
         scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
-        if !self.static_order || !scale.is_finite() || scale <= 0.
+        self.static_order.then_some(())?;
+        self.placement(viewport, scale, delta)
+    }
+
+    /// Logical placement can be replayed by the render owner even when the
+    /// source order cannot be flattened into a raster tile.
+    pub(super) fn placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
+        scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
+        if !self.replayable || !scale.is_finite() || scale <= 0.
             || [delta.x.0, delta.y.0].into_iter().any(|v| v.abs() > 1_048_576.)
         {
             return None;
@@ -393,6 +430,10 @@ impl ScrollPlacement {
     }
 
     pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }
+
+    pub(crate) fn can_defer_in_scope(&self) -> bool {
+        self.native.row_bounds.is_none() || self.has_scoped_order()
+    }
 
     /// A changed translation is a new paint, but does not change the
     /// immutable content, clip, native source identity or draw topology.
@@ -546,6 +587,10 @@ mod tests {
         };
         let mut ops = Operations::default();
         ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        let mut sibling_ops = Operations::default();
+        sibling_ops.push(PaintOperation::Primitive(Primitive::Quad(quad)));
+        let sibling = Arc::new(ScrollPaint::new(Point::default(), coverage, sibling_ops))
+            .native_placement(viewport, 1., Point::default()).unwrap();
         let source = Arc::new(ScrollPaint::new(Point::default(), coverage, ops));
         let first = source.native_placement(viewport, 1., Point::default()).unwrap();
         let moved = source.native_placement(viewport, 1., point(ScaledPixels(0.), ScaledPixels(-16.))).unwrap();
@@ -553,6 +598,7 @@ mod tests {
         painter.insert_primitive(quad);
         assert!(painter.push_deferred_scroll(first.clone()));
         painter.insert_primitive(quad);
+        assert!(painter.push_deferred_scroll(sibling.clone()));
         painter.finish();
         let mut old = painter.into_scene();
         let mut retention = crate::window::retained::RetainedPaint::default();
@@ -561,23 +607,28 @@ mod tests {
         publication.layers = crate::window::SceneLayers::capture(&publication.scene, None, true);
         let publication = Arc::new(publication);
         let next = publication.with_scroll_placement(1, moved.clone(), true).unwrap();
-        let direct = publication.layers.single_scroll_placement(1, &moved, true)
-            .expect("sole certified marker inherits its layer proof");
+        let direct = publication.layers.with_scroll_placement(1, &moved, true)
+            .expect("certified marker inherits its proof even with siblings");
         let rebuilt = crate::window::SceneLayers::capture(&next.scene, Some(&publication.layers), true);
-        assert_eq!(direct.frames[0].root_static_raster(), rebuilt.frames[0].root_static_raster());
-        assert_eq!(direct.frames[0].id, rebuilt.frames[0].id);
-        assert_eq!(direct.frames[0].generation, rebuilt.frames[0].generation);
-        assert!(Arc::ptr_eq(&direct.frames[0].content, &rebuilt.frames[0].content));
-        assert!(publication.layers.single_scroll_placement(0, &moved, true).is_none());
+        assert_eq!(direct.frames.len(), 2);
+        for (direct, rebuilt) in direct.frames.iter().zip(&rebuilt.frames) {
+            assert_eq!(direct.root_static_raster(), rebuilt.root_static_raster());
+            assert_eq!(direct.id, rebuilt.id);
+            assert_eq!(direct.generation, rebuilt.generation);
+            assert!(Arc::ptr_eq(&direct.content, &rebuilt.content));
+        }
+        assert!(publication.layers.with_scroll_placement(0, &moved, true).is_none());
+        assert!(publication.layers.with_scroll_placement(1, &moved, false).is_none());
         assert_ne!(next.scene.revision, publication.scene.revision);
         assert_eq!(next.scene.len(), publication.scene.len());
         assert!(next.scene.paint_operations.shares_boundary_storage(&publication.scene.paint_operations));
         assert_eq!(next.scene.paint_operations.placement_storage_matches(&publication.scene.paint_operations), Some(false));
-        assert_eq!(next.scene.paint_operations.deferred_scroll_indices().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(next.scene.paint_operations.deferred_scroll_indices().collect::<Vec<_>>(), vec![1, 3]);
         assert!(std::ptr::eq(&next.scene.quads[0], &publication.scene.quads[0]));
         assert!(std::ptr::eq(&next.scene.quads[1], &publication.scene.quads[1]));
         assert!(matches!(publication.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(old)) if old.same_paint(&first)));
         assert!(matches!(next.scene.paint_operations.view(1), Some(PaintOperationRef::DeferredScroll(new)) if new.same_paint(&moved)));
+        assert!(matches!(next.scene.paint_operations.view(3), Some(PaintOperationRef::DeferredScroll(unchanged)) if unchanged.same_paint(&sibling)));
         assert!(Arc::ptr_eq(&next.layers.frames[0].content, &publication.layers.frames[0].content));
         assert!(next.with_scroll_placement(0, moved.clone(), true).is_none());
         assert!(next.with_scroll_placement(1, moved, true).is_none());

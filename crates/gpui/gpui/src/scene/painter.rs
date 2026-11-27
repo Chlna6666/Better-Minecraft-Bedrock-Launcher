@@ -119,7 +119,7 @@ impl Painter {
     /// composition or reconstructs the ordinary Scene. Do not import
     /// native ordering proofs from across this boundary.
     pub(crate) fn push_deferred_scroll(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) -> bool {
-        if !self.layer_stack.is_empty() && !placement.has_scoped_order() {
+        if !self.layer_stack.is_empty() && !placement.can_defer_in_scope() {
             return false;
         }
         self.retain_deferred_scroll(placement)
@@ -132,7 +132,7 @@ impl Painter {
         &mut self, previous: &Scene, range: Range<usize>,
         placement: crate::window::scroll_paint::ScrollPlacement,
     ) -> bool {
-        if !self.layer_stack.is_empty() && !placement.has_scoped_order() {
+        if !self.layer_stack.is_empty() && !placement.can_defer_in_scope() {
             return false;
         }
         if range.len() == 1
