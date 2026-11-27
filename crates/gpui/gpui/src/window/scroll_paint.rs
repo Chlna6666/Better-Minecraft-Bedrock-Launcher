@@ -127,11 +127,6 @@ impl ScrollPaint {
         }
     }
 
-    /// The GPU owner may share the frozen pages without retaining UI state.
-    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>, &Arc<[(crate::AtlasTextureId, u32)]>)> {
-        self.raster_eligible.then_some((&self.operations, self.coverage, &self.raster_atlas_tiles))
-    }
-
     fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {
         operations
             .get_range(0..operations.len())
@@ -316,6 +311,71 @@ mod tests {
         let union = left.union(right);
         assert!(union.intersects(PaintBlockBounds::new(bounds(0.5, 0.25))));
         assert!(!union.contained_by(right));
+    }
+
+    #[test]
+    fn transferable_placement_projects_identical_pixels_on_another_thread() {
+        let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))).scale(1.));
+        let mut operations = Operations::default();
+        for y in [-48., -16., 16., 48., 80.] {
+            operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                bounds: bounds(y), content_mask: ContentMask::new(coverage), ..Default::default()
+            })));
+        }
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let delta = point(ScaledPixels(0.), ScaledPixels(-32.));
+        let placement = source.placement(viewport, delta).expect("covered integral translation");
+        assert!(Arc::ptr_eq(placement.raster_source().0, &source.operations));
+        let mut eager = Painter::default();
+        source.replay(&mut eager, viewport, delta);
+        eager.finish();
+        let recovered = std::thread::spawn(move || {
+            let mut painter = Painter::default();
+            placement.replay(&mut painter);
+            painter.finish();
+            painter.into_scene()
+        }).join().unwrap();
+        assert!(eager.paint_operations.matches_by(&recovered.paint_operations, PaintOperation::same_paint));
+        assert!(source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-0.5))).is_none());
+        assert!(source.placement(viewport, point(ScaledPixels(0.), ScaledPixels(-256.))).is_none());
+    }
+
+    #[test]
+    fn materialized_root_replaces_only_certified_placement_span() {
+        let bounds = |y| Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.);
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+            bounds: bounds(48.), content_mask: ContentMask::new(coverage), ..Default::default()
+        })));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let old_placement = source.placement(viewport.scale(1.), Point::default()).unwrap();
+        let moved_placement = source.placement(viewport.scale(1.), point(ScaledPixels(0.), ScaledPixels(-32.))).unwrap();
+        let outside = |y| Quad { bounds: bounds(y), content_mask: viewport.scale(1.), ..Default::default() };
+        let mut painter = Painter::default();
+        painter.insert_primitive(outside(0.));
+        old_placement.replay(&mut painter);
+        painter.insert_primitive(outside(48.));
+        painter.finish();
+        let scene = painter.into_scene();
+        let mut paint = crate::window::Paint::new(scene, Arc::default(), Default::default());
+        let mut fixture_source = Operations::default();
+        fixture_source.share(&source.operations, 0..source.operations.len());
+        paint.layers.raster_fixture(fixture_source, coverage, viewport, [0, 0]);
+        paint.layers.certify_fixture_root(&paint.scene, 1..2);
+        paint.layers.attach_fixture_placement(moved_placement.clone());
+        let recovered = paint.materialize_static_root().expect("static root fallback");
+        let mut eager = Painter::default();
+        eager.insert_primitive(outside(0.));
+        moved_placement.replay(&mut eager);
+        eager.insert_primitive(outside(48.));
+        eager.finish();
+        assert!(recovered.scene.paint_operations.matches_by(&eager.paint_operations, PaintOperation::same_paint));
+        assert_eq!(recovered.scene.len(), 3);
+        assert!(recovered.layers.frames.is_empty());
     }
 
     #[test]

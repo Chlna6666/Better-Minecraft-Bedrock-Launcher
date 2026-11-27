@@ -559,6 +559,43 @@ impl SceneLayers {
         }
     }
 
+    /// Rebuild a certified static root from original operations and placement
+    /// sources. A fresh Painter re-establishes native ordering and prepared
+    /// batches; expanded indices must never reuse the old RetainedPaint proofs.
+    /// Unsupported or overlapping captures remain ordinary operations.
+    pub(crate) fn materialize_static_root(&self, scene: &Scene) -> Option<Scene> {
+        let mut placements: Vec<_> = self.frames.iter().filter_map(|layer| {
+            Some((layer.root_static_span()?.clone(), layer.placement.as_ref()?))
+        }).collect();
+        if placements.is_empty() || !ordered_static_root(scene) { return None; }
+        placements.sort_unstable_by_key(|(range, _)| (range.start, std::cmp::Reverse(range.end)));
+        let mut painter = crate::scene::Painter::default();
+        let mut cursor = 0;
+        let replay = |painter: &mut crate::scene::Painter, range: Range<usize>| -> Option<()> {
+            for operation in scene.paint_operations.get_range(range)?.iter() {
+                match operation {
+                    PaintOperation::Primitive(primitive) => painter.insert_primitive(primitive.clone()),
+                    PaintOperation::StartLayer(bounds) => painter.push_layer(*bounds),
+                    PaintOperation::EndLayer => painter.pop_layer(),
+                    _ => return None,
+                }
+            }
+            Some(())
+        };
+        for (range, placement) in placements {
+            if range.start < cursor { continue; }
+            if range.is_empty() || range.end > scene.len() || !scene.can_reuse_range_bounds(range.clone()) {
+                return None;
+            }
+            replay(&mut painter, cursor..range.start)?;
+            placement.replay(&mut painter);
+            cursor = range.end;
+        }
+        replay(&mut painter, cursor..scene.len())?;
+        painter.finish();
+        Some(painter.into_scene())
+    }
+
     // Native GPU tests use the production admission and coordinate mapping
     // with a frozen ScrollPaint-style operation page.
     #[cfg(test)]
@@ -593,6 +630,11 @@ impl SceneLayers {
             content: Arc::new(content),
             placement: None,
         });
+    }
+
+    #[cfg(test)]
+    pub(in crate::window) fn attach_fixture_placement(&mut self, placement: crate::window::scroll_paint::ScrollPlacement) {
+        self.frames.last_mut().expect("raster fixture").placement = Some(placement);
     }
 
     #[cfg(test)]
@@ -808,6 +850,7 @@ mod tests {
             previous_coverage: Some(viewport.scale(1.).bounds),
             offset: LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(0.))),
             content: Arc::new(LayerContent { operations: Arc::new(Operations::default()), parts: Box::new([]), raster: None, raster_atlas_tiles: Arc::default() }),
+            placement: None,
         };
         assert_eq!(frame.adopt_tile(3, [0, 0, 512, 512], 1.), Some(4));
         assert_eq!(frame.adopt_tile(3, [512, 0, 1024, 512], 1.), None);

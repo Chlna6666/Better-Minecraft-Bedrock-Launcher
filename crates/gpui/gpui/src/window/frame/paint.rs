@@ -42,6 +42,14 @@ impl Paint {
             layers: SceneLayers::default(),
         }
     }
+
+    /// Owner-side fallback reconstruction is intentionally independent of
+    /// UI history. The materialized Scene has new operation indices and
+    /// therefore receives fresh retention metadata.
+    pub(crate) fn materialize_static_root(&self) -> Option<Self> {
+        let scene = self.layers.materialize_static_root(&self.scene)?;
+        Some(Self::new(scene, Arc::default(), self.geometry))
+    }
 }
 
 impl std::ops::Deref for Paint {
