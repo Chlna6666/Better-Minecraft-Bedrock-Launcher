@@ -454,7 +454,7 @@ mod tests {
         let proof = RetainedPaint::shared_quad_proof(candidate, &current.paint.scene,
             Some((&previous.paint.scene, &previous.retention)), &mut planner);
         assert!(matches!(proof, Some(RetainedChunkProof::Quad(_))));
-        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, false);
+        current.retention.finish_against(&mut current.paint.scene, &previous.paint.scene, &previous.retention, false, false);
         assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
 
         // A nonoverlapping new Quad receives order 1, which falls inside
@@ -470,7 +470,7 @@ mod tests {
         let mut planner = RetainedChunkPlanner::new(&conflicting.paint.scene, 1);
         assert!(RetainedPaint::shared_quad_proof(&conflicting.retention.retained_chunk_candidates[0],
             &conflicting.paint.scene, Some((&previous.paint.scene, &previous.retention)), &mut planner).is_none());
-        conflicting.retention.finish_against(&mut conflicting.paint.scene, &previous.paint.scene, &previous.retention, false);
+        conflicting.retention.finish_against(&mut conflicting.paint.scene, &previous.paint.scene, &previous.retention, false, false);
         assert!(conflicting.chunks().is_empty());
     }
 
