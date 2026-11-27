@@ -48,6 +48,30 @@ impl<T> Index<usize> for TypedPayload<T> {
 }
 
 impl<T: Ordered + PartialEq> TypedPayload<T> {
+    /// Directly share a physically contiguous, already sorted logical run.
+    /// Arbitrary operation permutations are not assumed to be contiguous.
+    fn share_sorted_run(
+        &self,
+        indices: &[OperationIndex],
+        kind: u32,
+        stream: &mut PrimitiveStream<T>,
+    ) -> bool {
+        let Some(owner) = &self.0 else { return false };
+        let Some(first) = indices.first() else { return false };
+        let start = first.slot();
+        if !indices.iter().enumerate().all(|(i, index)| {
+            index.kind() == kind && index.slot() == start + i
+        }) {
+            return false;
+        }
+        let range = start..start + indices.len();
+        if !owner[range.clone()].is_sorted_by_key(T::sort_key) {
+            return false;
+        }
+        stream.share_sorted_page(owner, range);
+        true
+    }
+
     /// Only a fresh, exclusively owned page whose insertion sequence agrees
     /// exactly with the draw builder can be unified. Root blur capture mirrors
     /// and synthetic draw streams are deliberately not inferred from counts.
@@ -143,6 +167,18 @@ impl OperationPage {
         self.shadows.publish_sorted(&mut self.indices, 0, shadows);
         self.quads.publish_sorted(&mut self.indices, 1, quads);
         self.mono.publish_sorted(&mut self.indices, 4, mono);
+    }
+
+    pub(super) fn share_quad_run(
+        &self, range: Range<usize>, stream: &mut PrimitiveStream<Quad>,
+    ) -> bool {
+        self.quads.share_sorted_run(&self.indices[range], 1, stream)
+    }
+
+    pub(super) fn share_mono_run(
+        &self, range: Range<usize>, stream: &mut PrimitiveStream<MonochromeSprite>,
+    ) -> bool {
+        self.mono.share_sorted_run(&self.indices[range], 4, stream)
     }
 
     pub(super) fn capacity_bytes(&self) -> usize {
@@ -316,6 +352,26 @@ mod tests {
         assert_eq!(quads.slices(0..4).count(), 1);
         page.clear();
         assert_eq!(quads[0].bounds.origin.x, ScaledPixels(20.));
+    }
+
+    #[test]
+    fn replay_merges_sorted_views_without_joining_a_descending_boundary() {
+        let mut page = OperationPage::default();
+        let mut quads = PrimitiveStream::default();
+        for order in [2, 3, 1, 4] {
+            page.push(PaintOperation::Primitive(Primitive::Quad(Quad { order, ..Quad::default() })));
+        }
+        assert!(!page.share_quad_run(0..4, &mut quads));
+        assert!(page.share_quad_run(0..2, &mut quads));
+        assert!(page.share_quad_run(2..4, &mut quads));
+        quads.finish();
+        assert_eq!(quads.iter().map(|quad| quad.order).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        for (logical, sorted) in [1, 2, 0, 3].into_iter().enumerate() {
+            let PaintOperationRef::Primitive(PrimitiveRef::Quad(quad)) = page.view(logical) else {
+                panic!("expected quad");
+            };
+            assert!(std::ptr::eq(quad, &quads[sorted]));
+        }
     }
 
     #[test]

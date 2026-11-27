@@ -415,10 +415,26 @@ impl Painter {
                 primitives().map(|primitive| (Self::ordering_bounds(primitive), primitive.order())),
             );
         }
-        // A complete typed Glyph order range may share its original
-        // payload. Partial equal-order groups must keep the copy fallback.
+        // Static quads can borrow contiguous sorted slots directly from the
+        // operation owner, without requiring a retained GPU upload chunk.
+        // Glyphs first try the existing complete draw-order group, then
+        // borrow a contiguous operation-owned range if it is already sorted.
         let mut cursor = 0;
         while cursor < count {
+            if matches!(operations.get(cursor).expect("qualified operation"), PaintOperationRef::Primitive(PrimitiveRef::Quad(_))) {
+                let end = cursor + operations.range(cursor..count).iter().take_while(|op| {
+                    matches!(op, PaintOperationRef::Primitive(PrimitiveRef::Quad(_)))
+                }).count();
+                let run = operations.range(cursor..end);
+                if !run.share_quad_run(&mut self.scene.quads) {
+                    for op in run.iter() {
+                        let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
+                        self.push_replayed_primitive(primitive, primitive.order());
+                    }
+                }
+                cursor = end;
+                continue;
+            }
             if matches!(operations.get(cursor).expect("qualified operation"), PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_))) {
                 let end = cursor + operations.range(cursor..count).iter().take_while(|op| {
                     matches!(op, PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_)))
@@ -438,9 +454,12 @@ impl Painter {
                     cursor = end;
                     continue;
                 }
-                for op in operations.range(cursor..end).iter() {
-                    let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
-                    self.push_replayed_primitive(primitive, primitive.order());
+                let run = operations.range(cursor..end);
+                if !run.share_mono_run(&mut self.scene.monochrome_sprites) {
+                    for op in run.iter() {
+                        let PaintOperationRef::Primitive(primitive) = op else { unreachable!() };
+                        self.push_replayed_primitive(primitive, primitive.order());
+                    }
                 }
                 cursor = end;
                 continue;

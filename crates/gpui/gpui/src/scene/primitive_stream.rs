@@ -242,12 +242,23 @@ impl<T: Ordered> PrimitiveStream<T> {
         self.append(owner, 0..count);
     }
 
+    /// The operation owner has verified this physical range is sorted.
+    pub(super) fn share_sorted_page(&mut self, owner: &Arc<Vec<T>>, range: Range<usize>) {
+        debug_assert!(!range.is_empty() && range.end <= owner.len());
+        self.freeze_pending();
+        self.append(Arc::clone(owner), range);
+    }
+
     fn append(&mut self, owner: Arc<Vec<T>>, range: Range<usize>) {
         let end = self.segments.last().map_or(0, |segment| segment.end) + range.len();
         self.len += range.len();
         if let Some(previous) = self.segments.last_mut()
             && Arc::ptr_eq(&previous.owner, &owner)
             && previous.range.end == range.start
+            // Operation-owned ranges can be individually sorted while their
+            // common backing allocation contains a descending boundary.
+            && previous.slice().last().expect("nonempty segment").sort_key()
+                <= owner[range.start].sort_key()
         {
             previous.range.end = range.end;
             previous.end = end;

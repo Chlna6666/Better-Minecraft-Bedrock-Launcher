@@ -70,6 +70,14 @@ impl<'a> OperationRun<'a> {
         (self.start..self.end).map(move |index| self.owner.expect("nonempty operation run").view(index))
     }
 
+    pub(super) fn share_quad_run(self, stream: &mut super::PrimitiveStream<super::Quad>) -> bool {
+        self.owner.is_some_and(|owner| owner.share_quad_run(self.start..self.end, stream))
+    }
+
+    pub(super) fn share_mono_run(self, stream: &mut super::PrimitiveStream<super::MonochromeSprite>) -> bool {
+        self.owner.is_some_and(|owner| owner.share_mono_run(self.start..self.end, stream))
+    }
+
     fn same_storage(self, other: OperationRun<'_>) -> bool {
         self.len() == other.len() && self.start == other.start
             && self.owner.zip(other.owner).is_some_and(|(a, b)| std::ptr::eq(a, b))
