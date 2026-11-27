@@ -2,7 +2,7 @@
 
 use crate::{
     AnyElement, App, Bounds, ContentMask, Pixels, Point, ScaledPixels, Window, point,
-    scene::{Operations, PaintOperation, Painter, Primitive},
+    scene::{Operations, PaintOperationRef, Painter, Primitive, PrimitiveRef},
 };
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -116,20 +116,20 @@ impl ScrollPaint {
         let mut order = super::frame::StaticPaintOrder::default();
         let mut static_order = true;
         let mut scoped = super::frame::StaticPaintOrder::default();
-        let mut scoped_order = scoped.accept(&PaintOperation::StartLayer(coverage));
+        let mut scoped_order = scoped.accept(PaintOperationRef::StartLayer(&coverage));
         let mut visual: Option<PaintBlockBounds> = None;
         let mut raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len());
         // Residency belongs to the frozen source even when GPU raster
         // admission fails. Do not stop gathering dependencies at the first
         // unsupported operation: later offscreen images can scroll into view.
-        for operation in operations.iter() {
+        for operation in operations.views() {
             match operation {
-                PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => {
+                PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) => {
                     has_lcd_glyphs |= sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel;
                     atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
-                PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
+                PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(sprite)) => {
                     atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
                 _ => {}
@@ -139,7 +139,7 @@ impl ScrollPaint {
             static_order = static_order && order.accept(operation);
             scoped_order = scoped_order && scoped.accept(operation);
             if raster_eligible && static_order
-                && let PaintOperation::Primitive(primitive) = operation
+                && let PaintOperationRef::Primitive(primitive) = operation
             {
                 let bounds = primitive.visual_bounds();
                 if !bounds.is_empty() {
@@ -154,7 +154,7 @@ impl ScrollPaint {
             Box::default()
         };
         let static_order = raster_eligible && static_order && order.complete();
-        let scoped_order = static_order && scoped_order && scoped.accept(&PaintOperation::EndLayer) && scoped.complete();
+        let scoped_order = static_order && scoped_order && scoped.accept(PaintOperationRef::EndLayer) && scoped.complete();
         let row_raster_bounds = if static_order {
             visual.and_then(|visual| compact_row_raster(visual, coverage))
         } else { None };
@@ -195,20 +195,19 @@ impl ScrollPaint {
         live.extend(self.atlas_tiles.iter().copied());
     }
 
-    fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {
-        operations
-            .get_range(0..operations.len())
-            .expect("full scroll operations range")
-            .slices()
-            .flat_map(|slice| slice.chunks(OPERATIONS_PER_BLOCK))
+    fn blocks(operations: &Operations) -> impl Iterator<Item = crate::scene::OperationRun<'_>> {
+        operations.all().runs().flat_map(|run| {
+            (0..run.len()).step_by(OPERATIONS_PER_BLOCK)
+                .map(move |start| run.range(start..(start + OPERATIONS_PER_BLOCK).min(run.len())))
+        })
     }
 
-    fn block_bounds(operations: &[PaintOperation]) -> Option<PaintBlockBounds> {
+    fn block_bounds(operations: crate::scene::OperationRun<'_>) -> Option<PaintBlockBounds> {
         let mut union: Option<PaintBlockBounds> = None;
-        for operation in operations {
+        for operation in operations.iter() {
             // Always replay scope markers in painter order, even when the
             // block's visible primitives are all clipped.
-            let PaintOperation::Primitive(primitive) = operation else {
+            let PaintOperationRef::Primitive(primitive) = operation else {
                 return None;
             };
             let bounds = primitive.visual_bounds();
@@ -331,26 +330,26 @@ impl ScrollPaint {
                 }
                 fully_visible = nonempty_viewport && bounds.contained_by(viewport_edges);
             }
-            for operation in block {
+            for operation in block.iter() {
                 match operation {
-                    PaintOperation::StartLayer(bounds) => {
+                    PaintOperationRef::StartLayer(bounds) => {
                         let bounds = moved(*bounds, delta).intersect(&viewport.bounds);
                         layers.push(!bounds.is_empty());
                         if !bounds.is_empty() {
                             painter.push_layer(bounds);
                         }
                     }
-                    PaintOperation::EndLayer => {
+                    PaintOperationRef::EndLayer => {
                         if layers.pop() == Some(true) {
                             painter.pop_layer();
                         }
                     }
-                    PaintOperation::Primitive(primitive) => {
+                    PaintOperationRef::Primitive(primitive) => {
                         if fully_visible || primitive.visual_bounds().intersects(&source_viewport) {
                             painter.insert_primitive(project_primitive(primitive, delta, viewport));
                         }
                     }
-                    PaintOperation::DeferredScroll(_) | PaintOperation::StartBlur(_) | PaintOperation::EndBlur => {
+                    PaintOperationRef::DeferredScroll(_) | PaintOperationRef::StartBlur(_) | PaintOperationRef::EndBlur => {
                         unreachable!("scroll capture admits only built-in unfiltered paint")
                     }
                 }
@@ -482,7 +481,7 @@ fn moved(bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels>) -> Bounds<Sca
 }
 
 fn project_primitive(
-    primitive: &Primitive,
+    primitive: PrimitiveRef<'_>,
     delta: Point<ScaledPixels>,
     viewport: ContentMask<ScaledPixels>,
 ) -> Primitive {
@@ -507,11 +506,11 @@ fn project_primitive(
         }};
     }
     match primitive {
-        Primitive::Quad(quad) => project!(quad, Quad),
-        Primitive::Underline(underline) => project!(underline, Underline),
-        Primitive::MonochromeSprite(sprite) => project!(sprite, MonochromeSprite),
-        Primitive::PolychromeSprite(sprite) => project!(sprite, PolychromeSprite),
-        Primitive::Shadow(shadow) => project!(shadow, Shadow),
+        PrimitiveRef::Quad(quad) => project!(quad, Quad),
+        PrimitiveRef::Underline(underline) => project!(underline, Underline),
+        PrimitiveRef::MonochromeSprite(sprite) => project!(sprite, MonochromeSprite),
+        PrimitiveRef::PolychromeSprite(sprite) => project!(sprite, PolychromeSprite),
+        PrimitiveRef::Shadow(shadow) => project!(shadow, Shadow),
         _ => unreachable!("unsupported primitive in built-in scroll capture"),
     }
 }
@@ -519,6 +518,7 @@ fn project_primitive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::PaintOperation;
     use crate::{Quad, px, size};
 
     #[test]

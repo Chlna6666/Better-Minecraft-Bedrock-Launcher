@@ -49,18 +49,18 @@ fn raster_work(
     let mut animated_area = 0.;
     let mut has_animation = false;
     let mut capture_depth = 0usize;
-    for operation in scene.paint_operations.iter() {
+    for operation in scene.paint_operations.views() {
         let primitive = match operation {
-            crate::scene::PaintOperation::StartBlur(_) => {
+            crate::scene::PaintOperationRef::StartBlur(_) => {
                 capture_depth += 1;
                 continue;
             }
-            crate::scene::PaintOperation::EndBlur => {
+            crate::scene::PaintOperationRef::EndBlur => {
                 capture_depth = capture_depth.saturating_sub(1);
                 continue;
             }
-            crate::scene::PaintOperation::Primitive(primitive)
-                if capture_depth == 0 && !matches!(primitive, crate::Primitive::Blur(_)) =>
+            crate::scene::PaintOperationRef::Primitive(primitive)
+                if capture_depth == 0 && !matches!(primitive, crate::scene::PrimitiveRef::Blur(_)) =>
             {
                 primitive
             }

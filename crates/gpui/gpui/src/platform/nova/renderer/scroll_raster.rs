@@ -5,7 +5,7 @@
 use super::*;
 use gfx_core::{OffscreenQueuePreference, RasterTile, RasterTileKey, RasterTileRead,
     RasterTileWrite, RenderPassCommands, SignedOrigin2d};
-use crate::{ContentMask, ScaledPixels, scene::{PaintOperation, Primitive}};
+use crate::{ContentMask, ScaledPixels, scene::{PaintOperationRef, PrimitiveRef}};
 
 const TILE_HEIGHT: i32 = 256;
 const MAX_TILES: usize = 64;
@@ -300,7 +300,7 @@ impl StaticStreams {
             .all(|bytes| bytes <= RETAINED_OUTSIDE_STREAM_BYTES)
     }
 
-    fn push(&mut self, primitive: &Primitive, split: bool) -> Option<()> {
+    fn push(&mut self, primitive: PrimitiveRef<'_>, split: bool) -> Option<()> {
         macro_rules! append {
             ($stream:ident, $bytes:ident, $limit:ident, $write:ident, $value:expr, $kind:expr) => {{
                 let first = self.$stream.len() / $bytes;
@@ -310,13 +310,13 @@ impl StaticStreams {
             }};
         }
         let (kind, first) = match primitive {
-            Primitive::Quad(q) => append!(quads, PACKED_QUAD_BYTES, MAX_QUADS, write_quad, q, SourceKind::Quad),
-            Primitive::Shadow(s) => append!(shadows, PACKED_SHADOW_BYTES, MAX_SHADOWS, write_shadow, s, SourceKind::Shadow),
-            Primitive::Underline(u) => append!(underlines, PACKED_UNDERLINE_BYTES, MAX_UNDERLINES, write_underline, u, SourceKind::Underline),
-            Primitive::MonochromeSprite(s) if s.tile.texture_id.kind == AtlasTextureKind::Monochrome
+            PrimitiveRef::Quad(q) => append!(quads, PACKED_QUAD_BYTES, MAX_QUADS, write_quad, q, SourceKind::Quad),
+            PrimitiveRef::Shadow(s) => append!(shadows, PACKED_SHADOW_BYTES, MAX_SHADOWS, write_shadow, s, SourceKind::Shadow),
+            PrimitiveRef::Underline(u) => append!(underlines, PACKED_UNDERLINE_BYTES, MAX_UNDERLINES, write_underline, u, SourceKind::Underline),
+            PrimitiveRef::MonochromeSprite(s) if s.tile.texture_id.kind == AtlasTextureKind::Monochrome
                 || (self.root_lcd && s.tile.texture_id.kind == AtlasTextureKind::Subpixel) =>
                 append!(mono, PACKED_MONO_SPRITE_BYTES, MAX_MONO_SPRITES, write_monochrome_sprite, s, SourceKind::Mono(s.tile.texture_id)),
-            Primitive::PolychromeSprite(s) if s.sampling != 2 &&
+            PrimitiveRef::PolychromeSprite(s) if s.sampling != 2 &&
                 matches!(s.tile.texture_id.kind, AtlasTextureKind::Bgra | AtlasTextureKind::Rgba) =>
                 append!(poly, PACKED_POLY_SPRITE_BYTES, MAX_POLY_SPRITES, write_polychrome_sprite, s, SourceKind::Poly(s.tile.texture_id)),
             _ => return None,
@@ -542,16 +542,28 @@ fn expanded_boundaries(runs: &[SourceRun], boundaries: &[usize], steps: &[Vec<Re
     Some(result)
 }
 
-fn resolve_primitive(primitive: &Primitive, placements: &FxHashMap<crate::TileId, AtlasTile>,
-    gpu: &FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>) -> Option<Primitive> {
-    let mut primitive = primitive.clone();
-    let tile = match &mut primitive {
-        Primitive::MonochromeSprite(sprite) => &mut sprite.tile,
-        Primitive::PolychromeSprite(sprite) => &mut sprite.tile,
-        _ => return Some(primitive),
-    };
-    *tile = *placements.get(&tile.tile_id)?;
-    gpu.contains_key(&tile.texture_id).then_some(primitive)
+// Resolve only atlas-backed payloads. Geometry streams borrow their
+// original typed instance, without building a large temporary Primitive.
+fn append_resolved_primitive(
+    streams: &mut StaticStreams, primitive: PrimitiveRef<'_>, split: bool,
+    placements: &FxHashMap<crate::TileId, AtlasTile>,
+    gpu: &FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
+) -> Option<()> {
+    match primitive {
+        PrimitiveRef::MonochromeSprite(source) => {
+            let mut sprite = *source;
+            sprite.tile = *placements.get(&sprite.tile.tile_id)?;
+            if !gpu.contains_key(&sprite.tile.texture_id) { return None; }
+            streams.push(PrimitiveRef::MonochromeSprite(&sprite), split)
+        }
+        PrimitiveRef::PolychromeSprite(source) => {
+            let mut sprite = *source;
+            sprite.tile = *placements.get(&sprite.tile.tile_id)?;
+            if !gpu.contains_key(&sprite.tile.texture_id) { return None; }
+            streams.push(PrimitiveRef::PolychromeSprite(&sprite), split)
+        }
+        _ => streams.push(primitive, split),
+    }
 }
 
 impl OutsideRoot {
@@ -559,7 +571,7 @@ impl OutsideRoot {
         if ranges.len() != self.source_ends.len() { return false; }
         let mut start = 0;
         for (range, &end) in ranges.iter().zip(&self.source_ends) {
-            if !self.source.range(start..end).matches_by(scene.range(range.clone()), PaintOperation::same_paint) {
+            if !self.source.range(start..end).matches_views(scene.range(range.clone()), PaintOperationRef::same_paint) {
                 return false;
             }
             start = end;
@@ -571,10 +583,10 @@ impl OutsideRoot {
         let before = outside_atlas_epoch(renderer);
         let mut ids = Vec::new();
         for range in ranges {
-            for operation in scene.paint_operations.get_range(range.clone())?.iter() {
+            for operation in scene.paint_operations.get_range(range.clone())?.views() {
                 match operation {
-                    PaintOperation::Primitive(Primitive::MonochromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
-                    PaintOperation::Primitive(Primitive::PolychromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
+                    PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
+                    PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(s)) => ids.push((s.tile.texture_id, s.tile.tile_id.0)),
                     _ => {}
                 }
             }
@@ -586,20 +598,19 @@ impl OutsideRoot {
         let mut extensions = Vec::new();
         for (index, range) in ranges.iter().enumerate() {
             let mut split = true;
-            for operation in scene.paint_operations.get_range(range.clone())?.iter() {
+            for operation in scene.paint_operations.get_range(range.clone())?.views() {
                 match operation {
-                    PaintOperation::Primitive(Primitive::RendererExtension(input)) => {
+                    PaintOperationRef::Primitive(PrimitiveRef::RendererExtension(input)) => {
                         let first = u32::try_from(extensions.len()).ok()?;
                         extensions.push(input.clone());
                         streams.runs.push(SourceRun { kind: SourceKind::Extension, first, count: 1 });
                         split = true;
                     }
-                    PaintOperation::Primitive(primitive) => {
-                        let primitive = resolve_primitive(primitive, &placements, &renderer.gpu_atlas_textures)?;
-                        streams.push(&primitive, split)?;
+                    PaintOperationRef::Primitive(primitive) => {
+                        append_resolved_primitive(&mut streams, primitive, split, &placements, &renderer.gpu_atlas_textures)?;
                         split = false;
                     }
-                    PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+                    PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer => {}
                     _ => return None,
                 }
             }
@@ -1346,16 +1357,15 @@ impl NovaRenderer {
                         placements
                     };
                     let mut streams = StaticStreams { root_lcd: background.is_some(), ..Default::default() };
-                    for operation in operations.iter() {
+                    for operation in operations.views() {
                         match operation {
-                            PaintOperation::Primitive(primitive) => {
+                            PaintOperationRef::Primitive(primitive) => {
                                 if primitive.bounds().intersect(&primitive.content_mask().bounds).is_empty() {
                                     continue;
                                 }
-                                let Some(primitive) = resolve_primitive(primitive, &placements, &self.gpu_atlas_textures) else { return Ok(false); };
-                                if streams.push(&primitive, false).is_none() { return Ok(false); }
+                                if append_resolved_primitive(&mut streams, primitive, false, &placements, &self.gpu_atlas_textures).is_none() { return Ok(false); }
                             }
-                            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+                            PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer => {}
                             _ => return Ok(false),
                         }
                     }
@@ -1749,6 +1759,7 @@ impl NovaRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::{PaintOperation, Primitive};
 
     fn fixture(translation: [i32; 2], capture_top: f32, capture_height: f32) -> crate::window::Paint {
         let viewport = ContentMask::new(crate::bounds(crate::point(crate::px(0.), crate::px(0.)),
@@ -2046,11 +2057,11 @@ mod tests {
         let quad = Primitive::Quad(Quad::default());
         let shadow = Primitive::Shadow(crate::Shadow::default());
         let mut streams = StaticStreams::default();
-        streams.push(&shadow, false).unwrap();
-        streams.push(&quad, false).unwrap();
-        streams.push(&quad, false).unwrap();
-        streams.push(&quad, true).unwrap();
-        streams.push(&shadow, false).unwrap();
+        streams.push(shadow.as_ref(), false).unwrap();
+        streams.push(quad.as_ref(), false).unwrap();
+        streams.push(quad.as_ref(), false).unwrap();
+        streams.push(quad.as_ref(), true).unwrap();
+        streams.push(shadow.as_ref(), false).unwrap();
         assert_eq!(streams.runs.iter().map(|run| (run.kind, run.first, run.count)).collect::<Vec<_>>(),
             vec![(SourceKind::Shadow, 0, 1), (SourceKind::Quad, 0, 2),
                  (SourceKind::Quad, 2, 1), (SourceKind::Shadow, 1, 1)]);

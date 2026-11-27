@@ -359,9 +359,9 @@ impl FilterRegistry {
             // Compare the actual last resident Scene, not the window's dirty
             // region. More complex source changes still require full capture.
             let static_quads = |scene: &crate::Scene| {
-                scene.paint_operations.iter().all(|operation| {
+                scene.paint_operations.views().all(|operation| {
                     matches!(operation,
-                        crate::PaintOperation::Primitive(crate::Primitive::Quad(quad))
+                        crate::scene::PaintOperationRef::Primitive(crate::scene::PrimitiveRef::Quad(quad))
                             if quad.animation_id.is_none())
                 })
             };

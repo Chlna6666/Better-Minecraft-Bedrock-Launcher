@@ -248,7 +248,7 @@ impl RetainedPaint {
             .take_while(|chunk| chunk.paint_range.start == range.start)
             .find(|chunk| chunk.id == candidate.id && chunk.paint_range == range)?;
         if !scene.paint_operations.get_range(range.clone())?
-            .matches_by(source.paint_operations.get_range(range.clone())?, |_, _| false)
+            .matches_views(source.paint_operations.get_range(range.clone())?, |_, _| false)
         {
             return None;
         }

@@ -367,8 +367,8 @@ impl Window {
         let delta = prepaint.origin.scale(scale) - content.origin.scale(scale);
         let old_range = old_paint.start.scene_index..old_paint.end.scene_index;
         let was_deferred = old_range.len() == 1 && matches!(
-            self.rendered_frame.scene().paint_operations.get(old_range.start),
-            Some(crate::PaintOperation::DeferredScroll(_))
+            self.rendered_frame.scene().paint_operations.view(old_range.start),
+            Some(crate::scene::PaintOperationRef::DeferredScroll(_))
         );
         // Both List and UniformList enter here after validating input and
         // content dependencies. Keep the existing row's source alive and

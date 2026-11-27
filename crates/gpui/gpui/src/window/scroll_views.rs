@@ -295,8 +295,8 @@ impl Window {
         let unchanged = previous.context.element_offset == context.element_offset;
         let old_range = previous.paint_range.start.scene_index..previous.paint_range.end.scene_index;
         let was_deferred = old_range.len() == 1 && matches!(
-            self.rendered_frame.scene().paint_operations.get(old_range.start),
-            Some(crate::PaintOperation::DeferredScroll(_))
+            self.rendered_frame.scene().paint_operations.view(old_range.start),
+            Some(crate::scene::PaintOperationRef::DeferredScroll(_))
         );
         let viewport = source.viewport.scale(scale);
         // Only Nova consumes logical roots. An independently ordered

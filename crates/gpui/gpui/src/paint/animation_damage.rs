@@ -1,7 +1,7 @@
 use super::*;
 /// Resolves visible geometry with the same fixed-mask translation as the GPU.
 pub(crate) fn sampled_primitive_bounds<'a>(
-    primitive: &Primitive,
+    primitive: PrimitiveRef<'_>,
     values: impl IntoIterator<Item = &'a SceneAnimationValue>,
 ) -> Bounds<ScaledPixels> {
     let value = values

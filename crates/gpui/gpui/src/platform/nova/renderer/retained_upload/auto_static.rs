@@ -66,7 +66,7 @@ pub(super) fn auto_capture_static_background(
     retained_chunks: &[crate::PreparedRetainedQuadChunk],
     drawable_size: DrawableSize,
 ) -> Option<StaticPrefix> {
-    use crate::{Primitive, scene::PaintOperation};
+    use crate::scene::{PrimitiveRef, PaintOperationRef};
 
     // Preserve resource/capture guards. Chunk residency does not change source
     // pixels; its boundary is checked separately below. Atlas inputs, nested
@@ -115,11 +115,11 @@ pub(super) fn auto_capture_static_background(
     let mut static_raster_area = 0.0_f64;
     let mut prefix_end = 0usize;
     let mut saw_dynamic = false;
-    for (index, operation) in scene.paint_operations.iter().enumerate() {
+    for (index, operation) in scene.paint_operations.views().enumerate() {
         let primitive = match operation {
-            PaintOperation::Primitive(primitive) => primitive,
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => continue,
-            PaintOperation::StartBlur(capture)
+            PaintOperationRef::Primitive(primitive) => primitive,
+            PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer => continue,
+            PaintOperationRef::StartBlur(capture)
                 if capture.radius.0 == 0.0 && capture.layer_id.is_some() =>
             {
                 if !saw_dynamic {
@@ -128,26 +128,26 @@ pub(super) fn auto_capture_static_background(
                 }
                 continue;
             }
-            PaintOperation::StartBlur(_) | PaintOperation::DeferredScroll(_) => {
+            PaintOperationRef::StartBlur(_) | PaintOperationRef::DeferredScroll(_) => {
                 return reject_auto_static_capture(scene, "unsupported_capture_boundary");
             }
-            PaintOperation::EndBlur => continue,
+            PaintOperationRef::EndBlur => continue,
         };
         match primitive {
-            Primitive::Quad(_) | Primitive::Shadow(_) => {}
+            PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_) => {}
             _ if !saw_dynamic => {
                 // A sprite/atlas dependency cannot become a static GPU texture
                 // without versioning its atlas placement/content first.
                 let kind = match primitive {
-                    Primitive::Path(_) => "path",
-                    Primitive::Underline(_) => "underline",
-                    Primitive::MonochromeSprite(_) => "monochrome_sprite",
-                    Primitive::PolychromeSprite(_) => "polychrome_sprite",
-                    Primitive::Surface(_) => "native_surface",
-                    Primitive::BackdropBlur(_) => "backdrop_blur",
-                    Primitive::Blur(_) => "blur",
-                    Primitive::RendererExtension(_) => "renderer_extension",
-                    Primitive::Quad(_) | Primitive::Shadow(_) => "quad_or_shadow",
+                    PrimitiveRef::Path(_) => "path",
+                    PrimitiveRef::Underline(_) => "underline",
+                    PrimitiveRef::MonochromeSprite(_) => "monochrome_sprite",
+                    PrimitiveRef::PolychromeSprite(_) => "polychrome_sprite",
+                    PrimitiveRef::Surface(_) => "native_surface",
+                    PrimitiveRef::BackdropBlur(_) => "backdrop_blur",
+                    PrimitiveRef::Blur(_) => "blur",
+                    PrimitiveRef::RendererExtension(_) => "renderer_extension",
+                    PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_) => "quad_or_shadow",
                 };
                 log::trace!(
                     target: "gpui::diagnostics",
@@ -156,13 +156,13 @@ pub(super) fn auto_capture_static_background(
                 );
                 return reject_auto_static_capture(scene, "non_quad_or_shadow_static_prefix");
             }
-            Primitive::Surface(_)
-            | Primitive::RendererExtension(_)
-            | Primitive::BackdropBlur(_) => {
+            PrimitiveRef::Surface(_)
+            | PrimitiveRef::RendererExtension(_)
+            | PrimitiveRef::BackdropBlur(_) => {
                 return reject_auto_static_capture(scene, "unsupported_foreground_primitive");
             }
-            Primitive::Blur(blur) if blur.radius.0 == 0.0 && blur.layer_id.is_some() => {}
-            Primitive::Blur(_) => {
+            PrimitiveRef::Blur(blur) if blur.radius.0 == 0.0 && blur.layer_id.is_some() => {}
+            PrimitiveRef::Blur(_) => {
                 return reject_auto_static_capture(scene, "unsupported_blur_composite");
             }
             _ => {}
@@ -170,8 +170,8 @@ pub(super) fn auto_capture_static_background(
         if !saw_dynamic && primitive.animation_id().is_none() {
             static_prefix += 1;
             let (mask, count) = match primitive {
-                Primitive::Quad(quad) => (&quad.content_mask, &mut static_quads),
-                Primitive::Shadow(shadow) => (&shadow.content_mask, &mut static_shadows),
+                PrimitiveRef::Quad(quad) => (&quad.content_mask, &mut static_quads),
+                PrimitiveRef::Shadow(shadow) => (&shadow.content_mask, &mut static_shadows),
                 _ => unreachable!("the static prefix contains only Quads and Shadows"),
             };
             if !(mask.bounds.size.width.0 <= 0.0 || mask.bounds.size.height.0 <= 0.0) {
@@ -212,7 +212,7 @@ pub(super) fn auto_capture_static_background(
     }
 
     // The static prefix is Quad/Shadow-only; a zero-filter popup contributes
-    // its output as a later Primitive::Blur, never as a member of the prefix.
+    // its output as a later PrimitiveRef::Blur, never as a member of the prefix.
     // Keep its draw-order barrier intact to avoid moving a popup behind chrome.
     let mut foreground_orders =
         top_level_orders(scene, scene.paint_operations.range(prefix_end..scene.len()));
@@ -222,9 +222,9 @@ pub(super) fn auto_capture_static_background(
     if scene
         .paint_operations
         .range(0..prefix_end)
-        .iter()
+        .views()
         .any(|operation| {
-            matches!(operation, PaintOperation::Primitive(primitive)
+            matches!(operation, PaintOperationRef::Primitive(primitive)
             if primitive.order() >= first_dynamic_order)
         })
         || foreground_orders.any(|order| order.is_none_or(|order| order < first_dynamic_order))
@@ -259,12 +259,12 @@ fn top_level_orders<'a>(
     scene: &'a crate::Scene,
     operations: crate::scene::OperationRange<'a>,
 ) -> impl Iterator<Item = Option<crate::DrawOrder>> + Clone + 'a {
-    use crate::scene::PaintOperation;
+    use crate::scene::PaintOperationRef;
     let mut capture_depth = 0usize;
     operations
-        .iter()
+        .views()
         .filter_map(move |operation| match operation {
-            PaintOperation::StartBlur(capture) => {
+            PaintOperationRef::StartBlur(capture) => {
                 let outermost = capture_depth == 0;
                 capture_depth += 1;
                 if !outermost {
@@ -281,11 +281,11 @@ fn top_level_orders<'a>(
                     None
                 })
             }
-            PaintOperation::EndBlur => {
+            PaintOperationRef::EndBlur => {
                 capture_depth -= 1;
                 None
             }
-            PaintOperation::Primitive(primitive) if capture_depth == 0 => {
+            PaintOperationRef::Primitive(primitive) if capture_depth == 0 => {
                 Some(Some(primitive.order()))
             }
             _ => None,

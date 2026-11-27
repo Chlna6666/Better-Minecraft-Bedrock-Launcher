@@ -1,4 +1,4 @@
-use super::PaintOperation;
+use super::PaintOperationRef;
 use crate::ScaledPixels;
 
 #[cfg(test)]
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(scene.blurs[0].bounds, pixel_bounds);
         assert_eq!(scene.blurs[0].radius, ScaledPixels(0.0));
 
-        let Some(PaintOperation::StartBlur(capture)) = scene.paint_operations.first() else {
+        let Some(PaintOperationRef::StartBlur(capture)) = scene.paint_operations.view(0) else {
             panic!("composite capture must keep its retained start marker");
         };
         assert_eq!(capture.bounds, pixel_bounds);
@@ -123,9 +123,9 @@ mod tests {
 
         let layer_bounds = scene
             .paint_operations
-            .iter()
+            .views()
             .find_map(|operation| match operation {
-                PaintOperation::StartLayer(bounds) => Some(*bounds),
+                PaintOperationRef::StartLayer(bounds) => Some(*bounds),
                 _ => None,
             });
         assert_eq!(layer_bounds, Some(pixel_bounds));

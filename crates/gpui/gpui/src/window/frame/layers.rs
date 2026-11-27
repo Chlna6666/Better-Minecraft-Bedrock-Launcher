@@ -1,5 +1,5 @@
 //! Immutable scroll content publication, adapted from GPUI Fast's LayerContent.
-use crate::{Bounds, ContentMask, Pixels, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperation, Primitive, Scene}};
+use crate::{Bounds, ContentMask, Pixels, Point, Rgba, ScaledPixels, TransformationMatrix, point, scene::{Operations, PaintOperationRef, PrimitiveRef, Scene}};
 use collections::{FxHashMap, FxHashSet};
 use std::{ops::Range, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
@@ -78,12 +78,12 @@ impl LayerContent {
         let current_mask = ContentMask::new(translated_bounds(current.coverage, current_origin));
         let old_mask = ContentMask::new(translated_bounds(old.coverage, old_origin));
         let mut damage = None;
-        for (current_op, old_op) in self.operations.iter().zip(previous.operations.iter()) {
+        for (current_op, old_op) in self.operations.views().zip(previous.operations.views()) {
             match (current_op, old_op) {
-                (PaintOperation::StartLayer(a), PaintOperation::StartLayer(b))
+                (PaintOperationRef::StartLayer(a), PaintOperationRef::StartLayer(b))
                     if *a == translated_bounds(*b, delta) => {}
-                (PaintOperation::EndLayer, PaintOperation::EndLayer) => {}
-                (PaintOperation::Primitive(a), PaintOperation::Primitive(b)) => {
+                (PaintOperationRef::EndLayer, PaintOperationRef::EndLayer) => {}
+                (PaintOperationRef::Primitive(a), PaintOperationRef::Primitive(b)) => {
                     let (Some(a_bounds), Some(b_bounds)) = (static_raster_bounds(a), static_raster_bounds(b))
                         else { return LayerDamage::Full; };
                     if *a.content_mask() != current_mask || *b.content_mask() != old_mask {
@@ -98,11 +98,11 @@ impl LayerContent {
                         }};
                     }
                     let equal = match (a, b) {
-                        (Primitive::Quad(a), Primitive::Quad(b)) => equal!(a, b),
-                        (Primitive::Shadow(a), Primitive::Shadow(b)) => equal!(a, b),
-                        (Primitive::Underline(a), Primitive::Underline(b)) => equal!(a, b),
-                        (Primitive::MonochromeSprite(a), Primitive::MonochromeSprite(b)) => equal!(a, b),
-                        (Primitive::PolychromeSprite(a), Primitive::PolychromeSprite(b)) => equal!(a, b),
+                        (PrimitiveRef::Quad(a), PrimitiveRef::Quad(b)) => equal!(a, b),
+                        (PrimitiveRef::Shadow(a), PrimitiveRef::Shadow(b)) => equal!(a, b),
+                        (PrimitiveRef::Underline(a), PrimitiveRef::Underline(b)) => equal!(a, b),
+                        (PrimitiveRef::MonochromeSprite(a), PrimitiveRef::MonochromeSprite(b)) => equal!(a, b),
+                        (PrimitiveRef::PolychromeSprite(a), PrimitiveRef::PolychromeSprite(b)) => equal!(a, b),
                         _ => return LayerDamage::Full,
                     };
                     if !equal {
@@ -165,15 +165,15 @@ enum LayerDamage {
     Bounds(Bounds<ScaledPixels>),
 }
 
-fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
+fn static_raster_bounds(primitive: PrimitiveRef<'_>) -> Option<Bounds<ScaledPixels>> {
     if primitive.animation_id().is_some() {
         return None;
     }
     match primitive {
-        Primitive::Quad(_) | Primitive::Shadow(_) | Primitive::Underline(_) => {}
-        Primitive::PolychromeSprite(sprite) if sprite.sampling != 2
+        PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_) | PrimitiveRef::Underline(_) => {}
+        PrimitiveRef::PolychromeSprite(sprite) if sprite.sampling != 2
             && matches!(sprite.tile.texture_id.kind, crate::AtlasTextureKind::Bgra | crate::AtlasTextureKind::Rgba) => {}
-        Primitive::MonochromeSprite(sprite)
+        PrimitiveRef::MonochromeSprite(sprite)
             if sprite.transformation == TransformationMatrix::unit()
                 && (sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome
                     || (cfg!(target_os = "windows")
@@ -192,15 +192,15 @@ fn static_raster_bounds(primitive: &Primitive) -> Option<Bounds<ScaledPixels>> {
 // Effects and transformed glyphs keep the ordinary path. LCD coverage
 // requires the opaque underlay proof at publication.
 pub(in crate::window) fn static_scroll_raster_operation(
-    operation: &PaintOperation,
+    operation: PaintOperationRef<'_>,
     coverage: Bounds<ScaledPixels>,
 ) -> bool {
     match operation {
-        PaintOperation::StartLayer(bounds) => [
+        PaintOperationRef::StartLayer(bounds) => [
             bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0,
         ].into_iter().all(f32::is_finite),
-        PaintOperation::EndLayer => true,
-        PaintOperation::Primitive(primitive) => {
+        PaintOperationRef::EndLayer => true,
+        PaintOperationRef::Primitive(primitive) => {
             contains_visual(coverage, primitive.content_mask().bounds)
                 && primitive.content_mask().corner_radii == Default::default()
                 && static_raster_bounds(primitive).is_some()
@@ -285,13 +285,13 @@ impl LayerFrame {
         }
         let region = Bounds::new(point(ScaledPixels(origin[0] as f32), ScaledPixels(origin[1] as f32)),
             crate::size(ScaledPixels(width as f32), ScaledPixels(height as f32)));
-        operations.iter().any(|operation| {
-            let PaintOperation::Primitive(primitive) = operation else {
-                return !matches!(operation, PaintOperation::StartLayer(_) | PaintOperation::EndLayer);
+        operations.views().any(|operation| {
+            let PaintOperationRef::Primitive(primitive) = operation else {
+                return !matches!(operation, PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer);
             };
             let id = match primitive {
-                Primitive::MonochromeSprite(sprite) => sprite.tile.tile_id.0,
-                Primitive::PolychromeSprite(sprite) => sprite.tile.tile_id.0,
+                PrimitiveRef::MonochromeSprite(sprite) => sprite.tile.tile_id.0,
+                PrimitiveRef::PolychromeSprite(sprite) => sprite.tile.tile_id.0,
                 _ => return false,
             };
             dirty.contains(&id) && static_raster_bounds(primitive)
@@ -382,9 +382,9 @@ impl StaticPaintOrder {
         Self { root_extension: true, ..Self::default() }
     }
 
-    pub(in crate::window) fn accept(&mut self, operation: &PaintOperation) -> bool {
+    pub(in crate::window) fn accept(&mut self, operation: PaintOperationRef<'_>) -> bool {
         match operation {
-            PaintOperation::StartLayer(bounds) => {
+            PaintOperationRef::StartLayer(bounds) => {
                 if ![bounds.left().0, bounds.top().0, bounds.right().0, bounds.bottom().0].into_iter().all(f32::is_finite) {
                     return false;
                 }
@@ -392,13 +392,13 @@ impl StaticPaintOrder {
                     kind: None, unstable_bounds: None });
                 true
             }
-            PaintOperation::EndLayer => {
+            PaintOperationRef::EndLayer => {
                 let Some(scope) = self.scopes.pop() else { return false; };
                 if let (Some(parent), Some(visual)) = (self.scopes.last_mut(), scope.visual) {
                     parent.append_isolated(visual)
                 } else { true }
             }
-            PaintOperation::DeferredScroll(placement) => {
+            PaintOperationRef::DeferredScroll(placement) => {
                 if !placement.has_static_order() { return false; }
                 if let Some(scope) = self.scopes.last_mut() {
                     // Replaying under an inherited layer can collapse the
@@ -406,7 +406,7 @@ impl StaticPaintOrder {
                     placement.has_scoped_order() && scope.append_isolated(placement.visual_bounds())
                 } else { true }
             }
-            PaintOperation::Primitive(Primitive::RendererExtension(extension)) => {
+            PaintOperationRef::Primitive(PrimitiveRef::RendererExtension(extension)) => {
                 // Native extensions are prepared in sorted DrawOrder, not
                 // necessarily raw paint order. A chain of intersecting
                 // clipped ordering rectangles proves strictly increasing
@@ -427,18 +427,18 @@ impl StaticPaintOrder {
                 self.last_extension = Some(bounds);
                 true
             }
-            PaintOperation::Primitive(primitive) => {
+            PaintOperationRef::Primitive(primitive) => {
                 if static_raster_bounds(primitive).is_none() {
                     return false;
                 }
                 // A shadow fringe outside its native ordering bounds
                 // cannot be certified by this geometric proof.
                 let kind = match primitive {
-                    Primitive::Shadow(shadow) if shadow.blur_radius.0 == 0. => 0,
-                    Primitive::Quad(_) => 1,
-                    Primitive::Underline(_) => 3,
-                    Primitive::MonochromeSprite(_) => 4,
-                    Primitive::PolychromeSprite(_) => 5,
+                    PrimitiveRef::Shadow(shadow) if shadow.blur_radius.0 == 0. => 0,
+                    PrimitiveRef::Quad(_) => 1,
+                    PrimitiveRef::Underline(_) => 3,
+                    PrimitiveRef::MonochromeSprite(_) => 4,
+                    PrimitiveRef::PolychromeSprite(_) => 5,
                     _ => return false,
                 };
                 let visual = primitive.visual_bounds();
@@ -487,21 +487,21 @@ fn ordered_static_root(scene: &Scene) -> bool {
     }
     if scene.paint_operations.has_deferred_scroll() {
         let mut proof = StaticPaintOrder::root();
-        return scene.paint_operations.iter().all(|operation| proof.accept(operation)) && proof.complete();
+        return scene.paint_operations.views().all(|operation| proof.accept(operation)) && proof.complete();
     }
     if !scene.renderer_extensions.is_empty() { return false; }
     let mut previous = None;
-    for operation in scene.paint_operations.iter() {
+    for operation in scene.paint_operations.views() {
         match operation {
-            PaintOperation::Primitive(primitive) => {
+            PaintOperationRef::Primitive(primitive) => {
                 let order = match primitive {
-                    Primitive::Shadow(_) => (primitive.order(), 0, 0, 0, 0),
-                    Primitive::Quad(_) => (primitive.order(), 1, 0, 0, 0),
-                    Primitive::Underline(_) => (primitive.order(), 3, 0, 0, 0),
-                    Primitive::MonochromeSprite(sprite)
+                    PrimitiveRef::Shadow(_) => (primitive.order(), 0, 0, 0, 0),
+                    PrimitiveRef::Quad(_) => (primitive.order(), 1, 0, 0, 0),
+                    PrimitiveRef::Underline(_) => (primitive.order(), 3, 0, 0, 0),
+                    PrimitiveRef::MonochromeSprite(sprite)
                         if sprite.tile.texture_id.kind == crate::AtlasTextureKind::Monochrome =>
                         (primitive.order(), 4, sprite.tile.texture_id.kind as u32, sprite.tile.texture_id.index, sprite.sampling() as u32),
-                    Primitive::PolychromeSprite(sprite) =>
+                    PrimitiveRef::PolychromeSprite(sprite) =>
                         (primitive.order(), 5, sprite.tile.texture_id.kind as u32, sprite.tile.texture_id.index, 0),
                     _ => return false,
                 };
@@ -510,7 +510,7 @@ fn ordered_static_root(scene: &Scene) -> bool {
                 }
                 previous = Some(order);
             }
-            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+            PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer => {}
             _ => return false,
         }
     }
@@ -526,10 +526,10 @@ fn static_root_span(scene: &Scene, range: Range<usize>) -> Option<Range<usize>> 
 // scroll source's generation or its content-space translation. Shared
 // immutable operation pages already prove every input in those pages.
 fn root_order_inputs_match(current: &Scene, previous: &Scene, flat_root: bool) -> bool {
-    root_order_eligible(current) && current.paint_operations.all().matches_by(
+    root_order_eligible(current) && current.paint_operations.all().matches_views(
         previous.paint_operations.all(),
         |current, previous| match (current, previous) {
-            (PaintOperation::DeferredScroll(a), PaintOperation::DeferredScroll(b)) => {
+            (PaintOperationRef::DeferredScroll(a), PaintOperationRef::DeferredScroll(b)) => {
                 a.has_static_order() == b.has_static_order()
                     && (flat_root || (a.has_scoped_order() == b.has_scoped_order()
                         && a.visual_bounds() == b.visual_bounds()))
@@ -569,10 +569,10 @@ impl SceneLayers {
         let mut operations = operations;
         operations.finish();
         assert!(operations.range_is_replayable(0..operations.len()));
-        assert!(operations.iter().all(|op| static_scroll_raster_operation(op, coverage)));
-        let atlas_tiles: Arc<[_]> = operations.iter().filter_map(|op| match op {
-            PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
-            PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
+        assert!(operations.views().all(|op| static_scroll_raster_operation(op, coverage)));
+        let atlas_tiles: Arc<[_]> = operations.views().filter_map(|op| match op {
+            PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
+            PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
             _ => None,
         }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
@@ -639,7 +639,7 @@ impl SceneLayers {
         let mut old_by_id: Option<FxHashMap<u64, &LayerFrame>> = None;
         let mut frames = Vec::with_capacity(old.len());
         for index in scene.paint_operations.deferred_scroll_indices() {
-            let Some(PaintOperation::DeferredScroll(placement)) = scene.paint_operations.get(index) else {
+            let Some(PaintOperationRef::DeferredScroll(placement)) = scene.paint_operations.view(index) else {
                 return Self::default();
             };
             let geometry = placement.native_geometry();
@@ -714,10 +714,10 @@ fn raster_background(scene: &Scene, index: usize, visible: Bounds<ScaledPixels>)
     if visible.is_empty() {
         return None;
     }
-    for operation in scene.paint_operations.range(0..index).iter().rev() {
+    for operation in scene.paint_operations.range(0..index).views().rev() {
         match operation {
-            PaintOperation::Primitive(primitive) if primitive.visual_bounds().intersects(&visible) => {
-                let Primitive::Quad(quad) = primitive else { return None; };
+            PaintOperationRef::Primitive(primitive) if primitive.visual_bounds().intersects(&visible) => {
+                let PrimitiveRef::Quad(quad) = primitive else { return None; };
                 let color = quad.background.solid;
                 let full_coverage = contains_visual(quad.bounds, visible)
                     && contains_visual(quad.content_mask.bounds, visible);
@@ -728,7 +728,7 @@ fn raster_background(scene: &Scene, index: usize, visible: Bounds<ScaledPixels>)
                     && color.a == 1. && full_coverage && rectangular && no_border)
                     .then_some(color);
             }
-            PaintOperation::DeferredScroll(other) if other.visual_bounds().intersects(&visible) => {
+            PaintOperationRef::DeferredScroll(other) if other.visual_bounds().intersects(&visible) => {
                 return None;
             }
             _ => {}
@@ -740,7 +740,7 @@ fn raster_background(scene: &Scene, index: usize, visible: Bounds<ScaledPixels>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Bounds, Quad, ScaledPixels, point, size, scene::Painter};
+    use crate::{Bounds, Quad, ScaledPixels, point, size, scene::{Painter, PaintOperation, Primitive}};
 
     #[test]
     fn ordered_root_retains_both_outside_spans() {

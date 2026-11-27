@@ -83,8 +83,8 @@ impl Painter {
         live: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
     ) {
         if let Some(capture) = &self.scroll_capture {
-            for operation in capture.iter() {
-                if let PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) = operation {
+            for operation in capture.views() {
+                if let PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(sprite)) = operation {
                     live.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
             }
@@ -177,14 +177,14 @@ impl Painter {
             let captured_primitive = capture
                 .scene
                 .paint_operations
-                .get(operation_start)
+                .view(operation_start)
                 .and_then(|operation| match operation {
-                    PaintOperation::Primitive(primitive) => Some(primitive.clone()),
-                    PaintOperation::StartLayer(_)
-                    | PaintOperation::EndLayer
-                    | PaintOperation::StartBlur(_)
-                    | PaintOperation::EndBlur
-                    | PaintOperation::DeferredScroll(_) => None,
+                    PaintOperationRef::Primitive(primitive) => Some(primitive.to_primitive()),
+                    PaintOperationRef::StartLayer(_)
+                    | PaintOperationRef::EndLayer
+                    | PaintOperationRef::StartBlur(_)
+                    | PaintOperationRef::EndBlur
+                    | PaintOperationRef::DeferredScroll(_) => None,
                 });
             if let Some(primitive) = captured_primitive {
                 self.scene
@@ -250,7 +250,7 @@ impl Painter {
         {
             let mut content_bounds: Option<Bounds<ScaledPixels>> = None;
             let mut group_bounds = capture.config.bounds;
-            for bounds in content.paint_operations.iter().filter_map(PaintOperation::visual_bounds) {
+            for bounds in content.paint_operations.views().filter_map(PaintOperationRef::visual_bounds) {
                 content_bounds = Some(content_bounds.map_or(bounds, |old| old.union(&bounds)));
                 group_bounds = group_bounds.union(&bounds);
             }
@@ -271,8 +271,8 @@ impl Painter {
             if !tight.is_empty() {
                 config.bounds = tight;
                 let end = self.scene.paint_operations.len();
-                let marker_changed = self.scene.paint_operations.get(capture.operation_start)
-                    .is_some_and(|operation| matches!(operation, PaintOperation::StartBlur(marker) if marker.bounds != tight));
+                let marker_changed = self.scene.paint_operations.view(capture.operation_start)
+                    .is_some_and(|operation| matches!(operation, PaintOperationRef::StartBlur(marker) if marker.bounds != tight));
                 if marker_changed {
                     self.scene.paint_operations.edit(capture.operation_start..capture.operation_start + 1, |operation| {
                         if let PaintOperation::StartBlur(marker) = operation {

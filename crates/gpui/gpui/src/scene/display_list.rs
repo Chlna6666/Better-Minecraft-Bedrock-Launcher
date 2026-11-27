@@ -4,9 +4,9 @@ use collections::FxHashSet;
 use std::ops::Range;
 
 use super::{
-    BatchIterator, MonochromeSprite, PaintBackdropBlur, PaintBlur, PaintOperation,
+    BatchIterator, MonochromeSprite, PaintBackdropBlur, PaintBlur, PaintOperationRef, PrimitiveRef,
     PaintRendererExtension, PaintSurface, Path, PolychromeSprite, PreparedSceneBatch,
-    PreparedSceneBatches, Primitive, PrimitiveBatch, SceneAnimationId, SceneAnimationValue, Shadow,
+    PreparedSceneBatches, PrimitiveBatch, SceneAnimationId, SceneAnimationValue, Shadow,
     Underline,
 };
 
@@ -119,7 +119,7 @@ impl Scene {
 
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
-        for operation in self.paint_operations.get_range(range.clone())?.iter() {
+        for operation in self.paint_operations.get_range(range.clone())?.views() {
             if let Some(operation_bounds) = operation.visual_bounds() {
                 bounds = Some(match bounds {
                     Some(bounds) => bounds.union(&operation_bounds),
@@ -247,25 +247,25 @@ impl Scene {
     }
 
     pub(crate) fn collect_animation_ids_into(&self, ids: &mut FxHashSet<SceneAnimationId>) {
-        for operation in self.paint_operations.iter() {
+        for operation in self.paint_operations.views() {
             match operation {
-                PaintOperation::Primitive(primitive) => {
+                PaintOperationRef::Primitive(primitive) => {
                     if let Some(animation_id) = primitive.animation_id() {
                         ids.insert(animation_id);
                     }
-                    if let Primitive::Blur(blur) = primitive {
+                    if let PrimitiveRef::Blur(blur) = primitive {
                         blur.content.collect_animation_ids_into(ids);
                     }
                 }
-                PaintOperation::StartBlur(blur) => {
+                PaintOperationRef::StartBlur(blur) => {
                     if let Some(animation_id) = blur.animation_id {
                         ids.insert(animation_id);
                     }
                 }
-                PaintOperation::StartLayer(_)
-                | PaintOperation::EndLayer
-                | PaintOperation::EndBlur
-                | PaintOperation::DeferredScroll(_) => {}
+                PaintOperationRef::StartLayer(_)
+                | PaintOperationRef::EndLayer
+                | PaintOperationRef::EndBlur
+                | PaintOperationRef::DeferredScroll(_) => {}
             }
         }
     }
