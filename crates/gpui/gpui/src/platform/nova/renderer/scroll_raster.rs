@@ -796,6 +796,16 @@ impl CompositeSlot {
         [self.global, self.sprites, self.outside.quads.buffer]
     }
 
+    #[cfg(all(test, target_os = "windows"))]
+    pub(super) fn resident_command_list(&self) -> Option<Arc<[RenderCommand]>> {
+        self.commands.as_ref().map(|commands| Arc::clone(&commands.commands))
+    }
+
+    #[cfg(all(test, target_os = "windows"))]
+    pub(super) fn projection_buffer(&self) -> Option<BufferId> {
+        self.projection.buffer
+    }
+
     fn write<D: ResourceDevice>(device: &mut D, buffer: &mut Option<BufferId>,
         bytes: &[u8], capacity: usize, usage: BufferUsage) -> Result<BufferId> {
         debug_assert!(bytes.len() <= capacity);

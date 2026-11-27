@@ -534,6 +534,8 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     let mut physical = None;
     let mut second_physical = None;
     let mut composite_buffers = None;
+    let mut composite_commands: Option<std::sync::Arc<[RenderCommand]>> = None;
+    let mut projection_buffer = None;
     let mut composite_binding = None;
     let mut outside_binding = None;
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
@@ -561,6 +563,25 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
             assert_eq!(previous, handles, "free slot reuses physical composite buffers");
         }
         composite_buffers = Some(handles);
+        let slot = &renderer.scroll_composite_slots[0];
+        let commands = slot.resident_command_list();
+        if with_extension {
+            assert!(commands.is_none(), "extension commands must not persist across frames");
+        } else {
+            let commands = commands.expect("static root and resident tiles own a command list");
+            if let Some(previous) = &composite_commands {
+                assert!(std::sync::Arc::ptr_eq(previous, &commands),
+                    "unchanged native command dependencies must reuse the published list");
+            }
+            composite_commands = Some(commands);
+        }
+        // The third frame repaints only one cell. It must retain the
+        // existing projection allocation rather than creating a new one.
+        let projection = slot.projection_buffer();
+        if let Some(previous) = projection_buffer {
+            assert_eq!(projection, Some(previous), "free slot retains projection storage");
+        }
+        projection_buffer = projection;
         let root_binding = renderer.scroll_composite_slots[0].outside_quad_binding().expect("resident outside quad binding");
         if let Some(previous) = outside_binding { assert_eq!(previous, root_binding); }
         outside_binding = Some(root_binding);
