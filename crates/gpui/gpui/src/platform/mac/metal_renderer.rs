@@ -525,6 +525,7 @@ impl MetalRenderer {
                     texture_id,
                     sampling: _,
                     sprites,
+                    ..
                 } => self.draw_monochrome_sprites(
                     texture_id,
                     sprites,

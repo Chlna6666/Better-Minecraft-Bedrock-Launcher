@@ -66,16 +66,8 @@ impl Painter {
         self.scene
             .underlines
             .sort_unstable_by_key(|underline| underline.order);
-        self.scene
-            .monochrome_sprites
-            .sort_unstable_by_key(|sprite| {
-                (
-                    sprite.order,
-                    sprite.tile.texture_id.kind as u32,
-                    sprite.tile.texture_id.index,
-                    sprite.sampling() as u32,
-                )
-            });
+        self.scene.monochrome_sprites.finish();
+        self.scene.monochrome_sprites.compact();
         self.scene
             .polychrome_sprites
             .sort_unstable_by_key(|sprite| {
@@ -207,11 +199,11 @@ impl Painter {
             primitive_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_vec_capacity(
-            &mut self.scene.monochrome_sprites,
-            primitive_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.scene.monochrome_sprites.capacity()
+            > primitive_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.scene.monochrome_sprites.shrink_to(primitive_floor);
+        }
         trim_vec_capacity(
             &mut self.scene.polychrome_sprites,
             primitive_floor,
@@ -297,6 +289,24 @@ impl Painter {
                 continue;
             }
 
+            if let PrimitiveBatch::MonochromeSprites { texture_id, sampling, ref range, .. } = batch {
+                // A physical page boundary is not a native draw boundary.
+                if let Some(PreparedSceneBatch::MonochromeSprites {
+                    texture_id: previous_texture,
+                    sampling: previous_sampling,
+                    range: previous,
+                }) = prepared.last_mut()
+                    && *previous_texture == texture_id && *previous_sampling == sampling
+                    && previous.end == range.start
+                {
+                    previous.end = range.end;
+                } else {
+                    prepared.push(PreparedSceneBatch::MonochromeSprites {
+                        texture_id, sampling, range: range.clone(),
+                    });
+                }
+                continue;
+            }
             prepared.push(match batch {
                 PrimitiveBatch::Shadows { .. } => {
                     unreachable!("shadow segments are merged before this match")
@@ -310,15 +320,9 @@ impl Painter {
                 PrimitiveBatch::Underlines(underlines) => {
                     PreparedSceneBatch::Underlines(slice_range(&self.scene.underlines, underlines))
                 }
-                PrimitiveBatch::MonochromeSprites {
-                    texture_id,
-                    sampling,
-                    sprites,
-                } => PreparedSceneBatch::MonochromeSprites {
-                    texture_id,
-                    sampling,
-                    range: slice_range(&self.scene.monochrome_sprites, sprites),
-                },
+                PrimitiveBatch::MonochromeSprites { .. } => {
+                    unreachable!("glyph segments are merged before this match")
+                }
                 PrimitiveBatch::PolychromeSprites {
                     texture_id,
                     sprites,

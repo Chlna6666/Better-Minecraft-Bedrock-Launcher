@@ -1227,7 +1227,8 @@ fn ordinary_static_glyph_and_quad_replay_shares_operation_payload() {
     for i in 0..len {
         assert!(std::ptr::eq(&previous.paint_operations[i], &replayed.paint_operations[i]));
     }
-    assert_eq!(replayed.monochrome_sprites, previous.monochrome_sprites);
+    assert!(replayed.monochrome_sprites.iter().eq(previous.monochrome_sprites.iter()));
+    assert!(std::ptr::eq(&replayed.monochrome_sprites[0], &previous.monochrome_sprites[0]));
     assert_eq!(replayed.quads[0], previous.quads[0]);
     replayed.finish();
     let mut again = crate::scene::Painter::default();

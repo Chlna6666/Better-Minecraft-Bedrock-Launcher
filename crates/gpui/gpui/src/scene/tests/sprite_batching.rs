@@ -55,6 +55,7 @@ fn sprites_group_by_texture_and_sampling_within_draw_order() {
                 texture_id,
                 sampling,
                 sprites,
+                ..
             } => Some((texture_id.index, sampling as u32, sprites.len())),
             _ => None,
         })

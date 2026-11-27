@@ -942,6 +942,7 @@ impl BladeRenderer {
                     texture_id,
                     sampling: _,
                     sprites,
+                    ..
                 } => {
                     let tex_info = self.atlas.texture_info(texture_id);
                     let instance_buf =

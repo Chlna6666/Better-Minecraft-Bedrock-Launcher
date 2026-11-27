@@ -2,23 +2,54 @@
 mod sort;
 #[cfg(test)]
 mod tests;
-use super::{DrawOrder, Quad, Shadow};
+use super::{DrawOrder, MonochromeSprite, Quad, Shadow};
 
 pub(crate) trait Ordered: Copy {
+    type SortKey: Ord + Copy;
     fn order(&self) -> DrawOrder;
+    fn sort_key(&self) -> Self::SortKey;
+
+    fn sort_pending(items: &mut [Self]) {
+        sort::pending(items);
+    }
 }
 
 impl Ordered for Quad {
+    type SortKey = DrawOrder;
+    fn sort_key(&self) -> Self::SortKey { self.order }
+
     fn order(&self) -> DrawOrder {
         self.order
     }
 }
 
 impl Ordered for Shadow {
+    type SortKey = DrawOrder;
+    fn sort_key(&self) -> Self::SortKey { self.order }
+
     fn order(&self) -> DrawOrder {
         self.order
     }
 }
+impl Ordered for MonochromeSprite {
+    type SortKey = (DrawOrder, u32, u32, u32);
+
+    fn order(&self) -> DrawOrder {
+        self.order
+    }
+
+    fn sort_key(&self) -> Self::SortKey {
+        (self.order(), self.tile.texture_id.kind as u32,
+            self.tile.texture_id.index, self.sampling() as u32)
+    }
+
+    fn sort_pending(items: &mut [Self]) {
+        if !items.is_sorted_by_key(Self::sort_key) {
+            items.sort_by_key(Self::sort_key);
+        }
+    }
+}
+
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
@@ -209,7 +240,7 @@ impl<T: Ordered> PrimitiveStream<T> {
     }
     fn freeze_pending(&mut self) {
         if !self.pending.is_empty() {
-            sort::pending(&mut self.pending);
+            T::sort_pending(&mut self.pending);
             let pending = std::mem::take(&mut self.pending);
             let count = pending.len();
             // These primitives were already counted by push().
@@ -225,15 +256,15 @@ impl<T: Ordered> PrimitiveStream<T> {
                 .slice()
                 .last()
                 .expect("nonempty Paint segment")
-                .order()
-                <= pair[1].slice()[0].order()
+                .sort_key()
+                <= pair[1].slice()[0].sort_key()
         }) {
             return;
         }
         let mut sources = std::mem::take(&mut self.segments);
         let mut heads = BinaryHeap::new();
         for (index, segment) in sources.iter().enumerate() {
-            heads.push(Reverse((segment.slice()[0].order(), index)));
+            heads.push(Reverse((segment.slice()[0].sort_key(), index)));
         }
         self.len = 0;
         while let Some(Reverse((_, index))) = heads.pop() {
@@ -247,8 +278,8 @@ impl<T: Ordered> PrimitiveStream<T> {
                     segment
                         .slice()
                         .partition_point(|primitive| {
-                            primitive.order() < *order
-                                || (primitive.order() == *order && index < *next_index)
+                            primitive.sort_key() < *order
+                                || (primitive.sort_key() == *order && index < *next_index)
                         })
                         .max(1)
                 });
@@ -256,7 +287,7 @@ impl<T: Ordered> PrimitiveStream<T> {
             self.append(Arc::clone(&segment.owner), first..first + count);
             segment.range.start += count;
             if !segment.range.is_empty() {
-                heads.push(Reverse((segment.slice()[0].order(), index)));
+                heads.push(Reverse((segment.slice()[0].sort_key(), index)));
             }
         }
     }

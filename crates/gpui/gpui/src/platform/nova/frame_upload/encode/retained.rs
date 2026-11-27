@@ -65,17 +65,18 @@ impl FrameUpload {
             {
                 continue;
             }
-            self.encode_monochrome_sprites(
-                &scene.monochrome_sprites[cursor..chunk.sprite_range.start],
-                summary,
-            );
+            for sprites in scene.monochrome_sprites.slices(cursor..chunk.sprite_range.start) {
+                self.encode_monochrome_sprites(sprites, summary);
+            }
             if !self.reuse_monochrome_sprite_chunk(cache, chunk, summary) {
                 summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
                 self.encode_monochrome_sprite_chunk(cache, scene, chunk, summary);
             }
             cursor = chunk.sprite_range.end;
         }
-        self.encode_monochrome_sprites(&scene.monochrome_sprites[cursor..range.end], summary);
+        for sprites in scene.monochrome_sprites.slices(cursor..range.end) {
+            self.encode_monochrome_sprites(sprites, summary);
+        }
     }
 
     fn encode_monochrome_sprite_chunk(
@@ -85,15 +86,17 @@ impl FrameUpload {
         chunk: &crate::window::retained::PreparedRetainedMonochromeSpriteChunk,
         summary: &mut FrameUploadSummary,
     ) {
-        let sprites = &scene.monochrome_sprites[chunk.sprite_range.clone()];
-        let visible_count = sprites
-            .iter()
+        let sprites = || scene.monochrome_sprites.slices(chunk.sprite_range.clone());
+        let visible_count = sprites()
+            .flatten()
             .filter(|sprite| !clip_is_degenerate(&sprite.content_mask))
             .count();
         let available =
             MAX_MONO_SPRITES.saturating_sub(self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES);
         if visible_count > available {
-            self.encode_monochrome_sprites(sprites, summary);
+            for slice in sprites() {
+                self.encode_monochrome_sprites(slice, summary);
+            }
             return;
         }
         let byte_start = self.mono_sprites.len();
@@ -102,7 +105,7 @@ impl FrameUpload {
         let mut packed_bytes = Vec::with_capacity(visible_count * PACKED_MONO_SPRITE_BYTES);
         let first_sprite = (byte_start / PACKED_MONO_SPRITE_BYTES) as u32;
         let mut sprite_count = 0_u32;
-        for source in sprites {
+        for source in sprites().flatten() {
             let Some((sprite, sprite_bounds)) = self.prepare_monochrome_sprite(source) else {
                 continue;
             };

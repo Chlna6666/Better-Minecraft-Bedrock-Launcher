@@ -415,8 +415,39 @@ impl Painter {
                 primitives().map(|primitive| (Self::ordering_bounds(primitive), primitive.order())),
             );
         }
-        for primitive in primitives() {
+        // A complete typed Glyph order range may share its original
+        // payload. Partial equal-order groups must keep the copy fallback.
+        let mut cursor = 0;
+        while cursor < count {
+            if matches!(&operations[cursor], PaintOperation::Primitive(Primitive::MonochromeSprite(_))) {
+                let end = cursor + operations[cursor..count].iter().take_while(|op| {
+                    matches!(op, PaintOperation::Primitive(Primitive::MonochromeSprite(_)))
+                }).count();
+                let mut first = DrawOrder::MAX;
+                let mut last = DrawOrder::MIN;
+                for op in &operations[cursor..end] {
+                    let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = op else { unreachable!() };
+                    first = first.min(sprite.order);
+                    last = last.max(sprite.order);
+                }
+                let typed = &previous.monochrome_sprites;
+                let from = typed.partition_point(|sprite| sprite.order < first);
+                let to = typed.partition_point(|sprite| sprite.order <= last);
+                if to - from == end - cursor {
+                    self.scene.monochrome_sprites.share(typed, from..to);
+                    cursor = end;
+                    continue;
+                }
+                for op in &operations[cursor..end] {
+                    let PaintOperation::Primitive(primitive) = op else { unreachable!() };
+                    self.push_replayed_primitive(primitive, primitive.order());
+                }
+                cursor = end;
+                continue;
+            }
+            let PaintOperation::Primitive(primitive) = &operations[cursor] else { unreachable!() };
             self.push_replayed_primitive(primitive, primitive.order());
+            cursor += 1;
         }
         self.scene.paint_operations.share(&previous.paint_operations, range.clone());
         self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(count);
