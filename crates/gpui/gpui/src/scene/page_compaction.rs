@@ -42,6 +42,13 @@ impl<T> CompactedPage<T> {
 pub(super) fn compact_sparse_pages<'a, T: PagePayload + 'a>(
     views: impl Iterator<Item = (&'a Arc<T>, &'a Range<usize>)>,
 ) -> FxHashMap<*const T, CompactedPage<T>> {
+    compact_sparse_pages_with(views, T::append_range)
+}
+
+pub(super) fn compact_sparse_pages_with<'a, T: PagePayload + 'a>(
+    views: impl Iterator<Item = (&'a Arc<T>, &'a Range<usize>)>,
+    mut append: impl FnMut(&mut T, &T, Range<usize>),
+) -> FxHashMap<*const T, CompactedPage<T>> {
     let mut coverage = FxHashMap::<_, Coverage<'a, T>>::default();
     for (owner, range) in views {
         let entry = coverage.entry(Arc::as_ptr(owner)).or_insert_with(|| Coverage {
@@ -92,7 +99,7 @@ pub(super) fn compact_sparse_pages<'a, T: PagePayload + 'a>(
         let mut ranges = SmallVec::new();
         for range in entry.ranges {
             let target = payload.len();
-            payload.append_range(entry.owner, range.clone());
+            append(&mut payload, entry.owner, range.clone());
             ranges.push((range, target));
         }
         compacted.insert(identity, CompactedPage { owner: Arc::new(payload), ranges });

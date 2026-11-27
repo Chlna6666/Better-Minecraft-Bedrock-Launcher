@@ -65,14 +65,12 @@ impl Painter {
             "scene capture must be closed before finishing a scene"
         );
         self.scene.shadows.finish();
-        self.scene.shadows.compact();
         self.scene.quads.finish();
         self.scene.paths.sort_unstable_by_key(|path| path.order);
         self.scene
             .underlines
             .sort_unstable_by_key(|underline| underline.order);
         self.scene.monochrome_sprites.finish();
-        self.scene.monochrome_sprites.compact();
         self.scene
             .polychrome_sprites
             .sort_unstable_by_key(|sprite| {
@@ -92,6 +90,11 @@ impl Painter {
         self.scene
             .renderer_extensions
             .sort_unstable_by_key(|extension| extension.order);
+        self.scene.paint_operations.compact_with_draws(
+            &mut self.scene.shadows,
+            &mut self.scene.quads,
+            &mut self.scene.monochrome_sprites,
+        );
         static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
         if let Some(previous) = previous {
             let (same_paint, same_batch_topology) =

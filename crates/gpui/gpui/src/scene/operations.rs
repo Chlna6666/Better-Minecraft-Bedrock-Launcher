@@ -375,7 +375,71 @@ impl Operations {
         });
     }
     /// Release unrelated old page payload when the combined live views are sparse.
+    #[cfg(test)]
     pub(crate) fn compact(&mut self) {
+        self.compact_pages(false);
+    }
+
+    /// Compact operation indices first, then compact each typed allocation
+    /// from the union of operation and draw coverage. The two views receive
+    /// the exact same replacement allocation and physical slot mapping.
+    pub(super) fn compact_with_draws(
+        &mut self,
+        shadows: &mut super::PrimitiveStream<super::Shadow>,
+        quads: &mut super::PrimitiveStream<super::Quad>,
+        mono: &mut super::PrimitiveStream<super::MonochromeSprite>,
+    ) {
+        self.compact_pages(true);
+        self.compact_draw(shadows);
+        self.compact_draw(quads);
+        self.compact_draw(mono);
+    }
+
+    fn compact_draw<T: super::primitive_stream::Ordered>(
+        &mut self, stream: &mut super::PrimitiveStream<T>,
+    )
+    where
+        OperationPage: super::operation_page::DrawPayload<T>,
+    {
+        use super::operation_page::DrawPayload;
+        use collections::{FxHashMap, FxHashSet};
+
+        // Multiple logical segments may retain the same operation page.
+        // Count each physical page once. Fully covered typed payload is
+        // represented by a single range rather than walking all operations.
+        let compacted = {
+            let mut seen = FxHashSet::default();
+            let mut coverage = Vec::new();
+            for segment in &self.segments {
+                if seen.insert(Arc::as_ptr(&segment.owner)) {
+                    segment.owner.draw_coverage(&mut coverage);
+                }
+            }
+            super::page_compaction::compact_sparse_pages(
+                coverage.iter().map(|(owner, range)| (*owner, range))
+                    .chain(stream.physical_ranges()),
+            )
+        };
+        if compacted.is_empty() { return; }
+        stream.remap_pages(&compacted);
+        let mut replacements = FxHashMap::default();
+        for segment in &mut self.segments {
+            let identity = Arc::as_ptr(&segment.owner);
+            if let Some(replacement) = replacements.get(&identity) {
+                segment.owner = Arc::clone(replacement);
+                continue;
+            }
+            let Some(page) = segment.owner.draw_owner()
+                .and_then(|owner| compacted.get(&Arc::as_ptr(owner))) else { continue };
+            let mut replacement = (*segment.owner).clone();
+            replacement.remap_draw(page);
+            let replacement = Arc::new(replacement);
+            replacements.insert(identity, Arc::clone(&replacement));
+            segment.owner = replacement;
+        }
+    }
+
+    fn compact_pages(&mut self, share_draw_payload: bool) {
         assert!(self.pending.is_empty(), "compact only finalized Paint");
         if self
             .segments
@@ -384,8 +448,15 @@ impl Operations {
         {
             return;
         }
-        let compacted = super::page_compaction::compact_sparse_pages(
+        let compacted = super::page_compaction::compact_sparse_pages_with(
             self.segments.iter().map(|segment| (&segment.owner, &segment.range)),
+            |target, source, range| {
+                if share_draw_payload {
+                    target.append_shared_range(source, range);
+                } else {
+                    target.append_range(source, range);
+                }
+            },
         );
         if compacted.is_empty() {
             return;

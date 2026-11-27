@@ -77,9 +77,6 @@ impl RetainedPaint {
         if !(same_paint && previous.is_some_and(|(_, old)| self.reuse_prepared_chunks(scene, old))) {
             self.prepare_retained_chunks(scene, previous);
         }
-        scene.quads.compact();
-        scene.paint_operations.compact();
-
         self.finished = true;
         self.revision = scene.revision;
     }

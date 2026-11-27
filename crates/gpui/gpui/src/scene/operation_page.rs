@@ -8,6 +8,7 @@ use std::{mem::size_of, ops::{Index, Range}, sync::Arc};
 /// Empty typed pages need only one nullable pointer. A nonempty page can
 /// publish its actual allocation to the sorted draw stream without retaining
 /// the operation page or allocating another primitive vector.
+#[derive(Clone)]
 struct TypedPayload<T>(Option<Arc<Vec<T>>>);
 
 impl<T> Default for TypedPayload<T> {
@@ -133,9 +134,12 @@ impl OperationIndex {
 
 /// All payload vectors are contiguous. Empty kinds allocate no payload.
 /// Sharing a logical range retains its page owner and its stable local slots.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct OperationPage {
     indices: Vec<OperationIndex>,
+    // A compacted logical page may reference only some slots of an original
+    // typed allocation. Dense builders need no per-operation coverage walk.
+    sparse_typed: u8,
     shadows: TypedPayload<Shadow>,
     quads: TypedPayload<Quad>,
     paths: Vec<Path<ScaledPixels>>,
@@ -200,6 +204,7 @@ impl OperationPage {
 
     pub(super) fn clear(&mut self) {
         self.indices.clear();
+        self.sparse_typed = 0;
         self.shadows.clear();
         self.quads.clear();
         self.paths.clear();
@@ -296,6 +301,30 @@ impl OperationPage {
         }
     }
 
+    /// Compact logical indices without independently copying draw payload.
+    /// All ranges appended to this destination belong to one source page.
+    pub(super) fn append_shared_range(&mut self, source: &Self, range: Range<usize>) {
+        self.indices.reserve(range.len());
+        for i in range {
+            let index = source.indices[i];
+            macro_rules! retain {
+                ($field:ident) => {{
+                    if self.$field.0.is_none() {
+                        self.$field.0 = source.$field.0.clone();
+                    }
+                    self.sparse_typed |= 1 << index.kind();
+                    self.indices.push(index);
+                }};
+            }
+            match index.kind() {
+                0 => retain!(shadows),
+                1 => retain!(quads),
+                4 => retain!(mono),
+                _ => self.push(source.view(i).to_operation()),
+            }
+        }
+    }
+
     /// Fast unique-page scope mutation. The index and typed payload address
     /// are unchanged; no other primitive is visited or cloned.
     pub(super) fn clip_layer(&mut self, index: usize, tight: Bounds<ScaledPixels>) {
@@ -311,6 +340,65 @@ impl OperationPage {
         self.captures[index.slot()].bounds = tight;
     }
 }
+
+/// Typed coverage is shared by logical Paint and sorted draw ranges.
+pub(super) trait DrawPayload<T: Ordered> {
+    fn draw_owner(&self) -> Option<&Arc<Vec<T>>>;
+    fn draw_coverage<'a>(&'a self, out: &mut Vec<(&'a Arc<Vec<T>>, Range<usize>)>);
+    fn remap_draw(&mut self, page: &super::page_compaction::CompactedPage<Vec<T>>);
+}
+
+macro_rules! draw_payload {
+    ($ty:ty, $field:ident, $tag:expr) => {
+        impl DrawPayload<$ty> for OperationPage {
+            fn draw_owner(&self) -> Option<&Arc<Vec<$ty>>> {
+                self.$field.0.as_ref()
+            }
+
+            fn draw_coverage<'a>(&'a self, out: &mut Vec<(&'a Arc<Vec<$ty>>, Range<usize>)>) {
+                let Some(owner) = self.$field.0.as_ref() else { return };
+                if self.sparse_typed & (1 << $tag) == 0 {
+                    if !owner.is_empty() {
+                        out.push((owner, 0..owner.len()));
+                    }
+                    return;
+                }
+                for index in &self.indices {
+                    if index.kind() != $tag { continue; }
+                    let slot = index.slot();
+                    if let Some((previous, range)) = out.last_mut()
+                        && Arc::ptr_eq(previous, owner)
+                        && range.end == slot
+                    {
+                        range.end += 1;
+                    } else {
+                        out.push((owner, slot..slot + 1));
+                    }
+                }
+            }
+
+            fn remap_draw(&mut self, page: &super::page_compaction::CompactedPage<Vec<$ty>>) {
+                let mut count = 0;
+                for index in &mut self.indices {
+                    if index.kind() == $tag {
+                        let slot = index.slot();
+                        *index = OperationIndex::new($tag, page.remap(slot..slot + 1).start);
+                        count += 1;
+                    }
+                }
+                self.$field.0 = Some(Arc::clone(&page.owner));
+                // Every source slot appears at most once per operation page.
+                if count == page.owner.len() {
+                    self.sparse_typed &= !(1 << $tag);
+                }
+            }
+        }
+    };
+}
+
+draw_payload!(Shadow, shadows, 0);
+draw_payload!(Quad, quads, 1);
+draw_payload!(MonochromeSprite, mono, 4);
 
 impl super::page_compaction::PagePayload for OperationPage {
     fn len(&self) -> usize { self.len() }

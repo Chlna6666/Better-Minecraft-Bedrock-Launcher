@@ -321,6 +321,7 @@ impl<T: Ordered> PrimitiveStream<T> {
     }
     /// Compact sparse borrowed allocations so a small fragment cannot pin an unrelated old page.
     /// New Paint and fully referenced shared owners keep their original payload without copying.
+    #[cfg(test)]
     pub(crate) fn compact(&mut self) {
         if self
             .segments
@@ -338,6 +339,18 @@ impl<T: Ordered> PrimitiveStream<T> {
         if compacted.is_empty() {
             return;
         }
+        self.remap_pages(&compacted);
+    }
+
+    pub(super) fn physical_ranges(&self) -> impl Iterator<Item = (&Arc<Vec<T>>, &Range<usize>)> {
+        debug_assert!(self.pending.is_empty());
+        self.segments.iter().map(|segment| (&segment.owner, &segment.range))
+    }
+
+    pub(super) fn remap_pages(
+        &mut self,
+        compacted: &collections::FxHashMap<*const Vec<T>, super::page_compaction::CompactedPage<Vec<T>>>,
+    ) {
         // Logical offsets and existing descriptor capacity stay intact.
         for segment in &mut self.segments {
             if let Some(page) = compacted.get(&Arc::as_ptr(&segment.owner)) {
