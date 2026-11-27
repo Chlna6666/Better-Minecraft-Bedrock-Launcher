@@ -117,7 +117,8 @@ impl NovaRenderer {
 
     /// Preflight before any target rebind or upload. Pending GPU readers keep their resources;
     /// the owner retries this packet without occupying the shared thread in a fence wait.
-    pub(super) fn frame_submission_is_ready(&mut self, scene: &crate::Scene) -> Result<bool> {
+    pub(super) fn frame_submission_is_ready(&mut self, paint: &crate::window::Paint) -> Result<bool> {
+        let scene = &paint.scene;
         self.submission_retry_pending = false;
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
             return Ok(true);
@@ -139,6 +140,7 @@ impl NovaRenderer {
             if !self.pending_submissions.is_empty() && self.atlas.has_pending_removals() {
                 let mut live_tiles = FxHashSet::default();
                 scene.collect_atlas_tile_ids_into(&mut live_tiles);
+                paint.layers.collect_atlas_tile_ids_into(&mut live_tiles);
                 self.atlas.has_retirable_pending_removals(&live_tiles)
             } else {
                 false

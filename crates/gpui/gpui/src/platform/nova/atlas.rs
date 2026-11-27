@@ -304,6 +304,19 @@ impl NovaAtlas {
             .collect()
     }
 
+    /// Snapshot only requested logical glyph placements. A miss never
+    /// samples an evicted allocation or a page whose upload is still queued.
+    /// The ordinary atlas upload path can make the next presentation eligible.
+    pub(super) fn ready_scroll_glyphs(&self, ids: &[(AtlasTextureId, u32)]) -> Option<FxHashMap<crate::TileId, AtlasTile>> {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        if !state.pending_uploads.is_empty() { return None; }
+        ids.iter().map(|(_, id)| {
+            let id = crate::TileId(*id);
+            let tile = state.placements.get(&id)?.0;
+            (tile.texture_id.kind == AtlasTextureKind::Monochrome).then_some((id, tile))
+        }).collect()
+    }
+
     pub(super) fn has_pending_removals(&self) -> bool {
         self.pending_removals_flag.load(AtomicOrdering::Acquire)
     }

@@ -16,6 +16,7 @@ pub(super) struct ScrollPaint {
     operations: Arc<Operations>,
     raster_eligible: bool,
     raster_quad_only: bool,
+    raster_atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
@@ -98,10 +99,14 @@ impl ScrollPaint {
         operations.finish();
         // Qualify once, not on each scrolled frame or GPU owner request.
         let mut raster_quad_only = true;
+        let mut raster_atlas_tiles = collections::FxHashSet::default();
         let raster_eligible = operations.len() != 0
             && operations.range_is_replayable(0..operations.len())
             && operations.iter().all(|operation| {
                 raster_quad_only &= !matches!(operation, PaintOperation::Primitive(primitive) if !matches!(primitive, Primitive::Quad(_)));
+                if let PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) = operation {
+                    raster_atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
+                }
                 super::frame::static_scroll_raster_operation(operation, coverage)
             });
         let block_bounds = if operations.len() >= MIN_INDEXED_OPERATIONS {
@@ -115,13 +120,14 @@ impl ScrollPaint {
             operations: Arc::new(operations),
             raster_eligible,
             raster_quad_only,
+            raster_atlas_tiles: if raster_eligible { raster_atlas_tiles.into_iter().collect::<Vec<_>>().into() } else { Arc::default() },
             block_bounds,
         }
     }
 
     /// The GPU owner may share the frozen pages without retaining UI state.
-    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>, bool)> {
-        self.raster_eligible.then_some((&self.operations, self.coverage, self.raster_quad_only))
+    pub(super) fn raster_operations(&self) -> Option<(&Arc<Operations>, Bounds<ScaledPixels>, bool, &Arc<[(crate::AtlasTextureId, u32)]>)> {
+        self.raster_eligible.then_some((&self.operations, self.coverage, self.raster_quad_only, &self.raster_atlas_tiles))
     }
 
     fn blocks(operations: &Operations) -> impl Iterator<Item = &[PaintOperation]> {

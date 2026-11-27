@@ -915,6 +915,7 @@ impl NovaRenderer {
                 .paint
                 .scene
                 .collect_atlas_tile_ids_into(&mut live_scene_tiles);
+            packet.paint.layers.collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self.atlas.has_retirable_pending_removals(&live_scene_tiles) {
                 self.wait_pending_submissions()?;
                 self.atlas.apply_pending_removals_except(&live_scene_tiles);

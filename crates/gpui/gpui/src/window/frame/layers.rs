@@ -23,6 +23,8 @@ pub(crate) struct LayerContent {
     operations: Arc<Operations>,
     parts: Box<[LayerPart]>,
     raster: Option<ContentRaster>,
+    // Immutable logical glyph identities collected once with ScrollPaint.
+    raster_atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
 }
 
 impl LayerContent {
@@ -58,7 +60,7 @@ impl LayerContent {
         }
         let mut operations = Operations::default();
         operations.share(&scene.paint_operations, range);
-        Some(Self { operations: Arc::new(operations), parts: parts.into_boxed_slice(), raster: None })
+        Some(Self { operations: Arc::new(operations), parts: parts.into_boxed_slice(), raster: None, raster_atlas_tiles: Arc::default() })
     }
 
     fn from_scroll(
@@ -68,6 +70,7 @@ impl LayerContent {
         translation: Option<[i32; 2]>,
         source_viewport: ContentMask<ScaledPixels>,
         quad_only: bool,
+        atlas_tiles: &Arc<[(crate::AtlasTextureId, u32)]>,
     ) -> Option<Self> {
         let [x, y] = translation?;
         // Capture coordinates = stable content coordinates + source origin.
@@ -89,6 +92,7 @@ impl LayerContent {
             operations: Arc::clone(operations),
             parts: Box::new([LayerPart { row: None, operations: 0..operations.len() }]),
             raster: Some(ContentRaster { source_origin, coverage, quad_only }),
+            raster_atlas_tiles: Arc::clone(atlas_tiles),
         })
     }
 
@@ -389,6 +393,10 @@ impl LayerFrame {
             .then_some((self.source_viewport.bounds, self.translation?))
     }
 
+    pub(crate) fn raster_atlas_tiles(&self) -> &[(crate::AtlasTextureId, u32)] {
+        &self.content.raster_atlas_tiles
+    }
+
     pub(crate) fn root_quad_outside(&self) -> Option<&[Range<usize>; 2]> {
         self.quad_root_outside.as_ref()
     }
@@ -497,6 +505,14 @@ pub(crate) struct SceneLayers {
 }
 
 impl SceneLayers {
+    /// Protect frozen overscan glyphs as well as the visible Scene. This
+    /// visits only unique logical dependencies, never the source operations.
+    pub(crate) fn collect_atlas_tile_ids_into(&self, live: &mut FxHashSet<(crate::AtlasTextureId, u32)>) {
+        for frame in &self.frames {
+            live.extend(frame.content.raster_atlas_tiles.iter().copied());
+        }
+    }
+
     // Native GPU tests use the production admission and coordinate mapping
     // with a frozen ScrollPaint-style operation page.
     #[cfg(test)]
@@ -511,9 +527,13 @@ impl SceneLayers {
         operations.finish();
         assert!(operations.range_is_replayable(0..operations.len()));
         assert!(operations.iter().all(|op| static_scroll_raster_operation(op, coverage)));
+        let atlas_tiles: Arc<[_]> = operations.iter().filter_map(|op| match op {
+            PaintOperation::Primitive(Primitive::MonochromeSprite(sprite)) => Some((sprite.tile.texture_id, sprite.tile.tile_id.0)),
+            _ => None,
+        }).collect::<FxHashSet<_>>().into_iter().collect::<Vec<_>>().into();
         let operations = Arc::new(operations);
         let content = LayerContent::from_scroll(
-            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), true,
+            &operations, coverage, Point::default(), Some(translation), viewport.scale(1.), atlas_tiles.is_empty(), &atlas_tiles,
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         self.frames.push(LayerFrame {
@@ -566,8 +586,8 @@ impl SceneLayers {
             // current native drawable (which can already have resized).
             let direct = if record.rows.is_empty() && !range.is_empty() {
                 scroll_views.raster_source(view_records, &range, record.viewport, record.source_viewport)
-                     .and_then(|(operations, coverage, delta, quad_only)| LayerContent::from_scroll(
-                        operations, coverage, delta, record.translation, record.source_viewport, quad_only,
+                     .and_then(|(operations, coverage, delta, quad_only, atlas_tiles)| LayerContent::from_scroll(
+                        operations, coverage, delta, record.translation, record.source_viewport, quad_only, atlas_tiles,
                     ))
             } else { None };
             let quad_root_outside = if direct.as_ref().is_some_and(|content| content.raster.is_some_and(|raster| raster.quad_only))
@@ -685,9 +705,9 @@ mod tests {
         operations.finish();
         let operations = Arc::new(operations);
         let before = LayerContent::from_scroll(&operations, coverage, Point::default(),
-            Some([0, -128]), viewport, true).unwrap();
+            Some([0, -128]), viewport, true, &Arc::default()).unwrap();
         let after = LayerContent::from_scroll(&operations, coverage, translation_point([0, -64]),
-            Some([0, -192]), viewport, true).unwrap();
+            Some([0, -192]), viewport, true, &Arc::default()).unwrap();
         assert!(Arc::ptr_eq(&before.operations, &after.operations));
         assert!(before.raster == after.raster);
         assert_eq!(after.raster.unwrap().source_origin_for_tile([0, 256, 128, 384]), Some([0, 128]));
@@ -711,7 +731,7 @@ mod tests {
             translation: Some([0, 0]),
             previous_coverage: Some(viewport.scale(1.).bounds),
             offset: LayerScrollPosition::Pixels(point(crate::px(0.), crate::px(0.))),
-            content: Arc::new(LayerContent { operations: Arc::new(Operations::default()), parts: Box::new([]), raster: None }),
+            content: Arc::new(LayerContent { operations: Arc::new(Operations::default()), parts: Box::new([]), raster: None, raster_atlas_tiles: Arc::default() }),
         };
         assert_eq!(frame.adopt_tile(3, [0, 0, 512, 512], 1.), Some(4));
         assert_eq!(frame.adopt_tile(3, [512, 0, 1024, 512], 1.), None);
@@ -772,7 +792,7 @@ mod tests {
             for quad in quads {
                 operations.push(PaintOperation::Primitive(Primitive::Quad(*quad)));
             }
-            LayerContent { operations: Arc::new(operations), parts: Box::new([]), raster: None }
+            LayerContent { operations: Arc::new(operations), parts: Box::new([]), raster: None, raster_atlas_tiles: Arc::default() }
         };
         let old = content(&[quad(20.), quad(300.)]);
         // The first old row is no longer visible; two new rows are outside

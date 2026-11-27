@@ -726,7 +726,7 @@ impl NovaRenderer {
             force_full_drawable_damage(packet, self.active_size);
             self.observe_presentation_packet(packet);
         }
-        if !self.frame_submission_is_ready(&packet.paint.scene)? {
+        if !self.frame_submission_is_ready(&packet.paint)? {
             return Ok(false);
         }
         self.ensure_path_mask_target_for_frame()?;
@@ -1244,7 +1244,7 @@ impl NovaRenderer {
                 force_full_drawable_damage(&mut packet, self.active_size);
                 self.observe_presentation_packet(&packet);
             }
-            if !self.frame_submission_is_ready(&packet.paint.scene)? {
+            if !self.frame_submission_is_ready(&packet.paint)? {
                 return Ok(false);
             }
             self.ensure_path_mask_target_for_frame()?;
