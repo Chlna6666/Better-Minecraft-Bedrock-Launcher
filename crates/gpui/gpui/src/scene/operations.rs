@@ -160,6 +160,14 @@ impl Operations {
     pub(crate) fn capacity(&self) -> usize {
         self.len - self.pending.len() + self.pending.capacity()
     }
+
+    /// Private backing storage only; immutable shared operation pages
+    /// belong to their Arc owners and must not be counted per view.
+    pub(crate) fn private_capacity_bytes(&self) -> u64 {
+        (self.segments.capacity() as u64).saturating_mul(std::mem::size_of::<Segment>() as u64)
+            .saturating_add((self.pending.capacity() as u64).saturating_mul(std::mem::size_of::<PaintOperation>() as u64))
+            .saturating_add((self.boundaries.capacity() as u64).saturating_mul(std::mem::size_of::<ReplayBoundary>() as u64))
+    }
     pub(crate) fn shrink_to(&mut self, floor: usize) {
         self.pending.shrink_to(floor);
         self.segments.shrink_to(self.segments.len());

@@ -99,6 +99,16 @@ pub struct RendererMemoryProfile {
     /// Fence-owned transient scroll buffers and depth targets, excluding tile pages.
     #[serde(default)]
     pub scroll_inflight_bytes: u64,
+    /// Private root encoding capacity; excludes shared Paint operation pages.
+    #[serde(default)]
+    pub scroll_cpu_root_capacity_bytes: u64,
+    /// Private scroll slot stream and command capacity; excludes hash buckets
+    /// and nested allocations in commands.
+    #[serde(default)]
+    pub scroll_cpu_slot_capacity_bytes: u64,
+    /// CPU bookkeeping capacity of fence-owned scroll allocations.
+    #[serde(default)]
+    pub scroll_cpu_inflight_capacity_bytes: u64,
 }
 
 impl RendererMemoryProfile {

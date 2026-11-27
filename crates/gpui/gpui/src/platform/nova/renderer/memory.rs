@@ -242,6 +242,16 @@ impl NovaRenderer {
                 .map_or(0, BackdropBlurTargets::byte_size),
             root_color_bytes: self.root_color.target.as_ref().map_or(0, |root| root.target.byte_size),
             scroll_tile_bytes: self.raster_tiles.bytes(),
+            scroll_cpu_root_capacity_bytes: self.scroll_outside_root.as_ref()
+                .map_or(0, |root| root.cpu_capacity_bytes()),
+            scroll_cpu_slot_capacity_bytes: self.scroll_composite_slots.iter()
+                .map(|slot| slot.cpu_capacity_bytes()).fold(0u64, u64::saturating_add)
+                .saturating_add((self.scroll_composite_slots.capacity() as u64)
+                    .saturating_mul(std::mem::size_of::<scroll_raster::CompositeSlot>() as u64)),
+            scroll_cpu_inflight_capacity_bytes: self.scroll_raster_resources.iter()
+                .map(|(_, resources)| resources.cpu_capacity_bytes()).fold(0u64, u64::saturating_add)
+                .saturating_add((self.scroll_raster_resources.capacity() as u64)
+                    .saturating_mul(std::mem::size_of::<(SubmissionId, scroll_raster::Resources)>() as u64)),
             scroll_resident_buffer_bytes: self.scroll_composite_slots.iter()
                 .map(|slot| slot.gpu_bytes()).fold(0u64, u64::saturating_add),
             scroll_inflight_bytes: self.scroll_raster_resources.iter()

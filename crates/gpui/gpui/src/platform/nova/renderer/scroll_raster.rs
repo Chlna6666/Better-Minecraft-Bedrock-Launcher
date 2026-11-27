@@ -99,7 +99,16 @@ pub(super) struct Resources {
     gpu_bytes: u64,
 }
 
+fn vec_capacity_bytes<T>(values: &Vec<T>) -> u64 {
+    (values.capacity() as u64).saturating_mul(std::mem::size_of::<T>() as u64)
+}
+
 impl Resources {
+    pub(super) fn cpu_capacity_bytes(&self) -> u64 {
+        [vec_capacity_bytes(&self.buffers), vec_capacity_bytes(&self.bindings),
+            vec_capacity_bytes(&self.depths)].into_iter().fold(0u64, u64::saturating_add)
+    }
+
     pub(super) fn gpu_bytes(&self) -> u64 {
         self.gpu_bytes
     }
@@ -501,6 +510,19 @@ pub(super) struct OutsideRootCache {
     atlas_epoch: Option<[u64; 4]>,
 }
 
+impl OutsideRootCache {
+    pub(super) fn cpu_capacity_bytes(&self) -> u64 {
+        let root = &self.root;
+        let streams = &root.streams;
+        [root.source.private_capacity_bytes(), vec_capacity_bytes(&root.source_ends),
+            vec_capacity_bytes(&root.atlas_tiles), vec_capacity_bytes(&root.boundaries),
+            vec_capacity_bytes(&root.extensions), vec_capacity_bytes(&streams.quads),
+            vec_capacity_bytes(&streams.shadows), vec_capacity_bytes(&streams.underlines),
+            vec_capacity_bytes(&streams.mono), vec_capacity_bytes(&streams.poly),
+            vec_capacity_bytes(&streams.runs)].into_iter().fold(0u64, u64::saturating_add)
+    }
+}
+
 fn outside_atlas_epoch(renderer: &NovaRenderer) -> [u64; 4] {
     [renderer.atlas.placement_generation(), renderer.atlas.texture_set_generation(),
         renderer.atlas.scroll_content_generation(), renderer.atlas.scroll_damage_generation()]
@@ -828,6 +850,21 @@ fn changed_record_ranges(previous: &[u8], next: &[u8], stride: usize) -> Vec<std
 }
 
 impl CompositeSlot {
+    /// Private CPU backing capacities. Hash table buckets, nested extension
+    /// payloads and allocator overhead are excluded rather than estimated.
+    pub(super) fn cpu_capacity_bytes(&self) -> u64 {
+        let commands = self.commands.as_ref().map_or(0, |cached| {
+            vec_capacity_bytes(&cached.tiles)
+                .saturating_add(vec_capacity_bytes(&cached.boundaries))
+                .saturating_add((cached.commands.len() as u64)
+                    .saturating_mul(std::mem::size_of::<RenderCommand>() as u64))
+        });
+        [vec_capacity_bytes(&self.global_bytes), vec_capacity_bytes(&self.sprite_bytes),
+            vec_capacity_bytes(&self.placement_bytes), vec_capacity_bytes(&self.sprite_records),
+            vec_capacity_bytes(&self.outside.text_bytes), commands]
+            .into_iter().fold(0u64, u64::saturating_add)
+    }
+
     /// Logical sizes of buffers actually allocated by this physical slot.
     /// Tile pages and fence-owned transient allocations are counted elsewhere.
     pub(super) fn gpu_bytes(&self) -> u64 {
@@ -1740,6 +1777,22 @@ mod tests {
         assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[(0, 1), (2, 2)]));
         assert!(!cached.matches(&root, pipeline, &[(0, a), (2, b)], &[(1, 2), (2, 2)]));
         assert!(!cached.matches(&root, RenderPipelineId::from_parts(2, 1), &[(0, a), (2, b)], &[(1, 1), (2, 2)]));
+    }
+
+    #[test]
+    fn cpu_capacity_counts_allocations_not_live_record_lengths() {
+        let mut slot = CompositeSlot::default();
+        assert_eq!(slot.cpu_capacity_bytes(), 0);
+        slot.sprite_bytes.reserve(256);
+        slot.placement_bytes.reserve(128);
+        slot.sprite_records.reserve(8);
+        let expected = vec_capacity_bytes(&slot.sprite_bytes)
+            + vec_capacity_bytes(&slot.placement_bytes)
+            + vec_capacity_bytes(&slot.sprite_records);
+        assert_eq!(slot.cpu_capacity_bytes(), expected);
+        slot.sprite_bytes.extend_from_slice(&[0; 16]);
+        slot.sprite_bytes.clear();
+        assert_eq!(slot.cpu_capacity_bytes(), expected);
     }
 
     #[test]
