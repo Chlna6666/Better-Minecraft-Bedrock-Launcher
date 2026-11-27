@@ -1196,8 +1196,9 @@ impl NovaRenderer {
             for read in reads { self.raster_tiles.quarantine_reader(read); }
             anyhow::bail!("scroll present returned no native reader fence");
         }
-        log::trace!(target: "gpui::diagnostics", "scroll raster present: layers={} tiles={} misses={} hits={} outside_runs={}",
-            plans.len(), requests.len(), misses, requests.len() - misses, outside.streams.runs.len());
+        log::trace!(target: "gpui::diagnostics", "scroll raster present: layers={} tiles={} misses={} hits={} outside_runs={} logical_resident={} physical_textures={}",
+            plans.len(), requests.len(), misses, requests.len() - misses, outside.streams.runs.len(),
+            self.raster_tiles.logical_tiles(), self.raster_tiles.physical_textures());
         Ok(Some(outcome.was_presented()))
     }
 }

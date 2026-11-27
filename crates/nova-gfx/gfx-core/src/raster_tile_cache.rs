@@ -180,6 +180,14 @@ impl RasterTileCache {
         for e in self.entries.values_mut() { e.invalidate(); }
     }
 
+    /// Number of live logical allocations, including invalid or busy cells.
+    pub fn logical_tiles(&self) -> usize { self.entries.len() }
+
+    /// Number of physical color allocations, including shared pages.
+    pub fn physical_textures(&self) -> usize {
+        self.pages.len() + self.entries.values().filter(|entry| entry.page_slot.is_none()).count()
+    }
+
     /// True while a native submission still owns a cached texture.
     pub fn has_pending_users(&self) -> bool {
         self.entries.values().any(|e| !e.readers.is_empty() || matches!(e.state, State::Submitted(_)))
@@ -214,7 +222,8 @@ impl RasterTileCache {
         }
     }
 
-    /// Resolve completed pixels, independent of viewport placement.
+    /// Resolve completed standalone pixels, independent of viewport placement.
+    /// Paged consumers must use `lookup_ordered` to obtain the exact subrectangle.
     pub fn lookup(&mut self, key: RasterTileKey, generation: u64, raster: RasterTile, format: Format) -> Option<RasterTileTexture> {
         let e = self.entries.get_mut(&key)?;
         if e.page_slot.is_some() || e.state != State::Ready || e.stale || e.generation != generation
@@ -380,10 +389,12 @@ impl RasterTileCache {
     fn allocate_page_slot<D: ResourceDevice + ?Sized>(&mut self, device: &mut D,
         key: RasterTileKey, generation: u64, raster: RasterTile, format: Format, serial: u64, cell: Extent2d,
     ) -> Result<()> {
-        let candidate = self.pages.iter().find_map(|(&texture, page)| {
-            (page.cell == cell && page.format == format && page.view.is_some())
-                .then(|| page.free_slot().map(|slot| (texture, slot))).flatten()
-        });
+        // Fill the densest compatible page first, limiting the number
+        // of live views and increasing contiguous composite batch hits.
+        let candidate = self.pages.iter().filter_map(|(&texture, page)| {
+            if page.cell != cell || page.format != format || page.view.is_none() { return None; }
+            Some((texture, page.free_slot()?, page.occupied.count_ones()))
+        }).max_by_key(|&(_, _, occupancy)| occupancy).map(|(texture, slot, _)| (texture, slot));
         let (texture, slot) = if let Some(candidate) = candidate { candidate } else {
             let extent = Extent2d::new(cell.width(), cell.height() * u32::from(PAGE_CELLS))?;
             let bytes = u64::from(extent.width()) * u64::from(extent.height()) * u64::from(format.bytes_per_pixel());

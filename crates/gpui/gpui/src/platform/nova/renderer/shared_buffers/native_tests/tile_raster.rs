@@ -533,7 +533,12 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
     let tile = RasterTile { origin: SignedOrigin2d::ZERO, extent: Extent2d::new(64, 64).unwrap() };
     let key = RasterTileKey { layer: paint.layers.frames[0].id, x: 0, y: 0 };
     let second_key = RasterTileKey { layer: paint.layers.frames[1].id, x: 0, y: 0 };
-    for _ in 0..2 {
+    for iteration in 0..3 {
+        if iteration == 2 {
+            // Repaint exactly one cell after both previous reader fences
+            // complete. The adjacent page cell must keep its own pixels.
+            renderer.raster_tiles.invalidate_layer(key.layer);
+        }
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while renderer.presentation_readiness(None, Some((64, 64))).expect("scroll readiness") != PresentReadiness::Ready
             || !renderer.draw(packet()).expect("scroll direct present")
@@ -594,6 +599,8 @@ fn verify_direct_present(backend: RendererBackend, with_glyph: bool, native: boo
         };
         assert_cell(second_read, [255, 0, 0, 255]);
         assert_eq!(renderer.raster_tiles.bytes(), (if paged { 4 } else { 2 }) * 64 * 64 * 4);
+        assert_eq!(renderer.raster_tiles.logical_tiles(), 2);
+        assert_eq!(renderer.raster_tiles.physical_textures(), if paged { 1 } else { 2 });
         if let Some(previous) = physical {
             assert_eq!(previous, texture, "resident hit must retain the physical texture");
         }
