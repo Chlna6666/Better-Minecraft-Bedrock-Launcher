@@ -106,8 +106,7 @@ impl Window {
 
 /// One owner record, with its last resolved dispatch route. `keep` is
 /// scratch for publication, not an additional owner index.
-/// Additive owner-scoped dependency adoption. Retired row reads remain
-/// conservative until the ordinary traversal reconciles the owner.
+/// Owner-scoped dependency adoption. Only certified row-only reads may retire.
 pub(super) struct BoundaryRowReads {
     owner: EntityId,
     merged: crate::RenderDependencies,
@@ -485,9 +484,53 @@ impl WindowInvalidator {
         Some(BoundaryRowReads { owner, merged })
     }
 
+    /// Retire only reads proven to belong to the complete departing row
+    /// domain. Own reads, surviving rows and unknown historical reads
+    /// remain protected. The caller certifies single-list row membership.
+    pub(super) fn prepare_boundary_row_delta(
+        &self, owner: EntityId, entered: &crate::RenderDependencies,
+        retired: &crate::RenderDependencies, kept: &crate::RenderDependencies,
+    ) -> Option<BoundaryRowReads> {
+        let mut prepared = self.prepare_boundary_row_reads(owner, entered)?;
+        if !retired.states.is_empty() || !kept.states.is_empty() { return None; }
+        let inner = self.inner.borrow();
+        let Some(old) = inner.view_reads.get(&Some(owner)) else {
+            return (retired.entities.is_empty() && retired.globals.is_empty()
+                && kept.entities.is_empty() && kept.globals.is_empty()).then_some(prepared);
+        };
+        // A row record must be covered by the committed owner snapshot.
+        if !retired.entities.iter().chain(kept.entities.iter()).all(|key| old.reads.entities.binary_search(key).is_ok())
+            || !retired.globals.iter().chain(kept.globals.iter()).all(|key| old.reads.globals.binary_search(key).is_ok())
+        { return None; }
+        if retired.entities.iter().any(|key| *key != owner
+            && kept.entities.binary_search(key).is_err()
+            && entered.entities.binary_search(key).is_err()
+            && old.own_reads.entities.binary_search(key).is_err())
+        {
+            prepared.merged.entities = prepared.merged.entities.iter().copied().filter(|key| {
+                *key == owner || retired.entities.binary_search(key).is_err()
+                    || kept.entities.binary_search(key).is_ok()
+                    || entered.entities.binary_search(key).is_ok()
+                    || old.own_reads.entities.binary_search(key).is_ok()
+            }).collect();
+        }
+        if retired.globals.iter().any(|key| kept.globals.binary_search(key).is_err()
+            && entered.globals.binary_search(key).is_err()
+            && old.own_reads.globals.binary_search(key).is_err())
+        {
+            prepared.merged.globals = prepared.merged.globals.iter().copied().filter(|key| {
+                retired.globals.binary_search(key).is_err()
+                    || kept.globals.binary_search(key).is_ok()
+                    || entered.globals.binary_search(key).is_ok()
+                    || old.own_reads.globals.binary_search(key).is_ok()
+            }).collect();
+        }
+        Some(prepared)
+    }
+
     /// No callbacks or fallible admission after the placement epoch is
     /// consumed. Preserve own_reads: these additions came only from rows.
-    pub(super) fn commit_boundary_row_reads(&self, prepared: BoundaryRowReads) {
+    pub(super) fn commit_boundary_row_reads(&self, prepared: BoundaryRowReads) -> Vec<EntityId> {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
         let route = Some(prepared.owner);
@@ -500,8 +543,14 @@ impl WindowInvalidator {
             &entry.reads.entities, route, &prepared.merged.entities, route);
         update_dependency_routes(&mut inner.global_read_dependencies,
             &entry.reads.globals, route, &prepared.merged.globals, route);
+        // The compact reverse index retains other scoped owners and
+        // unresolved readers. Only a vanished key can leave App routing.
+        let removed = entry.reads.entities.iter().copied().filter(|entity|
+            prepared.merged.entities.binary_search(entity).is_err()
+                && !inner.render_dependencies.contains_key(entity)).collect();
         entry.reads = prepared.merged;
         entry.keep = true;
+        removed
     }
 
     pub(in crate::window) fn commit_frame_dependencies(

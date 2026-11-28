@@ -1495,8 +1495,19 @@ impl Window {
             || !self.rendered_frame.dispatch_tree.has_view_route(owner)
             || !self.invalidator.row_dependencies_unchanged(plan.notification_epoch, &reads)
         { return None; }
-        let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty() { None }
-            else { Some(self.invalidator.prepare_boundary_row_reads(owner, &reads)?) };
+        let mut retired_reads = RenderDependencies::default();
+        let mut kept_reads = RenderDependencies::default();
+        for row in old_range.clone() {
+            let record = old.scroll_rows.rows.get(&(key, row))?;
+            if new_range.contains(&row) {
+                kept_reads.merge_replayed(&record.prepaint.reads);
+            } else {
+                retired_reads.merge_replayed(&record.prepaint.reads);
+            }
+        }
+        let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
+            && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
+            else { Some(self.invalidator.prepare_boundary_row_delta(owner, &reads, &retired_reads, &kept_reads)?) };
         let current_text = self.text_system.layout_index();
         if !fresh_text.within(&current_text, true) { return None; }
 
@@ -1805,7 +1816,8 @@ impl Window {
             .expect("reserved detached layout commit");
         let retired_states = prepared_states.map_or_else(Vec::new, |prepared| self.element_states.commit_boundary(prepared));
         if let Some(prepared) = prepared_reads {
-            self.invalidator.commit_boundary_row_reads(prepared);
+            let retired_entities = self.invalidator.commit_boundary_row_reads(prepared);
+            cx.unregister_boundary_entities(self.handle, &retired_entities);
             cx.register_boundary_entities(self.handle, self.invalidator.clone(), &reads.entities);
         }
         let paint = candidate.paint.clone();

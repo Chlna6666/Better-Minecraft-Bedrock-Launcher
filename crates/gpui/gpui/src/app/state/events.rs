@@ -32,6 +32,22 @@ impl App {
         }
     }
 
+    /// All remaining window owners have already been checked by the
+    /// invalidator. Do not touch registrations belonging to other windows.
+    pub(crate) fn unregister_boundary_entities(
+        &mut self, window_handle: AnyWindowHandle, entities: &[EntityId],
+    ) {
+        if let Some(tracked) = self.tracked_entities.get_mut(&window_handle.id) {
+            for entity in entities {
+                if tracked.remove(entity) {
+                    if let Some(windows) = self.window_invalidators_by_entity.get_mut(entity) {
+                        windows.remove(&window_handle.id);
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn record_entities_accessed(
         &mut self,
         window_handle: AnyWindowHandle,
