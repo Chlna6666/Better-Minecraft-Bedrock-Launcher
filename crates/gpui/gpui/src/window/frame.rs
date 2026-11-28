@@ -263,7 +263,7 @@ pub(crate) enum SpliceSource {
 
 #[allow(dead_code)] // Frame publication will consume the retained index mapping.
 impl RecordSplicePlan {
-    pub(super) fn new(
+    pub(crate) fn new(
         old_len: usize,
         replacement_len: usize,
         edits: &[(Range<usize>, Range<usize>)],
@@ -318,7 +318,7 @@ impl RecordSplicePlan {
     /// Empty spans can be relocated only at unambiguous boundaries.
     /// A nonempty insertion at this checkpoint needs explicit before/after
     /// ownership, and a checkpoint inside retired records is invalid.
-    fn retained_span(&self, range: Range<usize>) -> Option<Range<usize>> {
+    pub(crate) fn retained_span(&self, range: Range<usize>) -> Option<Range<usize>> {
         if !range.is_empty() || range.start > range.end {
             return self.retained_range(range);
         }
@@ -349,6 +349,43 @@ impl RecordSplicePlan {
             }
         };
         Some(index..index)
+    }
+
+    /// A unique owner cannot be replayed twice or moved backwards through
+    /// an already consumed replacement stream. Unlike shared page edits,
+    /// these edits must also have disjoint, monotonic replacement ranges.
+    fn can_move_owners(&self, old_len: usize, replacement_len: usize) -> bool {
+        if !self.matches_sources(old_len, replacement_len) { return false; }
+        let mut end = 0;
+        for edit in &self.edits {
+            if edit.replacement.is_empty() { continue; }
+            if edit.replacement.start < end { return false; }
+            end = edit.replacement.end;
+        }
+        true
+    }
+
+    /// Consume two unique record streams only after admission. Reserve all
+    /// destination storage before taking either source. Retirement occurs
+    /// when the remaining source iterators are dropped. No Clone bound.
+    fn move_owners<T>(&self, old: &mut Vec<T>, replacement: &mut Vec<T>) -> Option<Vec<T>> {
+        if !self.can_move_owners(old.len(), replacement.len()) { return None; }
+        let mut result = Vec::new();
+        result.try_reserve_exact(self.new_len).ok()?;
+        let mut old = std::mem::take(old).into_iter();
+        let mut replacement = std::mem::take(replacement).into_iter();
+        let (mut old_index, mut new_index) = (0, 0);
+        self.visit_ranges(|source, range| {
+            let (records, index) = match source {
+                SpliceSource::Retained => (&mut old, &mut old_index),
+                SpliceSource::Replacement => (&mut replacement, &mut new_index),
+            };
+            let skip = range.start - *index;
+            result.extend(records.by_ref().skip(skip).take(range.len()));
+            *index = range.end;
+        });
+        debug_assert_eq!(result.len(), self.new_len);
+        Some(result)
     }
 
     pub(crate) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
@@ -1238,6 +1275,29 @@ mod publication_tests {
         assert_eq!(hitboxes.retained_span(4..4), Some(2..2));
         assert_eq!(scene.retained_span(2..2), Some(2..2));
         assert_eq!(scene.retained_span(3..3), Some(4..4));
+    }
+
+    #[test]
+    fn unique_record_splice_moves_noncloneable_owners_once_and_preserves_order() {
+        struct Owner(usize, Rc<Cell<usize>>);
+        impl Drop for Owner {
+            fn drop(&mut self) { self.1.set(self.1.get() + 1); }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let mut old = (0..6).map(|i| Owner(i, drops.clone())).collect::<Vec<_>>();
+        let mut new = (10..14).map(|i| Owner(i, drops.clone())).collect::<Vec<_>>();
+        let invalid = RecordSplicePlan::new(6, 4, &[(1..2, 0..2), (3..4, 1..3)]).unwrap();
+        assert!(invalid.move_owners(&mut old, &mut new).is_none());
+        assert_eq!(old.len(), 6);
+        assert_eq!(new.len(), 4);
+        assert_eq!(drops.get(), 0);
+        let plan = RecordSplicePlan::new(6, 4, &[(1..3, 0..1), (5..5, 2..4)]).unwrap();
+        let result = plan.move_owners(&mut old, &mut new).unwrap();
+        assert_eq!(result.iter().map(|owner| owner.0).collect::<Vec<_>>(), vec![0, 10, 3, 4, 12, 13, 5]);
+        assert!(old.is_empty() && new.is_empty());
+        assert_eq!(drops.get(), 3);
+        drop(result);
+        assert_eq!(drops.get(), 10);
     }
 
     #[test]
