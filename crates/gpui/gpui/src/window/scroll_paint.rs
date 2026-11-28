@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(old_layers.frames.len(), 2);
         assert_eq!(next_layers.frames.len(), 3);
         assert_eq!(old_layers.frames[1].id, next_layers.frames[2].id);
-        assert_eq!(next_layers.frames[2].root_static_span(), Some(3..4));
+        assert_eq!(next_layers.frames[2].root_static_span(), Some(&(3..4)));
 
         // Root primitives cannot be silently retired or inserted without
         // rebuilding the matching ordinary draw ordering.
