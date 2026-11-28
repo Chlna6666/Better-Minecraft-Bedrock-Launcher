@@ -402,7 +402,7 @@ impl RecordSplicePlan {
 
     pub(crate) fn edit_count(&self) -> usize { self.edits.len() }
 
-    pub(super) fn edited_ranges(&self, replacement: bool) -> impl Iterator<Item = Range<usize>> + '_ {
+    pub(crate) fn edited_ranges(&self, replacement: bool) -> impl Iterator<Item = Range<usize>> + '_ {
         self.edits.iter().map(move |edit| {
             if replacement { edit.replacement.clone() } else { edit.old.clone() }
         })
