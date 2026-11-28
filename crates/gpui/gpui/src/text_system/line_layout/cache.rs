@@ -1705,6 +1705,47 @@ mod tests {
     }
 
     #[test]
+    fn boundary_text_retirement_preserves_external_owners_and_reuses_free_slots() {
+        use crate::window::RecordSplicePlan;
+        let key = |text: &'static str| Arc::new(CacheKey {
+            text: SharedString::from(text), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        let mut store = LayoutStore::<LineLayout>::default();
+        let a = key("shared");
+        let b = key("unshared");
+        let external = Arc::new(LineLayout::default());
+        store.insert(a.clone(), external.clone(), 1);
+        store.insert(b.clone(), Arc::new(LineLayout::default()), 1);
+        let a_id = store.keys[&a];
+        let b_id = store.keys[&b];
+        store.finish(1, |_, _| {});
+        let plan = RecordSplicePlan::new(2, 0, &[(0..2, 0..0)]).unwrap();
+        let prepared = store.prepare_boundary_accesses(&plan).unwrap();
+        let retired = store.commit_boundary_accesses(prepared);
+        store.retire_boundary_slots(retired, |key, _| assert_eq!(key, &b));
+        assert!(store.slots[a_id].is_some());
+        assert!(store.slots[b_id].is_none());
+        assert_eq!(store.free, vec![b_id]);
+        let c = key("new");
+        store.insert(c.clone(), Arc::new(LineLayout::default()), 2);
+        assert_eq!(store.keys[&c], b_id);
+        let plan = RecordSplicePlan::new(0, 1, &[(0..0, 0..1)]).unwrap();
+        let prepared = store.prepare_boundary_accesses(&plan).unwrap();
+        let retired = store.commit_boundary_accesses(prepared);
+        store.retire_boundary_slots(retired, |_, _| panic!("nothing retired"));
+        let plan = RecordSplicePlan::new(1, 0, &[(0..1, 0..0)]).unwrap();
+        let prepared = store.prepare_boundary_accesses(&plan).unwrap();
+        let retired = store.commit_boundary_accesses(prepared);
+        store.retire_boundary_slots(retired, |key, _| assert_eq!(key, &c));
+        assert!(!store.keys.contains_key(&c));
+        assert!(store.keys.contains_key(&a));
+        drop(external);
+        store.finish(4, |key, _| assert_eq!(key, &a));
+        assert!(store.keys.is_empty());
+    }
+
+    #[test]
     fn boundary_text_count_delta_adopts_duplicate_replacement_ids() {
         use crate::window::RecordSplicePlan;
         let mut store = LayoutStore::<LineLayout>::default();
