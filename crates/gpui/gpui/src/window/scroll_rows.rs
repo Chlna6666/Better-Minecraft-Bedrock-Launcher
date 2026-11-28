@@ -1777,7 +1777,11 @@ impl Window {
         // epoch. The native owners cannot change between these checks
         // and the swaps on the exclusive UI thread.
         let prepared_states = if states.edit_count() != 0 || !self.element_states.boundary_is_untouched() {
-            Some(self.element_states.prepare_boundary(candidate.state_access.keys(0..candidate.state_access.len()))?)
+            Some(self.element_states.prepare_boundary_delta(
+                old.accessed_element_states.keys(0..old.accessed_element_states.len()),
+                states.edited_ranges(false).flat_map(|range| old.accessed_element_states.keys(range)),
+                states.edited_ranges(true).flat_map(|range| fresh.accessed_element_states.keys(range)),
+            )?)
         } else { None };
         self.rendered_frame.scroll_rows.rows.try_reserve(entered_count).ok()?;
         if !self.global_ids.borrow().can_finish_partial_frame()
