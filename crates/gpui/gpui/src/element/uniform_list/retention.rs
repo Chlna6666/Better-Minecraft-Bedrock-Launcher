@@ -37,7 +37,7 @@ pub(super) fn prepaint(
         None => visible.clone(),
     };
     if let RenderItems::Each(renderer) = render {
-        window.retain_uniform_row_builder(&mut plan, renderer);
+        window.retain_uniform_row_builder(&mut plan, renderer, content_mask);
     }
     let reused: SmallVec<[bool; 64]> = range
         .clone()
