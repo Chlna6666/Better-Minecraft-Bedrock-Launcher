@@ -394,6 +394,26 @@ impl RecordSplicePlan {
         result
     }
 
+    /// Transfer optional platform owners without dropping retired handlers
+    /// during Frame adoption. The original vectors remain as retirement
+    /// storage: moved slots become None, and discarded slots are untouched.
+    fn take_option_owners_into<T>(
+        &self, old: &mut [Option<T>], replacement: &mut [Option<T>],
+        mut result: Vec<Option<T>>,
+    ) -> Vec<Option<T>> {
+        debug_assert!(self.can_move_owners(old.len(), replacement.len()));
+        debug_assert!(result.is_empty() && result.capacity() >= self.new_len);
+        self.visit_ranges(|source, range| {
+            let records = match source {
+                SpliceSource::Retained => &mut *old,
+                SpliceSource::Replacement => &mut *replacement,
+            };
+            result.extend(records[range].iter_mut().map(Option::take));
+        });
+        debug_assert_eq!(result.len(), self.new_len);
+        result
+    }
+
     pub(crate) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
         let mut cursor = 0;
         for edit in &self.edits {
@@ -550,6 +570,7 @@ impl BoundaryCallbackCandidate<'_> {
     /// Final unique-owner transfer. Call only after all Frame, layout and
     /// platform IME checks succeed, while both source frames are exclusive.
     /// The caller must still publish mouse routing and the other records.
+    /// Retired handlers remain in source slots until post-publication cleanup.
     pub(super) fn take_input_handlers(
         self, old: &mut Frame, replacement: &mut Frame,
     ) -> Option<(Vec<Option<PlatformInputHandler>>, Vec<MouseListener>,
@@ -560,7 +581,7 @@ impl BoundaryCallbackCandidate<'_> {
         {
             return None;
         }
-        let ime = self.ime_plan.move_owners_into(
+        let ime = self.ime_plan.take_option_owners_into(
             &mut old.input_handlers, &mut replacement.input_handlers, self.ime,
         );
         Some((ime, self.mouse, self.mounted_sources))
@@ -1371,6 +1392,31 @@ mod publication_tests {
         assert_eq!(hitboxes.retained_span(4..4), Some(2..2));
         assert_eq!(scene.retained_span(2..2), Some(2..2));
         assert_eq!(scene.retained_span(3..3), Some(4..4));
+    }
+
+    #[test]
+    fn optional_owner_splice_defers_retirement_until_after_publication() {
+        struct Owner(usize, Rc<Cell<usize>>);
+        impl Drop for Owner {
+            fn drop(&mut self) { self.1.set(self.1.get() + 1); }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let mut old = vec![Some(Owner(0, drops.clone())), None, Some(Owner(2, drops.clone()))];
+        let mut new = vec![Some(Owner(3, drops.clone())), None, Some(Owner(5, drops.clone()))];
+        let plan = RecordSplicePlan::new(3, 3, &[(1..3, 0..2)]).unwrap();
+        assert!(plan.can_move_owners(old.len(), new.len()));
+        let result = plan.take_option_owners_into(&mut old, &mut new, Vec::with_capacity(plan.len()));
+        assert_eq!(result.iter().map(|v| v.as_ref().map(|v| v.0)).collect::<Vec<_>>(),
+            vec![Some(0), Some(3), None]);
+        assert!(old[0].is_none() && new[0].is_none());
+        assert_eq!(old[2].as_ref().map(|v| v.0), Some(2));
+        assert_eq!(new[2].as_ref().map(|v| v.0), Some(5));
+        assert_eq!(drops.get(), 0);
+        drop(old);
+        drop(new);
+        assert_eq!(drops.get(), 2);
+        drop(result);
+        assert_eq!(drops.get(), 4);
     }
 
     #[test]
