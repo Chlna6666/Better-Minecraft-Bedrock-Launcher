@@ -11,7 +11,7 @@ mod scroll;
 #[cfg(test)]
 mod tests;
 
-use crate::window::scroll_rows::{RowPlan, RowRevision};
+use crate::window::scroll_rows::{RowPlan, RowRevision, UniformRowRenderer};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId,
     Hitbox, InspectorElementId, Interactivity, IntoElement, IsZero, LayoutId, ListSizingBehavior,
@@ -63,7 +63,7 @@ where
     let render_row = move |index, window: &mut Window, cx: &mut App| {
         f(index, window, cx).into_any_element()
     };
-    uniform_list_with_renderer(id.into(), item_count, RenderItems::Each(Box::new(render_row)))
+    uniform_list_with_renderer(id.into(), item_count, RenderItems::Each(std::rc::Rc::new(render_row)))
 }
 
 fn uniform_list_with_renderer(id: ElementId, item_count: usize, render_items: RenderItems) -> UniformList {
@@ -102,11 +102,10 @@ pub struct UniformList {
 }
 
 type RenderBatch = dyn Fn(Range<usize>, &mut Window, &mut App) -> SmallVec<[AnyElement; 64]>;
-type RenderRow = dyn Fn(usize, &mut Window, &mut App) -> AnyElement;
 
 enum RenderItems {
     Batch(Box<RenderBatch>),
-    Each(Box<RenderRow>),
+    Each(UniformRowRenderer),
 }
 
 impl RenderItems {
