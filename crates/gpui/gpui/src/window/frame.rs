@@ -372,6 +372,12 @@ impl RecordSplicePlan {
         if !self.can_move_owners(old.len(), replacement.len()) { return None; }
         let mut result = Vec::new();
         result.try_reserve_exact(self.new_len).ok()?;
+        Some(self.move_owners_into(old, replacement, result))
+    }
+
+    fn move_owners_into<T>(&self, old: &mut Vec<T>, replacement: &mut Vec<T>, mut result: Vec<T>) -> Vec<T> {
+        debug_assert!(self.can_move_owners(old.len(), replacement.len()));
+        debug_assert!(result.is_empty() && result.capacity() >= self.new_len);
         let mut old = std::mem::take(old).into_iter();
         let mut replacement = std::mem::take(replacement).into_iter();
         let (mut old_index, mut new_index) = (0, 0);
@@ -385,7 +391,7 @@ impl RecordSplicePlan {
             *index = range.end;
         });
         debug_assert_eq!(result.len(), self.new_len);
-        Some(result)
+        result
     }
 
     pub(crate) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
@@ -426,15 +432,17 @@ impl Window {
     }
 }
 
-/// Index projection for the four currently supported boundary streams.
-/// Callers must separately certify that the other record streams, including
-/// text layout logs, have not changed before adopting these mapped ranges.
+/// Index projection for the native boundary streams. Other streams must
+/// separately be certified unchanged before adopting these mapped ranges.
 #[allow(dead_code)]
 pub(super) struct BoundaryIndexSplices<'a> {
     pub(super) scene: &'a RecordSplicePlan,
     pub(super) hitboxes: &'a RecordSplicePlan,
     pub(super) states: &'a RecordSplicePlan,
     pub(super) dispatch: &'a RecordSplicePlan,
+    pub(super) mouse: &'a RecordSplicePlan,
+    pub(super) ime: &'a RecordSplicePlan,
+    pub(super) text: Option<(u64, &'a RecordSplicePlan, &'a RecordSplicePlan)>,
 }
 
 #[allow(dead_code)]
@@ -452,6 +460,14 @@ impl BoundaryIndexSplices<'_> {
         result.end.dispatch_tree_index = dispatch.end;
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
+        if let Some((generation, lines, wrapped)) = self.text {
+            let mapped = LineLayoutIndex::retained_splice(
+                &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
+                generation, lines, wrapped,
+            )?;
+            result.start.line_layout_index = mapped.start;
+            result.end.line_layout_index = mapped.end;
+        }
         Some(result)
     }
 
@@ -461,6 +477,12 @@ impl BoundaryIndexSplices<'_> {
         let states = self.states.retained_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
         result.start.scene_index = scene.start;
         result.end.scene_index = scene.end;
+        let mouse = self.mouse.retained_span(source.start.mouse_listeners_index..source.end.mouse_listeners_index)?;
+        let ime = self.ime.retained_span(source.start.input_handlers_index..source.end.input_handlers_index)?;
+        result.start.mouse_listeners_index = mouse.start;
+        result.end.mouse_listeners_index = mouse.end;
+        result.start.input_handlers_index = ime.start;
+        result.end.input_handlers_index = ime.end;
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
         Some(result)
@@ -472,16 +494,82 @@ impl BoundaryIndexSplices<'_> {
 /// records (including noncloneable callbacks) still need admission and
 /// relocation before this can become a published Paint.
 #[allow(dead_code)]
-pub(super) struct BoundaryRecordCandidate {
+pub(super) struct BoundaryRecordCandidate<'a> {
+    pub(super) callbacks: BoundaryCallbackCandidate<'a>,
     pub(super) scene: Scene,
     pub(super) hitboxes: HitboxStore,
     pub(super) state_access: state_access::StateAccessLog,
     pub(super) dispatch: DispatchTree,
 }
 
+/// Prepared callback ownership. Mouse listeners already support shared
+/// callback ownership; IME slots are unique and must not be taken until
+/// all remaining Frame admission and epoch checks have succeeded.
+#[allow(dead_code)]
+pub(super) struct BoundaryCallbackCandidate<'a> {
+    pub(super) mouse: Vec<MouseListener>,
+    pub(super) mounted_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
+    ime_plan: &'a RecordSplicePlan,
+    ime: Vec<Option<PlatformInputHandler>>,
+}
+
+#[allow(dead_code)]
+impl BoundaryCallbackCandidate<'_> {
+    fn prepare<'a>(
+        old: &Frame, replacement: &Frame,
+        mouse_plan: &RecordSplicePlan, ime_plan: &'a RecordSplicePlan,
+    ) -> Option<BoundaryCallbackCandidate<'a>> {
+        if !mouse_plan.can_move_owners(old.mouse_listeners.len(), replacement.mouse_listeners.len())
+            || !ime_plan.can_move_owners(old.input_handlers.len(), replacement.input_handlers.len())
+            || !old.replayed_input_handlers.is_empty()
+            || !replacement.replayed_input_handlers.is_empty()
+        {
+            return None;
+        }
+        let mut mouse = Vec::new();
+        mouse.try_reserve_exact(mouse_plan.len()).ok()?;
+        let mut mounted_sources = Vec::new();
+        mounted_sources.try_reserve_exact(
+            old.mounted_scroll_sources.len().checked_add(replacement.mounted_scroll_sources.len())?,
+        ).ok()?;
+        mouse_plan.visit_ranges(|source, range| {
+            let source = match source {
+                SpliceSource::Retained => old,
+                SpliceSource::Replacement => replacement,
+            };
+            super::scroll_dependencies::carry_scroll_sources(
+                &source.mounted_scroll_sources, &mut mounted_sources, range.clone(), mouse.len(),
+            );
+            mouse.extend_from_slice(&source.mouse_listeners[range]);
+        });
+        let mut ime = Vec::new();
+        ime.try_reserve_exact(ime_plan.len()).ok()?;
+        Some(BoundaryCallbackCandidate { mouse, mounted_sources, ime_plan, ime })
+    }
+
+    /// Final unique-owner transfer. Call only after all Frame, layout and
+    /// platform IME checks succeed, while both source frames are exclusive.
+    /// The caller must still publish mouse routing and the other records.
+    pub(super) fn take_input_handlers(
+        self, old: &mut Frame, replacement: &mut Frame,
+    ) -> Option<(Vec<Option<PlatformInputHandler>>, Vec<MouseListener>,
+        Vec<super::scroll_dependencies::MountedScrollSource>)> {
+        if !self.ime_plan.can_move_owners(old.input_handlers.len(), replacement.input_handlers.len())
+            || !old.replayed_input_handlers.is_empty()
+            || !replacement.replayed_input_handlers.is_empty()
+        {
+            return None;
+        }
+        let ime = self.ime_plan.move_owners_into(
+            &mut old.input_handlers, &mut replacement.input_handlers, self.ime,
+        );
+        Some((ime, self.mouse, self.mounted_sources))
+    }
+}
+
 impl Frame {
     #[allow(dead_code)]
-    pub(super) fn prepare_boundary_records(
+    pub(super) fn prepare_boundary_records<'a>(
         &self,
         replacement: &Self,
         scene_edits: &[(Range<usize>, Range<usize>)],
@@ -489,7 +577,10 @@ impl Frame {
         states: &RecordSplicePlan,
         dispatch: &RecordSplicePlan,
         replacement_parent: DispatchNodeId,
-    ) -> Option<BoundaryRecordCandidate> {
+        mouse: &RecordSplicePlan,
+        ime: &'a RecordSplicePlan,
+    ) -> Option<BoundaryRecordCandidate<'a>> {
+        let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
         // other candidates own only new descriptors and shared payloads.
         let dispatch = self.dispatch_tree.with_spliced_records(
@@ -502,7 +593,7 @@ impl Frame {
         let scene = self.scene().with_spliced_row_markers(
             &replacement.scene().paint_operations, scene_edits,
         )?;
-        Some(BoundaryRecordCandidate { scene, hitboxes, state_access, dispatch })
+        Some(BoundaryRecordCandidate { scene, hitboxes, state_access, dispatch, callbacks })
     }
 
     /// Borrows the sole Paint payload for this frame's current lifecycle phase.
@@ -1211,7 +1302,7 @@ mod publication_tests {
         let empty = RecordSplicePlan::new(0, 0, &[]).unwrap();
         let plan = RecordSplicePlan::new(4, 2, &[(1..2, 0..2)]).unwrap();
         let next = old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &plan, root,
+            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty,
         ).expect("independent child replacement");
         assert_eq!(next.dispatch.len(), 5);
         assert_eq!(next.dispatch.dispatch_path(DispatchNodeId(2)).as_slice(),
@@ -1228,7 +1319,7 @@ mod publication_tests {
         // record stream and routes remain untouched after rejection.
         let orphan = RecordSplicePlan::new(4, 2, &[(2..3, 0..0)]).unwrap();
         assert!(old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &orphan, root,
+            &replacement, &[], &empty, &empty, &orphan, root, &empty, &empty,
         ).is_none());
         assert_eq!(old.dispatch_tree.len(), 4);
         assert_eq!(old.dispatch_tree.dispatch_path(child).as_slice(), &[root, kept, child]);
@@ -1239,7 +1330,7 @@ mod publication_tests {
         replacement.dispatch_tree.pop_node();
         replacement.dispatch_tree.freeze();
         assert!(old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &plan, root,
+            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty,
         ).is_none());
         assert!(old.dispatch_tree.has_view_route(owner));
     }
@@ -1252,6 +1343,7 @@ mod publication_tests {
         let dispatch = RecordSplicePlan::new(10, 1, &[(2..5, 0..1)]).unwrap();
         let maps = BoundaryIndexSplices {
             scene: &scene, hitboxes: &hitboxes, states: &states, dispatch: &dispatch,
+            mouse: &states, ime: &scene, text: None,
         };
         let pre = PrepaintStateIndex {
             hitboxes_index: 5, dispatch_tree_index: 6, accessed_element_states_index: 7,
@@ -1265,10 +1357,14 @@ mod publication_tests {
         assert_eq!(moved.start.dispatch_tree_index..moved.end.dispatch_tree_index, 4..6);
         assert_eq!(moved.start.accessed_element_states_index..moved.end.accessed_element_states_index, 10..12);
         assert_eq!(moved.start.tooltips_index..moved.end.tooltips_index, 2..3);
-        let paint = PaintIndex { scene_index: 4, accessed_element_states_index: 5, ..Default::default() }
-            ..PaintIndex { scene_index: 8, accessed_element_states_index: 9, ..Default::default() };
+        let paint = PaintIndex { scene_index: 4, accessed_element_states_index: 5,
+            mouse_listeners_index: 5, input_handlers_index: 4, ..Default::default() }
+            ..PaintIndex { scene_index: 8, accessed_element_states_index: 9,
+                mouse_listeners_index: 7, input_handlers_index: 8, ..Default::default() };
         let moved = maps.retained_paint(&paint).unwrap();
         assert_eq!(moved.start.scene_index..moved.end.scene_index, 5..9);
+        assert_eq!(moved.start.mouse_listeners_index..moved.end.mouse_listeners_index, 8..10);
+        assert_eq!(moved.start.input_handlers_index..moved.end.input_handlers_index, 5..9);
         assert_eq!(moved.start.accessed_element_states_index..moved.end.accessed_element_states_index, 8..12);
         assert_eq!(states.retained_span(1..1), None);
         assert_eq!(hitboxes.retained_span(3..3), None);
