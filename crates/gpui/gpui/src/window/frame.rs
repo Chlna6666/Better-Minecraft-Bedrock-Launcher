@@ -351,6 +351,34 @@ impl RecordSplicePlan {
         Some(index..index)
     }
 
+    /// Map the explicitly certified ancestor of a single edited domain.
+    /// All edits must be completely contained; insertion at either edge
+    /// belongs to this owner, unlike a retained sibling's checkpoint.
+    pub(crate) fn enclosing_span(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > self.old_len { return None; }
+        if self.edits.is_empty() { return Some(range); }
+        let first = self.edits.first()?;
+        let last = self.edits.last()?;
+        if range.start > first.old.start || range.end < last.old.end { return None; }
+        let start = first.target.start.checked_sub(first.old.start - range.start)?;
+        let end = last.target.end.checked_add(range.end - last.old.end)?;
+        Some(start..end)
+    }
+
+    /// A replacement subrange must have exactly one destination.
+    pub(crate) fn replacement_span(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > self.replacement_len { return None; }
+        let mut mapped = None;
+        for edit in &self.edits {
+            if range.start < edit.replacement.start || range.end > edit.replacement.end { continue; }
+            let start = edit.target.start.checked_add(range.start - edit.replacement.start)?;
+            let target = start..start.checked_add(range.len())?;
+            if mapped.as_ref().is_some_and(|old| old != &target) { return None; }
+            mapped = Some(target);
+        }
+        mapped
+    }
+
     /// A unique owner cannot be replayed twice or moved backwards through
     /// an already consumed replacement stream. Unlike shared page edits,
     /// these edits must also have disjoint, monotonic replacement ranges.
@@ -505,6 +533,14 @@ impl BoundaryIndexSplices<'_> {
         result.end.input_handlers_index = ime.end;
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
+        if let Some((generation, lines, wrapped)) = self.text {
+            let mapped = LineLayoutIndex::retained_splice(
+                &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
+                generation, lines, wrapped,
+            )?;
+            result.start.line_layout_index = mapped.start;
+            result.end.line_layout_index = mapped.end;
+        }
         Some(result)
     }
 }
@@ -1354,6 +1390,21 @@ mod publication_tests {
             &replacement, &[], &empty, &empty, &plan, root, &empty, &empty,
         ).is_none());
         assert!(old.dispatch_tree.has_view_route(owner));
+    }
+
+    #[test]
+    fn enclosing_and_replacement_spans_have_explicit_ownership() {
+        let plan = RecordSplicePlan::new(10, 3, &[(2..2, 0..1), (4..6, 1..3)]).unwrap();
+        assert_eq!(plan.enclosing_span(2..6), Some(2..7));
+        assert_eq!(plan.enclosing_span(0..10), Some(0..11));
+        assert_eq!(plan.enclosing_span(3..9), None);
+        assert_eq!(plan.retained_span(2..2), None);
+        assert_eq!(plan.replacement_span(1..3), Some(5..7));
+        assert_eq!(plan.replacement_span(1..1), None);
+        let repeated = RecordSplicePlan::new(4, 2, &[(1..2, 0..2), (3..4, 0..2)]).unwrap();
+        assert_eq!(repeated.replacement_span(0..1), None);
+        let inserted = RecordSplicePlan::new(0, 2, &[(0..0, 0..2)]).unwrap();
+        assert_eq!(inserted.enclosing_span(0..0), Some(0..2));
     }
 
     #[test]
