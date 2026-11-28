@@ -280,6 +280,7 @@ impl<V> LayoutStore<V> {
     /// the current epoch. Restore their eligibility for the ordinary draw;
     /// truncating the log alone would suppress the next lookup's record.
     fn cancel_current_accesses(&mut self, epoch: u64) {
+        if self.used_count == 0 && self.current.is_empty() { return; }
         // A nested prepaint rollback can have truncated the current
         // access log already. Scan live slots on this exceptional path,
         // including slots whose original access records were removed.
