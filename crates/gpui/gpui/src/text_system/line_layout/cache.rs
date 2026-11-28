@@ -1652,6 +1652,58 @@ mod tests {
     }
 
     #[test]
+    fn boundary_text_counts_update_only_changed_slots_and_survive_cancel() {
+        use crate::window::RecordSplicePlan;
+        let generation = Arc::new(AtomicU64::new(0));
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), generation);
+        let runs = [FontRun { len: 5, font_id: FontId(1) }];
+        {
+            let _record = cache.record_row_accesses();
+            cache.layout_wrapped_line("hello", px(14.), &runs, Some(px(80.)), None);
+            cache.layout_wrapped_line("hello", px(14.), &runs, Some(px(80.)), None);
+        }
+        cache.finish_frame();
+        let (old_lines, old_wrapped, old_id, old_stamp) = {
+            let frame = cache.frame.borrow();
+            let id = frame.wrapped_lines.previous[0];
+            (frame.lines.previous.len(), frame.wrapped_lines.previous.len(),
+                id, frame.wrapped_lines.slots[id].as_ref().unwrap().last_used)
+        };
+        assert_eq!(old_wrapped, 2);
+        let lines = RecordSplicePlan::new(old_lines, 0, &[]).unwrap();
+        let wrapped = RecordSplicePlan::new(old_wrapped, 0, &[(0..1, 0..0)]).unwrap();
+        cache.prepare_boundary_layouts(0, &lines, &wrapped).unwrap();
+        cache.cancel_boundary_layouts();
+        {
+            let frame = cache.frame.borrow();
+            assert_eq!(frame.wrapped_lines.previous.len(), 2);
+            assert_eq!(frame.wrapped_lines.boundary_counts.as_ref().unwrap()[&old_id], 2);
+        }
+        cache.prepare_boundary_layouts(0, &lines, &wrapped).unwrap();
+        cache.commit_boundary_layouts();
+        {
+            let frame = cache.frame.borrow();
+            assert_eq!(frame.wrapped_lines.previous, vec![old_id]);
+            assert_eq!(frame.wrapped_lines.boundary_counts.as_ref().unwrap()[&old_id], 1);
+            assert_eq!(frame.wrapped_lines.slots[old_id].as_ref().unwrap().last_used, old_stamp);
+        }
+        let wrapped = RecordSplicePlan::new(1, 0, &[(0..1, 0..0)]).unwrap();
+        cache.prepare_boundary_layouts(0, &lines, &wrapped).unwrap();
+        cache.commit_boundary_layouts();
+        {
+            let frame = cache.frame.borrow();
+            assert!(frame.wrapped_lines.previous.is_empty());
+            assert!(frame.wrapped_lines.boundary_counts.as_ref().unwrap().is_empty());
+            assert!(frame.wrapped_lines.slots[old_id].is_some(), "deferred physical retirement");
+        }
+        // Normal frame traversal remains authoritative for unused slots.
+        cache.finish_frame();
+        let frame = cache.frame.borrow();
+        assert!(frame.wrapped_lines.boundary_counts.is_none());
+        assert!(frame.wrapped_lines.slots[old_id].is_none());
+    }
+
+    #[test]
     fn boundary_text_pages_share_physical_slot_ids_across_successive_edits() {
         use crate::window::RecordSplicePlan;
         let mut store = LayoutStore::<LineLayout>::default();
