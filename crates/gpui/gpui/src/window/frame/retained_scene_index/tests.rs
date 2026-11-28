@@ -92,3 +92,41 @@ fn replayed_fragment_does_not_keep_source_link() {
     let entry = &destination.retained_scene_index[&EntityId::from(1_u64)];
     assert_eq!(entry.segments(&destination.retained_scene_segments).count(), 2);
 }
+
+#[test]
+fn fragment_splice_relinks_interleaved_owners_and_retires_last_reader() {
+    let mut old = frame();
+    let mut replacement = frame();
+    for (position, entity) in [1, 2, 1, 3, 1].into_iter().enumerate() {
+        let mut fragment = segment(entity, position as f32);
+        fragment.scene_range = position..position + 1;
+        old.push_retained_scene_segment(fragment);
+    }
+    let mut fragment = segment(1, 10.);
+    fragment.scene_range = 0..1;
+    replacement.push_retained_scene_segment(fragment);
+    let mut fragment = segment(4, 11.);
+    fragment.scene_range = 1..2;
+    replacement.push_retained_scene_segment(fragment);
+
+    let plan = RecordSplicePlan::new(5, 2, &[(1..2, 0..2), (3..4, 0..0)]).unwrap();
+    let candidate = SegmentSplice::prepare(&old, &replacement, &plan, &plan).unwrap();
+    assert_eq!(old.retained_scene_index[&EntityId::from(1_u64)].len(), 3);
+    assert_eq!(old.retained_scene_segments[0].next_for_entity.unwrap().get() - 1, 2);
+    let retired = candidate.adopt(&mut old, &mut replacement);
+    assert_eq!(retired.len(), 2);
+    assert!(replacement.retained_scene_segments.is_empty());
+    assert!(replacement.retained_scene_index.is_empty());
+    assert!(!old.retained_scene_index.contains_key(&EntityId::from(2_u64)));
+    assert!(!old.retained_scene_index.contains_key(&EntityId::from(3_u64)));
+    let entry = &old.retained_scene_index[&EntityId::from(1_u64)];
+    assert_eq!((entry.first, entry.last, entry.len()), (0, 4, 4));
+    assert_eq!(
+        entry.segments(&old.retained_scene_segments)
+            .map(|fragment| fragment.scene_range.clone())
+            .collect::<Vec<_>>(),
+        vec![0..1, 1..2, 3..4, 4..5]
+    );
+    assert_eq!(old.retained_scene_index[&EntityId::from(4_u64)].first, 2);
+    assert!(old.retained_scene_segments[4].next_for_entity.is_none());
+}
