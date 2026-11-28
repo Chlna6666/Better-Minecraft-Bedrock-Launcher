@@ -512,6 +512,19 @@ impl DispatchTree {
         plan: &crate::window::RecordSplicePlan,
         replacement_parent: DispatchNodeId,
     ) -> Option<Self> {
+        self.with_spliced_records_under(replacement, plan, replacement_parent, None)
+    }
+
+    /// Independent materialization can use a temporary dispatch anchor
+    /// rather than reproducing the committed ancestor path. That anchor
+    /// is not itself adopted; only its explicitly selected children are.
+    pub(crate) fn with_spliced_records_under(
+        &self,
+        replacement: &Self,
+        plan: &crate::window::RecordSplicePlan,
+        replacement_parent: DispatchNodeId,
+        replacement_anchor: Option<DispatchNodeId>,
+    ) -> Option<Self> {
         use crate::window::SpliceSource;
         if !self.node_stack.is_empty() || !replacement.node_stack.is_empty()
             || !self.nodes.pending.is_empty() || !replacement.nodes.pending.is_empty()
@@ -530,6 +543,8 @@ impl DispatchTree {
             plan.retained_range(node.0..end).map(|range| DispatchNodeId(range.start))
         };
         let parent = remap(replacement_parent)?;
+        if replacement_anchor.is_some_and(|anchor| anchor.0 >= replacement.len()
+            || replacement.parent(anchor).is_some()) { return None; }
         let mut offset = 0;
         let mut valid = true;
         plan.visit_ranges(|source, range| {
@@ -539,7 +554,8 @@ impl DispatchTree {
                     old.is_none_or(|old| remap(old).is_some_and(|new| new.0 < offset))
                 }),
                 SpliceSource::Replacement => parent.0 < offset
-                    && replacement.parents.all_external_parents(range.clone(), |old| old.is_none()),
+                    && replacement_anchor.is_none_or(|anchor| !range.contains(&anchor.0))
+                    && replacement.parents.all_external_parents(range.clone(), |old| old == replacement_anchor),
             };
             offset += range.len();
         });
