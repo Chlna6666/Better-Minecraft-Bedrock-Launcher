@@ -160,7 +160,7 @@ fn translated_bounds(mut bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels
     bounds
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum LayerDamage {
     Full,
     Clean,
@@ -233,6 +233,33 @@ pub(crate) struct LayerFrame {
 }
 
 impl LayerFrame {
+    /// All frame-local coordinates and generation adoption evidence must
+    /// match before sharing the descriptor itself, not merely its content.
+    fn same_publication(&self, other: &Self) -> bool {
+        self.id == other.id && self.source_id == other.source_id
+            && self.background == other.background && self.generation == other.generation
+            && self.static_root_span == other.static_root_span
+            && self.damage == other.damage && self.previous_coverage == other.previous_coverage
+            && self.translation == other.translation && self.source_viewport == other.source_viewport
+            && self.scale == other.scale && self.row_raster == other.row_raster
+            && Arc::ptr_eq(&self.content, &other.content)
+    }
+
+    fn reset_adoption(frame: &mut Arc<Self>) {
+        if frame.damage != LayerDamage::Full || frame.previous_coverage.is_some() {
+            let frame = Arc::make_mut(frame);
+            frame.damage = LayerDamage::Full;
+            frame.previous_coverage = None;
+        }
+    }
+
+    fn share_publication(self, previous: Option<&Arc<Self>>) -> Arc<Self> {
+        if let Some(previous) = previous && self.same_publication(previous) {
+            return Arc::clone(previous);
+        }
+        Arc::new(self)
+    }
+
     fn coverage(viewport: ContentMask<ScaledPixels>, translation: [i32; 2]) -> Bounds<ScaledPixels> {
         let [x, y] = translation;
         translated_bounds(viewport.bounds, translation_point([-x, -y]))
@@ -546,7 +573,7 @@ fn root_order_inputs_match(current: &Scene, previous: &Scene, flat_root: bool) -
 
 #[derive(Default)]
 pub(crate) struct SceneLayers {
-    pub(crate) frames: Vec<LayerFrame>,
+    pub(crate) frames: Vec<Arc<LayerFrame>>,
     // A positive proof belongs only to this immutable root publication.
     ordered: bool,
     flat_root: bool,
@@ -587,7 +614,7 @@ impl SceneLayers {
         ).expect("fixture source coverage");
         assert!(Arc::ptr_eq(&operations, &content.operations));
         let id = self.frames.len() as u64 + 1;
-        self.frames.push(LayerFrame {
+        self.frames.push(Arc::new(LayerFrame {
             id, source_id: id, generation: 1, background: None,
             static_root_span: Some(0..0),
             damage: LayerDamage::Full, previous_coverage: None,
@@ -595,12 +622,12 @@ impl SceneLayers {
             scale: 1.,
             content,
             row_raster: None,
-        });
+        }));
     }
 
     #[cfg(test)]
     pub(crate) fn certify_fixture_root(&mut self, scene: &Scene, range: Range<usize>) {
-        self.frames.last_mut().expect("raster fixture").static_root_span = ordered_static_root(scene)
+        Arc::make_mut(self.frames.last_mut().expect("raster fixture")).static_root_span = ordered_static_root(scene)
             .then(|| static_root_span(scene, range)).flatten();
     }
 
@@ -694,13 +721,12 @@ impl SceneLayers {
             if !Arc::ptr_eq(&content, &old.content) {
                 return None;
             }
-            frames[slot].translation = translation;
+            if frames[slot].translation != translation {
+                Arc::make_mut(&mut frames[slot]).translation = translation;
+            }
         }
         // Match the general capture's same-generation adoption policy.
-        for frame in &mut frames {
-            frame.damage = LayerDamage::Full;
-            frame.previous_coverage = None;
-        }
+        for frame in &mut frames { LayerFrame::reset_adoption(frame); }
         Some(Self { frames, ordered: true, flat_root: self.flat_root, window_opaque })
     }
 
@@ -763,13 +789,10 @@ impl SceneLayers {
                 row_raster: geometry.row_bounds.map(|bounds| {
                     translated_bounds(bounds, Point::default() - translation_point(geometry.source_origin))
                 }),
-            });
+            }.share_publication(previous));
         }
         frames.extend(old.cloned());
-        for frame in &mut frames {
-            frame.damage = LayerDamage::Full;
-            frame.previous_coverage = None;
-        }
+        for frame in &mut frames { LayerFrame::reset_adoption(frame); }
         Some(Self { frames, ordered: true, flat_root: true, window_opaque })
     }
 
@@ -805,7 +828,7 @@ impl SceneLayers {
         // The common scroll publication preserves row order. Match that
         // prefix directly; build an identity index only at the first
         // insertion, removal or reorder that actually needs one.
-        let mut old_by_id: Option<FxHashMap<u64, &LayerFrame>> = None;
+        let mut old_by_id: Option<FxHashMap<u64, &Arc<LayerFrame>>> = None;
         let mut frames = Vec::with_capacity(old.len());
         for index in scene.paint_operations.deferred_scroll_indices() {
             let Some(PaintOperationRef::DeferredScroll(placement)) = scene.paint_operations.view(index) else {
@@ -872,7 +895,7 @@ impl SceneLayers {
                 row_raster: geometry.row_bounds.map(|bounds| {
                     translated_bounds(bounds, Point::default() - translation_point(geometry.source_origin))
                 }),
-            });
+            }.share_publication(previous));
         }
         Self { frames, ordered, flat_root, window_opaque }
     }

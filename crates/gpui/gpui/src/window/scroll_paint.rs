@@ -1289,6 +1289,11 @@ mod tests {
         let reordered = crate::window::SceneLayers::capture(&publish(&[b.clone(), a]), Some(&old), true);
         let removed = crate::window::SceneLayers::capture(&publish(&[b]), Some(&old), true);
         assert_eq!(old.frames.len(), 2);
+        assert!(Arc::ptr_eq(&stable.frames[0], &old.frames[0]));
+        assert!(Arc::ptr_eq(&stable.frames[1], &old.frames[1]));
+        // Reordering changes the operation coordinate proof, even when
+        // the underlying raster content stays identical.
+        assert!(!Arc::ptr_eq(&reordered.frames[0], &old.frames[1]));
         assert!(Arc::ptr_eq(&stable.frames[0].content, &old.frames[0].content));
         assert!(Arc::ptr_eq(&stable.frames[1].content, &old.frames[1].content));
         assert!(Arc::ptr_eq(&reordered.frames[0].content, &old.frames[1].content));

@@ -447,11 +447,11 @@ struct LayerPlan<'a> {
     requests: Vec<Request>,
 }
 
-fn layer_plan<'a>(layers: &'a [crate::window::LayerFrame], scene_len: usize, size: DrawableSize) -> Vec<LayerPlan<'a>> {
+fn layer_plan<'a>(layers: &'a [Arc<crate::window::LayerFrame>], scene_len: usize, size: DrawableSize) -> Vec<LayerPlan<'a>> {
     let mut candidates: Vec<_> = layers.iter().filter_map(|layer| {
         let span = layer.root_static_span()?.clone();
         if span.start > span.end || span.end > scene_len { return None; }
-        Some(LayerPlan { layer, span, requests: requests(layer, size)? })
+        Some(LayerPlan { layer: layer.as_ref(), span, requests: requests(layer, size)? })
     }).collect();
     candidates.sort_by_key(|plan| (plan.span.start, std::cmp::Reverse(plan.span.end)));
     let mut end = 0;
