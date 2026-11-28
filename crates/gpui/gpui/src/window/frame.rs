@@ -65,6 +65,7 @@ pub(crate) struct RetainedPaintContext {
 pub(super) struct LayerInput {
     pub(super) hitboxes: Range<usize>,
     viewport: Bounds<Pixels>,
+    layout_owner: Option<u64>,
     /// The original scroll placement is retained only if no descendant
     /// introduced a moving clip or replayed input of unknown provenance.
     geometry: Option<ScrollInputGeometry>,
@@ -793,7 +794,7 @@ impl Frame {
         window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         self.prepare_boundary_records_under(replacement, scene_edits, hitboxes, states, dispatch,
-            replacement_parent, None, mouse, ime, window_opaque)
+            replacement_parent, None, mouse, ime, window_opaque, None)
     }
 
     pub(super) fn prepare_boundary_records_under<'a>(
@@ -803,6 +804,7 @@ impl Frame {
         dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
         replacement_anchor: Option<DispatchNodeId>, mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan, window_opaque: bool,
+        row_input_domain: Option<(u64, Range<usize>)>,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
@@ -818,21 +820,26 @@ impl Frame {
         let mut layer_inputs = Vec::with_capacity(self.layer_inputs.len());
         for layer in &self.layer_inputs {
             let range = layer.hitboxes.clone();
-            if hitboxes.edits.iter().any(|edit| edit.old.is_empty()
+            let owns_rows = row_input_domain.as_ref().is_some_and(|(key, domain)| {
+                layer.layout_owner == Some(*key) && &range == domain
+            });
+            if !owns_rows && hitboxes.edits.iter().any(|edit| edit.old.is_empty()
                 && (edit.old.start == range.start || edit.old.start == range.end))
             {
                 // Retained-span affinity alone cannot prove whether a
                 // layer owns a new hitbox at either of its endpoints.
                 return None;
             }
-            let relocated = if let Some(mapped) = hitboxes.retained_span(range.clone()) {
+            let relocated = if owns_rows {
+                hitboxes.enclosing_span(range.clone())?
+            } else if let Some(mapped) = hitboxes.retained_span(range.clone()) {
                 mapped
             } else {
                 // Nonempty retired records prove interval membership.
                 hitboxes.enclosing_span(range)?
             };
             layer_inputs.push(LayerInput {
-                hitboxes: relocated, viewport: layer.viewport,
+                hitboxes: relocated, viewport: layer.viewport, layout_owner: layer.layout_owner,
                 // A retained row can also translate without editing its
                 // records. Never inherit a stale aggregate offset proof.
                 geometry: None,
@@ -1084,8 +1091,17 @@ impl Frame {
             self.layer_inputs.push(LayerInput {
                 hitboxes: start..end,
                 viewport,
+                layout_owner: None,
                 geometry: None,
             });
+        }
+    }
+
+    /// Bind the just-recorded group to the real Drawable prepaint owner.
+    /// This is not inferred later from matching ranges or pixel bounds.
+    pub(crate) fn bind_layer_input_owner(&mut self, previous_len: usize, owner: Option<u64>) {
+        if self.layer_inputs.len() == previous_len + 1 {
+            self.layer_inputs.last_mut().expect("recorded input").layout_owner = owner;
         }
     }
 
@@ -1126,6 +1142,7 @@ impl Frame {
                 hitboxes: target + (layer.hitboxes.start - source.start)
                     ..target + (layer.hitboxes.end - source.start),
                 viewport: layer.viewport,
+                layout_owner: layer.layout_owner,
                 geometry: layer.geometry,
             }));
     }
@@ -1161,6 +1178,7 @@ impl Frame {
                 self.layer_inputs.push(LayerInput {
                     hitboxes: start..self.hitboxes.len(),
                     viewport: layer.viewport,
+                    layout_owner: layer.layout_owner,
                     geometry: Some(ScrollInputGeometry { offset, ..geometry }),
                 });
                 self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
