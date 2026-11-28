@@ -1598,7 +1598,8 @@ impl Window {
         let mut placements = Vec::new();
         // The rows own every record in the old contiguous hitbox domain.
         // This explicit cursor resolves even zero-length row checkpoints.
-        let mut hitbox_cursor = boundary.hitboxes.start;
+        let hitbox_domain = hitboxes.enclosing_span(boundary.hitboxes.clone())?;
+        let mut hitbox_cursor = hitbox_domain.start;
         let mut prepaint_state_cursor = prepaint_state_domain.start;
         let mut paint_state_cursor = paint_state_domain.start;
         let mut text_cursors = text_targets.clone().map(|streams| streams.map(|span| span.start));
@@ -1694,7 +1695,9 @@ impl Window {
             updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
                 paint: paint_start..paint_end, fresh_claims });
         }
-        if prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end { return None; }
+        if hitbox_cursor != hitbox_domain.end
+            || prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end
+        { return None; }
         if text_cursors != text_targets.clone().map(|streams| streams.map(|span| span.end)) { return None; }
         let damage = damage?;
         if !placements.is_empty() {
