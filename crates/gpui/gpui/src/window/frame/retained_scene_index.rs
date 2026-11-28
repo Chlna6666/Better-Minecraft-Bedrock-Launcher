@@ -100,14 +100,16 @@ impl Frame {
 #[allow(dead_code)]
 pub(in crate::window) struct SegmentSplice<'a> {
     owners: RecordOwnerSplice<'a, RetainedSceneSegment>,
-    coordinates: Vec<(Range<usize>, Option<std::num::NonZeroUsize>)>,
+    coordinates: Vec<(usize, Range<usize>)>,
+    links: Vec<(usize, Option<std::num::NonZeroUsize>)>,
+    affected: FxHashSet<EntityId>,
     index: FxHashMap<EntityId, Entry>,
 }
 
 #[allow(dead_code)]
 impl<'a> SegmentSplice<'a> {
     pub(in crate::window) fn prepare(
-        old: &Frame,
+        old: &mut Frame,
         replacement: &Frame,
         fragments: &'a RecordSplicePlan,
         scene: &RecordSplicePlan,
@@ -116,10 +118,12 @@ impl<'a> SegmentSplice<'a> {
             &old.retained_scene_segments,
             &replacement.retained_scene_segments,
         )?;
-        let mut coordinates: Vec<(Range<usize>, Option<std::num::NonZeroUsize>)> = Vec::new();
-        coordinates.try_reserve_exact(fragments.len()).ok()?;
-        let mut index = FxHashMap::default();
-        index.try_reserve(fragments.len()).ok()?;
+        let mut coordinates = Vec::new();
+        let mut affected = FxHashSet::default();
+        for range in fragments.edited_ranges(false) {
+            affected.extend(old.retained_scene_segments[range].iter().map(|segment| segment.entity_id));
+        }
+        let mut position = 0;
         let mut valid = true;
         fragments.visit_ranges(|source, range| {
             if !valid {
@@ -129,7 +133,8 @@ impl<'a> SegmentSplice<'a> {
                 SpliceSource::Retained => (&old.retained_scene_segments, true),
                 SpliceSource::Replacement => (&replacement.retained_scene_segments, false),
             };
-            for segment in &segments[range] {
+            for source_index in range {
+                let segment = &segments[source_index];
                 let mapped = if retained {
                     scene.retained_span(segment.scene_range.clone())
                 } else {
@@ -139,14 +144,49 @@ impl<'a> SegmentSplice<'a> {
                     valid = false;
                     return;
                 };
-                let position = coordinates.len();
-                if let Some(previous) = append(&mut index, segment.entity_id, position) {
-                    coordinates[previous].1 = std::num::NonZeroUsize::new(position + 1);
+                if mapped != segment.scene_range {
+                    coordinates.push((position, mapped));
                 }
-                coordinates.push((mapped, None));
+                // A coordinate-only scene change does not affect the
+                // fragment table's entity links. Membership or slot
+                // relocation does, including predecessor links.
+                if !retained || position != source_index {
+                    affected.insert(segment.entity_id);
+                }
+                position += 1;
             }
         });
-        valid.then_some(Self { owners, coordinates, index })
+        if !valid {
+            return None;
+        }
+
+        // Only affected entity chains are rebuilt. Unaffected keys and
+        // their embedded links stay resident in the committed index.
+        let mut index = FxHashMap::default();
+        index.try_reserve(affected.len()).ok()?;
+        let mut links: Vec<(usize, Option<std::num::NonZeroUsize>)> = Vec::new();
+        let mut tails: FxHashMap<EntityId, usize> = FxHashMap::default();
+        tails.try_reserve(affected.len()).ok()?;
+        let mut position = 0;
+        fragments.visit_ranges(|source, range| {
+            let segments = match source {
+                SpliceSource::Retained => &old.retained_scene_segments,
+                SpliceSource::Replacement => &replacement.retained_scene_segments,
+            };
+            for segment in &segments[range] {
+                if affected.contains(&segment.entity_id) {
+                    if let Some(previous) = tails.insert(segment.entity_id, links.len()) {
+                        links[previous].1 = std::num::NonZeroUsize::new(position + 1);
+                    }
+                    append(&mut index, segment.entity_id, position);
+                    links.push((position, None));
+                }
+                position += 1;
+            }
+        });
+        let added = index.keys().filter(|entity| !old.retained_scene_index.contains_key(*entity)).count();
+        old.retained_scene_index.try_reserve(added).ok()?;
+        Some(Self { owners, coordinates, links, affected, index })
     }
 
     /// Publish records and destination links together. Retired fragments
@@ -156,11 +196,16 @@ impl<'a> SegmentSplice<'a> {
             &mut old.retained_scene_segments,
             &mut replacement.retained_scene_segments,
         );
-        for (segment, (range, next)) in old.retained_scene_segments.iter_mut().zip(self.coordinates) {
-            segment.scene_range = range;
-            segment.next_for_entity = next;
+        for (position, range) in self.coordinates {
+            old.retained_scene_segments[position].scene_range = range;
         }
-        old.retained_scene_index = self.index;
+        for (position, next) in self.links {
+            old.retained_scene_segments[position].next_for_entity = next;
+        }
+        for entity in self.affected {
+            old.retained_scene_index.remove(&entity);
+        }
+        old.retained_scene_index.extend(self.index);
         replacement.retained_scene_index.clear();
         retired
     }

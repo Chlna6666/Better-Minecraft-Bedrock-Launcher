@@ -110,7 +110,7 @@ fn fragment_splice_relinks_interleaved_owners_and_retires_last_reader() {
     replacement.push_retained_scene_segment(fragment);
 
     let plan = RecordSplicePlan::new(5, 2, &[(1..2, 0..2), (3..4, 0..0)]).unwrap();
-    let candidate = SegmentSplice::prepare(&old, &replacement, &plan, &plan).unwrap();
+    let candidate = SegmentSplice::prepare(&mut old, &replacement, &plan, &plan).unwrap();
     assert_eq!(old.retained_scene_index[&EntityId::from(1_u64)].len(), 3);
     assert_eq!(old.retained_scene_segments[0].next_for_entity.unwrap().get() - 1, 2);
     let retired = candidate.adopt(&mut old, &mut replacement);
@@ -129,4 +129,35 @@ fn fragment_splice_relinks_interleaved_owners_and_retires_last_reader() {
     );
     assert_eq!(old.retained_scene_index[&EntityId::from(4_u64)].first, 2);
     assert!(old.retained_scene_segments[4].next_for_entity.is_none());
+}
+
+#[test]
+fn fragment_delta_preserves_stable_prefix_and_coordinate_only_links() {
+    let mut old = frame();
+    let mut replacement = frame();
+    for (position, entity) in [9, 1, 2, 1, 8].into_iter().enumerate() {
+        let mut fragment = segment(entity, position as f32);
+        fragment.scene_range = position..position + 1;
+        old.push_retained_scene_segment(fragment);
+    }
+    let mut fragment = segment(3, 10.);
+    fragment.scene_range = 0..1;
+    replacement.push_retained_scene_segment(fragment);
+    let fragments = RecordSplicePlan::new(5, 1, &[(2..3, 0..1)]).unwrap();
+    let scene = RecordSplicePlan::new(5, 2, &[(2..3, 0..2)]).unwrap();
+    let candidate = SegmentSplice::prepare(&mut old, &replacement, &fragments, &scene).unwrap();
+    assert_eq!(candidate.affected.len(), 2);
+    assert!(candidate.affected.contains(&EntityId::from(2_u64)));
+    assert!(candidate.affected.contains(&EntityId::from(3_u64)));
+    assert!(!candidate.index.contains_key(&EntityId::from(1_u64)));
+    assert!(!candidate.index.contains_key(&EntityId::from(9_u64)));
+    assert_eq!(candidate.links.len(), 1);
+    let retired = candidate.adopt(&mut old, &mut replacement);
+    assert_eq!(retired.len(), 1);
+    let entry = &old.retained_scene_index[&EntityId::from(1_u64)];
+    assert_eq!((entry.first, entry.last, entry.len()), (1, 3, 2));
+    assert_eq!(old.retained_scene_segments[1].next_for_entity.unwrap().get() - 1, 3);
+    assert_eq!(old.retained_scene_segments[3].scene_range, 4..5);
+    assert_eq!(old.retained_scene_segments[4].scene_range, 5..6);
+    assert!(!old.retained_scene_index.contains_key(&EntityId::from(2_u64)));
 }
