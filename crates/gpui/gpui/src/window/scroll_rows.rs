@@ -1062,8 +1062,8 @@ struct RowRecord {
 
 /// First runtime boundary domain: static, fixed-height independent rows.
 /// The surrounding list may remain interactive. Only the rows being
-/// spliced may own fixed-clip hitboxes, but not callbacks, state, text or
-/// nested view records. Other side-stream offsets remain fixed.
+/// spliced may own fixed-clip hitboxes and isolated element state, but
+/// not callbacks, text or nested view records.
 struct StaticUniformBoundary {
     key: u64,
     binding: RowPlacementBinding,
@@ -1073,6 +1073,8 @@ struct StaticUniformBoundary {
     scene: Range<usize>,
     dispatch: Range<usize>,
     hitboxes: Range<usize>,
+    prepaint_states: Range<usize>,
+    paint_states: Range<usize>,
     prepaint_base: PrepaintStateIndex,
     paint_base: PaintIndex,
     retired_claims: Vec<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
@@ -1149,9 +1151,13 @@ impl RowRecord {
         prepaint.end.dispatch_tree_index = 0;
         prepaint.start.hitboxes_index = 0;
         prepaint.end.hitboxes_index = 0;
+        prepaint.start.accessed_element_states_index = 0;
+        prepaint.end.accessed_element_states_index = 0;
         let mut paint = self.paint.clone();
         paint.start.scene_index = 0;
         paint.end.scene_index = 0;
+        paint.start.accessed_element_states_index = 0;
+        paint.end.accessed_element_states_index = 0;
         if prepaint.start != prepaint.end || paint.start != paint.end
             || !self.prepaint.fixed_input_clip
             || self.prepaint.layout_claims.is_none()
@@ -1161,6 +1167,14 @@ impl RowRecord {
             return None;
         }
         Some((prepaint.start, paint.start))
+    }
+
+    fn state_span(&self, paint: bool) -> Range<usize> {
+        if paint {
+            self.paint.start.accessed_element_states_index..self.paint.end.accessed_element_states_index
+        } else {
+            self.prepaint.records.start.accessed_element_states_index..self.prepaint.records.end.accessed_element_states_index
+        }
     }
 
     fn dispatch_span(&self) -> Range<usize> {
@@ -1216,13 +1230,14 @@ impl Window {
         self.fast_layout.end_frame();
         self.text_system.cancel_boundary_layouts();
         self.element_states.cancel_boundary();
-        if let Some((paint, damage, retired_records, retired_rows)) = result {
+        if let Some((paint, damage, retired_records, retired_rows, retired_states)) = result {
             self.scroll_hover.row_owners.insert(owner);
             self.finish_scroll_placement_publication(paint, std::iter::once(damage), true, started, cx);
             // Do not destroy committed callback, row or scene owners until
             // the replacement CPU records and GPU publication are visible.
             drop(retired_records);
             drop(retired_rows);
+            drop(retired_states);
             self.next_frame.clear();
             log::trace!(target: "gpui::diagnostics", "gpui independent uniform boundary committed");
             true
@@ -1248,7 +1263,7 @@ impl Window {
     fn execute_static_uniform_boundary(
         &mut self, boundary: StaticUniformBoundary, epoch: super::lifecycle::PlacementEpoch,
         cx: &mut App,
-    ) -> Option<(Arc<super::Paint>, Bounds<crate::ScaledPixels>, super::frame::RetiredBoundaryRecords, Vec<RowRecord>)> {
+    ) -> Option<(Arc<super::Paint>, Bounds<crate::ScaledPixels>, super::frame::RetiredBoundaryRecords, Vec<RowRecord>, Vec<Box<dyn std::any::Any>>)> {
         use super::frame::{BoundaryIndexSplices, RecordSplicePlan};
         let source_revision = self.rendered_frame.scene().revision;
         let key = boundary.key;
@@ -1302,8 +1317,6 @@ impl Window {
             || self.text_system.layout_index() != text_start
             || self.rendered_frame.scene().revision != source_revision
             || self.draw_was_degraded
-            || self.next_frame.accessed_element_states.len() != 0
-            || !self.element_states.boundary_is_untouched()
             || self.requested_autoscroll.is_some()
             || !self.next_frame.mouse_listeners.is_empty()
             || !self.next_frame.mounted_scroll_sources.is_empty()
@@ -1342,6 +1355,9 @@ impl Window {
         // dispatch records must be contiguous beneath the temporary anchor.
         let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
         let mut fresh_hitbox_end = 0;
+        let mut fresh_prepaint_end = 0;
+        let mut fresh_paint_start = None;
+        let mut fresh_paint_end = 0;
         for (marker, row) in new_range.clone().filter(|row| !old_range.contains(row)).enumerate() {
             let record = fresh.scroll_rows.rows.get(&(key, row))?;
             record.static_boundary_checkpoints()?;
@@ -1360,10 +1376,22 @@ impl Window {
                 })
             { return None; }
             fresh_hitbox_end = hitboxes.end;
+            let prepaint = record.state_span(false);
+            let paint = record.state_span(true);
+            if prepaint.start != fresh_prepaint_end || !fresh.accessed_element_states.contains(prepaint.clone())
+                || !fresh.accessed_element_states.contains(paint.clone())
+            { return None; }
+            let first_paint = fresh_paint_start.get_or_insert(paint.start);
+            if fresh_paint_end == 0 { fresh_paint_end = *first_paint; }
+            if paint.start != fresh_paint_end { return None; }
+            fresh_prepaint_end = prepaint.end;
+            fresh_paint_end = paint.end;
             fresh_dispatch_end = span.end;
         }
         if fresh_dispatch_end != fresh.dispatch_tree.len()
-            || fresh_hitbox_end != fresh.hitboxes.len() { return None; }
+            || fresh_hitbox_end != fresh.hitboxes.len()
+            || fresh_paint_start.unwrap_or(0) != fresh_prepaint_end
+            || fresh_paint_end != fresh.accessed_element_states.len() { return None; }
 
         // The left and right gaps are independent native stream edits.
         // A jump with no retained intersection replaces the domain once.
@@ -1378,6 +1406,8 @@ impl Window {
         let mut scene_edits = Vec::with_capacity(groups.len());
         let mut dispatch_edits = Vec::with_capacity(groups.len());
         let mut hitbox_edits = Vec::with_capacity(groups.len());
+        let mut prepaint_state_edits = Vec::with_capacity(groups.len());
+        let mut paint_state_edits = Vec::with_capacity(groups.len());
         let old_dispatch_at = |row: usize| -> Option<usize> {
             if row == old_range.end { Some(boundary.dispatch.end) }
             else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
@@ -1404,6 +1434,23 @@ impl Window {
             scene_edits.push((start..end, new_scene));
             dispatch_edits.push((old_dispatch, new_dispatch));
             hitbox_edits.push((old_hitboxes, new_hitboxes));
+            for (paint, edits, domain) in [
+                (false, &mut prepaint_state_edits, &boundary.prepaint_states),
+                (true, &mut paint_state_edits, &boundary.paint_states),
+            ] {
+                let at = |row: usize| -> Option<usize> {
+                    if row == old_range.end { Some(domain.end) }
+                    else { Some(old.scroll_rows.rows.get(&(key, row))?.state_span(paint).start) }
+                };
+                let old_states = at(retired.start)?..at(retired.end)?;
+                let new_states = if entered.is_empty() { 0..0 } else {
+                    fresh.scroll_rows.rows.get(&(key, entered.start))?.state_span(paint).start
+                        ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.state_span(paint).end
+                };
+                if !old_states.is_empty() || !new_states.is_empty() {
+                    edits.push((old_states, new_states));
+                }
+            }
         }
 
         self.next_frame.painter.finish();
@@ -1415,12 +1462,16 @@ impl Window {
         let scene = RecordSplicePlan::new(old.scene().len(), fresh.scene().len(), &scene_edits)?;
         let dispatch = RecordSplicePlan::new(old.dispatch_tree.len(), fresh.dispatch_tree.len(), &dispatch_edits)?;
         let hitboxes = RecordSplicePlan::new(old.hitboxes.len(), fresh.hitboxes.len(), &hitbox_edits)?;
-        let states = RecordSplicePlan::new(old.accessed_element_states.len(), 0, &[])?;
+        let state_split = prepaint_state_edits.len();
+        prepaint_state_edits.extend(paint_state_edits);
+        let states = RecordSplicePlan::new(old.accessed_element_states.len(), fresh.accessed_element_states.len(), &prepaint_state_edits)?;
+        let prepaint_state_domain = states.enclosing_phase_span(boundary.prepaint_states.clone(), 0..state_split)?;
+        let paint_state_domain = states.enclosing_phase_span(boundary.paint_states.clone(), state_split..states.edit_count())?;
         let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), 0, &[])?;
         let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
         let maps = BoundaryIndexSplices {
             scene: &scene, dispatch: &dispatch, hitboxes: &hitboxes, states: &states,
-            mouse: &mouse, ime: &ime, text: None,
+            state_prepaint_edits: Some(state_split), mouse: &mouse, ime: &ime, text: None,
         };
         let mut candidate = old.prepare_boundary_records_under(
             fresh, &scene_edits, &hitboxes, &states, &dispatch, builder.dispatch_parent,
@@ -1441,6 +1492,8 @@ impl Window {
         // The rows own every record in the old contiguous hitbox domain.
         // This explicit cursor resolves even zero-length row checkpoints.
         let mut hitbox_cursor = boundary.hitboxes.start;
+        let mut prepaint_state_cursor = prepaint_state_domain.start;
+        let mut paint_state_cursor = paint_state_domain.start;
         for row in new_range.clone() {
             let row_key = (key, row);
             let entering = !old_range.contains(&row);
@@ -1483,15 +1536,33 @@ impl Window {
             let mut end = start.clone();
             start.hitboxes_index = next_hitboxes.start;
             end.hitboxes_index = next_hitboxes.end;
+            let mut project_states = |paint: bool, cursor: &mut usize| -> Option<Range<usize>> {
+                let source = record.state_span(paint);
+                let target = *cursor..cursor.checked_add(source.len())?;
+                if !source.is_empty() {
+                    let mapped = if entering { states.replacement_span(source)? }
+                        else { states.retained_range(source)? };
+                    if mapped != target { return None; }
+                }
+                *cursor = target.end;
+                Some(target)
+            };
+            let prepaint_states = project_states(false, &mut prepaint_state_cursor)?;
+            let paint_states = project_states(true, &mut paint_state_cursor)?;
+            start.accessed_element_states_index = prepaint_states.start;
+            end.accessed_element_states_index = prepaint_states.end;
             start.dispatch_tree_index = node_span.start;
             end.dispatch_tree_index = node_span.end;
             let mut paint_start = boundary.paint_base.clone();
             let mut paint_end = paint_start.clone();
             paint_start.scene_index = marker;
             paint_end.scene_index = marker.checked_add(1)?;
+            paint_start.accessed_element_states_index = paint_states.start;
+            paint_end.accessed_element_states_index = paint_states.end;
             updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
                 paint: paint_start..paint_end, fresh_claims });
         }
+        if prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end { return None; }
         let damage = damage?;
         if !placements.is_empty() {
             candidate.paint = candidate.paint.with_scroll_placements(&placements, opaque)?;
@@ -1508,6 +1579,9 @@ impl Window {
         // All fallible work completes before consuming the placement
         // epoch. The native owners cannot change between these checks
         // and the swaps on the exclusive UI thread.
+        let prepared_states = if states.edit_count() != 0 || !self.element_states.boundary_is_untouched() {
+            Some(self.element_states.prepare_boundary(candidate.state_access.keys(0..candidate.state_access.len()))?)
+        } else { None };
         self.rendered_frame.scroll_rows.rows.try_reserve(entered_count).ok()?;
         if !self.global_ids.borrow().can_finish_partial_frame()
             || boundary.sample_read.status() != crate::StateReadStatus::Unchanged
@@ -1521,6 +1595,7 @@ impl Window {
         if !self.invalidator.commit_placement(epoch, &[owner]) { return None; }
         self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
             .expect("reserved detached layout commit");
+        let retired_states = prepared_states.map_or_else(Vec::new, |prepared| self.element_states.commit_boundary(prepared));
         let paint = candidate.paint.clone();
         let retired_records = candidate.adopt(&mut self.rendered_frame, &mut self.next_frame)
             .expect("validated exclusive Frame adoption");
@@ -1529,7 +1604,7 @@ impl Window {
         self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&membership.version);
         self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
         self.global_ids.get_mut().finish_partial_frame();
-        Some((paint, damage, retired_records, retired_rows))
+        Some((paint, damage, retired_records, retired_rows, retired_states))
     }
 
     /// This runs only after the common position-transaction admission.
@@ -1568,11 +1643,15 @@ impl Window {
         let scene_start = first.paint.start.scene_index;
         let dispatch_start = first.dispatch_span().start;
         let hitbox_start = hitbox_range(&first.prepaint).start;
+        let prepaint_state_start = first.state_span(false).start;
+        let paint_state_start = first.state_span(true).start;
         if builder.dispatch_parent.0 >= dispatch_start { return None; }
         let scale = self.scale_factor();
         let viewport = builder.context.inherited.visual_content_mask;
         let mut dispatch_end = dispatch_start;
         let mut hitbox_end = hitbox_start;
+        let mut prepaint_state_end = prepaint_state_start;
+        let mut paint_state_end = paint_state_start;
         let mut retired_claims = Vec::new();
         for (index, row) in binding.captured.clone().enumerate() {
             let record = rows.rows.get(&(key, row))?;
@@ -1603,15 +1682,26 @@ impl Window {
                 })
             { return None; }
             hitbox_end = input.end;
+            let prepaint_states = record.state_span(false);
+            let paint_states = record.state_span(true);
+            if prepaint_states.start != prepaint_state_end || paint_states.start != paint_state_end
+                || !frame.accessed_element_states.contains(prepaint_states.clone())
+                || !frame.accessed_element_states.contains(paint_states.clone())
+            { return None; }
+            prepaint_state_end = prepaint_states.end;
+            paint_state_end = paint_states.end;
             dispatch_end = span.end;
             if !membership.captured.contains(&row) {
                 retired_claims.push(record.prepaint.layout_claims.as_ref()?.clone());
             }
         }
+        if prepaint_state_end > paint_state_start { return None; }
         Some(StaticUniformBoundary {
             key, binding: binding.clone(), membership, sample_read, mounted_source,
             scene: scene_start..scene_start.checked_add(binding.captured.len())?,
             dispatch: dispatch_start..dispatch_end, hitboxes: hitbox_start..hitbox_end,
+            prepaint_states: prepaint_state_start..prepaint_state_end,
+            paint_states: paint_state_start..paint_state_end,
             prepaint_base, paint_base, retired_claims,
         })
     }
