@@ -25,6 +25,7 @@ struct RowPlacementBinding {
     captured: Range<usize>,
     row_revision: Option<RowRevision>,
     proof: Option<Rc<RowPlacementTopology>>,
+    builder: Option<UniformRowBuilder>,
 }
 
 #[derive(Clone)]
@@ -39,6 +40,18 @@ enum RowPlacementSource {
         measurement: Option<Rc<RowMeasurement>>,
     },
     Variable(crate::ListPlacementProof),
+}
+
+/// The factory owns captures independently of the short-lived list element.
+/// No AnyElement, element arena, or mutable App borrow survives publication.
+/// Only the existing buffered independent-row domain can retain a builder.
+#[derive(Clone)]
+#[allow(dead_code)] // Boundary execution must restore these native scopes.
+struct UniformRowBuilder {
+    renderer: UniformRowRenderer,
+    context: Rc<ListContext>,
+    layout_parent: u64,
+    dispatch_parent: crate::DispatchNodeId,
 }
 
 /// Fixed CPU record topology is certified once per committed frame.
@@ -713,6 +726,8 @@ impl ScrollRows {
 }
 
 pub(crate) type RowRevision = Rc<dyn Fn(usize) -> u64>;
+/// Independent row factory, shared with its committed placement binding.
+pub(crate) type UniformRowRenderer = Rc<dyn Fn(usize, &mut Window, &mut App) -> AnyElement>;
 
 #[derive(PartialEq)]
 struct ListContext {
@@ -778,7 +793,7 @@ impl RowPlan {
             self.row_placement = Some(RowPlacementBinding {
                 owner: self.context.owner, revision: self.revision,
                 source: RowPlacementSource::Variable(proof), sampled, visible, captured,
-                row_revision: None, proof: None,
+                row_revision: None, proof: None, builder: None,
             });
         }
     }
@@ -952,6 +967,7 @@ impl Window {
             captured: captured.clone(),
             row_revision: plan.row_revision.clone(),
             proof: None,
+            builder: None,
         });
         captured
     }
@@ -1129,6 +1145,25 @@ impl Window {
                 inherited: self.current_retained_paint_context(),
             }),
         })
+    }
+
+    /// Capture the factory in the actual list prepaint scope, not when the
+    /// element is constructed. The same native owner/revision and inherited
+    /// context gates that admitted buffering constrain future execution.
+    pub(crate) fn retain_uniform_row_builder(
+        &self, plan: &mut RowPlan, renderer: &UniformRowRenderer,
+    ) {
+        let Some(binding) = plan.row_placement.as_mut() else { return; };
+        if !binding.buffered() || !plan.allow_reuse || !plan.placement_only {
+            return;
+        }
+        let Some(layout_parent) = crate::fast::layout_key::layout_key(self) else { return; };
+        let Some(dispatch_parent) = self.next_frame.dispatch_tree.active_node_id() else { return; };
+        if layout_parent != plan.key { return; }
+        binding.builder = Some(UniformRowBuilder {
+            renderer: Rc::clone(renderer), context: Rc::clone(&plan.context),
+            layout_parent, dispatch_parent,
+        });
     }
 
     pub(crate) fn remember_row_placement(&mut self, plan: &RowPlan, cx: &App) {
