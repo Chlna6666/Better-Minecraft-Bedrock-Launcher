@@ -1324,6 +1324,76 @@ mod binding_tests {
     }
 
     #[gpui::test]
+    fn independent_fixed_uniform_boundary_builds_only_entering_rows(cx: &mut crate::TestAppContext) {
+        use crate::{
+            Context, IntoElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
+            UniformListScrollHandle, div, uniform_list_each,
+        };
+        use std::cell::Cell;
+
+        struct Rows {
+            roots: Rc<Cell<usize>>,
+            builds: Rc<Cell<usize>>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.roots.set(self.roots.get() + 1);
+                let builds = self.builds.clone();
+                uniform_list_each("detached-static-rows", 100, move |row, _, _| {
+                    builds.set(builds.get() + 1);
+                    div().h(px(24.)).w_full()
+                        .bg(if row % 2 == 0 { crate::blue() } else { crate::red() })
+                })
+                .with_item_height(px(24.))
+                .with_row_revision(|_| 0)
+                .track_scroll(self.scroll.clone())
+                .w(px(200.)).h(px(120.))
+            }
+        }
+        let roots = Rc::new(Cell::new(0));
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Rows { roots: roots.clone(), builds: builds.clone(), scroll: UniformListScrollHandle::new() }
+        });
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(8.), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            for _ in 0..2 {
+                window.dispatch_event(wheel(-1.), app);
+                window.draw(app).clear();
+                assert!(window.test_present().is_accepted());
+            }
+            assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 1);
+            let root_builds = roots.get();
+            let row_builds = builds.get();
+            window.dispatch_event(wheel(-120.), app);
+            assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::MissingCapture)));
+            let (_, _, entered, retired) = window.rendered_frame.scroll_rows.uniform_boundary_runs()
+                .expect("outside the committed overscan");
+            assert!(!entered.is_empty() && !retired.is_empty());
+            window.draw(app).clear();
+            assert_eq!(roots.get(), root_builds, "boundary must skip Root Render");
+            assert_eq!(builds.get(), row_builds + entered.len(), "only entering rows may build");
+            assert!(window.rendered_frame.scroll_rows.uniform_boundary_runs().is_none());
+            assert!(window.test_present().is_accepted());
+
+            let row_builds = builds.get();
+            window.dispatch_event(wheel(-1.), app);
+            assert!(window.prepare_scroll_placement(app).is_ok());
+            window.draw(app).clear();
+            assert_eq!(roots.get(), root_builds);
+            assert_eq!(builds.get(), row_builds);
+            assert!(window.test_present().is_accepted());
+        });
+    }
+
+    #[gpui::test]
     fn measured_uniform_rows_reuse_overscan_without_rebuilding(cx: &mut crate::TestAppContext) {
         use crate::{
             Context, InteractiveElement, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
