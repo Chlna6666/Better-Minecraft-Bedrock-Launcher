@@ -902,6 +902,10 @@ impl WindowTextSystem {
         self.line_layout_cache.splice_layouts(generation, lines, wrapped)
     }
 
+    pub(crate) fn cancel_boundary_layouts(&self) {
+        self.line_layout_cache.cancel_boundary_layouts();
+    }
+
     pub(crate) fn truncate_layouts(&self, index: LineLayoutIndex) {
         self.line_layout_cache.truncate_layouts(index)
     }
