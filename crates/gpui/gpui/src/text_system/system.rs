@@ -901,13 +901,18 @@ impl WindowTextSystem {
     /// Adopt independent boundary accesses before the ordinary text frame
     /// finish. The Window must validate all other Frame owners first.
     #[allow(dead_code)]
-    pub(crate) fn splice_layouts(
+    pub(crate) fn prepare_boundary_layouts(
         &self,
         generation: u64,
         lines: &crate::window::RecordSplicePlan,
         wrapped: &crate::window::RecordSplicePlan,
     ) -> Option<()> {
-        self.line_layout_cache.splice_layouts(generation, lines, wrapped)
+        self.line_layout_cache.prepare_boundary_layouts(generation, lines, wrapped)
+    }
+
+    pub(crate) fn commit_boundary_layouts(&self) -> LineLayoutFrameMetrics {
+        self.text_system.raster_bounds.read().finish_frame();
+        self.line_layout_cache.commit_boundary_layouts()
     }
 
     pub(crate) fn cancel_boundary_layouts(&self) {
