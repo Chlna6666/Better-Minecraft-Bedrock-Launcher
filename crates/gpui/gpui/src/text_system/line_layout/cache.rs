@@ -26,6 +26,7 @@ pub(crate) struct LineLayoutCache {
     font_generation: Arc<AtomicU64>,
     cached_font_generation: AtomicU64,
     frame_metrics: LineLayoutCacheMetrics,
+    row_access_depth: Cell<usize>,
     number_shaping: RefCell<crate::fast::number_shaping::NumberShaping>,
     recent_shapes: Arc<Mutex<RecentShapes>>,
 }
@@ -222,15 +223,22 @@ impl<V> Default for LayoutStore<V> {
 }
 
 impl<V> LayoutStore<V> {
+    #[cfg(test)]
     fn lookup(&mut self, key: &dyn AsCacheKeyRef, epoch: u64) -> Option<(Arc<V>, bool)> {
+        self.lookup_recorded(key, epoch, false)
+    }
+
+    fn lookup_recorded(&mut self, key: &dyn AsCacheKeyRef, epoch: u64, row_access: bool) -> Option<(Arc<V>, bool)> {
         let id = *self.keys.get(key)?;
         let entry = self.slots[id].as_mut().expect("live text layout slot");
         let reused = entry.last_used != epoch;
         if reused {
             entry.last_used = epoch;
             self.used_count += 1;
-            self.current.push(id);
         }
+        // Rows can retire independently. Record repeated accesses inside
+        // a row even if another owner already used the same immutable slot.
+        if reused || row_access { self.current.push(id); }
         Some((Arc::clone(&entry.layout), reused))
     }
 
@@ -557,6 +565,14 @@ pub(crate) struct LineLayoutIndex {
 }
 
 impl LineLayoutIndex {
+    pub(crate) fn components(&self) -> (u64, usize, usize) {
+        (self.font_generation, self.lines_index, self.wrapped_lines_index)
+    }
+
+    pub(crate) fn from_components(font_generation: u64, lines_index: usize, wrapped_lines_index: usize) -> Self {
+        Self { font_generation, lines_index, wrapped_lines_index }
+    }
+
     /// Project a retained text range through independent line and wrapped
     /// line access edits. Never infer the ownership of ambiguous checkpoints.
     #[allow(dead_code)]
@@ -633,6 +649,7 @@ impl LineLayoutCache {
             font_generation,
             cached_font_generation: AtomicU64::new(cached_font_generation),
             frame_metrics: LineLayoutCacheMetrics::default(),
+            row_access_depth: Cell::new(0),
             number_shaping: RefCell::default(),
             recent_shapes,
         }
@@ -656,6 +673,23 @@ impl LineLayoutCache {
                 .store(generation, Ordering::Release);
         }
         generation
+    }
+
+    /// Scope repeated access records to independently retireable rows.
+    pub(crate) fn record_row_accesses(&self) -> impl Drop + '_ {
+        struct Recording<'a>(&'a Cell<usize>);
+        impl Drop for Recording<'_> {
+            fn drop(&mut self) { self.0.set(self.0.get() - 1); }
+        }
+        self.row_access_depth.set(self.row_access_depth.get() + 1);
+        Recording(&self.row_access_depth)
+    }
+
+    pub(crate) fn committed_layout_index(&self) -> Option<LineLayoutIndex> {
+        let generation = self.font_generation.load(Ordering::Acquire);
+        if generation != self.cached_font_generation.load(Ordering::Acquire) { return None; }
+        let frame = self.frame.borrow();
+        Some(LineLayoutIndex::from_components(generation, frame.lines.previous.len(), frame.wrapped_lines.previous.len()))
     }
 
     pub fn layout_index(&self) -> LineLayoutIndex {
@@ -806,7 +840,7 @@ impl LineLayoutCache {
 
         let mut frame = self.frame.borrow_mut();
         let epoch = frame.epoch;
-        if let Some((layout, reused)) = frame.wrapped_lines.lookup(key, epoch) {
+        if let Some((layout, reused)) = frame.wrapped_lines.lookup_recorded(key, epoch, self.row_access_depth.get() != 0) {
             if reused { self.frame_metrics.reuse(); } else { self.frame_metrics.hit(); }
             drop(frame);
             if self.font_generation.load(Ordering::Acquire) == font_generation {
@@ -879,7 +913,7 @@ impl LineLayoutCache {
 
         let mut frame = self.frame.borrow_mut();
         let epoch = frame.epoch;
-        if let Some((layout, reused)) = frame.lines.lookup(key, epoch) {
+        if let Some((layout, reused)) = frame.lines.lookup_recorded(key, epoch, self.row_access_depth.get() != 0) {
             if reused { self.frame_metrics.reuse(); } else { self.frame_metrics.hit(); }
             drop(frame);
             if self.font_generation.load(Ordering::Acquire) == font_generation {
