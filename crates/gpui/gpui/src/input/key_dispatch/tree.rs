@@ -796,6 +796,21 @@ impl DispatchTree {
         DispatchNodeId(0)
     }
 
+    /// A static detached-row domain may own ordinary topology nodes, but
+    /// cannot retire focus/view routes or input callbacks. More complex
+    /// rows continue through the existing regular Frame traversal.
+    pub(crate) fn inert_row_range(&self, mut range: Range<usize>) -> bool {
+        range.start <= range.end && range.end <= self.len()
+            && range.all(|index| {
+                let node = &self.nodes[index];
+                node.focus_id.is_none() && node.view_id.is_none()
+                    && node.context.is_none()
+                    && node.key_listeners.is_empty()
+                    && node.action_listeners.is_empty()
+                    && node.modifiers_changed_listeners.is_empty()
+            })
+    }
+
     pub fn active_node_id(&self) -> Option<DispatchNodeId> {
         self.node_stack.last().copied()
     }
