@@ -713,6 +713,53 @@ impl TaffyLayoutEngine {
         true
     }
 
+    /// Project an enclosing View's layout ownership into the candidate's
+    /// stable coordinates. The caller must certify it is an ancestor of
+    /// this single boundary domain, including for insertion-only edits.
+    /// Unrelated View records keep their original claim coordinates.
+    #[allow(dead_code)]
+    pub(crate) fn detached_boundary_ancestor_claims(
+        &self, old: &LayoutClaimBlocks,
+    ) -> Option<LayoutClaimBlocks> {
+        let boundary = self.detached_boundary.as_ref()?;
+        let old_len = self.committed_claim_log.len();
+        if boundary.rejected || old.iter().any(|span| span.start > span.end || span.end > old_len) {
+            return None;
+        }
+        let mut retired = boundary.retired.clone();
+        // The row domain belongs to prepaint; an overlapping request
+        // block would mean the caller chose an invalid enclosing owner.
+        if old.request_blocks().iter().any(|request| retired.iter().any(|span| {
+            request.start < span.end && span.start < request.end
+        })) {
+            return None;
+        }
+        let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
+        Self::subtract_claim_blocks(old.prepaint_blocks(), &mut retired, &mut kept)?;
+        let mut result = LayoutClaimBlocks::default();
+        for span in old.request_blocks() { result.push_request(span.clone()); }
+        for span in kept { result.push_prepaint(span); }
+        result.push_prepaint(old_len..old_len.checked_add(self.claimed_key_log.len())?);
+        result.normalize();
+        Some(result)
+    }
+
+    /// Resolve one freshly materialized row's local claim coordinates
+    /// into the append-only committed log without touching the nodes.
+    #[allow(dead_code)]
+    pub(crate) fn detached_boundary_row_claims(
+        &self, root: LayoutId, local: &LayoutClaimBlocks,
+    ) -> Option<LayoutClaimBlocks> {
+        let boundary = self.detached_boundary.as_ref()?;
+        if boundary.rejected || !local.request_blocks().is_empty() || local.prepaint_blocks().len() != 1 {
+            return None;
+        }
+        let span = &local.prepaint_blocks()[0];
+        self.capture_detached_row_claims(span.clone(), root)?;
+        let offset = self.committed_claim_log.len();
+        Some(LayoutClaimBlocks::prepaint(offset.checked_add(span.start)?..offset.checked_add(span.end)?))
+    }
+
     /// Final native adoption, after all other Frame candidates are validated.
     /// Existing indices are unchanged, retired slots are tombstoned, and
     /// new row claims use begin_detached_boundary's returned offset.
@@ -2033,7 +2080,17 @@ mod tests {
         assert_eq!(engine.begin_detached_boundary(&[(leaving, retired)]), Some(3));
         let entering = engine.request_layout(Some(owner(&enter)), true, Style::default(), crate::px(16.), 1., &[]);
         assert_eq!(engine.committed_claim_log, before);
-        assert_eq!(engine.capture_detached_row_range(0..1).unwrap().0, entering);
+        let (captured_root, local) = engine.capture_detached_row_range(0..1).unwrap();
+        assert_eq!(captured_root, entering);
+        let entering_claims = engine.detached_boundary_row_claims(entering, &local).unwrap();
+        assert_eq!(entering_claims.prepaint_blocks(), &[3..4]);
+        let mut enclosing = LayoutClaimBlocks::request(0..1);
+        enclosing.push_prepaint(1..3);
+        let projected = engine.detached_boundary_ancestor_claims(&enclosing).unwrap();
+        assert_eq!(projected.request_blocks(), &[0..1]);
+        assert_eq!(projected.prepaint_blocks(), &[2..4]);
+        assert!(projected.covers(&entering_claims));
+        assert!(engine.detached_boundary_ancestor_claims(&LayoutClaimBlocks::prepaint(2..3)).is_none());
         engine.commit_detached_boundary().unwrap();
         assert_eq!(engine.committed_claim_log.len(), 4);
         assert_eq!(engine.committed_claim_log[0], before[0]);
