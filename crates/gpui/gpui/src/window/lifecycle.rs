@@ -1341,6 +1341,42 @@ mod view_invalidation_tests {
     }
 
     #[test]
+    fn boundary_row_reads_preserve_other_owners_and_own_read_provenance() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let other = EntityId::from(2);
+        let original = EntityId::from(3);
+        let entering = EntityId::from(4);
+        let global = TypeId::of::<u32>();
+        let mut log = crate::AppDependencies::default();
+        log.entity(Some(owner), original);
+        log.entity(Some(other), original);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(),
+            &FxHashSet::default(), |_| true, |_| true);
+        let reads = crate::RenderDependencies {
+            entities: Rc::from([entering]),
+            globals: Rc::from([(global, None)]),
+            ..Default::default()
+        };
+        let prepared = invalidator.prepare_boundary_row_reads(owner, &reads).unwrap();
+        assert!(!invalidator.inner.borrow().render_dependencies.contains_key(&entering));
+        invalidator.commit_boundary_row_reads(prepared);
+        let prepared = invalidator.prepare_boundary_row_reads(owner, &reads).unwrap();
+        invalidator.commit_boundary_row_reads(prepared);
+        {
+            let inner = invalidator.inner.borrow();
+            let entry = &inner.view_reads[&Some(owner)];
+            assert_eq!(entry.own_reads.entities.as_ref(), &[original]);
+            assert_eq!(inner.render_dependencies[&entering].as_ref().unwrap().as_slice(), &[owner]);
+            assert!(inner.render_dependencies[&original].as_ref().unwrap().contains(&other));
+            assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[owner]);
+        }
+        let mut inner = invalidator.inner.borrow_mut();
+        inner.mark_dependency_dirty(owner, Some(RowNotification::Entity(entering)));
+        assert!(inner.pending_row_only.contains(&owner));
+    }
+
+    #[test]
     fn global_row_only_provenance_preserves_presence_semantics() {
         let invalidator = WindowInvalidator::new();
         let owner = EntityId::from(1);
