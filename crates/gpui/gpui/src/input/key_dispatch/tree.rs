@@ -512,25 +512,7 @@ impl DispatchTree {
         plan: &crate::window::RecordSplicePlan,
         replacement_parent: DispatchNodeId,
     ) -> Option<Self> {
-        self.with_spliced_records_under(replacement, plan, replacement_parent, None)
-    }
-
-    /// Independent materialization can use a temporary dispatch anchor
-    /// rather than reproducing the committed ancestor path. That anchor
-    /// is not itself adopted; only its explicitly selected children are.
-    pub(crate) fn with_spliced_records_under(
-        &self,
-        replacement: &Self,
-        plan: &crate::window::RecordSplicePlan,
-        replacement_parent: DispatchNodeId,
-        replacement_anchor: Option<DispatchNodeId>,
-    ) -> Option<Self> {
-        if replacement_anchor.is_some_and(|anchor| {
-            anchor.0 >= replacement.len() || replacement.parent(anchor).is_some()
-        }) {
-            return None;
-        }
-        self.with_spliced_forests(replacement, plan, &[(replacement_anchor, replacement_parent)])
+        self.with_spliced_forests(replacement, plan, &[(None, replacement_parent)])
     }
 
     /// Each detached forest attaches to its own retained parent. Anchors
@@ -559,18 +541,19 @@ impl DispatchTree {
             let end = node.0.checked_add(1)?;
             plan.retained_range(node.0..end).map(|range| DispatchNodeId(range.start))
         };
-        let mut parents = FxHashMap::default();
+        let mut parents = SmallVec::<[(Option<DispatchNodeId>, DispatchNodeId); 2]>::new();
         for &(anchor, parent) in attachments {
             // An explicit anchor must exist in the scratch tree. It can
             // have a scratch parent for multiple forests beneath a shared
             // temporary root, but cannot be adopted as part of any edit.
             if anchor.is_some_and(|anchor| anchor.0 >= replacement.len())
-                || parents.insert(anchor, remap(parent)?).is_some()
+                || parents.iter().any(|(previous, _)| *previous == anchor)
             {
                 return None;
             }
+            parents.push((anchor, remap(parent)?));
         }
-        let mut replacement_parents = Vec::new();
+        let mut replacement_parents = SmallVec::<[DispatchNodeId; 4]>::new();
         let mut offset = 0;
         let mut valid = true;
         plan.visit_ranges(|source, range| {
@@ -581,7 +564,9 @@ impl DispatchTree {
                 }),
                 SpliceSource::Replacement => {
                     let anchor = replacement.parent(DispatchNodeId(range.start));
-                    if let Some(&parent) = parents.get(&anchor) {
+                    if let Some((_, parent)) = parents.iter().copied()
+                        .find(|(candidate, _)| *candidate == anchor)
+                    {
                         let admitted = parent.0 < offset
                             && !attachments.iter().any(|(anchor, _)| {
                                 anchor.is_some_and(|anchor| range.contains(&anchor.0))

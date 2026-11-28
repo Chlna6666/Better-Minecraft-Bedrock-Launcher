@@ -796,23 +796,24 @@ impl Frame {
         window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         self.prepare_boundary_records_under(replacement, scene_edits, hitboxes, states, dispatch,
-            replacement_parent, None, mouse, ime, window_opaque, None)
+            &[(None, replacement_parent)], mouse, ime, window_opaque, None)
     }
 
     pub(super) fn prepare_boundary_records_under<'a>(
         &self, replacement: &Self,
         scene_edits: &[(Range<usize>, Range<usize>)],
         hitboxes: &RecordSplicePlan, states: &RecordSplicePlan,
-        dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
-        replacement_anchor: Option<DispatchNodeId>, mouse: &RecordSplicePlan,
+        dispatch: &RecordSplicePlan,
+        attachments: &[(Option<DispatchNodeId>, DispatchNodeId)],
+        mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan, window_opaque: bool,
         row_input_domain: Option<(u64, Range<usize>)>,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
         // other candidates own only new descriptors and shared payloads.
-        let dispatch = self.dispatch_tree.with_spliced_records_under(
-            &replacement.dispatch_tree, dispatch, replacement_parent, replacement_anchor,
+        let dispatch = self.dispatch_tree.with_spliced_forests(
+            &replacement.dispatch_tree, dispatch, attachments,
         )?;
         // Replacement rows with their own moving clips are not admitted.
         // Existing layer ranges may survive outside the edit, or

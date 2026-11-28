@@ -1703,8 +1703,9 @@ impl Window {
             text: Some((generation, &lines, &wrapped)), text_prepaint_edits: Some((line_split, wrapped_split)),
         };
         let mut candidate = old.prepare_boundary_records_under(
-            fresh, &scene_edits, &hitboxes, &states, &dispatch, builder.dispatch_parent,
-            Some(anchor), &mouse, &ime, opaque, Some((key, boundary.hitboxes.clone())),
+            fresh, &scene_edits, &hitboxes, &states, &dispatch,
+            &[(Some(anchor), builder.dispatch_parent)],
+            &mouse, &ime, opaque, Some((key, boundary.hitboxes.clone())),
         )?;
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
