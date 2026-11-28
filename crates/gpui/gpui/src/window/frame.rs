@@ -1099,6 +1099,8 @@ impl Frame {
 
     /// Bind the just-recorded group to the real Drawable prepaint owner.
     /// This is not inferred later from matching ranges or pixel bounds.
+    pub(crate) fn layer_input_count(&self) -> usize { self.layer_inputs.len() }
+
     pub(crate) fn bind_layer_input_owner(&mut self, previous_len: usize, owner: Option<u64>) {
         if self.layer_inputs.len() == previous_len + 1 {
             self.layer_inputs.last_mut().expect("recorded input").layout_owner = owner;
