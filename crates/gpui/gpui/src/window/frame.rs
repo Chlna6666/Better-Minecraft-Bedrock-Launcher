@@ -365,6 +365,30 @@ impl RecordSplicePlan {
         Some(start..end)
     }
 
+    /// A shared stream can contain distinct prepaint and paint domains.
+    /// The caller proves which edits belong to this phase. Other edits
+    /// may shift its coordinates but cannot own records within the range.
+    pub(crate) fn enclosing_phase_span(
+        &self, range: Range<usize>, phase: Range<usize>,
+    ) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > self.old_len
+            || phase.start > phase.end || phase.end > self.edits.len()
+        { return None; }
+        let selected = &self.edits[phase.clone()];
+        if selected.is_empty() { return self.retained_span(range); }
+        let first = selected.first()?;
+        let last = selected.last()?;
+        if range.start > first.old.start || range.end < last.old.end { return None; }
+        // Earlier/later phases may touch the boundary, not cross it.
+        if self.edits[..phase.start].last().is_some_and(|edit| edit.old.end > range.start)
+            || self.edits[phase.end..].first().is_some_and(|edit| edit.old.start < range.end)
+        { return None; }
+        Some(first.target.start.checked_sub(first.old.start - range.start)?
+            ..last.target.end.checked_add(range.end - last.old.end)?)
+    }
+
+    pub(crate) fn edit_count(&self) -> usize { self.edits.len() }
+
     /// A replacement subrange must have exactly one destination.
     pub(crate) fn replacement_span(&self, range: Range<usize>) -> Option<Range<usize>> {
         if range.start > range.end || range.end > self.replacement_len { return None; }
@@ -487,6 +511,7 @@ pub(super) struct BoundaryIndexSplices<'a> {
     pub(super) scene: &'a RecordSplicePlan,
     pub(super) hitboxes: &'a RecordSplicePlan,
     pub(super) states: &'a RecordSplicePlan,
+    pub(super) state_prepaint_edits: Option<usize>,
     pub(super) dispatch: &'a RecordSplicePlan,
     pub(super) mouse: &'a RecordSplicePlan,
     pub(super) ime: &'a RecordSplicePlan,
@@ -510,7 +535,11 @@ impl BoundaryIndexSplices<'_> {
         let mut result = source.clone();
         let hitboxes = map(self.hitboxes, source.start.hitboxes_index..source.end.hitboxes_index)?;
         let dispatch = map(self.dispatch, source.start.dispatch_tree_index..source.end.dispatch_tree_index)?;
-        let states = map(self.states, source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        let state_range = source.start.accessed_element_states_index..source.end.accessed_element_states_index;
+        let states = match (enclosing, self.state_prepaint_edits) {
+            (true, Some(split)) => self.states.enclosing_phase_span(state_range, 0..split)?,
+            _ => map(self.states, state_range)?,
+        };
         result.start.hitboxes_index = hitboxes.start;
         result.end.hitboxes_index = hitboxes.end;
         result.start.dispatch_tree_index = dispatch.start;
@@ -540,7 +569,11 @@ impl BoundaryIndexSplices<'_> {
         let map = |plan: &RecordSplicePlan, range| if enclosing { plan.enclosing_span(range) } else { plan.retained_span(range) };
         let mut result = source.clone();
         let scene = map(self.scene, source.start.scene_index..source.end.scene_index)?;
-        let states = map(self.states, source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        let state_range = source.start.accessed_element_states_index..source.end.accessed_element_states_index;
+        let states = match (enclosing, self.state_prepaint_edits) {
+            (true, Some(split)) => self.states.enclosing_phase_span(state_range, split..self.states.edit_count())?,
+            _ => map(self.states, state_range)?,
+        };
         result.start.scene_index = scene.start;
         result.end.scene_index = scene.end;
         let mouse = map(self.mouse, source.start.mouse_listeners_index..source.end.mouse_listeners_index)?;
@@ -726,7 +759,7 @@ impl Frame {
         scene_edits: &[(Range<usize>, Range<usize>)],
         hitboxes: &RecordSplicePlan,
         states: &RecordSplicePlan,
-        dispatch: &RecordSplicePlan,
+        state_prepaint_edits: None, dispatch: &RecordSplicePlan,
         replacement_parent: DispatchNodeId,
         mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan,
@@ -740,7 +773,7 @@ impl Frame {
         &self, replacement: &Self,
         scene_edits: &[(Range<usize>, Range<usize>)],
         hitboxes: &RecordSplicePlan, states: &RecordSplicePlan,
-        dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
+        state_prepaint_edits: None, dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
         replacement_anchor: Option<DispatchNodeId>, mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan, window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
@@ -1566,6 +1599,16 @@ mod publication_tests {
     }
 
     #[test]
+    fn boundary_phase_spans_do_not_adopt_other_phase_insertions() {
+        let plan = RecordSplicePlan::new(8, 4, &[(3..3, 0..2), (3..3, 2..4)]).unwrap();
+        assert_eq!(plan.enclosing_phase_span(1..3, 0..1), Some(1..5));
+        assert_eq!(plan.enclosing_phase_span(3..6, 1..2), Some(5..10));
+        assert_eq!(plan.enclosing_phase_span(1..4, 0..1), None);
+        assert_eq!(plan.retained_span(3..3), None);
+        assert_eq!(plan.edit_count(), 2);
+    }
+
+    #[test]
     fn enclosing_and_replacement_spans_have_explicit_ownership() {
         let plan = RecordSplicePlan::new(10, 3, &[(2..2, 0..1), (4..6, 1..3)]).unwrap();
         assert_eq!(plan.enclosing_span(2..6), Some(2..7));
@@ -1587,7 +1630,7 @@ mod publication_tests {
         let states = RecordSplicePlan::new(10, 3, &[(1..1, 0..3)]).unwrap();
         let dispatch = RecordSplicePlan::new(10, 1, &[(2..5, 0..1)]).unwrap();
         let maps = BoundaryIndexSplices {
-            scene: &scene, hitboxes: &hitboxes, states: &states, dispatch: &dispatch,
+            scene: &scene, hitboxes: &hitboxes, states: &states, state_prepaint_edits: None, dispatch: &dispatch,
             mouse: &states, ime: &scene, text: None,
         };
         let pre = PrepaintStateIndex {
