@@ -525,6 +525,23 @@ impl DispatchTree {
         replacement_parent: DispatchNodeId,
         replacement_anchor: Option<DispatchNodeId>,
     ) -> Option<Self> {
+        if replacement_anchor.is_some_and(|anchor| {
+            anchor.0 >= replacement.len() || replacement.parent(anchor).is_some()
+        }) {
+            return None;
+        }
+        self.with_spliced_forests(replacement, plan, &[(replacement_anchor, replacement_parent)])
+    }
+
+    /// Each detached forest attaches to its own retained parent. Anchors
+    /// belong to the scratch tree and must never appear in the published
+    /// tree. The same validation and replay path handles a single forest.
+    pub(crate) fn with_spliced_forests(
+        &self,
+        replacement: &Self,
+        plan: &crate::window::RecordSplicePlan,
+        attachments: &[(Option<DispatchNodeId>, DispatchNodeId)],
+    ) -> Option<Self> {
         use crate::window::SpliceSource;
         if !self.node_stack.is_empty() || !replacement.node_stack.is_empty()
             || !self.nodes.pending.is_empty() || !replacement.nodes.pending.is_empty()
@@ -542,9 +559,18 @@ impl DispatchTree {
             let end = node.0.checked_add(1)?;
             plan.retained_range(node.0..end).map(|range| DispatchNodeId(range.start))
         };
-        let parent = remap(replacement_parent)?;
-        if replacement_anchor.is_some_and(|anchor| anchor.0 >= replacement.len()
-            || replacement.parent(anchor).is_some()) { return None; }
+        let mut parents = FxHashMap::default();
+        for &(anchor, parent) in attachments {
+            // An explicit anchor must exist in the scratch tree. It can
+            // have a scratch parent for multiple forests beneath a shared
+            // temporary root, but cannot be adopted as part of any edit.
+            if anchor.is_some_and(|anchor| anchor.0 >= replacement.len())
+                || parents.insert(anchor, remap(parent)?).is_some()
+            {
+                return None;
+            }
+        }
+        let mut replacement_parents = Vec::new();
         let mut offset = 0;
         let mut valid = true;
         plan.visit_ranges(|source, range| {
@@ -553,15 +579,31 @@ impl DispatchTree {
                 SpliceSource::Retained => self.parents.all_external_parents(range.clone(), |old| {
                     old.is_none_or(|old| remap(old).is_some_and(|new| new.0 < offset))
                 }),
-                SpliceSource::Replacement => parent.0 < offset
-                    && replacement_anchor.is_none_or(|anchor| !range.contains(&anchor.0))
-                    && replacement.parents.all_external_parents(range.clone(), |old| old == replacement_anchor),
+                SpliceSource::Replacement => {
+                    let anchor = replacement.parent(DispatchNodeId(range.start));
+                    if let Some(&parent) = parents.get(&anchor) {
+                        let admitted = parent.0 < offset
+                            && !attachments.iter().any(|(anchor, _)| {
+                                anchor.is_some_and(|anchor| range.contains(&anchor.0))
+                            })
+                            && replacement.parents.all_external_parents(range.clone(), |old| {
+                                old == anchor
+                            });
+                        if admitted {
+                            replacement_parents.push(parent);
+                        }
+                        admitted
+                    } else {
+                        false
+                    }
+                }
             };
             offset += range.len();
         });
         if !valid { return None; }
 
         let mut result = Self::new(Rc::clone(&self.keymap), Rc::clone(&self.action_registry));
+        let mut replacement_parents = replacement_parents.into_iter();
         plan.visit_ranges(|source, range| {
             match source {
                 SpliceSource::Retained => {
@@ -570,10 +612,12 @@ impl DispatchTree {
                     }));
                 }
                 SpliceSource::Replacement => {
+                    let parent = replacement_parents.next().expect("validated forest attachment");
                     result.replay_segment(range, replacement, None, |_| Some(parent));
                 }
             }
         });
+        debug_assert!(replacement_parents.next().is_none());
         // Do not silently change focus or view route precedence when an
         // independently materialized subtree conflicts with a retained one.
         if result.focus_routes_may_shadow || result.view_routes_may_shadow {
@@ -820,6 +864,68 @@ impl DispatchTree {
 #[cfg(test)]
 mod retained_dispatch_replay_tests {
     use super::*;
+
+    #[test]
+    fn detached_forests_adopt_distinct_parents_and_view_routes() {
+        use crate::window::RecordSplicePlan;
+
+        let keymap = Rc::new(RefCell::new(Keymap::default()));
+        let actions = Rc::new(ActionRegistry::default());
+        let mut old = DispatchTree::new(keymap.clone(), actions.clone());
+        let mut fresh = DispatchTree::new(keymap, actions);
+        let left = EntityId::from(11_u64);
+        let retired = EntityId::from(12_u64);
+        let right = EntityId::from(13_u64);
+        let entered_left = EntityId::from(14_u64);
+        let entered_right = EntityId::from(15_u64);
+        let root = old.push_node();
+        let left_parent = old.push_node();
+        old.set_view_id(left);
+        old.push_node();
+        old.set_view_id(retired);
+        old.pop_node();
+        old.pop_node();
+        let right_parent = old.push_node();
+        old.set_view_id(right);
+        old.push_node();
+        old.pop_node();
+        old.pop_node();
+        old.pop_node();
+        old.freeze();
+
+        fresh.push_node();
+        let left_anchor = fresh.push_node();
+        fresh.push_node();
+        fresh.set_view_id(entered_left);
+        fresh.push_node();
+        fresh.pop_node();
+        fresh.pop_node();
+        fresh.pop_node();
+        let right_anchor = fresh.push_node();
+        fresh.push_node();
+        fresh.set_view_id(entered_right);
+        fresh.pop_node();
+        fresh.pop_node();
+        fresh.pop_node();
+        fresh.freeze();
+
+        let plan = RecordSplicePlan::new(5, 6, &[(2..3, 2..4), (4..5, 5..6)]).unwrap();
+        let attachments = [(Some(left_anchor), left_parent), (Some(right_anchor), right_parent)];
+        let result = old.with_spliced_forests(&fresh, &plan, &attachments).unwrap();
+        assert_eq!(result.len(), 6);
+        assert_eq!(result.view_path(entered_left).as_slice(), &[left, entered_left]);
+        assert_eq!(result.view_path(entered_right).as_slice(), &[right, entered_right]);
+        assert_eq!(result.dispatch_path(DispatchNodeId(3)).as_slice(),
+            &[root, left_parent, DispatchNodeId(2), DispatchNodeId(3)]);
+        assert!(!result.has_view_route(retired));
+        assert!(old.has_view_route(retired));
+        assert!(!old.has_view_route(entered_left));
+        assert!(old.with_spliced_forests(&fresh, &plan, &attachments[..1]).is_none());
+        assert!(old.with_spliced_forests(&fresh, &plan,
+            &[(Some(left_anchor), left_parent), (Some(left_anchor), right_parent)]).is_none());
+        assert!(old.with_spliced_forests(&fresh, &plan,
+            &[(Some(left_anchor), DispatchNodeId(2)), (Some(right_anchor), right_parent)]).is_none());
+    }
 
     #[test]
     fn split_dispatch_replay_relocates_suffix_parent() {
