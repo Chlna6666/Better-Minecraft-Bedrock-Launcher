@@ -540,38 +540,44 @@ impl WindowInvalidator {
         Some(prepared)
     }
 
-    /// No callbacks or fallible admission after the placement epoch is
-    /// consumed. Preserve own_reads: these additions came only from rows.
-    pub(super) fn commit_boundary_row_reads(&self, prepared: BoundaryRowReads) -> Vec<EntityId> {
+    /// Commit all certified owner deltas under one borrow. An Entity
+    /// moving from one owner to another must not be reported as retired
+    /// just because the removal happened before the addition.
+    pub(super) fn commit_boundary_row_reads_batch(
+        &self, prepared: impl IntoIterator<Item = BoundaryRowReads>,
+    ) -> Vec<EntityId> {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
-        let route = Some(prepared.owner);
-        let entry = inner.view_reads.entry(route).or_insert_with(|| CommittedReads {
-            reads: Default::default(), own_reads: Default::default(),
-            state_validation: Default::default(), route, keep: true,
-        });
-        debug_assert_eq!(entry.route, route);
-        // The scoped route cannot become unresolved during a boundary
-        // transaction. Apply the certified edge delta directly rather than
-        // diffing the complete owner snapshots again after publication.
-        for entity in prepared.added_entities {
-            insert_dependency_owner(&mut inner.render_dependencies, entity, route);
-        }
-        for global in prepared.added_globals {
-            insert_dependency_owner(&mut inner.global_read_dependencies, global, route);
-        }
-        for &global in &prepared.removed_globals {
-            remove_dependency_owner(&mut inner.global_read_dependencies, global, route);
-        }
-        // Other scoped owners and unresolved readers still protect App
-        // routing. Check only entities whose scoped edge actually retired.
         let mut removed = Vec::new();
-        for entity in prepared.removed_entities {
-            remove_dependency_owner(&mut inner.render_dependencies, entity, route);
-            if !inner.render_dependencies.contains_key(&entity) { removed.push(entity); }
+        for prepared in prepared {
+            let route = Some(prepared.owner);
+            let entry = inner.view_reads.entry(route).or_insert_with(|| CommittedReads {
+                reads: Default::default(), own_reads: Default::default(),
+                state_validation: Default::default(), route, keep: true,
+            });
+            debug_assert_eq!(entry.route, route);
+            // Own reads are unchanged; these deltas only describe rows.
+            for entity in prepared.added_entities {
+                insert_dependency_owner(&mut inner.render_dependencies, entity, route);
+            }
+            for global in prepared.added_globals {
+                insert_dependency_owner(&mut inner.global_read_dependencies, global, route);
+            }
+            for global in prepared.removed_globals {
+                remove_dependency_owner(&mut inner.global_read_dependencies, global, route);
+            }
+            for entity in prepared.removed_entities {
+                remove_dependency_owner(&mut inner.render_dependencies, entity, route);
+                removed.push(entity);
+            }
+            entry.reads = prepared.merged;
+            entry.keep = true;
         }
-        entry.reads = prepared.merged;
-        entry.keep = true;
+        // Decide App-level retirement only after the final owner route
+        // set is visible. Other owners and unresolved routes protect it.
+        removed.retain(|entity| !inner.render_dependencies.contains_key(entity));
+        removed.sort_unstable();
+        removed.dedup();
         removed
     }
 
@@ -1431,7 +1437,7 @@ mod view_invalidation_tests {
         };
         let prepared = invalidator.prepare_boundary_row_reads(owner, &reads).unwrap();
         assert!(!invalidator.inner.borrow().render_dependencies.contains_key(&entering));
-        invalidator.commit_boundary_row_reads(prepared);
+        invalidator.commit_boundary_row_reads_batch(std::iter::once(prepared));
         let prepared = invalidator.prepare_boundary_row_reads(owner, &reads).unwrap();
         assert!(prepared.added_entities.is_empty());
         assert!(prepared.added_globals.is_empty());
@@ -1441,7 +1447,7 @@ mod view_invalidation_tests {
             assert!(Rc::ptr_eq(&prepared.merged.entities, &old.entities));
             assert!(Rc::ptr_eq(&prepared.merged.globals, &old.globals));
         }
-        invalidator.commit_boundary_row_reads(prepared);
+        invalidator.commit_boundary_row_reads_batch(std::iter::once(prepared));
         {
             let inner = invalidator.inner.borrow();
             let entry = &inner.view_reads[&Some(owner)];
@@ -1501,7 +1507,7 @@ mod view_invalidation_tests {
         assert!(prepared.removed_entities.contains(&retired));
         assert!(prepared.removed_entities.contains(&other_reader));
         assert_eq!(prepared.removed_globals, vec![(global, None)]);
-        let removed = invalidator.commit_boundary_row_reads(prepared);
+        let removed = invalidator.commit_boundary_row_reads_batch(std::iter::once(prepared));
         assert_eq!(removed, vec![retired]);
         let inner = invalidator.inner.borrow();
         let reads = &inner.view_reads[&Some(owner)].reads;
@@ -1513,6 +1519,39 @@ mod view_invalidation_tests {
         assert_eq!(inner.render_dependencies[&other_reader].as_ref().unwrap().as_slice(), &[other]);
         assert!(!inner.global_read_dependencies.contains_key(&(global, None)));
         assert!(inner.global_read_dependencies.contains_key(&(global, Some(true))));
+    }
+
+    #[test]
+    fn boundary_owner_batch_keeps_transferred_entity_route_in_either_order() {
+        for reverse in [false, true] {
+            let invalidator = WindowInvalidator::new();
+            let left = EntityId::from(1);
+            let right = EntityId::from(2);
+            let entity = EntityId::from(3);
+            let departing = EntityId::from(4);
+            let global = TypeId::of::<u32>();
+            let before = crate::RenderDependencies {
+                entities: Rc::from([entity, departing]),
+                globals: Rc::from([(global, None)]),
+                ..Default::default()
+            };
+            let after = crate::RenderDependencies {
+                entities: Rc::from([entity]),
+                globals: Rc::from([(global, None)]),
+                ..Default::default()
+            };
+            let initial = invalidator.prepare_boundary_row_reads(left, &before).unwrap();
+            invalidator.commit_boundary_row_reads_batch(std::iter::once(initial));
+            let empty = crate::RenderDependencies::default();
+            let remove = invalidator.prepare_boundary_row_delta(left, &empty, &before, &empty).unwrap();
+            let add = invalidator.prepare_boundary_row_reads(right, &after).unwrap();
+            let deltas = if reverse { [add, remove] } else { [remove, add] };
+            assert_eq!(invalidator.commit_boundary_row_reads_batch(deltas), vec![departing]);
+            let inner = invalidator.inner.borrow();
+            assert_eq!(inner.render_dependencies[&entity].as_ref().unwrap().as_slice(), &[right]);
+            assert_eq!(inner.global_read_dependencies[&(global, None)].as_ref().unwrap().as_slice(), &[right]);
+            assert!(!inner.render_dependencies.contains_key(&departing));
+        }
     }
 
     #[test]

@@ -2052,7 +2052,7 @@ impl Window {
             .expect("reserved detached layout commit");
         let retired_states = prepared_states.map_or_else(Vec::new, |prepared| self.element_states.commit_boundary(prepared));
         if let Some(prepared) = prepared_reads {
-            let retired_entities = self.invalidator.commit_boundary_row_reads(prepared);
+            let retired_entities = self.invalidator.commit_boundary_row_reads_batch(std::iter::once(prepared));
             cx.unregister_boundary_entities(self.handle, &retired_entities);
             cx.register_boundary_entities(self.handle, self.invalidator.clone(), &reads.entities);
         }
