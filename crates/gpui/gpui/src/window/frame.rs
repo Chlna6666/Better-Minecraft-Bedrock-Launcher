@@ -401,6 +401,12 @@ impl RecordSplicePlan {
 
     pub(crate) fn edit_count(&self) -> usize { self.edits.len() }
 
+    pub(super) fn edited_ranges(&self, replacement: bool) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.edits.iter().map(move |edit| {
+            if replacement { edit.replacement.clone() } else { edit.old.clone() }
+        })
+    }
+
     /// A replacement subrange must have exactly one destination.
     pub(crate) fn replacement_span(&self, range: Range<usize>) -> Option<Range<usize>> {
         if range.start > range.end || range.end > self.replacement_len { return None; }
