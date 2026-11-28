@@ -732,33 +732,68 @@ impl TaffyLayoutEngine {
         true
     }
 
-    /// Project an enclosing View's layout ownership into the candidate's
-    /// stable coordinates. The caller must certify it is an ancestor of
-    /// this single boundary domain, including for insertion-only edits.
-    /// Unrelated View records keep their original claim coordinates.
+    /// Borrow the complete native boundary domain for a single-list
+    /// transaction. Both coordinates remain stable until final adoption.
+    pub(crate) fn detached_boundary_claim_domain(&self) -> Option<(&[Range<usize>], Range<usize>)> {
+        let boundary = self.detached_boundary.as_ref()?;
+        (!boundary.rejected).then_some((boundary.retired.as_slice(), 0..self.claimed_key_log.len()))
+    }
+
+    /// Project an enclosing View's layout ownership into stable committed
+    /// coordinates. The caller certifies exactly the retired and entered
+    /// domains it encloses; independent lists need not share a View path.
     #[allow(dead_code)]
     pub(crate) fn detached_boundary_ancestor_claims(
-        &self, old: &LayoutClaimBlocks,
+        &self,
+        old: &LayoutClaimBlocks,
+        retired: &[Range<usize>],
+        entered: &[Range<usize>],
     ) -> Option<LayoutClaimBlocks> {
         let boundary = self.detached_boundary.as_ref()?;
         let old_len = self.committed_claim_log.len();
-        if boundary.rejected || old.iter().any(|span| span.start > span.end || span.end > old_len) {
+        if boundary.rejected || old.iter().any(|span| span.start > span.end || span.end > old_len)
+            || entered.iter().any(|span| span.start > span.end || span.end > self.claimed_key_log.len())
+            || entered.windows(2).any(|pair| pair[0].end > pair[1].start)
+        {
             return None;
         }
-        let mut retired = boundary.retired.clone();
-        // The row domain belongs to prepaint; an overlapping request
-        // block would mean the caller chose an invalid enclosing owner.
-        if old.request_blocks().iter().any(|request| retired.iter().any(|span| {
-            request.start < span.end && span.start < request.end
-        })) {
+
+        // The native retirement table is already sorted and disjoint.
+        // Reject any selected range which is not an exact native edit.
+        let all = boundary.retired.as_slice();
+        let complete = std::ptr::eq(retired, all);
+        if !complete && retired.iter().any(|span| {
+            all.binary_search_by_key(&span.start, |range| range.start)
+                .ok().is_none_or(|index| &all[index] != span)
+        }) {
+            return None;
+        }
+        // Retired lazy rows cannot overlap request-phase ownership.
+        let overlaps = |block: &Range<usize>| {
+            let start = all.partition_point(|span| span.end <= block.start);
+            let end = all.partition_point(|span| span.start < block.end);
+            &all[start..end.max(start)]
+        };
+        if old.request_blocks().iter().any(|block| !overlaps(block).is_empty()) {
+            return None;
+        }
+        // An ancestor may not silently retain a retired range just
+        // because its caller omitted that domain from the certificate.
+        if !complete && old.prepaint_blocks().iter().any(|block| {
+            overlaps(block).iter().any(|span| {
+                retired.binary_search_by_key(&span.start, |range| range.start).is_err()
+            })
+        }) {
             return None;
         }
         let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
-        Self::subtract_claim_blocks(old.prepaint_blocks(), &mut retired, &mut kept)?;
+        Self::subtract_claim_blocks(old.prepaint_blocks(), retired, &mut kept)?;
         let mut result = LayoutClaimBlocks::default();
         for span in old.request_blocks() { result.push_request(span.clone()); }
         for span in kept { result.push_prepaint(span); }
-        result.push_prepaint(old_len..old_len.checked_add(self.claimed_key_log.len())?);
+        for span in entered {
+            result.push_prepaint(old_len.checked_add(span.start)?..old_len.checked_add(span.end)?);
+        }
         result.normalize();
         Some(result)
     }
@@ -1083,9 +1118,11 @@ impl TaffyLayoutEngine {
         // Each phase independently subtracts its dirty blocks. The source
         // ranges may be interleaved physically after previous splices.
         let mut kept = smallvec::SmallVec::<[Range<usize>; 5]>::new();
-        Self::subtract_claim_blocks(anchor.request_blocks(), &mut excluded_request, &mut kept)?;
+        excluded_request.sort_unstable_by_key(|range| range.start);
+        Self::subtract_claim_blocks(anchor.request_blocks(), &excluded_request, &mut kept)?;
         let request_len: usize = kept.iter().map(Range::len).sum();
-        Self::subtract_claim_blocks(anchor.prepaint_blocks(), &mut excluded_prepaint, &mut kept)?;
+        excluded_prepaint.sort_unstable_by_key(|range| range.start);
+        Self::subtract_claim_blocks(anchor.prepaint_blocks(), &excluded_prepaint, &mut kept)?;
         let start = self.claimed_key_log.len();
         let mut map = ClaimBlockMap::default();
         let mut target = start;
@@ -1102,10 +1139,9 @@ impl TaffyLayoutEngine {
     }
 
     fn subtract_claim_blocks(
-        anchors: &[Range<usize>], excluded: &mut [Range<usize>],
+        anchors: &[Range<usize>], excluded: &[Range<usize>],
         kept: &mut smallvec::SmallVec<[Range<usize>; 5]>,
     ) -> Option<()> {
-        excluded.sort_unstable_by_key(|range| range.start);
         if excluded.windows(2).any(|pair| pair[0].end > pair[1].start)
             || anchors.windows(2).any(|pair| pair[0].end > pair[1].start)
         {
@@ -2132,11 +2168,14 @@ mod tests {
         assert_eq!(entering_claims.prepaint_blocks(), &[3..4]);
         let mut enclosing = LayoutClaimBlocks::request(0..1);
         enclosing.push_prepaint(1..3);
-        let projected = engine.detached_boundary_ancestor_claims(&enclosing).unwrap();
+        let (retired, entered) = engine.detached_boundary_claim_domain().unwrap();
+        let projected = engine.detached_boundary_ancestor_claims(&enclosing, retired, &[entered.clone()]).unwrap();
         assert_eq!(projected.request_blocks(), &[0..1]);
         assert_eq!(projected.prepaint_blocks(), &[2..4]);
         assert!(projected.covers(&entering_claims));
-        assert!(engine.detached_boundary_ancestor_claims(&LayoutClaimBlocks::prepaint(2..3)).is_none());
+        assert!(engine.detached_boundary_ancestor_claims(
+            &LayoutClaimBlocks::prepaint(2..3), retired, &[entered],
+        ).is_none());
         engine.commit_detached_boundary().unwrap();
         assert_eq!(engine.committed_claim_log.len(), 4);
         assert_eq!(engine.committed_claim_log[0], before[0]);
@@ -2164,6 +2203,38 @@ mod tests {
         assert!(engine.try_keep_retained(&LayoutClaimBlocks::request(0..1), root).is_some());
         assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(2..3), kept).is_some());
         assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(4..5), returning).is_some());
+    }
+
+    #[test]
+    fn detached_boundary_ancestors_claim_only_their_independent_domains() {
+        let mut engine = TaffyLayoutEngine::new();
+        let left = engine.request_layout(Some(owner(&row_id(1))), true, Style::default(), crate::px(16.), 1., &[]);
+        let right = engine.request_layout(Some(owner(&row_id(2))), true, Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        assert_eq!(engine.begin_detached_boundary(&[
+            (left, LayoutClaimBlocks::prepaint(0..1)),
+            (right, LayoutClaimBlocks::prepaint(1..2)),
+        ]), Some(2));
+        let new_left = engine.request_layout(Some(owner(&row_id(3))), true, Style::default(), crate::px(16.), 1., &[]);
+        let new_right = engine.request_layout(Some(owner(&row_id(4))), true, Style::default(), crate::px(16.), 1., &[]);
+        let left_claims = LayoutClaimBlocks::prepaint(0..1);
+        let right_claims = LayoutClaimBlocks::prepaint(1..2);
+        let a = engine.detached_boundary_ancestor_claims(&left_claims, &[0..1], &[0..1]).unwrap();
+        let b = engine.detached_boundary_ancestor_claims(&right_claims, &[1..2], &[1..2]).unwrap();
+        assert_eq!(a.prepaint_blocks(), &[2..3]);
+        assert_eq!(b.prepaint_blocks(), &[3..4]);
+        let (all, entered) = engine.detached_boundary_claim_domain().unwrap();
+        let common = LayoutClaimBlocks::prepaint(0..2);
+        let both = engine.detached_boundary_ancestor_claims(&common, all, &[entered]).unwrap();
+        assert_eq!(both.prepaint_blocks(), &[2..4]);
+        assert!(engine.detached_boundary_ancestor_claims(&common, &[0..1], &[0..1]).is_none());
+        assert!(engine.detached_boundary_ancestor_claims(&left_claims, &[1..2], &[0..1]).is_none());
+        assert!(engine.detached_boundary_ancestor_claims(&left_claims, &[0..2], &[0..1]).is_none());
+        assert!(engine.detached_boundary_ancestor_claims(&left_claims, &[0..1], &[0..2, 1..2]).is_none());
+        assert!(engine.detached_boundary_ancestor_claims(&left_claims, &[0..1], &[2..3]).is_none());
+        engine.commit_detached_boundary().unwrap();
+        assert_eq!(engine.committed_claim_log[2].unwrap().id, new_left);
+        assert_eq!(engine.committed_claim_log[3].unwrap().id, new_right);
     }
 
     #[test]

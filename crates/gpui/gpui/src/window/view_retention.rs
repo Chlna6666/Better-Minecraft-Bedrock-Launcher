@@ -370,6 +370,8 @@ impl BoundaryViewRecords {
         }
         let ancestors = old.dispatch_tree.view_path(owner);
         let enclosing = |entity| entity == owner || ancestors.contains(&entity);
+        let (retired_claims, entered_claims) = engine.detached_boundary_claim_domain()?;
+        let entered_claims = [entered_claims];
         let mut records = Vec::new();
         for (index, slot) in old.view_retention_records.iter().enumerate() {
             let Some(record) = slot.record.as_ref() else { continue; };
@@ -399,7 +401,9 @@ impl BoundaryViewRecords {
                 continue;
             }
             let claims = if is_ancestor {
-                Some(engine.detached_boundary_ancestor_claims(&record.layout_claims)?)
+                Some(engine.detached_boundary_ancestor_claims(
+                    &record.layout_claims, retired_claims, &entered_claims,
+                )?)
             } else {
                 None
             };
