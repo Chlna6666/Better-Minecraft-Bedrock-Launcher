@@ -890,6 +890,18 @@ impl WindowTextSystem {
         self.line_layout_cache.reuse_layouts(index)
     }
 
+    /// Adopt independent boundary accesses before the ordinary text frame
+    /// finish. The Window must validate all other Frame owners first.
+    #[allow(dead_code)]
+    pub(crate) fn splice_layouts(
+        &self,
+        generation: u64,
+        lines: &crate::window::RecordSplicePlan,
+        wrapped: &crate::window::RecordSplicePlan,
+    ) -> Option<()> {
+        self.line_layout_cache.splice_layouts(generation, lines, wrapped)
+    }
+
     pub(crate) fn truncate_layouts(&self, index: LineLayoutIndex) {
         self.line_layout_cache.truncate_layouts(index)
     }
