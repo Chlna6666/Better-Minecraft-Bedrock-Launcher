@@ -294,6 +294,9 @@ pub struct TaffyLayoutEngine {
     claimed_key_log: Vec<Option<LayoutClaim>>,
     committed_claim_log: Vec<Option<LayoutClaim>>,
     detached_boundary: Option<DetachedBoundary>,
+    // The committed claim log has stable coordinates between ordinary
+    // draws. A successful append-only boundary preserves its proof.
+    detached_claim_proof: Option<(u64, u64)>,
     claim_relocations: SpanRelocations,
     pending_replays: Vec<LayoutId>,
     layout_changes: u64,
@@ -362,6 +365,7 @@ impl TaffyLayoutEngine {
             claimed_key_log: Vec::new(),
             committed_claim_log: Vec::new(),
             detached_boundary: None,
+            detached_claim_proof: None,
             claim_relocations: SpanRelocations::default(),
             pending_replays: Vec::new(),
             layout_changes: 0,
@@ -480,6 +484,7 @@ impl TaffyLayoutEngine {
 
     pub fn clear(&mut self) {
         debug_assert!(self.detached_boundary.is_none(), "unfinished detached boundary");
+        self.detached_claim_proof = None;
         // Observe the frame that just finished before clearing it. This is the real active layout
         // working set and lets a large-to-small page transition return excess buckets without
         // disturbing stable large pages.
@@ -641,6 +646,13 @@ impl TaffyLayoutEngine {
         {
             return None;
         }
+        // Validate the committed domain once per ordinary frame or
+        // external native mutation, not once per scroll boundary.
+        let proof = (self.request_frame, self.layout_changes);
+        if self.detached_claim_proof != Some(proof) {
+            if !self.claims_valid(&self.committed_claim_log) { return None; }
+            self.detached_claim_proof = Some(proof);
+        }
         let mut ranges = Vec::with_capacity(retired.len());
         for (root, blocks) in retired {
             if !blocks.request_blocks().is_empty() || blocks.prepaint_blocks().len() != 1 {
@@ -693,6 +705,7 @@ impl TaffyLayoutEngine {
     #[allow(dead_code)]
     pub(crate) fn cancel_detached_boundary(&mut self) -> bool {
         let Some(boundary) = self.detached_boundary.take() else { return false; };
+        self.detached_claim_proof = None;
         if boundary.touched_existing {
             self.abort_frame();
             return false;
@@ -770,13 +783,14 @@ impl TaffyLayoutEngine {
         if boundary.rejected || !self.anonymous_nodes.is_empty()
             || !self.pending_replays.is_empty()
             || self.claimed_this_frame != self.claimed_key_log.len()
+            || boundary.created.len() != self.claimed_key_log.len()
+            || boundary.created_keys.len() != self.claimed_key_log.len()
             || !self.claimed_key_log.iter().all(|entry| entry.as_ref().is_some_and(|claim| {
                 boundary.created.contains(&claim.id)
                     && self.persistent_nodes.get(&claim.key).is_some_and(|node| {
                         node.id == claim.id && node.claimed_in_frame == self.request_frame
                     })
             }))
-            || !self.claims_valid(&self.committed_claim_log)
         {
             return None;
         }
@@ -788,20 +802,41 @@ impl TaffyLayoutEngine {
     pub(crate) fn commit_detached_boundary(&mut self) -> Option<()> {
         self.prepare_detached_boundary_commit()?;
         let boundary = self.detached_boundary.take().expect("validated boundary");
-        for range in boundary.retired {
-            self.committed_claim_log[range].fill(None);
+        // Keep the ordinary traversal epoch unchanged. Its next request
+        // must still be able to claim every surviving node. Only entered
+        // nodes need their current-frame claim stamp converted to the
+        // previously committed epoch.
+        for claim in self.claimed_key_log.iter().flatten() {
+            self.persistent_nodes.get_mut(&claim.key).expect("validated entered claim")
+                .claimed_in_frame = self.request_frame.wrapping_sub(1);
         }
-        for claim in self.committed_claim_log.iter().flatten() {
-            let node = self.persistent_nodes.get_mut(&claim.key).expect("validated retained claim");
-            if node.claimed_in_frame != self.request_frame {
-                node.claimed_in_frame = self.request_frame;
-                self.claimed_this_frame += 1;
+        // The admission proof established complete detached subtrees.
+        // Retire them immediately instead of scanning the entire native
+        // map to age offscreen nodes. A reverse scroll can recreate the
+        // same key without colliding with an offscreen lingering slot.
+        for range in boundary.retired {
+            for index in range {
+                let claim = self.committed_claim_log[index].take().expect("validated retired claim");
+                self.persistent_nodes.remove(&claim.key).expect("validated retired node");
+                self.remove_native_node(claim.id);
             }
         }
         self.committed_claim_log.append(&mut self.claimed_key_log);
-        // clear() performs the ordinary epoch advance and retirement policy.
-        std::mem::swap(&mut self.committed_claim_log, &mut self.claimed_key_log);
-        self.clear();
+        self.claimed_this_frame = 0;
+        self.claim_relocations.clear();
+        self.computed_layouts.clear();
+        self.bounds_mutations.clear();
+        self.persistent_layout_reuses = 0;
+        self.nodes_requested = 0;
+        self.measured_nodes_requested = 0;
+        self.roots_computed = 0;
+        self.bounds_cache_hits = 0;
+        self.bounds_cache_misses = 0;
+        self.layout_cache_hits = 0;
+        self.layout_cache_misses = 0;
+        self.layout_cache_reused_roots = 0;
+        self.layout_time = Duration::ZERO;
+        self.detached_claim_proof = Some((self.request_frame, self.layout_changes));
         Some(())
     }
 
@@ -2104,7 +2139,7 @@ mod tests {
         assert_eq!(engine.committed_claim_log[3].unwrap().id, entering);
         assert_eq!(engine.persistent_nodes[&owner(&list)].id, root);
         assert_eq!(engine.persistent_nodes[&owner(&keep)].id, kept);
-        assert!(engine.persistent_nodes[&owner(&exit)].offscreen);
+        assert!(!engine.persistent_nodes.contains_key(&owner(&exit)));
         assert_eq!(engine.claimed_this_frame, 0);
         assert!(engine.try_keep_retained(&LayoutClaimBlocks::request(0..1), root).is_some());
         assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(2..3), kept).is_some());
