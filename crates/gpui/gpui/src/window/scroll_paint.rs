@@ -1217,6 +1217,40 @@ mod tests {
     }
 
     #[test]
+    fn native_recapture_preserves_tiles_between_distant_damage_regions() {
+        let rect = |y, height| Bounds::new(point(px(0.), px(y)), size(px(40.), px(height))).scale(1.);
+        let coverage = rect(-96., 288.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(96.))));
+        let capture = |color| {
+            let mut ops = Operations::default();
+            for (y, rgb) in [(8., color), (48., 0x123456), (80., color)] {
+                ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                    bounds: rect(y, 8.), content_mask: ContentMask::new(coverage),
+                    background: crate::rgb(rgb).into(), ..Default::default()
+                })));
+            }
+            ScrollPaint::new(Point::default(), coverage, ops)
+        };
+        let publish = |source: &Arc<ScrollPaint>| {
+            let mut painter = Painter::default();
+            assert!(painter.push_deferred_scroll(source.native_placement(viewport, 1., Point::default()).unwrap()));
+            painter.finish();
+            painter.into_scene()
+        };
+        let original = Arc::new(capture(0x0000ff));
+        let scene = publish(&original);
+        let old = crate::window::SceneLayers::capture(&scene, None, true);
+        let mut refreshed = capture(0x00ff00);
+        assert!(refreshed.inherit_native_identity(&original, 1.));
+        let scene = publish(&Arc::new(refreshed));
+        let layers = crate::window::SceneLayers::capture(&scene, Some(&old), true);
+        let layer = &layers.frames[0];
+        assert_eq!(layer.adopt_tile(1, [0, 0, 40, 32], 1.), None);
+        assert_eq!(layer.adopt_tile(1, [0, 32, 40, 64], 1.), Some(2));
+        assert_eq!(layer.adopt_tile(1, [0, 64, 40, 96], 1.), None);
+    }
+
+    #[test]
     fn native_recapture_adopts_unaffected_tiles_across_flat_operation_count_changes() {
         let rect = |y, height| Bounds::new(point(px(0.), px(y)), size(px(40.), px(height))).scale(1.);
         let coverage = rect(-96., 288.);
