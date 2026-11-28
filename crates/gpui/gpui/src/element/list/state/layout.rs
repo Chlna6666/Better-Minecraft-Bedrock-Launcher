@@ -519,6 +519,7 @@ impl StateInner {
                                         records: start..window.prepaint_index(),
                                         reads,
                                         validation: Default::default(),
+                                        layout_claims: None,
                                     });
                                 }
                             }
