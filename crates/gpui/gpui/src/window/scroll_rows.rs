@@ -72,6 +72,37 @@ pub(crate) fn uniform_visible_range(
     start..end.min(count)
 }
 
+/// The ordinary list build and independent boundary preparation must
+/// select exactly the same logical rows for an identical scroll sample.
+fn uniform_capture_range(
+    visible: &Range<usize>, count: usize, versioned: bool,
+    sampled: Point<Pixels>, previous: Option<Point<Pixels>>,
+) -> Range<usize> {
+    let overscan = (visible.len() / 4).clamp(2, 8);
+    let (before, after) = if versioned {
+        let forward = (visible.len() / 2).clamp(3, 8);
+        match previous.map(|previous| sampled.y.0.total_cmp(&previous.y.0)) {
+            Some(std::cmp::Ordering::Less) => (overscan, forward),
+            Some(std::cmp::Ordering::Greater) => (forward, overscan),
+            _ => (forward, forward),
+        }
+    } else {
+        (overscan, overscan)
+    };
+    visible.start.saturating_sub(before)..visible.end.saturating_add(after).min(count)
+}
+
+/// Pure membership preparation; native Frame ownership is still required
+/// before any entering row can be materialized from this builder.
+#[allow(dead_code)]
+struct UniformBoundaryMembership {
+    sampled: Point<Pixels>,
+    version: crate::StateVersion,
+    visible: Range<usize>,
+    captured: Range<usize>,
+    delta: VisibleRangeDelta,
+}
+
 impl RowPlacementBinding {
     fn measurement(&self) -> Option<&RowMeasurement> {
         match &self.source {
@@ -86,30 +117,53 @@ impl RowPlacementBinding {
             || matches!(&self.source, RowPlacementSource::Variable(proof) if proof.buffered())
     }
 
+    fn sample_uniform(&self) -> Option<(Point<Pixels>, crate::StateVersion, Range<usize>)> {
+        let RowPlacementSource::Uniform { offset, item_count, item_height, padded, padding_top, min_y, .. } =
+            &self.source else { return None; };
+        let offset = offset.upgrade()?;
+        let sampled = *offset.borrow();
+        if sampled.x != Pixels::ZERO || !sampled.y.0.is_finite()
+            || sampled.y < *min_y || sampled.y > Pixels::ZERO
+        {
+            return None;
+        }
+        let visible = uniform_visible_range(
+            sampled.y, *item_height, padded.size.height, *padding_top, *item_count,
+        );
+        (!visible.is_empty()).then(|| (sampled, offset.version.clone(), visible))
+    }
+
     fn sample(&self) -> Option<(Point<Pixels>, crate::StateVersion, Range<usize>)> {
         match &self.source {
             RowPlacementSource::Variable(proof) => proof.sample(),
-            RowPlacementSource::Uniform { offset, item_count, item_height, padded, padding_top, min_y, .. } => {
-                let offset = offset.upgrade()?;
-                let sampled = *offset.borrow();
-                if sampled.x != Pixels::ZERO || !sampled.y.0.is_finite()
-                    || sampled.y < *min_y || sampled.y > Pixels::ZERO
-                {
-                    return None;
-                }
-                let visible = uniform_visible_range(
-                    sampled.y, *item_height, padded.size.height, *padding_top, *item_count,
-                );
+            RowPlacementSource::Uniform { .. } => {
+                let (sampled, version, visible) = self.sample_uniform()?;
                 if if self.buffered() {
-                    visible.is_empty() || visible.start < self.captured.start || visible.end > self.captured.end
+                    visible.start < self.captured.start || visible.end > self.captured.end
                 } else {
                     visible != self.captured
                 } {
                     return None;
                 }
-                Some((sampled, offset.version.clone(), visible))
+                Some((sampled, version, visible))
             }
         }
+    }
+
+    #[allow(dead_code)] // The final boundary commit will consume the entering runs.
+    fn boundary_membership(&self) -> Option<UniformBoundaryMembership> {
+        let builder = self.builder.as_ref()?;
+        let (sampled, version, visible) = self.sample_uniform()?;
+        if !self.buffered() || builder.context.owner != self.owner
+            || (visible.start >= self.captured.start && visible.end <= self.captured.end)
+        {
+            return None;
+        }
+        let captured = uniform_capture_range(
+            &visible, builder.context.item_count, self.row_revision.is_some(), sampled, Some(self.sampled),
+        );
+        let delta = VisibleRangeDelta::between(&self.captured, &captured);
+        Some(UniformBoundaryMembership { sampled, version, visible, captured, delta })
     }
 
     fn origin(&self, row: usize, offset: Point<Pixels>, previous: Point<Pixels>) -> Point<Pixels> {
@@ -934,20 +988,11 @@ impl Window {
         };
         if measurement.is_some() || plan.row_revision.is_some() {
             if !self.can_buffer_scroll_rows(plan, &visible) { return visible; }
-            let overscan = (visible.len() / 4).clamp(2, 8);
-            let (before, after) = if plan.row_revision.is_some() {
-                let forward = (visible.len() / 2).clamp(3, 8);
-                let previous = self.rendered_frame.scroll_rows.row_placements.get(&plan.key);
-                match previous.map(|previous| sampled.y.0.total_cmp(&previous.sampled.y.0)) {
-                    Some(std::cmp::Ordering::Less) => (overscan, forward),
-                    Some(std::cmp::Ordering::Greater) => (forward, overscan),
-                    _ => (forward, forward),
-                }
-            } else {
-                (overscan, overscan)
-            };
-            captured = visible.start.saturating_sub(before)
-                ..visible.end.saturating_add(after).min(plan.context.item_count);
+            let previous = self.rendered_frame.scroll_rows.row_placements.get(&plan.key);
+            captured = uniform_capture_range(
+                &visible, plan.context.item_count, plan.row_revision.is_some(),
+                sampled, previous.map(|previous| previous.sampled),
+            );
             plan.buffer_rows(visible.clone());
         }
         plan.row_placement = Some(RowPlacementBinding {
@@ -1668,6 +1713,28 @@ mod scoped_row_tests {
         append_row_input_move(&mut moves, 8..9, other).unwrap();
         assert_eq!(moves.as_slice(), &[(1..5, delta), (7..8, delta), (8..9, other)]);
         assert!(matches!(append_row_input_move(&mut moves, 8..10, other), Err(Outcome::InputRecords)));
+    }
+
+    #[test]
+    fn independent_boundary_membership_matches_directional_overscan() {
+        use crate::{point, px};
+        let old = uniform_capture_range(&(10..16), 100, true, point(px(0.), px(-240.)), None);
+        assert_eq!(old, 7..19);
+        let forward = uniform_capture_range(&(18..24), 100, true,
+            point(px(0.), px(-432.)), Some(point(px(0.), px(-240.))));
+        assert_eq!(forward, 16..27);
+        let delta = VisibleRangeDelta::between(&old, &forward);
+        assert_eq!(delta.kept, 16..19);
+        assert_eq!(delta.entered, [16..16, 19..27]);
+        assert_eq!(delta.exited, [7..16, 19..19]);
+        let reverse = uniform_capture_range(&(0..6), 100, true,
+            Point::default(), Some(point(px(0.), px(-432.))));
+        assert_eq!(reverse, 0..8);
+        let jump = VisibleRangeDelta::between(&forward, &reverse);
+        assert!(jump.kept.is_empty());
+        assert_eq!(jump.entered[0], reverse);
+        assert_eq!(jump.exited[0], forward);
+        assert_eq!(uniform_capture_range(&(96..100), 100, false, Point::default(), None), 94..100);
     }
 
     #[test]
