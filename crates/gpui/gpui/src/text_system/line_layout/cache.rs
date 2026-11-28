@@ -276,6 +276,42 @@ impl<V> LayoutStore<V> {
         reused
     }
 
+    /// Prepare the next access log from the committed and independently
+    /// materialized streams. The slot table is authoritative for both.
+    /// Duplicate IDs are deliberate and no layout Arc is cloned.
+    fn spliced_accesses(&self, plan: &crate::window::RecordSplicePlan) -> Option<Vec<usize>> {
+        use crate::window::SpliceSource;
+        if !plan.matches_sources(self.previous.len(), self.current.len()) { return None; }
+        let mut accesses = Vec::new();
+        accesses.try_reserve_exact(plan.len()).ok()?;
+        plan.visit_ranges(|source, range| {
+            let source = match source {
+                SpliceSource::Retained => &self.previous,
+                SpliceSource::Replacement => &self.current,
+            };
+            accesses.extend_from_slice(&source[range]);
+        });
+        accesses.iter().all(|&id| self.slots.get(id).is_some_and(Option::is_some))
+            .then_some(accesses)
+    }
+
+    /// Adopt only after both text streams have been prepared and their
+    /// font generation is still current. Retained slots must be marked
+    /// live before the ordinary frame finish retires unused entries.
+    fn adopt_spliced_accesses(&mut self, accesses: Vec<usize>, epoch: u64) -> usize {
+        let mut reused = 0;
+        for &id in &accesses {
+            let entry = self.slots[id].as_mut().expect("validated text layout slot");
+            if entry.last_used != epoch {
+                entry.last_used = epoch;
+                reused += 1;
+            }
+        }
+        self.used_count += reused;
+        self.current = accesses;
+        reused
+    }
+
     fn finish(&mut self, epoch: u64, mut retire: impl FnMut(&Arc<CacheKey>, Arc<V>)) {
         debug_assert!(self.used_count <= self.keys.len());
         // Every key was used: no unused slot can be retired. Unlike an
@@ -504,6 +540,24 @@ pub(crate) struct LineLayoutIndex {
 }
 
 impl LineLayoutIndex {
+    /// Project a retained text range through independent line and wrapped
+    /// line access edits. Never infer the ownership of ambiguous checkpoints.
+    #[allow(dead_code)]
+    pub(crate) fn retained_splice(
+        range: &Range<Self>,
+        generation: u64,
+        lines: &crate::window::RecordSplicePlan,
+        wrapped: &crate::window::RecordSplicePlan,
+    ) -> Option<Range<Self>> {
+        if range.start.font_generation != generation || range.end.font_generation != generation {
+            return None;
+        }
+        let l = lines.retained_span(range.start.lines_index..range.end.lines_index)?;
+        let w = wrapped.retained_span(range.start.wrapped_lines_index..range.end.wrapped_lines_index)?;
+        Some(Self { font_generation: generation, lines_index: l.start, wrapped_lines_index: w.start }
+            ..Self { font_generation: generation, lines_index: l.end, wrapped_lines_index: w.end })
+    }
+
     /// Rebase this frame-local index from one retained subtree origin to another.
     ///
     /// The operation is checked because a malformed retained range must degrade the frame instead
@@ -623,6 +677,34 @@ impl LineLayoutCache {
             + frame.wrapped_lines.replay(
                 range.start.wrapped_lines_index..range.end.wrapped_lines_index, epoch);
         self.frame_metrics.reuse_many(reused);
+    }
+
+    /// Adopt the two text access streams together. The current log must
+    /// contain only independently materialized replacement accesses. This
+    /// is called at the final boundary-commit stage, immediately before
+    /// normal finish_frame; no further fallible Frame adoption may follow.
+    /// On rejection neither log is changed (including font invalidation).
+    #[allow(dead_code)]
+    pub(crate) fn splice_layouts(
+        &self,
+        generation: u64,
+        lines: &crate::window::RecordSplicePlan,
+        wrapped: &crate::window::RecordSplicePlan,
+    ) -> Option<()> {
+        if self.cached_font_generation.load(Ordering::Acquire) != generation
+            || self.font_generation.load(Ordering::Acquire) != generation
+        {
+            return None;
+        }
+        let mut frame = self.frame.borrow_mut();
+        let next_lines = frame.lines.spliced_accesses(lines)?;
+        let next_wrapped = frame.wrapped_lines.spliced_accesses(wrapped)?;
+        if self.font_generation.load(Ordering::Acquire) != generation { return None; }
+        let epoch = frame.epoch;
+        let reused = frame.lines.adopt_spliced_accesses(next_lines, epoch)
+            + frame.wrapped_lines.adopt_spliced_accesses(next_wrapped, epoch);
+        self.frame_metrics.reuse_many(reused);
+        Some(())
     }
 
     pub fn truncate_layouts(&self, index: LineLayoutIndex) {
@@ -1175,6 +1257,54 @@ mod tests {
         assert_eq!(recent.current.len(), 1);
         assert_eq!(recent.old.len(), 1);
         assert_eq!(recent.current_units, RECENT_SHAPE_UNITS);
+    }
+
+    #[test]
+    fn text_access_splice_preserves_slots_duplicates_and_retained_liveness() {
+        use crate::window::RecordSplicePlan;
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = |text: &'static str| Arc::new(CacheKey {
+            text: SharedString::from(text), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        let a = key("a");
+        let b = key("b");
+        let c = key("c");
+        store.insert(a.clone(), Arc::new(LineLayout::default()), 1);
+        store.insert(b.clone(), Arc::new(LineLayout::default()), 1);
+        let a_id = store.keys[&a];
+        let b_id = store.keys[&b];
+        store.finish(1, |_, _| {});
+        store.insert(c.clone(), Arc::new(LineLayout::default()), 2);
+        let c_id = store.keys[&c];
+        let plan = RecordSplicePlan::new(2, 1, &[(1..2, 0..1), (2..2, 0..1)]).unwrap();
+        let accesses = store.spliced_accesses(&plan).unwrap();
+        assert_eq!(accesses, vec![a_id, c_id, c_id]);
+        assert_eq!(store.previous, vec![a_id, b_id]);
+        assert_eq!(store.current, vec![c_id]);
+        assert_eq!(store.adopt_spliced_accesses(accesses, 2), 1);
+        assert_eq!(store.used_count, 2);
+        store.finish(2, |key, _| assert_eq!(key, &b));
+        assert_eq!(store.previous, vec![a_id, c_id, c_id]);
+        assert_eq!(store.keys[&a], a_id);
+        assert_eq!(store.keys[&c], c_id);
+        assert!(!store.keys.contains_key(&b));
+    }
+
+    #[test]
+    fn text_index_splice_rejects_wrong_font_generation_and_ambiguous_checkpoint() {
+        use crate::window::RecordSplicePlan;
+        let lines = RecordSplicePlan::new(6, 2, &[(1..2, 0..2)]).unwrap();
+        let wrapped = RecordSplicePlan::new(5, 0, &[(1..3, 0..0)]).unwrap();
+        let index = |l, w| LineLayoutIndex { font_generation: 7, lines_index: l, wrapped_lines_index: w };
+        let span = index(3, 4)..index(5, 5);
+        let mapped = LineLayoutIndex::retained_splice(&span, 7, &lines, &wrapped).unwrap();
+        assert_eq!(mapped.start.lines_index..mapped.end.lines_index, 4..6);
+        assert_eq!(mapped.start.wrapped_lines_index..mapped.end.wrapped_lines_index, 2..3);
+        assert!(LineLayoutIndex::retained_splice(&span, 8, &lines, &wrapped).is_none());
+        let insert = RecordSplicePlan::new(6, 1, &[(3..3, 0..1)]).unwrap();
+        let empty = index(3, 4)..index(3, 4);
+        assert!(LineLayoutIndex::retained_splice(&empty, 7, &insert, &wrapped).is_none());
     }
 
     #[test]
