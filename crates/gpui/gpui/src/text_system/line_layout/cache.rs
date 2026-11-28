@@ -1260,6 +1260,42 @@ mod tests {
     }
 
     #[test]
+    fn text_boundary_splice_validates_both_streams_before_adoption() {
+        use crate::window::RecordSplicePlan;
+        let generation = Arc::new(AtomicU64::new(0));
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), generation.clone());
+        let runs = [FontRun { len: 5, font_id: FontId(1) }];
+        let old = cache.layout_wrapped_line("hello", px(14.), &runs, Some(px(80.)), None);
+        cache.finish_frame();
+        let new = cache.layout_wrapped_line("world", px(14.), &runs, Some(px(80.)), None);
+        let (old_lines, old_wrapped, new_lines, new_wrapped) = {
+            let frame = cache.frame.borrow();
+            (frame.lines.previous.clone(), frame.wrapped_lines.previous.clone(),
+                frame.lines.current.clone(), frame.wrapped_lines.current.clone())
+        };
+        let lines = RecordSplicePlan::new(old_lines.len(), new_lines.len(),
+            &[(old_lines.len()..old_lines.len(), 0..new_lines.len())]).unwrap();
+        let wrapped = RecordSplicePlan::new(old_wrapped.len(), new_wrapped.len(),
+            &[(old_wrapped.len()..old_wrapped.len(), 0..new_wrapped.len())]).unwrap();
+        let invalid = RecordSplicePlan::new(old_wrapped.len() + 1, new_wrapped.len(), &[]).unwrap();
+        assert!(cache.splice_layouts(0, &lines, &invalid).is_none());
+        {
+            let frame = cache.frame.borrow();
+            assert_eq!(frame.lines.current, new_lines);
+            assert_eq!(frame.wrapped_lines.current, new_wrapped);
+        }
+        assert!(cache.splice_layouts(1, &lines, &wrapped).is_none());
+        cache.splice_layouts(0, &lines, &wrapped).unwrap();
+        cache.finish_frame();
+        let frame = cache.frame.borrow();
+        assert_eq!(frame.lines.previous, [old_lines, new_lines].concat());
+        assert_eq!(frame.wrapped_lines.previous, [old_wrapped, new_wrapped].concat());
+        assert_eq!(frame.wrapped_lines.previous.len(), 2);
+        assert!(Arc::ptr_eq(&old, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[0]].as_ref().unwrap().layout));
+        assert!(Arc::ptr_eq(&new, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[1]].as_ref().unwrap().layout));
+    }
+
+    #[test]
     fn text_access_splice_preserves_slots_duplicates_and_retained_liveness() {
         use crate::window::RecordSplicePlan;
         let mut store = LayoutStore::<LineLayout>::default();
