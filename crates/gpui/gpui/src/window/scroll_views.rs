@@ -1282,11 +1282,14 @@ mod binding_tests {
                 window.draw(app).clear();
                 assert!(window.test_present().is_accepted());
             }
+            assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 1);
             let before = builds.get();
             window.dispatch_event(wheel(-24.), app);
             assert!(window.prepare_scroll_placement(app).is_ok());
             window.draw(app).clear();
             assert_eq!(builds.get(), before);
+            assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 1);
+            assert!(window.rendered_frame.scroll_rows.uniform_boundary_runs().is_none());
             assert!(window.test_present().is_accepted());
 
             revision.set(1);
