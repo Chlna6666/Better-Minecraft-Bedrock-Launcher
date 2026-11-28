@@ -268,6 +268,7 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
 struct DetachedBoundary {
     retired: Vec<Range<usize>>,
     created: FxHashSet<LayoutId>,
+    created_keys: Vec<u64>,
     // A colliding key is diverted to a temporary node; an external native
     // write requires full layout recovery rather than pretending to undo it.
     rejected: bool,
@@ -552,6 +553,8 @@ impl TaffyLayoutEngine {
     }
 
     pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
+        // Idle trimming cannot retire native slots while a boundary is open.
+        if self.detached_boundary.is_some() { return; }
         let floor = match level {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => 0,
@@ -667,7 +670,7 @@ impl TaffyLayoutEngine {
         if ranges.windows(2).any(|pair| pair[0].end > pair[1].start) { return None; }
         let offset = self.committed_claim_log.len();
         self.detached_boundary = Some(DetachedBoundary {
-            retired: ranges, created: FxHashSet::default(),
+            retired: ranges, created: FxHashSet::default(), created_keys: Vec::new(),
             rejected: false, touched_existing: false,
         });
         Some(offset)
@@ -694,7 +697,9 @@ impl TaffyLayoutEngine {
             self.abort_frame();
             return false;
         }
-        self.persistent_nodes.retain(|_, node| !boundary.created.contains(&node.id));
+        for key in boundary.created_keys {
+            self.persistent_nodes.remove(&key);
+        }
         for id in boundary.created {
             self.computed_layouts.remove(&id);
             self.remove_native_node(id);
@@ -1240,6 +1245,9 @@ impl TaffyLayoutEngine {
             let id = self.create_taffy_node(build_style(), children, measure.map(MeasureRequest::into_context));
             self.claimed_this_frame += 1;
             self.claimed_key_log.push(Some(LayoutClaim { key, id }));
+            if let Some(boundary) = self.detached_boundary.as_mut() {
+                boundary.created_keys.push(key);
+            }
             self.persistent_nodes.insert(
                 key,
                 PersistentLayoutNode {
@@ -1283,8 +1291,10 @@ impl TaffyLayoutEngine {
         children: &[LayoutId],
         measure: Option<NodeContext>,
     ) -> LayoutId {
-        for &child in children {
-            self.observe_boundary_write(child);
+        if self.detached_boundary.is_some() {
+            for &child in children {
+                self.observe_boundary_write(child);
+            }
         }
         self.layout_changes = self.layout_changes.wrapping_add(1);
         if measure.is_some() {
@@ -2004,6 +2014,76 @@ mod tests {
         assert_eq!(log.entries()[1].1, available);
         log.record(known, available, crate::size(crate::px(20.), crate::px(12.)));
         assert!(matches!(log, MeasureLog::Invalid));
+    }
+
+    #[test]
+    fn detached_boundary_commit_preserves_old_claim_coordinates_and_native_ids() {
+        let mut engine = TaffyLayoutEngine::new();
+        let list = list_id();
+        let exit = row_id(1);
+        let keep = row_id(2);
+        let enter = row_id(3);
+        let root = engine.request_layout(Some(owner(&list)), false, Style::default(), crate::px(16.), 1., &[]);
+        let leaving = engine.request_layout(Some(owner(&exit)), true, Style::default(), crate::px(16.), 1., &[]);
+        let kept = engine.request_layout(Some(owner(&keep)), true, Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        let before = engine.committed_claim_log.clone();
+        let retired = LayoutClaimBlocks::prepaint(1..2);
+        assert!(engine.begin_detached_boundary(&[(leaving, retired.clone()), (leaving, retired.clone())]).is_none());
+        assert_eq!(engine.begin_detached_boundary(&[(leaving, retired)]), Some(3));
+        let entering = engine.request_layout(Some(owner(&enter)), true, Style::default(), crate::px(16.), 1., &[]);
+        assert_eq!(engine.committed_claim_log, before);
+        assert_eq!(engine.capture_detached_row_range(0..1).unwrap().0, entering);
+        engine.commit_detached_boundary().unwrap();
+        assert_eq!(engine.committed_claim_log.len(), 4);
+        assert_eq!(engine.committed_claim_log[0], before[0]);
+        assert!(engine.committed_claim_log[1].is_none());
+        assert_eq!(engine.committed_claim_log[2], before[2]);
+        assert_eq!(engine.committed_claim_log[3].unwrap().id, entering);
+        assert_eq!(engine.persistent_nodes[&owner(&list)].id, root);
+        assert_eq!(engine.persistent_nodes[&owner(&keep)].id, kept);
+        assert!(engine.persistent_nodes[&owner(&exit)].offscreen);
+        assert_eq!(engine.claimed_this_frame, 0);
+        assert!(engine.try_keep_retained(&LayoutClaimBlocks::request(0..1), root).is_some());
+        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(2..3), kept).is_some());
+        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(3..4), entering).is_some());
+    }
+
+    #[test]
+    fn detached_boundary_cancel_removes_only_new_nodes_and_rejects_colliding_keys() {
+        let mut engine = TaffyLayoutEngine::new();
+        let key = row_id(1);
+        let root = engine.request_layout(Some(owner(&key)), true, Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        let before = engine.committed_claim_log.clone();
+        let epoch = engine.request_frame;
+        assert_eq!(engine.begin_detached_boundary(&[]), Some(1));
+        let child = engine.request_layout(Some(owner(&row_id(2))), true, Style::default(), crate::px(16.), 1., &[]);
+        let parent = engine.request_layout(Some(owner(&row_id(3))), true, Style::default(), crate::px(16.), 1., &[child]);
+        let duplicate = engine.request_layout(Some(owner(&key)), true, Style::default(), crate::px(16.), 1., &[]);
+        assert_ne!(duplicate, root);
+        assert_ne!(parent, root);
+        assert!(engine.commit_detached_boundary().is_none());
+        assert!(engine.cancel_detached_boundary());
+        assert_eq!(engine.request_frame, epoch);
+        assert_eq!(engine.committed_claim_log, before);
+        assert_eq!(engine.taffy.total_node_count(), 1);
+        assert_eq!(engine.persistent_nodes[&owner(&key)].id, root);
+        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(0..1), root).is_some());
+    }
+
+    #[test]
+    fn detached_boundary_external_edge_forces_native_recovery() {
+        let mut engine = TaffyLayoutEngine::new();
+        let child = engine.request_layout(Some(owner(&row_id(1))), true, Style::default(), crate::px(16.), 1., &[]);
+        let root = engine.request_layout(Some(owner(&row_id(2))), true, Style::default(), crate::px(16.), 1., &[child]);
+        engine.clear();
+        assert_eq!(engine.begin_detached_boundary(&[]), Some(2));
+        engine.request_layout(Some(owner(&row_id(3))), true, Style::default(), crate::px(16.), 1., &[child]);
+        assert!(engine.commit_detached_boundary().is_none());
+        assert!(!engine.cancel_detached_boundary());
+        assert_eq!(engine.taffy.total_node_count(), 0);
+        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(0..2), root).is_none());
     }
 
     #[test]
