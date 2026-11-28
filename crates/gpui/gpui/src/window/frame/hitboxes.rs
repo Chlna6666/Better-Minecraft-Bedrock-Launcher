@@ -312,6 +312,50 @@ impl HitboxStore {
         }
     }
 
+    /// Prepare a variable-length frozen hitbox store from validated record
+    /// coordinates. No projection, Hitbox clone, or envelope regeneration is
+    /// needed: bounded physical pages and their translations remain shared.
+    #[allow(dead_code)] // Adopted only with the matching Dispatch/Frame transaction.
+    pub(in crate::window) fn with_spliced_records(
+        &self, replacement: &Self, plan: &super::RecordSplicePlan,
+    ) -> Option<Self> {
+        if !self.pending.is_empty() || !replacement.pending.is_empty()
+            || !plan.matches_sources(self.len, replacement.len)
+        {
+            return None;
+        }
+        let mut result = Self::default();
+        plan.visit_ranges(|source, range| {
+            let source = match source {
+                super::SpliceSource::Retained => self,
+                super::SpliceSource::Replacement => replacement,
+            };
+            for span in source.spans_in(&range) {
+                let begin = range.start.max(span.begin());
+                let end = range.end.min(span.end);
+                let start = span.start + (begin - span.begin());
+                let len = end - begin;
+                result.len += len;
+                if let Some(last) = result.spans.last_mut()
+                    && Rc::ptr_eq(&last.owner, &span.owner)
+                    && last.start + last.len == start
+                    && last.translation == span.translation
+                {
+                    last.len += len;
+                    last.end = result.len;
+                } else {
+                    result.spans.push(Span {
+                        owner: Rc::clone(&span.owner),
+                        start, len, end: result.len,
+                        translation: span.translation,
+                    });
+                }
+            }
+        });
+        debug_assert_eq!(result.len, plan.len());
+        Some(result)
+    }
+
     /// Split at most two page descriptors and translate the retained
     /// range in place. Hitbox payloads, IDs, order and fixed clips remain
     /// untouched. Called only after the Frame transaction validates it.
@@ -394,6 +438,41 @@ mod tests {
             content_mask: ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(100.), px(1000.)))),
             behavior: HitboxBehavior::Normal,
         }
+    }
+
+    #[test]
+    fn variable_hitbox_splice_shares_translated_pages_and_fixed_clips() {
+        let mut old = HitboxStore::default();
+        for i in 0..PAGE_LEN * 2 { old.push(hitbox(i)); }
+        old.freeze();
+        old.translate_committed(20..150, point(px(2.), px(-5.)));
+        let mut replacement = HitboxStore::default();
+        for i in 500..504 { replacement.push(hitbox(i)); }
+        replacement.freeze();
+        replacement.translate_committed(0..4, point(px(1.), px(-10.)));
+        let plan = super::super::RecordSplicePlan::new(old.len(), replacement.len(), &[
+            (5..5, 0..1), (20..25, 1..4), (130..132, 4..4),
+        ]).unwrap();
+        let expected = old.range(0..5)
+            .chain(replacement.range(0..1))
+            .chain(old.range(5..20))
+            .chain(replacement.range(1..4))
+            .chain(old.range(25..130))
+            .chain(old.range(132..old.len()))
+            .collect::<Vec<_>>();
+        let next = old.with_spliced_records(&replacement, &plan).unwrap();
+        assert_eq!(next.len(), expected.len());
+        assert!(next.spans.iter().all(|span| old.spans.iter()
+            .chain(replacement.spans.iter()).any(|source| Rc::ptr_eq(&span.owner, &source.owner))));
+        assert!(next.pending.is_empty());
+        old.clear();
+        replacement.clear();
+        for (actual, expected) in next.iter().zip(expected) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.bounds, expected.bounds);
+            assert_eq!(actual.content_mask, expected.content_mask);
+        }
+        assert!(old.with_spliced_records(&replacement, &plan).is_none());
     }
 
     #[test]
