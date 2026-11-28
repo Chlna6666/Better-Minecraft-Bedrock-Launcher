@@ -657,12 +657,21 @@ impl TaffyLayoutEngine {
     pub(crate) fn try_keep_detached_row_claims(
         &mut self, spans: &LayoutClaimBlocks, root: LayoutId,
     ) -> Option<LayoutClaimBlocks> {
-        if !spans.request_blocks().is_empty()
-            || spans.prepaint_blocks().is_empty()
-            || self.layout_parent(root).is_some()
-        {
+        if !spans.request_blocks().is_empty() || spans.prepaint_blocks().is_empty() {
             return None;
         }
+        // A previous paint can outlive a discarded native layout engine
+        // generation. Check the authoritative persistent slot before
+        // accessing Taffy's generational node ID.
+        let mut root_live = false;
+        for span in spans.prepaint_blocks() {
+            let claims = self.committed_claim_log.get(span.clone())?;
+            root_live |= claims.iter().flatten().any(|claim| {
+                claim.id == root && self.persistent_nodes.get(&claim.key)
+                    .is_some_and(|node| node.id == root && !node.offscreen)
+            });
+        }
+        if !root_live || self.layout_parent(root).is_some() { return None; }
         self.try_keep_retained(spans, root)
     }
 
@@ -1855,6 +1864,8 @@ mod tests {
         assert!(engine.try_keep_detached_row_claims(&claims, root).is_none());
         engine.release_kept(&kept);
         assert_eq!(engine.claimed_this_frame, 0);
+        engine.abort_frame();
+        assert!(engine.try_keep_detached_row_claims(&claims, root).is_none());
     }
 
     #[test]
