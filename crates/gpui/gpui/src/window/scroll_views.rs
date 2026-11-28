@@ -1443,15 +1443,33 @@ mod binding_tests {
 
     #[gpui::test]
     fn independent_boundary_preserves_stable_sibling_list(cx: &mut crate::TestAppContext) {
-        assert_multi_list_boundary(cx, false);
+        assert_multi_list_boundary(cx, BoundaryPairScenario::Alternating);
     }
 
     #[gpui::test]
     fn simultaneous_boundaries_share_one_scratch_and_placement_epoch(cx: &mut crate::TestAppContext) {
-        assert_multi_list_boundary(cx, true);
+        assert_multi_list_boundary(cx, BoundaryPairScenario::BothStructural);
     }
 
-    fn assert_multi_list_boundary(cx: &mut crate::TestAppContext, simultaneous: bool) {
+    #[gpui::test]
+    fn mixed_boundary_keeps_following_placement_rows(cx: &mut crate::TestAppContext) {
+        assert_multi_list_boundary(cx, BoundaryPairScenario::LeftStructural);
+    }
+
+    #[gpui::test]
+    fn mixed_boundary_keeps_preceding_placement_rows(cx: &mut crate::TestAppContext) {
+        assert_multi_list_boundary(cx, BoundaryPairScenario::RightStructural);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BoundaryPairScenario {
+        Alternating,
+        BothStructural,
+        LeftStructural,
+        RightStructural,
+    }
+
+    fn assert_multi_list_boundary(cx: &mut crate::TestAppContext, scenario: BoundaryPairScenario) {
         use crate::{Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
             ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
         use std::cell::Cell;
@@ -1506,17 +1524,22 @@ mod binding_tests {
             }
             assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
             let initial = (roots.get(), left.get(), right.get());
-            if simultaneous {
-                window.dispatch_event(wheel(8., -120.), app);
-                window.dispatch_event(wheel(208., -144.), app);
+            if scenario != BoundaryPairScenario::Alternating {
+                let left_structural = scenario != BoundaryPairScenario::RightStructural;
+                let right_structural = scenario != BoundaryPairScenario::LeftStructural;
+                window.dispatch_event(wheel(8., if left_structural { -120. } else { -1. }), app);
+                window.dispatch_event(wheel(208., if right_structural { -144. } else { -1. }), app);
+                assert_eq!(window.rendered_frame.mounted_scroll_sources.iter().filter(|source| !source.unchanged()).count(), 2);
                 assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::MissingCapture)));
                 let entered = window.rendered_frame.scroll_rows.uniform_boundary_entered_counts();
-                assert_eq!(entered.len(), 2);
+                assert_eq!(entered.len(), usize::from(left_structural) + usize::from(right_structural));
                 assert!(entered.iter().all(|count| *count != 0));
                 let previous = window.rendered_frame.published_paint();
                 window.draw(app).clear();
-                assert_eq!(roots.get(), initial.0, "both boundaries must skip Root Render");
-                assert!(left.get() > initial.1 && right.get() > initial.2);
+                assert_eq!(roots.get(), initial.0, "boundary batch must skip Root Render");
+                assert_eq!(left.get() > initial.1, left_structural);
+                assert_eq!(right.get() > initial.2, right_structural);
+                assert!(window.rendered_frame.mounted_scroll_sources.iter().all(|source| source.unchanged()));
                 assert_eq!(left.get() + right.get(), initial.1 + initial.2 + entered.iter().sum::<usize>());
                 assert!(window.rendered_frame.scroll_rows.uniform_boundary_entered_counts().is_empty());
                 assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
@@ -1709,6 +1732,15 @@ mod binding_tests {
 
     #[gpui::test]
     fn independent_owner_boundaries_share_atomic_publication(cx: &mut crate::TestAppContext) {
+        assert_independent_owner_boundary(cx, false);
+    }
+
+    #[gpui::test]
+    fn mixed_owner_boundary_and_placement_share_atomic_publication(cx: &mut crate::TestAppContext) {
+        assert_independent_owner_boundary(cx, true);
+    }
+
+    fn assert_independent_owner_boundary(cx: &mut crate::TestAppContext, mixed: bool) {
         use crate::{AppContext as _, Context, Entity, IntoElement, ParentElement, PlatformInput,
             Render, ScrollDelta, ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
         use std::cell::Cell;
@@ -1786,16 +1818,21 @@ mod binding_tests {
                 assert!(window.test_present().is_accepted());
             }
             let before = (root.get(), left.get(), right.get());
-            let row_before = left_rows.get() + right_rows.get();
+            let left_before = left_rows.get();
+            let right_before = right_rows.get();
+            let row_before = left_before + right_before;
             window.dispatch_event(wheel(8., -120.), app);
-            window.dispatch_event(wheel(208., -144.), app);
+            window.dispatch_event(wheel(208., if mixed { -1. } else { -144. }), app);
             let (_, owners) = window.invalidator.pending_placement().expect("pending owner set");
             assert_eq!(owners.len(), 2);
             let entered = window.rendered_frame.scroll_rows.uniform_boundary_entered_counts();
-            assert_eq!(entered.len(), 2);
+            assert_eq!(entered.len(), if mixed { 1 } else { 2 });
             assert!(entered.iter().all(|count| *count > 0));
             window.draw(app).clear();
             assert_eq!((root.get(), left.get(), right.get()), before);
+            assert!(left_rows.get() > left_before);
+            assert_eq!(right_rows.get() > right_before, !mixed);
+            assert!(window.rendered_frame.mounted_scroll_sources.iter().all(|source| source.unchanged()));
             assert_eq!(left_rows.get() + right_rows.get(), row_before + entered.iter().sum::<usize>());
             assert!(window.rendered_frame.scroll_rows.uniform_boundary_entered_counts().is_empty());
             assert!(!window.invalidator.is_dirty());
