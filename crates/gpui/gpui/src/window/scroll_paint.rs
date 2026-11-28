@@ -779,6 +779,79 @@ mod tests {
     }
 
     #[test]
+    fn variable_row_marker_scene_shares_root_draws_and_rebases_layer_spans() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let row = |y| {
+            let mut ops = Operations::default();
+            ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                bounds: Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.),
+                content_mask: ContentMask::new(coverage), ..Default::default()
+            })));
+            Arc::new(ScrollPaint::new(Point::default(), coverage, ops))
+                .native_row_placement(viewport, 1., Point::default()).unwrap()
+        };
+        let first = row(0.);
+        let kept = row(16.);
+        let new_a = row(32.);
+        let new_b = row(48.);
+        let root = Quad {
+            bounds: Bounds::new(point(px(60.), px(0.)), size(px(16.), px(16.))).scale(1.),
+            content_mask: ContentMask::new(Bounds::new(point(px(60.), px(0.)),
+                size(px(16.), px(64.))).scale(1.)),
+            ..Default::default()
+        };
+
+        let mut painter = Painter::for_frame();
+        painter.insert_primitive(root);
+        assert!(painter.push_deferred_scroll(first.clone()));
+        assert!(painter.push_deferred_scroll(kept.clone()));
+        painter.finish();
+        let old = painter.into_scene();
+
+        let mut builder = Painter::for_frame();
+        assert!(builder.push_deferred_scroll(new_a.clone()));
+        assert!(builder.push_deferred_scroll(new_b.clone()));
+        builder.finish();
+        let replacement = builder.into_scene();
+        let next = old.with_spliced_row_markers(&replacement.paint_operations, &[
+            (1..2, 0..2),
+        ]).expect("independent deferred row replacement");
+
+        assert_eq!(old.len(), 3);
+        assert_eq!(next.len(), 4);
+        assert_ne!(old.revision, next.revision);
+        assert_eq!(old.quads.len(), 1);
+        assert_eq!(next.quads.len(), 1);
+        assert!(std::ptr::eq(&old.quads[0], &next.quads[0]));
+        assert!(!old.prepared_batches().is_empty());
+        assert!(std::ptr::eq(old.prepared_batches().as_ptr(), next.prepared_batches().as_ptr()));
+        for (index, expected) in [new_a, new_b, kept.clone()].iter().enumerate() {
+            assert!(matches!(next.paint_operations.view(index + 1),
+                Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(expected)));
+        }
+        assert_eq!(old.paint_operations.storage_identity(2), next.paint_operations.storage_identity(3));
+        assert!(matches!(old.paint_operations.view(1),
+            Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&first)));
+
+        let old_layers = crate::window::SceneLayers::capture(&old, None, true);
+        let next_layers = crate::window::SceneLayers::capture(&next, Some(&old_layers), true);
+        assert_eq!(old_layers.frames.len(), 2);
+        assert_eq!(next_layers.frames.len(), 3);
+        assert_eq!(old_layers.frames[1].id, next_layers.frames[2].id);
+        assert_eq!(next_layers.frames[2].root_static_span(), Some(3..4));
+
+        // Root primitives cannot be silently retired or inserted without
+        // rebuilding the matching ordinary draw ordering.
+        assert!(old.with_spliced_row_markers(&replacement.paint_operations, &[(0..1, 0..0)]).is_none());
+        assert!(old.with_spliced_row_markers(&old.paint_operations, &[(1..1, 0..1)]).is_none());
+        let empty = old.with_spliced_row_markers(&replacement.paint_operations, &[(1..3, 0..0)]).unwrap();
+        assert_eq!(empty.len(), 1);
+        assert!(!empty.paint_operations.has_deferred_scroll());
+        assert!(std::ptr::eq(&old.quads[0], &empty.quads[0]));
+    }
+
+    #[test]
     fn direct_placement_publication_keeps_old_paint_and_draw_allocations_live() {
         let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
         let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
