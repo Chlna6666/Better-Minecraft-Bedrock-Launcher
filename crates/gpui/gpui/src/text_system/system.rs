@@ -878,6 +878,14 @@ impl WindowTextSystem {
         self.text_system.font_cache_generation.load(Ordering::Acquire)
     }
 
+    pub(crate) fn record_row_accesses(&self) -> impl Drop + '_ {
+        self.line_layout_cache.record_row_accesses()
+    }
+
+    pub(crate) fn committed_layout_index(&self) -> Option<LineLayoutIndex> {
+        self.line_layout_cache.committed_layout_index()
+    }
+
     pub(crate) fn layout_index(&self) -> LineLayoutIndex {
         self.line_layout_cache.layout_index()
     }
