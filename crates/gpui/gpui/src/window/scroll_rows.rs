@@ -58,6 +58,10 @@ struct UniformRowBuilder {
     owner_path: Vec<crate::EntityId>,
     factory_context: RetainedPaintContext,
     row_mask: crate::ContentMask<Pixels>,
+    // Paint inherits the interactivity paint scope, which need not match
+    // the factory's prepaint scope. Capture it from the live traversal.
+    paint_context: Option<RetainedPaintContext>,
+    paint_key: Option<u64>,
 }
 
 impl UniformRowBuilder {
@@ -75,7 +79,7 @@ impl UniformRowBuilder {
         {
             return None;
         }
-        self.with_prepaint_scope(window, parent, |window| {
+        self.with_native_scope(window, parent, super::DrawPhase::Prepaint, &self.factory_context, |window| {
             let read_start = cx.entities.dependency_read_index();
             let item = (self.renderer)(row, window, cx);
             let reads = cx.entities.row_reads_since(read_start);
@@ -88,17 +92,46 @@ impl UniformRowBuilder {
         }).flatten()
     }
 
+    /// Consume only a newly materialized Element from this speculative
+    /// transaction. Keep native scroll capture and dependency recording on
+    /// the ordinary paint path; do not invoke retained application code a
+    /// second time or paint without its real row prepaint records.
+    #[allow(dead_code)]
+    fn paint_materialized(
+        &self, window: &mut Window, parent: crate::DispatchNodeId,
+        row: usize, item: AnyElement, plan: &mut RowPlan, cx: &mut App,
+    ) -> Option<()> {
+        let context = self.paint_context.as_ref()?;
+        if !plan.matches_context(&self.context)
+            || plan.prepainted.front().is_none_or(|(index, _)| *index != row)
+        {
+            return None;
+        }
+        self.with_native_scope(window, parent, super::DrawPhase::Paint, context, |window| {
+            window.paint_planned_scroll_row(Some(plan), row, Some(item), cx);
+        })?;
+        let record = window.next_frame.scroll_rows.rows.get(&(plan.key, row))?;
+        let marker = record.paint.start.scene_index;
+        if record.paint.end.scene_index.checked_sub(marker) != Some(1)
+            || !matches!(window.next_frame.painter.paint_operations.view(marker),
+                Some(crate::scene::PaintOperationRef::DeferredScroll(_)))
+        {
+            return None;
+        }
+        Some(())
+    }
+
     /// Restore only native scopes, not an Element or a second layout tree.
     /// The caller owns a live speculative prepaint transaction and has
     /// already relocated the dispatch parent into that transaction.
     /// In particular this must not run against the committed Frame.
     #[allow(dead_code)]
-    fn with_prepaint_scope<R>(
+    fn with_native_scope<R>(
         &self, window: &mut Window, parent: crate::DispatchNodeId,
+        phase: super::DrawPhase, context: &RetainedPaintContext,
         f: impl FnOnce(&mut Window) -> R,
     ) -> Option<R> {
-        let context = &self.factory_context;
-        if window.invalidator.phase() != super::DrawPhase::Prepaint
+        if window.invalidator.phase() != phase
             || window.next_frame.dispatch_tree.active_node_id() != Some(parent)
             || window.scale_factor() != context.device_scale_factor
             || self.owner_path.last().copied() != Some(self.context.owner)
@@ -121,11 +154,21 @@ impl UniformRowBuilder {
         let transform = mem::replace(&mut window.element_visual_transform,
             super::state::ElementVisualTransform { scale: context.scale, translation: context.translation });
         let raster = mem::replace(&mut window.scene_text_raster_scale, context.text_raster_scale);
-        let enclosing = crate::fast::layout_key::enter_prepaint_scope(window, self.layout_parent);
         let result = window.with_rem_size(Some(context.rem_size), |window| {
-            window.with_parent_layout_key(Some(self.layout_parent), f)
+            if phase == super::DrawPhase::Prepaint {
+                let enclosing = crate::fast::layout_key::enter_prepaint_scope(window, self.layout_parent);
+                let result = window.with_parent_layout_key(Some(self.layout_parent), f);
+                crate::fast::layout_key::exit_prepaint_scope(window, enclosing);
+                result
+            } else {
+                let previous = mem::replace(&mut window.paint_layout_key, self.paint_key);
+                let result = f(window);
+                window.paint_layout_key = previous;
+                // Drawable::paint activates its own native prepaint node.
+                window.next_frame.dispatch_tree.set_active_node(parent);
+                result
+            }
         });
-        crate::fast::layout_key::exit_prepaint_scope(window, enclosing);
         window.scene_text_raster_scale = raster;
         window.element_visual_transform = transform;
         window.element_opacity = opacity;
@@ -1316,6 +1359,8 @@ impl Window {
             owner_path: self.rendered_entity_stack.clone(),
             factory_context: self.current_retained_paint_context(),
             row_mask,
+            paint_context: None,
+            paint_key: None,
         });
     }
 
@@ -1325,6 +1370,17 @@ impl Window {
         }
         if let Some(binding) = &plan.row_placement {
             let mut binding = binding.clone();
+            if let Some(builder) = binding.builder.as_mut() {
+                if self.element_id_stack.global_id() == builder.application_prefix
+                    && self.rendered_entity_stack == builder.owner_path
+                    && self.scene_animation.is_none()
+                {
+                    builder.paint_context = Some(self.current_retained_paint_context());
+                    builder.paint_key = self.paint_layout_key;
+                } else {
+                    binding.builder = None;
+                }
+            }
             // A factory is not sufficient proof of the committed domain.
             // Do not retain captures if any row failed native capture.
             if binding.builder.is_some() && !binding.captured.clone().all(|row| {
