@@ -640,6 +640,17 @@ impl TaffyLayoutEngine {
         Some(LayoutClaimBlocks::prepaint(range))
     }
 
+    /// Native request order is children-before-parent. Avoid asking the
+    /// Element to request layout a second time just to recover its root.
+    pub(crate) fn capture_detached_row_range(
+        &self, range: Range<usize>,
+    ) -> Option<(LayoutId, LayoutClaimBlocks)> {
+        if range.is_empty() { return None; }
+        let root = self.claimed_key_log.get(range.end.checked_sub(1)?)?.as_ref()?.id;
+        let claims = self.capture_detached_row_claims(range, root)?;
+        Some((root, claims))
+    }
+
     /// Use the existing all-or-nothing native claim mechanism. A row may
     /// already have been claimed by another retained owner; in that case
     /// do not publish a second claim proof.
