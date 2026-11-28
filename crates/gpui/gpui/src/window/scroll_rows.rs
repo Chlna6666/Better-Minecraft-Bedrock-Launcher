@@ -1387,9 +1387,10 @@ impl Window {
         {
             return false;
         }
-        let Some(boundary) = self.prepare_static_uniform_boundary(cx, epoch, owner) else { return false; };
+        let Some(boundaries) = self.prepare_static_uniform_boundaries(cx, epoch, owner) else { return false; };
+        let retired_claims: Vec<_> = boundaries.iter().flat_map(|boundary| boundary.retired_claims.iter().cloned()).collect();
         if self.element_states.begin_boundary().is_none() { return false; }
-        if self.layout_engine.as_mut().and_then(|engine| engine.begin_detached_boundary(&boundary.retired_claims)).is_none() {
+        if self.layout_engine.as_mut().and_then(|engine| engine.begin_detached_boundary(&retired_claims)).is_none() {
             self.element_states.cancel_boundary();
             return false;
         }
@@ -1401,7 +1402,7 @@ impl Window {
         cx.entities.set_render_dependency_owner(Some(owner));
         let result = {
             let _reads = cx.entities.begin_state_reads();
-            self.execute_static_uniform_boundary(boundary, epoch, cx)
+            self.execute_static_uniform_boundary(boundaries, epoch, owner, cx)
         };
         cx.entities.discard_frame_dependencies();
         cx.entities.frame_entity_scratch = scratch;
@@ -1443,56 +1444,63 @@ impl Window {
     /// Frame. All unsupported side streams reject the candidate before
     /// any committed CPU/GPU owner can move.
     fn execute_static_uniform_boundary(
-        &mut self, boundary: StaticUniformBoundary, epoch: super::lifecycle::PlacementEpoch,
-        cx: &mut App,
+        &mut self, boundaries: Vec<StaticUniformBoundary>, epoch: super::lifecycle::PlacementEpoch,
+        owner: crate::EntityId, cx: &mut App,
     ) -> Option<(Arc<super::Paint>, Bounds<crate::ScaledPixels>, super::frame::RetiredBoundaryRecords, Vec<RowRecord>, Vec<Box<dyn std::any::Any>>)> {
         use super::frame::{BoundaryIndexSplices, RecordSplicePlan};
         let source_revision = self.rendered_frame.scene().revision;
-        let key = boundary.key;
-        let builder = boundary.binding.builder.as_ref()?.clone();
-        let owner = boundary.binding.owner;
-        let membership = &boundary.membership;
-        let old_range = boundary.binding.captured.clone();
-        let new_range = membership.captured.clone();
         let scale = self.scale_factor();
-        let viewport = builder.context.inherited.visual_content_mask;
         let opaque = self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque;
         let committed_text = self.text_system.committed_layout_index()?;
-        let text_start = self.text_system.layout_index();
-        let generation = boundary.text.generation;
-        if text_start.components() != (generation, 0, 0)
-            || !boundary.text.within(&committed_text, false)
+        let generation = committed_text.components().0;
+        if self.text_system.layout_index().components() != (generation, 0, 0)
+            || boundaries.iter().any(|boundary| !boundary.text.within(&committed_text, false))
         { return None; }
         let read_start = cx.entities.dependency_read_index();
-
-        let mut binding = boundary.binding.clone();
-        binding.sampled = membership.sampled;
-        binding.visible = membership.visible.clone();
-        binding.captured = new_range.clone();
-        binding.proof = None;
-        let mut plan = RowPlan {
-            key, revision: epoch.content, notification_epoch: self.invalidator.row_notification_epoch(),
-            placement_only: true, allow_reuse: false,
-            row_placement: Some(binding.clone()), buffered_visible: Some(membership.visible.clone()),
-            row_revision: binding.row_revision.clone(), context: builder.context.clone(),
-            previous_context: RefCell::new(None), hover_held: true, prepainted: VecDeque::new(),
-        };
+        let notification_epoch = self.invalidator.row_notification_epoch();
+        let mut scratch = Vec::with_capacity(boundaries.len());
         self.invalidator.set_phase(super::DrawPhase::Prepaint);
-        let anchor = self.next_frame.dispatch_tree.push_node();
-        let mut items = Vec::new();
-        for row in new_range.clone().filter(|row| !old_range.contains(row)) {
-            let origin = binding.origin(row, membership.sampled, Point::default());
-            let item = builder.materialize(self, anchor, row, &membership.visible, origin, &mut plan, cx)?;
-            items.push((row, item));
+        for boundary in &boundaries {
+            let key = boundary.key;
+            let builder = boundary.binding.builder.as_ref()?.clone();
+            let membership = &boundary.membership;
+            let mut binding = boundary.binding.clone();
+            binding.sampled = membership.sampled;
+            binding.visible = membership.visible.clone();
+            binding.captured = membership.captured.clone();
+            binding.proof = None;
+            let mut plan = RowPlan {
+                key, revision: epoch.content, notification_epoch,
+                placement_only: true, allow_reuse: false,
+                row_placement: Some(binding.clone()), buffered_visible: Some(membership.visible.clone()),
+                row_revision: binding.row_revision.clone(), context: builder.context.clone(),
+                previous_context: RefCell::new(None), hover_held: true, prepainted: VecDeque::new(),
+            };
+            let anchor = self.next_frame.dispatch_tree.push_node();
+            let mut items = Vec::new();
+            for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
+                let origin = binding.origin(row, membership.sampled, Point::default());
+                let item = builder.materialize(self, anchor, row, &membership.visible, origin, &mut plan, cx)?;
+                items.push((row, item));
+            }
+            if items.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(anchor) {
+                return None;
+            }
+            self.next_frame.dispatch_tree.pop_node();
+            scratch.push((binding, builder, anchor, plan, items));
         }
+        let prepaint_end = self.prepaint_index();
         self.invalidator.set_phase(super::DrawPhase::Paint);
-        for (row, item) in items {
-            builder.paint_materialized(self, anchor, row, item, &mut plan, cx)?;
+        for (_, builder, anchor, plan, items) in &mut scratch {
+            self.next_frame.dispatch_tree.set_active_node(*anchor);
+            for (row, item) in items.drain(..) {
+                builder.paint_materialized(self, *anchor, row, item, plan, cx)?;
+            }
+            if !plan.prepainted.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(*anchor) {
+                return None;
+            }
+            self.next_frame.dispatch_tree.pop_node();
         }
-        if !plan.prepainted.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(anchor) {
-            return None;
-        }
-        self.next_frame.dispatch_tree.pop_node();
         self.invalidator.set_phase(super::DrawPhase::None);
 
         // Only admit reads accounted for by the entering row records.
@@ -1525,80 +1533,94 @@ impl Window {
         if !self.next_frame.debug_bounds_records.is_empty() { return None; }
         let old = &self.rendered_frame;
         let fresh = &self.next_frame;
-        let entered_count = new_range.clone().filter(|row| !old_range.contains(row)).count();
+        let entered_count = boundaries.iter().map(|boundary| {
+            boundary.membership.captured.clone().filter(|row| !boundary.binding.captured.contains(row)).count()
+        }).sum::<usize>();
         if fresh.scroll_rows.rows.len() != entered_count
             || fresh.painter.len() != entered_count
             || !fresh.dispatch_tree.inert_row_range(0..fresh.dispatch_tree.len())
-        {
-            return None;
-        }
+        { return None; }
 
-        // Entering rows are materialized in logical order. Their native
-        // dispatch records must be contiguous beneath the temporary anchor.
-        let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
+        let mut fresh_dispatch_end = 0;
         let mut fresh_hitbox_end = 0;
         let mut fresh_mouse_end = 0;
+        let mut fresh_marker = 0;
         let mut row_reads = RenderDependencies::default();
         let mut fresh_prepaint_end = 0;
-        let mut fresh_paint_start = None;
-        let mut fresh_paint_end = 0;
-        let first_entered = new_range.clone().find(|row| !old_range.contains(row))?;
-        let mut fresh_text = RowTextDomain::at_start(fresh.scroll_rows.rows.get(&(key, first_entered))?, generation)?;
-        for (marker, row) in new_range.clone().filter(|row| !old_range.contains(row)).enumerate() {
-            let record = fresh.scroll_rows.rows.get(&(key, row))?;
-            record.static_boundary_checkpoints()?;
-            let span = record.dispatch_span();
-            if !record.boundary_dependencies_unchanged(&self.invalidator) || record.paint.start.scene_index != marker
-                || span.start != fresh_dispatch_end
-                || record.prepaint.origin != binding.origin(row, membership.sampled, Point::default())
-                || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
-            {
-                return None;
+        let mut fresh_paint_end = prepaint_end.accessed_element_states_index;
+        let (prepaint_generation, prepaint_lines, prepaint_wrapped) = prepaint_end.line_layout_index.components();
+        if prepaint_generation != generation { return None; }
+        let mut text_cursors = [[0, 0], [prepaint_lines, prepaint_wrapped]];
+        for (boundary, (binding, builder, anchor, _, _)) in boundaries.iter().zip(&scratch) {
+            if anchor.0 != fresh_dispatch_end { return None; }
+            fresh_dispatch_end = anchor.0.checked_add(1)?;
+            let viewport = builder.context.inherited.visual_content_mask;
+            for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
+                let record = fresh.scroll_rows.rows.get(&(boundary.key, row))?;
+                record.static_boundary_checkpoints()?;
+                let span = record.dispatch_span();
+                if !record.boundary_dependencies_unchanged(&self.invalidator)
+                    || record.paint.start.scene_index != fresh_marker || span.start != fresh_dispatch_end
+                    || record.prepaint.origin != binding.origin(row, binding.sampled, Point::default())
+                    || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
+                { return None; }
+                let hitboxes = hitbox_range(&record.prepaint);
+                if hitboxes.start != fresh_hitbox_end || !fresh.hitboxes.contains(&hitboxes)
+                    || fresh.hitboxes.slices(hitboxes.clone()).any(|(slice, _)| {
+                        slice.iter().any(|hitbox| hitbox.content_mask != viewport)
+                    })
+                { return None; }
+                fresh_hitbox_end = hitboxes.end;
+                let mouse = record.mouse_span();
+                if mouse.start != fresh_mouse_end || !record.boundary_mouse_is_safe(fresh) { return None; }
+                fresh_mouse_end = mouse.end;
+                let prepaint = record.state_span(false);
+                let paint = record.state_span(true);
+                if prepaint.start != fresh_prepaint_end || paint.start != fresh_paint_end
+                    || !fresh.accessed_element_states.contains(prepaint.clone())
+                    || !fresh.accessed_element_states.contains(paint.clone())
+                { return None; }
+                fresh_prepaint_end = prepaint.end;
+                fresh_paint_end = paint.end;
+                for (phase, cursors) in text_cursors.iter_mut().enumerate() {
+                    for (cursor, span) in cursors.iter_mut().zip(record.text_spans(phase == 1, generation)?) {
+                        if *cursor != span.start { return None; }
+                        *cursor = span.end;
+                    }
+                }
+                row_reads.merge_replayed(&record.prepaint.reads);
+                fresh_dispatch_end = span.end;
+                fresh_marker += 1;
             }
-            let hitboxes = hitbox_range(&record.prepaint);
-            if hitboxes.start != fresh_hitbox_end || !fresh.hitboxes.contains(&hitboxes)
-                || fresh.hitboxes.slices(hitboxes.clone()).any(|(slice, _)| {
-                    slice.iter().any(|hitbox| hitbox.content_mask != viewport)
-                })
-            { return None; }
-            fresh_hitbox_end = hitboxes.end;
-            let mouse = record.mouse_span();
-            if mouse.start != fresh_mouse_end || !record.boundary_mouse_is_safe(fresh) { return None; }
-            fresh_mouse_end = mouse.end;
-            let prepaint = record.state_span(false);
-            let paint = record.state_span(true);
-            if prepaint.start != fresh_prepaint_end || !fresh.accessed_element_states.contains(prepaint.clone())
-                || !fresh.accessed_element_states.contains(paint.clone())
-            { return None; }
-            let first_paint = fresh_paint_start.get_or_insert(paint.start);
-            if fresh_paint_end == 0 { fresh_paint_end = *first_paint; }
-            if paint.start != fresh_paint_end { return None; }
-            fresh_prepaint_end = prepaint.end;
-            fresh_paint_end = paint.end;
-            fresh_text.append(record)?;
-            row_reads.merge_replayed(&record.prepaint.reads);
-            fresh_dispatch_end = span.end;
         }
+        let current_text = self.text_system.layout_index();
+        let (current_generation, current_lines, current_wrapped) = current_text.components();
         if fresh_dispatch_end != fresh.dispatch_tree.len()
             || fresh_hitbox_end != fresh.hitboxes.len()
             || fresh_mouse_end != fresh.mouse_listeners.len()
-            || fresh_paint_start.unwrap_or(0) != fresh_prepaint_end
-            || fresh_paint_end != fresh.accessed_element_states.len() { return None; }
+            || fresh_marker != entered_count
+            || fresh_prepaint_end != prepaint_end.accessed_element_states_index
+            || fresh_paint_end != fresh.accessed_element_states.len()
+            || current_generation != generation
+            || text_cursors != [[prepaint_lines, prepaint_wrapped], [current_lines, current_wrapped]]
+        { return None; }
 
         if !row_reads.same_routes(&reads)
             || !self.rendered_frame.dispatch_tree.has_view_route(owner)
-            || !self.invalidator.row_dependencies_unchanged(plan.notification_epoch, &reads)
+            || !self.invalidator.row_dependencies_unchanged(notification_epoch, &reads)
         { return None; }
         let mut retiring_counts = FxHashMap::default();
-        for row in membership.delta.exited.iter().cloned().flatten() {
-            let record = old.scroll_rows.rows.get(&(key, row))?;
-            let reads = &record.prepaint.reads;
-            if !reads.states.is_empty() { return None; }
-            for &entity in reads.entities.iter() {
-                *retiring_counts.entry(RowDependencyKey::Entity(entity)).or_insert(0) += 1;
-            }
-            for &(global, exists) in reads.globals.iter() {
-                *retiring_counts.entry(RowDependencyKey::Global(global, exists)).or_insert(0) += 1;
+        for boundary in &boundaries {
+            for row in boundary.membership.delta.exited.iter().cloned().flatten() {
+                let record = old.scroll_rows.rows.get(&(boundary.key, row))?;
+                let reads = &record.prepaint.reads;
+                if !reads.states.is_empty() { return None; }
+                for &entity in reads.entities.iter() {
+                    *retiring_counts.entry(RowDependencyKey::Entity(entity)).or_insert(0) += 1;
+                }
+                for &(global, exists) in reads.globals.iter() {
+                    *retiring_counts.entry(RowDependencyKey::Global(global, exists)).or_insert(0) += 1;
+                }
             }
         }
         // Reuse the existing reverse row index as a reference count. The
@@ -1616,113 +1638,127 @@ impl Window {
         let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
             && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
             else { Some(self.invalidator.prepare_boundary_row_delta(owner, &reads, &retired_reads, &kept_reads)?) };
-        let current_text = self.text_system.layout_index();
-        if !fresh_text.within(&current_text, true) { return None; }
 
-        // The left and right gaps are independent native stream edits.
-        // A jump with no retained intersection replaces the domain once.
-        let kept = &membership.delta.kept;
-        let mut groups = SmallVec::<[(Range<usize>, Range<usize>); 2]>::new();
-        if kept.is_empty() {
-            groups.push((old_range.clone(), new_range.clone()));
-        } else {
-            groups.push((old_range.start..kept.start, new_range.start..kept.start));
-            groups.push((kept.end..old_range.end, kept.end..new_range.end));
-        }
-        let mut domain_edits = RowDomainEdits::default();
-        let mut scene_edits = Vec::with_capacity(groups.len());
-        let mut dispatch_edits = Vec::with_capacity(groups.len());
-        let mut hitbox_edits = Vec::with_capacity(groups.len());
-        let mut mouse_edits = Vec::with_capacity(groups.len());
-        let mut prepaint_state_edits = Vec::with_capacity(groups.len());
-        let mut paint_state_edits = Vec::with_capacity(groups.len());
+        let mut scene_edits = Vec::new();
+        let mut dispatch_edits = Vec::new();
+        let mut hitbox_edits = Vec::new();
+        let mut mouse_edits = Vec::new();
+        let mut prepaint_state_edits = Vec::new();
+        let mut paint_state_edits = Vec::new();
         let mut text_edits: [[Vec<(Range<usize>, Range<usize>)>; 2]; 2] =
-            std::array::from_fn(|_| std::array::from_fn(|_| Vec::with_capacity(groups.len())));
-        let old_dispatch_at = |row: usize| -> Option<usize> {
-            if row == old_range.end { Some(boundary.dispatch.end) }
-            else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
-        };
-        let old_hitbox_at = |row: usize| -> Option<usize> {
-            if row == old_range.end { Some(boundary.hitboxes.end) }
-            else { Some(hitbox_range(&old.scroll_rows.rows.get(&(key, row))?.prepaint).start) }
-        };
-        let old_mouse_at = |row: usize| -> Option<usize> {
-            if row == old_range.end { Some(boundary.mouse.end) }
-            else { Some(old.scroll_rows.rows.get(&(key, row))?.mouse_span().start) }
-        };
-        for (retired, entered) in groups {
-            if retired.is_empty() && entered.is_empty() { continue; }
-            let start = boundary.scene.start.checked_add(retired.start.checked_sub(old_range.start)?)?;
-            let end = start.checked_add(retired.len())?;
-            let old_dispatch = old_dispatch_at(retired.start)?..old_dispatch_at(retired.end)?;
-            let old_hitboxes = old_hitbox_at(retired.start)?..old_hitbox_at(retired.end)?;
-            let (new_scene, new_dispatch, new_hitboxes) = if entered.is_empty() {
-                (0..0, 0..0, 0..0)
+            std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
+        let mut all_domain_edits = Vec::with_capacity(boundaries.len());
+        for boundary in &boundaries {
+            let key = boundary.key;
+            let membership = &boundary.membership;
+            let old_range = boundary.binding.captured.clone();
+            let new_range = membership.captured.clone();
+            // The left and right gaps are independent native stream edits.
+            // A jump with no retained intersection replaces the domain once.
+            let kept = &membership.delta.kept;
+            let mut groups = SmallVec::<[(Range<usize>, Range<usize>); 2]>::new();
+            if kept.is_empty() {
+                groups.push((old_range.clone(), new_range.clone()));
             } else {
-                let first = fresh.scroll_rows.rows.get(&(key, entered.start))?;
-                let last = fresh.scroll_rows.rows.get(&(key, entered.end - 1))?;
-                (first.paint.start.scene_index..last.paint.end.scene_index,
-                    first.dispatch_span().start..last.dispatch_span().end,
-                    hitbox_range(&first.prepaint).start..hitbox_range(&last.prepaint).end)
-            };
-            scene_edits.push((start..end, new_scene));
-            dispatch_edits.push((old_dispatch, new_dispatch));
-            if !old_hitboxes.is_empty() || !new_hitboxes.is_empty() {
-                hitbox_edits.push((old_hitboxes, new_hitboxes));
+                groups.push((old_range.start..kept.start, new_range.start..kept.start));
+                groups.push((kept.end..old_range.end, kept.end..new_range.end));
             }
-            let retired_mouse = old_mouse_at(retired.start)?..old_mouse_at(retired.end)?;
-            let entered_mouse = if entered.is_empty() { 0..0 } else {
-                fresh.scroll_rows.rows.get(&(key, entered.start))?.mouse_span().start
-                    ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.mouse_span().end
+            let mut domain_edits = RowDomainEdits {
+                scene: scene_edits.len()..0,
+                dispatch: dispatch_edits.len()..0,
+                hitboxes: hitbox_edits.len()..0,
+                mouse: mouse_edits.len()..0,
+                states: [prepaint_state_edits.len()..0, paint_state_edits.len()..0],
+                text: std::array::from_fn(|phase| std::array::from_fn(|stream| text_edits[phase][stream].len()..0)),
             };
-            if !retired_mouse.is_empty() || !entered_mouse.is_empty() {
-                mouse_edits.push((retired_mouse, entered_mouse));
-            }
-            for (paint, edits, domain) in [
-                (false, &mut prepaint_state_edits, &boundary.prepaint_states),
-                (true, &mut paint_state_edits, &boundary.paint_states),
-            ] {
-                let at = |row: usize| -> Option<usize> {
-                    if row == old_range.end { Some(domain.end) }
-                    else { Some(old.scroll_rows.rows.get(&(key, row))?.state_span(paint).start) }
+            let old_dispatch_at = |row: usize| -> Option<usize> {
+                if row == old_range.end { Some(boundary.dispatch.end) }
+                else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
+            };
+            let old_hitbox_at = |row: usize| -> Option<usize> {
+                if row == old_range.end { Some(boundary.hitboxes.end) }
+                else { Some(hitbox_range(&old.scroll_rows.rows.get(&(key, row))?.prepaint).start) }
+            };
+            let old_mouse_at = |row: usize| -> Option<usize> {
+                if row == old_range.end { Some(boundary.mouse.end) }
+                else { Some(old.scroll_rows.rows.get(&(key, row))?.mouse_span().start) }
+            };
+            for (retired, entered) in groups {
+                if retired.is_empty() && entered.is_empty() { continue; }
+                let start = boundary.scene.start.checked_add(retired.start.checked_sub(old_range.start)?)?;
+                let end = start.checked_add(retired.len())?;
+                let old_dispatch = old_dispatch_at(retired.start)?..old_dispatch_at(retired.end)?;
+                let old_hitboxes = old_hitbox_at(retired.start)?..old_hitbox_at(retired.end)?;
+                let (new_scene, new_dispatch, new_hitboxes) = if entered.is_empty() {
+                    (0..0, 0..0, 0..0)
+                } else {
+                    let first = fresh.scroll_rows.rows.get(&(key, entered.start))?;
+                    let last = fresh.scroll_rows.rows.get(&(key, entered.end - 1))?;
+                    (first.paint.start.scene_index..last.paint.end.scene_index,
+                        first.dispatch_span().start..last.dispatch_span().end,
+                        hitbox_range(&first.prepaint).start..hitbox_range(&last.prepaint).end)
                 };
-                let old_states = at(retired.start)?..at(retired.end)?;
-                let new_states = if entered.is_empty() { 0..0 } else {
-                    fresh.scroll_rows.rows.get(&(key, entered.start))?.state_span(paint).start
-                        ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.state_span(paint).end
-                };
-                if !old_states.is_empty() || !new_states.is_empty() {
-                    edits.push((old_states, new_states));
+                scene_edits.push((start..end, new_scene));
+                dispatch_edits.push((old_dispatch, new_dispatch));
+                if !old_hitboxes.is_empty() || !new_hitboxes.is_empty() {
+                    hitbox_edits.push((old_hitboxes, new_hitboxes));
                 }
-            }
-            for (phase, streams) in text_edits.iter_mut().enumerate() {
-                for (stream, edits) in streams.iter_mut().enumerate() {
+                let retired_mouse = old_mouse_at(retired.start)?..old_mouse_at(retired.end)?;
+                let entered_mouse = if entered.is_empty() { 0..0 } else {
+                    fresh.scroll_rows.rows.get(&(key, entered.start))?.mouse_span().start
+                        ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.mouse_span().end
+                };
+                if !retired_mouse.is_empty() || !entered_mouse.is_empty() {
+                    mouse_edits.push((retired_mouse, entered_mouse));
+                }
+                for (paint, edits, domain) in [
+                    (false, &mut prepaint_state_edits, &boundary.prepaint_states),
+                    (true, &mut paint_state_edits, &boundary.paint_states),
+                ] {
                     let at = |row: usize| -> Option<usize> {
-                        if row == old_range.end { Some(boundary.text.spans[phase][stream].end) }
-                        else { Some(old.scroll_rows.rows.get(&(key, row))?.text_spans(phase == 1, generation)?[stream].start) }
+                        if row == old_range.end { Some(domain.end) }
+                        else { Some(old.scroll_rows.rows.get(&(key, row))?.state_span(paint).start) }
                     };
-                    let retired_text = at(retired.start)?..at(retired.end)?;
-                    let entering_text = if entered.is_empty() { 0..0 } else {
-                        fresh.scroll_rows.rows.get(&(key, entered.start))?.text_spans(phase == 1, generation)?[stream].start
-                            ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.text_spans(phase == 1, generation)?[stream].end
+                    let old_states = at(retired.start)?..at(retired.end)?;
+                    let new_states = if entered.is_empty() { 0..0 } else {
+                        fresh.scroll_rows.rows.get(&(key, entered.start))?.state_span(paint).start
+                            ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.state_span(paint).end
                     };
-                    if !retired_text.is_empty() || !entering_text.is_empty() {
-                        edits.push((retired_text, entering_text));
+                    if !old_states.is_empty() || !new_states.is_empty() {
+                        edits.push((old_states, new_states));
+                    }
+                }
+                for (phase, streams) in text_edits.iter_mut().enumerate() {
+                    for (stream, edits) in streams.iter_mut().enumerate() {
+                        let at = |row: usize| -> Option<usize> {
+                            if row == old_range.end { Some(boundary.text.spans[phase][stream].end) }
+                            else { Some(old.scroll_rows.rows.get(&(key, row))?.text_spans(phase == 1, generation)?[stream].start) }
+                        };
+                        let retired_text = at(retired.start)?..at(retired.end)?;
+                        let entering_text = if entered.is_empty() { 0..0 } else {
+                            fresh.scroll_rows.rows.get(&(key, entered.start))?.text_spans(phase == 1, generation)?[stream].start
+                                ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.text_spans(phase == 1, generation)?[stream].end
+                        };
+                        if !retired_text.is_empty() || !entering_text.is_empty() {
+                            edits.push((retired_text, entering_text));
+                        }
                     }
                 }
             }
-        }
 
-        domain_edits.scene.end = scene_edits.len();
-        domain_edits.dispatch.end = dispatch_edits.len();
-        domain_edits.hitboxes.end = hitbox_edits.len();
-        domain_edits.mouse.end = mouse_edits.len();
-        domain_edits.states[0].end = prepaint_state_edits.len();
-        domain_edits.states[1].end = paint_state_edits.len();
-        for (phase, streams) in text_edits.iter().enumerate() {
-            for (stream, edits) in streams.iter().enumerate() {
-                domain_edits.text[phase][stream].end = edits.len();
+            domain_edits.scene.end = scene_edits.len();
+            domain_edits.dispatch.end = dispatch_edits.len();
+            domain_edits.hitboxes.end = hitbox_edits.len();
+            domain_edits.mouse.end = mouse_edits.len();
+            domain_edits.states[0].end = prepaint_state_edits.len();
+            domain_edits.states[1].end = paint_state_edits.len();
+            for (phase, streams) in text_edits.iter().enumerate() {
+                for (stream, edits) in streams.iter().enumerate() {
+                    domain_edits.text[phase][stream].end = edits.len();
+                }
             }
+
+            all_domain_edits.push(domain_edits);
         }
 
         self.next_frame.painter.finish();
@@ -1750,15 +1786,8 @@ impl Window {
         let wrapped = RecordSplicePlan::new(old_wrapped, fresh_wrapped, &wrapped_edits)?;
         let text_plans = [&lines, &wrapped];
         let text_splits = [line_split, wrapped_split];
-        domain_edits.shift_paint(state_split, text_splits)?;
-        let prepaint_state_domain = states.enclosing_edit_span(boundary.prepaint_states.clone(), domain_edits.states[0].clone())?;
-        let paint_state_domain = states.enclosing_edit_span(boundary.paint_states.clone(), domain_edits.states[1].clone())?;
-        let mut text_targets = boundary.text.spans.clone();
-        for (phase, streams) in text_targets.iter_mut().enumerate() {
-            for (stream, target) in streams.iter_mut().enumerate() {
-                let plan = text_plans[stream];
-                *target = plan.enclosing_edit_span(target.clone(), domain_edits.text[phase][stream].clone())?;
-            }
+        for domain in &mut all_domain_edits {
+            domain.shift_paint(state_split, text_splits)?;
         }
         let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), fresh.mouse_listeners.len(), &mouse_edits)?;
         let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
@@ -1767,160 +1796,188 @@ impl Window {
             state_prepaint_edits: Some(state_split), mouse: &mouse, ime: &ime,
             text: Some((generation, &lines, &wrapped)), text_prepaint_edits: Some((line_split, wrapped_split)),
         };
+        let attachments: Vec<_> = scratch.iter().map(|(_, builder, anchor, _, _)|
+            (Some(*anchor), builder.dispatch_parent)).collect();
+        let input_domains: Vec<_> = boundaries.iter().zip(&all_domain_edits).map(|(boundary, edits)|
+            super::frame::RowInputDomain {
+                owner: boundary.key, hitboxes: boundary.hitboxes.clone(), edits: edits.hitboxes.clone(),
+            }).collect();
         let mut candidate = old.prepare_boundary_records_under(
             fresh, &scene_edits, &hitboxes, &states, &dispatch,
-            &[(Some(anchor), builder.dispatch_parent)],
-            &mouse, &ime, opaque,
-            &[super::frame::RowInputDomain {
-                owner: key,
-                hitboxes: boundary.hitboxes.clone(),
-                edits: domain_edits.hitboxes.clone(),
-            }],
+            &attachments, &mouse, &ime, opaque, &input_domains,
         )?;
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
         let mut include_damage = |bounds: Bounds<crate::ScaledPixels>| {
             if !bounds.is_empty() { damage = Some(damage.map_or(bounds, |old| old.union(&bounds))); }
         };
-        for marker in boundary.scene.clone() {
-            let Some(crate::scene::PaintOperationRef::DeferredScroll(row)) = old.scene().paint_operations.view(marker)
-            else { return None; };
-            include_damage(row.visual_bounds());
-        }
-        let mut updates = Vec::with_capacity(new_range.len());
+        let mut updates = Vec::new();
         let mut placements = Vec::new();
-        // The rows own every record in the old contiguous hitbox domain.
-        // This explicit cursor resolves even zero-length row checkpoints.
-        let hitbox_domain = hitboxes.enclosing_edit_span(boundary.hitboxes.clone(), domain_edits.hitboxes.clone())?;
-        let mut hitbox_cursor = hitbox_domain.start;
-        let mouse_domain = mouse.enclosing_edit_span(boundary.mouse.clone(), domain_edits.mouse.clone())?;
-        let mut mouse_cursor = mouse_domain.start;
-        let mut prepaint_state_cursor = prepaint_state_domain.start;
-        let mut paint_state_cursor = paint_state_domain.start;
-        let mut text_cursors = text_targets.clone().map(|streams| streams.map(|span| span.start));
-        for row in new_range.clone() {
-            let row_key = (key, row);
-            let entering = !old_range.contains(&row);
-            let record = if entering { fresh.scroll_rows.rows.get(&row_key)? }
-                else { old.scroll_rows.rows.get(&row_key)? };
-            let source_scene = record.paint.start.scene_index..record.paint.end.scene_index;
-            let source_dispatch = record.dispatch_span();
-            let (marker, node_span) = if entering {
-                (scene.replacement_span(source_scene)?.start, dispatch.replacement_span(source_dispatch)?)
-            } else {
-                (scene.retained_range(source_scene)?.start, dispatch.retained_range(source_dispatch)?)
-            };
-            let origin = binding.origin(row, membership.sampled, record.prepaint.origin);
-            let delta = record.content.translation(origin, scale)?;
-            let placement = ScrollPaintTarget::BufferedRow { visible: membership.visible.contains(&row) }
-                .placement(&record.content, viewport, scale, delta)?;
-            let Some(crate::scene::PaintOperationRef::DeferredScroll(previous)) =
-                candidate.paint.scene.paint_operations.view(marker) else { return None; };
-            include_damage(placement.visual_bounds());
-            if !placement.same_paint(previous) {
-                if entering { return None; }
-                placements.push((marker, placement));
-            }
-            let fresh_claims = if entering {
-                let (root, local) = record.prepaint.layout_claims.as_ref()?;
-                Some((*root, self.layout_engine.as_ref()?.detached_boundary_row_claims(*root, local)?))
-            } else { None };
-            let source_hitboxes = hitbox_range(&record.prepaint);
-            let next_hitboxes = hitbox_cursor..hitbox_cursor.checked_add(source_hitboxes.len())?;
-            if !source_hitboxes.is_empty() {
-                let projected = if entering { hitboxes.replacement_span(source_hitboxes)? }
-                    else { hitboxes.retained_range(source_hitboxes)? };
-                if projected != next_hitboxes { return None; }
-                if !entering {
-                    candidate.hitboxes.translate_committed(next_hitboxes.clone(), origin - record.prepaint.origin);
+        let mut bindings = Vec::with_capacity(boundaries.len());
+        let mut retired_keys = Vec::new();
+        for ((boundary, (mut binding, builder, _, _, _)), domain_edits) in
+            boundaries.iter().zip(scratch).zip(all_domain_edits)
+        {
+            let key = boundary.key;
+            let membership = &boundary.membership;
+            let old_range = boundary.binding.captured.clone();
+            let new_range = binding.captured.clone();
+            let viewport = builder.context.inherited.visual_content_mask;
+            let prepaint_state_domain = states.enclosing_edit_span(boundary.prepaint_states.clone(), domain_edits.states[0].clone())?;
+            let paint_state_domain = states.enclosing_edit_span(boundary.paint_states.clone(), domain_edits.states[1].clone())?;
+            let mut text_targets = boundary.text.spans.clone();
+            for (phase, streams) in text_targets.iter_mut().enumerate() {
+                for (stream, target) in streams.iter_mut().enumerate() {
+                    *target = text_plans[stream].enclosing_edit_span(target.clone(), domain_edits.text[phase][stream].clone())?;
                 }
             }
-            hitbox_cursor = next_hitboxes.end;
-            let mut start = boundary.prepaint_base.clone();
-            let mut end = start.clone();
-            start.hitboxes_index = next_hitboxes.start;
-            end.hitboxes_index = next_hitboxes.end;
-            let project_states = |paint: bool, cursor: &mut usize| -> Option<Range<usize>> {
-                let source = record.state_span(paint);
-                let target = *cursor..cursor.checked_add(source.len())?;
-                if !source.is_empty() {
-                    let mapped = if entering { states.replacement_span(source)? }
-                        else { states.retained_range(source)? };
-                    if mapped != target { return None; }
-                }
-                *cursor = target.end;
-                Some(target)
-            };
-            let prepaint_states = project_states(false, &mut prepaint_state_cursor)?;
-            let paint_states = project_states(true, &mut paint_state_cursor)?;
-            start.accessed_element_states_index = prepaint_states.start;
-            end.accessed_element_states_index = prepaint_states.end;
-            start.dispatch_tree_index = node_span.start;
-            end.dispatch_tree_index = node_span.end;
-            let mut paint_start = boundary.paint_base.clone();
-            let mut paint_end = paint_start.clone();
-            paint_start.scene_index = marker;
-            paint_end.scene_index = marker.checked_add(1)?;
-            let source_mouse = record.mouse_span();
-            let target_mouse = mouse_cursor..mouse_cursor.checked_add(source_mouse.len())?;
-            if !source_mouse.is_empty() {
-                let projected = if entering { mouse.replacement_span(source_mouse)? }
-                    else { mouse.retained_range(source_mouse)? };
-                if projected != target_mouse { return None; }
+            let scene_domain = scene.enclosing_edit_span(boundary.scene.clone(), domain_edits.scene.clone())?;
+            let dispatch_domain = dispatch.enclosing_edit_span(boundary.dispatch.clone(), domain_edits.dispatch.clone())?;
+            if scene_domain.len() != new_range.len() { return None; }
+            let mut dispatch_cursor = dispatch_domain.start;
+            for marker in boundary.scene.clone() {
+                let Some(crate::scene::PaintOperationRef::DeferredScroll(row)) = old.scene().paint_operations.view(marker)
+                else { return None; };
+                include_damage(row.visual_bounds());
             }
-            paint_start.mouse_listeners_index = target_mouse.start;
-            paint_end.mouse_listeners_index = target_mouse.end;
-            mouse_cursor = target_mouse.end;
-            paint_start.accessed_element_states_index = paint_states.start;
-            paint_end.accessed_element_states_index = paint_states.end;
-            let mut project_text = |phase: usize| -> Option<Range<super::LineLayoutIndex>> {
-                let sources = record.text_spans(phase == 1, generation)?;
-                let mut target = [0..0, 0..0];
-                for (stream, source) in sources.into_iter().enumerate() {
-                    let cursor = &mut text_cursors[phase][stream];
-                    let next = *cursor..cursor.checked_add(source.len())?;
-                    if !source.is_empty() {
-                        let plan = text_plans[stream];
-                        let mapped = if entering { plan.replacement_span(source)? }
-                            else { plan.retained_range(source)? };
-                        if mapped != next { return None; }
+            updates.try_reserve(new_range.len()).ok()?;
+            // The rows own every record in the old contiguous hitbox domain.
+            // This explicit cursor resolves even zero-length row checkpoints.
+            let hitbox_domain = hitboxes.enclosing_edit_span(boundary.hitboxes.clone(), domain_edits.hitboxes.clone())?;
+            let mut hitbox_cursor = hitbox_domain.start;
+            let mouse_domain = mouse.enclosing_edit_span(boundary.mouse.clone(), domain_edits.mouse.clone())?;
+            let mut mouse_cursor = mouse_domain.start;
+            let mut prepaint_state_cursor = prepaint_state_domain.start;
+            let mut paint_state_cursor = paint_state_domain.start;
+            let mut text_cursors = text_targets.clone().map(|streams| streams.map(|span| span.start));
+            for row in new_range.clone() {
+                let row_key = (key, row);
+                let entering = !old_range.contains(&row);
+                let record = if entering { fresh.scroll_rows.rows.get(&row_key)? }
+                    else { old.scroll_rows.rows.get(&row_key)? };
+                let source_scene = record.paint.start.scene_index..record.paint.end.scene_index;
+                let source_dispatch = record.dispatch_span();
+                let (marker, node_span) = if entering {
+                    (scene.replacement_span(source_scene)?.start, dispatch.replacement_span(source_dispatch)?)
+                } else {
+                    (scene.retained_range(source_scene)?.start, dispatch.retained_range(source_dispatch)?)
+                };
+                if marker != scene_domain.start.checked_add(row.checked_sub(new_range.start)?)?
+                    || node_span.start != dispatch_cursor { return None; }
+                dispatch_cursor = node_span.end;
+                let origin = binding.origin(row, membership.sampled, record.prepaint.origin);
+                let delta = record.content.translation(origin, scale)?;
+                let placement = ScrollPaintTarget::BufferedRow { visible: membership.visible.contains(&row) }
+                    .placement(&record.content, viewport, scale, delta)?;
+                let Some(crate::scene::PaintOperationRef::DeferredScroll(previous)) =
+                    candidate.paint.scene.paint_operations.view(marker) else { return None; };
+                include_damage(placement.visual_bounds());
+                if !placement.same_paint(previous) {
+                    if entering { return None; }
+                    placements.push((marker, placement));
+                }
+                let fresh_claims = if entering {
+                    let (root, local) = record.prepaint.layout_claims.as_ref()?;
+                    Some((*root, self.layout_engine.as_ref()?.detached_boundary_row_claims(*root, local)?))
+                } else { None };
+                let source_hitboxes = hitbox_range(&record.prepaint);
+                let next_hitboxes = hitbox_cursor..hitbox_cursor.checked_add(source_hitboxes.len())?;
+                if !source_hitboxes.is_empty() {
+                    let projected = if entering { hitboxes.replacement_span(source_hitboxes)? }
+                        else { hitboxes.retained_range(source_hitboxes)? };
+                    if projected != next_hitboxes { return None; }
+                    if !entering {
+                        candidate.hitboxes.translate_committed(next_hitboxes.clone(), origin - record.prepaint.origin);
                     }
-                    *cursor = next.end;
-                    target[stream] = next;
                 }
-                Some(super::LineLayoutIndex::from_components(generation, target[0].start, target[1].start)
-                    ..super::LineLayoutIndex::from_components(generation, target[0].end, target[1].end))
-            };
-            let prepaint_text = project_text(0)?;
-            let paint_text = project_text(1)?;
-            start.line_layout_index = prepaint_text.start;
-            end.line_layout_index = prepaint_text.end;
-            paint_start.line_layout_index = paint_text.start;
-            paint_end.line_layout_index = paint_text.end;
-            updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
-                paint: paint_start..paint_end, fresh_claims });
+                hitbox_cursor = next_hitboxes.end;
+                let mut start = boundary.prepaint_base.clone();
+                let mut end = start.clone();
+                start.hitboxes_index = next_hitboxes.start;
+                end.hitboxes_index = next_hitboxes.end;
+                let project_states = |paint: bool, cursor: &mut usize| -> Option<Range<usize>> {
+                    let source = record.state_span(paint);
+                    let target = *cursor..cursor.checked_add(source.len())?;
+                    if !source.is_empty() {
+                        let mapped = if entering { states.replacement_span(source)? }
+                            else { states.retained_range(source)? };
+                        if mapped != target { return None; }
+                    }
+                    *cursor = target.end;
+                    Some(target)
+                };
+                let prepaint_states = project_states(false, &mut prepaint_state_cursor)?;
+                let paint_states = project_states(true, &mut paint_state_cursor)?;
+                start.accessed_element_states_index = prepaint_states.start;
+                end.accessed_element_states_index = prepaint_states.end;
+                start.dispatch_tree_index = node_span.start;
+                end.dispatch_tree_index = node_span.end;
+                let mut paint_start = boundary.paint_base.clone();
+                let mut paint_end = paint_start.clone();
+                paint_start.scene_index = marker;
+                paint_end.scene_index = marker.checked_add(1)?;
+                let source_mouse = record.mouse_span();
+                let target_mouse = mouse_cursor..mouse_cursor.checked_add(source_mouse.len())?;
+                if !source_mouse.is_empty() {
+                    let projected = if entering { mouse.replacement_span(source_mouse)? }
+                        else { mouse.retained_range(source_mouse)? };
+                    if projected != target_mouse { return None; }
+                }
+                paint_start.mouse_listeners_index = target_mouse.start;
+                paint_end.mouse_listeners_index = target_mouse.end;
+                mouse_cursor = target_mouse.end;
+                paint_start.accessed_element_states_index = paint_states.start;
+                paint_end.accessed_element_states_index = paint_states.end;
+                let mut project_text = |phase: usize| -> Option<Range<super::LineLayoutIndex>> {
+                    let sources = record.text_spans(phase == 1, generation)?;
+                    let mut target = [0..0, 0..0];
+                    for (stream, source) in sources.into_iter().enumerate() {
+                        let cursor = &mut text_cursors[phase][stream];
+                        let next = *cursor..cursor.checked_add(source.len())?;
+                        if !source.is_empty() {
+                            let plan = text_plans[stream];
+                            let mapped = if entering { plan.replacement_span(source)? }
+                                else { plan.retained_range(source)? };
+                            if mapped != next { return None; }
+                        }
+                        *cursor = next.end;
+                        target[stream] = next;
+                    }
+                    Some(super::LineLayoutIndex::from_components(generation, target[0].start, target[1].start)
+                        ..super::LineLayoutIndex::from_components(generation, target[0].end, target[1].end))
+                };
+                let prepaint_text = project_text(0)?;
+                let paint_text = project_text(1)?;
+                start.line_layout_index = prepaint_text.start;
+                end.line_layout_index = prepaint_text.end;
+                paint_start.line_layout_index = paint_text.start;
+                paint_end.line_layout_index = paint_text.end;
+                updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
+                    paint: paint_start..paint_end, fresh_claims });
+            }
+            if dispatch_cursor != dispatch_domain.end || hitbox_cursor != hitbox_domain.end || mouse_cursor != mouse_domain.end
+                || prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end
+            { return None; }
+            if text_cursors != text_targets.clone().map(|streams| streams.map(|span| span.end)) { return None; }
+            let parent_index = builder.dispatch_parent.0;
+            binding.builder.as_mut()?.dispatch_parent = crate::DispatchNodeId(
+                dispatch.retained_range(parent_index..parent_index.checked_add(1)?)?.start);
+            retired_keys.extend(old_range.clone().filter(|row| !new_range.contains(row)).map(|row| (key, row)));
+            let membership_slot = old.scroll_rows.membership.single_run(key)?.0;
+            bindings.push((key, membership_slot, binding));
         }
-        if hitbox_cursor != hitbox_domain.end || mouse_cursor != mouse_domain.end
-            || prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end
-        { return None; }
-        if text_cursors != text_targets.clone().map(|streams| streams.map(|span| span.end)) { return None; }
         let damage = damage?;
         if !placements.is_empty() {
             candidate.paint = candidate.paint.with_scroll_placements(&placements, opaque)?;
         }
         candidate.prepare_view_records(old, fresh, &maps, self.layout_engine.as_ref()?, owner, damage)?;
-        let parent_index = builder.dispatch_parent.0;
-        binding.builder.as_mut()?.dispatch_parent = crate::DispatchNodeId(
-            dispatch.retained_range(parent_index..parent_index.checked_add(1)?)?.start);
-        let retired_keys: Vec<_> = old_range.clone().filter(|row| !new_range.contains(row))
-            .map(|row| (key, row)).collect();
         let retired = Vec::with_capacity(retired_keys.len());
         // Every other captured row retains its content and layout claims.
         // The structural edit may nevertheless relocate its native frame
         // coordinates. Empty checkpoints at ambiguous insertions reject
         // the whole candidate rather than silently misbind a sibling.
         for (&row_key, record) in &old.scroll_rows.rows {
-            if row_key.0 == key { continue; }
+            if bindings.iter().any(|(key, _, _)| *key == row_key.0) { continue; }
             let prepaint = maps.retained_prepaint(&record.prepaint.records)?;
             let paint = maps.retained_paint(&record.paint)?;
             if prepaint != record.prepaint.records || paint != record.paint {
@@ -1931,16 +1988,15 @@ impl Window {
         }
         let mut sibling_bindings = Vec::new();
         for (&sibling, binding) in &old.scroll_rows.row_placements {
-            if sibling == key { continue; }
+            if bindings.iter().any(|(key, _, _)| *key == sibling) { continue; }
             let parent = if let Some(builder) = &binding.builder {
                 let index = builder.dispatch_parent.0;
                 Some(crate::DispatchNodeId(dispatch.retained_range(index..index.checked_add(1)?)?.start))
             } else { None };
             sibling_bindings.push((sibling, parent));
         }
-        let membership_slot = old.scroll_rows.membership.single_run(key)?.0;
         let rows = BoundaryRowAdoption {
-            bindings: vec![(key, membership_slot, binding)],
+            bindings,
             sibling_bindings, updates, retired_keys, retired,
         };
 
@@ -1956,7 +2012,7 @@ impl Window {
         } else { None };
         self.rendered_frame.scroll_rows.rows.try_reserve(entered_count).ok()?;
         if !self.global_ids.borrow().can_finish_partial_frame()
-            || boundary.sample_read.status() != crate::StateReadStatus::Unchanged
+            || boundaries.iter().any(|boundary| boundary.sample_read.status() != crate::StateReadStatus::Unchanged)
             || self.rendered_frame.scene().revision != source_revision
             || self.focus != self.rendered_frame.focus
             || self.viewport_epoch != self.committed_epoch
@@ -1984,7 +2040,9 @@ impl Window {
             .expect("validated exclusive Frame adoption");
         let retired_rows = rows.adopt(&mut self.rendered_frame.scroll_rows,
             &mut self.next_frame.scroll_rows, self.invalidator.row_notification_epoch());
-        self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&membership.version);
+        for boundary in &boundaries {
+            self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&boundary.membership.version);
+        }
         self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
         self.global_ids.get_mut().finish_partial_frame();
         if adopt_text { self.text_system.commit_boundary_layouts(); }
@@ -1994,29 +2052,52 @@ impl Window {
     /// This runs only after the common position-transaction admission.
     /// Do not execute any application callback until native ownership of
     /// the old domain and all retired rows has been certified.
-    fn prepare_static_uniform_boundary(
+    fn prepare_static_uniform_boundaries(
         &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+    ) -> Option<Vec<StaticUniformBoundary>> {
+        let frame = &self.rendered_frame;
+        if !self.scroll_hover_deadline_active(cx) { return None; }
+        let mut boundaries = Vec::new();
+        for (mounted_source, source) in frame.mounted_scroll_sources.iter().enumerate().filter(|(_, source)| !source.unchanged()) {
+            let mut candidates = frame.scroll_rows.row_placements.iter().filter_map(|(&key, binding)| {
+                if binding.owner != owner { return None; }
+                let membership = binding.boundary_membership()?;
+                source.changed_for(owner, &membership.version).then_some((key, binding, membership))
+            });
+            let (key, binding, membership) = candidates.next()?;
+            if candidates.next().is_some() || boundaries.iter().any(|boundary: &StaticUniformBoundary| boundary.key == key) {
+                return None;
+            }
+            boundaries.push(self.prepare_static_uniform_domain(epoch, key, binding, membership, mounted_source)?);
+        }
+        if boundaries.is_empty() { return None; }
+        // Scratch follows committed scene order. Reject domains whose
+        // native streams require a different order or overlap.
+        boundaries.sort_unstable_by_key(|boundary| boundary.scene.start);
+        for pair in boundaries.windows(2) {
+            let [a, b] = pair else { unreachable!() };
+            if a.scene.end > b.scene.start || a.dispatch.end > b.dispatch.start
+                || a.hitboxes.end > b.hitboxes.start || a.mouse.end > b.mouse.start
+                || a.prepaint_states.end > b.prepaint_states.start || a.paint_states.end > b.paint_states.start
+                || (0..2).any(|phase| (0..2).any(|stream|
+                    a.text.spans[phase][stream].end > b.text.spans[phase][stream].start))
+            { return None; }
+        }
+        for (index, current) in boundaries.iter().enumerate() {
+            let bounds = current.binding.builder.as_ref()?.row_mask.bounds;
+            if boundaries[..index].iter().any(|other|
+                other.binding.builder.as_ref().is_some_and(|builder| !builder.row_mask.bounds.intersect(&bounds).is_empty()))
+            { return None; }
+        }
+        Some(boundaries)
+    }
+
+    fn prepare_static_uniform_domain(
+        &self, epoch: super::lifecycle::PlacementEpoch, key: u64,
+        binding: &RowPlacementBinding, membership: UniformBoundaryMembership, mounted_source: usize,
     ) -> Option<StaticUniformBoundary> {
         let frame = &self.rendered_frame;
         let rows = &frame.scroll_rows;
-        if !self.scroll_hover_deadline_active(cx) {
-            return None;
-        }
-        // One structurally changing source is allowed among stable
-        // sibling lists. Multiple changed sources still require a shared
-        // scratch materialization transaction.
-        let mut changed = frame.mounted_scroll_sources.iter().enumerate()
-            .filter(|(_, source)| !source.unchanged());
-        let (mounted_source, source) = changed.next()?;
-        if changed.next().is_some() { return None; }
-        let mut candidates = rows.row_placements.iter().filter_map(|(&key, binding)| {
-            if binding.owner != owner { return None; }
-            let membership = binding.boundary_membership()?;
-            source.changed_for(owner, &membership.version)
-                .then_some((key, binding, membership))
-        });
-        let (key, binding, membership) = candidates.next()?;
-        if candidates.next().is_some() { return None; }
         let builder = binding.builder.as_ref()?;
         if binding.revision != epoch.content
             || binding.row_revision.is_none() || builder.paint_context.is_none()
