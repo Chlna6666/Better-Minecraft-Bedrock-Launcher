@@ -80,7 +80,7 @@ impl LayerContent {
             return self.flat_edit_damage(previous, current_origin, old_origin, current_mask, old_mask)
                 .unwrap_or(LayerDamage::Full);
         }
-        let mut damage = None;
+        let mut damage = DamageRegions::default();
         for (current_op, old_op) in self.operations.views().zip(previous.operations.views()) {
             match (current_op, old_op) {
                 (PaintOperationRef::StartLayer(a), PaintOperationRef::StartLayer(b))
@@ -96,15 +96,14 @@ impl LayerContent {
                         return LayerDamage::Full;
                     };
                     if !equal {
-                        let changed = translated_bounds(a_bounds, Point::default() - current_origin)
-                            .union(&translated_bounds(b_bounds, Point::default() - old_origin));
-                        union_visual(&mut damage, changed);
+                        damage.insert(translated_bounds(a_bounds, Point::default() - current_origin));
+                        damage.insert(translated_bounds(b_bounds, Point::default() - old_origin));
                     }
                 }
                 _ => return LayerDamage::Full,
             }
         }
-        damage.map_or(LayerDamage::Clean, LayerDamage::Bounds)
+        damage.finish()
     }
 
     /// A changed operation count need not invalidate every tile. For a
@@ -133,7 +132,7 @@ impl LayerContent {
         let suffix = self.operations.views().rev().zip(previous.operations.views().rev())
             .take(self.operations.len().min(previous.operations.len()) - prefix)
             .take_while(|(a, b)| equal(*a, *b)).count();
-        let mut damage = None;
+        let mut damage = DamageRegions::default();
         for (operations, origin, mask) in [
             (&self.operations, current_origin, current_mask),
             (&previous.operations, old_origin, old_mask),
@@ -143,10 +142,10 @@ impl LayerContent {
                 let PaintOperationRef::Primitive(primitive) = operation else { return None; };
                 if *primitive.content_mask() != mask { return None; }
                 let bounds = static_raster_bounds(primitive)?;
-                union_visual(&mut damage, translated_bounds(bounds, Point::default() - origin));
+                damage.insert(translated_bounds(bounds, Point::default() - origin));
             }
         }
-        Some(damage.map_or(LayerDamage::Clean, LayerDamage::Bounds))
+        Some(damage.finish())
     }
 }
 
@@ -212,11 +211,78 @@ fn translated_bounds(mut bounds: Bounds<ScaledPixels>, delta: Point<ScaledPixels
     bounds
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum LayerDamage {
     Full,
     Clean,
     Bounds(Bounds<ScaledPixels>),
+    Regions(Arc<[Bounds<ScaledPixels>]>),
+}
+
+impl LayerDamage {
+    fn excludes_tile(&self, [left, top, right, bottom]: [i64; 4]) -> bool {
+        let excludes = |bounds: &Bounds<ScaledPixels>| {
+            f64::from(bounds.right().0) <= left as f64
+                || f64::from(bounds.bottom().0) <= top as f64
+                || f64::from(bounds.left().0) >= right as f64
+                || f64::from(bounds.top().0) >= bottom as f64
+        };
+        match self {
+            Self::Full => false,
+            Self::Clean => true,
+            Self::Bounds(bounds) => excludes(bounds),
+            Self::Regions(regions) => regions.iter().all(excludes),
+        }
+    }
+}
+
+/// Keep the common single-region proof allocation-free. Bound the work
+/// per changed primitive and per tile; pathological fragmentation falls
+/// back to a conservative union, never to an incomplete damage set.
+const MAX_DAMAGE_REGIONS: usize = 8;
+
+#[derive(Default)]
+struct DamageRegions {
+    regions: smallvec::SmallVec<[Bounds<ScaledPixels>; MAX_DAMAGE_REGIONS]>,
+    collapsed: bool,
+}
+
+impl DamageRegions {
+    fn insert(&mut self, mut bounds: Bounds<ScaledPixels>) {
+        if bounds.is_empty() {
+            return;
+        }
+        if self.collapsed {
+            self.regions[0] = self.regions[0].union(&bounds);
+            return;
+        }
+        // A union can intersect a region checked earlier. Restart only
+        // after a merge; at most MAX_DAMAGE_REGIONS regions are present.
+        let mut index = 0;
+        while index < self.regions.len() {
+            if self.regions[index].intersects(&bounds) {
+                bounds = bounds.union(&self.regions.swap_remove(index));
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        if self.regions.len() == MAX_DAMAGE_REGIONS {
+            for region in self.regions.drain(..) {
+                bounds = bounds.union(&region);
+            }
+            self.collapsed = true;
+        }
+        self.regions.push(bounds);
+    }
+
+    fn finish(self) -> LayerDamage {
+        match self.regions.len() {
+            0 => LayerDamage::Clean,
+            1 => LayerDamage::Bounds(self.regions[0]),
+            _ => LayerDamage::Regions(Arc::from(self.regions.as_slice())),
+        }
+    }
 }
 
 fn static_raster_bounds(primitive: PrimitiveRef<'_>) -> Option<Bounds<ScaledPixels>> {
@@ -405,15 +471,7 @@ impl LayerFrame {
         {
             return None;
         }
-        let clean = match self.damage {
-            LayerDamage::Full => false,
-            LayerDamage::Clean => true,
-            LayerDamage::Bounds(bounds) => f64::from(bounds.right().0) <= left as f64
-                || f64::from(bounds.bottom().0) <= top as f64
-                || f64::from(bounds.left().0) >= right as f64
-                || f64::from(bounds.top().0) >= bottom as f64,
-        };
-        clean.then_some(self.generation)
+        self.damage.excludes_tile(rect).then_some(self.generation)
     }
 }
 
@@ -1071,6 +1129,35 @@ mod tests {
         let new_origin = LayerContent::from_scroll(&operations, coverage, Point::default(),
             [0, -64], viewport, &atlas, Some(&before)).unwrap();
         assert!(!Arc::ptr_eq(&before, &new_origin));
+    }
+
+    #[test]
+    fn damage_regions_preserve_gaps_and_bound_fragmentation() {
+        let rect = |x: f32| Bounds::new(
+            point(ScaledPixels(x), ScaledPixels(0.)),
+            size(ScaledPixels(8.), ScaledPixels(8.)),
+        );
+        let mut damage = DamageRegions::default();
+        damage.insert(rect(0.));
+        damage.insert(rect(64.));
+        damage.insert(rect(4.));
+        assert_eq!(damage.regions.len(), 2);
+        let proof = damage.finish();
+        assert!(!proof.excludes_tile([0, 0, 16, 16]));
+        assert!(proof.excludes_tile([16, 0, 48, 16]));
+        assert!(!proof.excludes_tile([64, 0, 80, 16]));
+
+        let mut damage = DamageRegions::default();
+        for index in 0..=MAX_DAMAGE_REGIONS {
+            damage.insert(rect(index as f32 * 32.));
+        }
+        assert!(damage.collapsed);
+        damage.insert(rect(1024.));
+        assert_eq!(damage.regions.len(), 1);
+        let proof = damage.finish();
+        assert!(!proof.excludes_tile([1024, 0, 1040, 16]));
+        assert!(!proof.excludes_tile([16, 0, 24, 16]));
+        assert!(proof.excludes_tile([1040, 0, 1056, 16]));
     }
 
     #[test]
