@@ -457,6 +457,17 @@ impl RowRuns {
         }
     }
 
+    /// An independently materialized domain owns one complete normalized
+    /// run. Do not overwrite membership belonging to another list.
+    fn single_run(&self, list: u64) -> Option<(usize, RowRun)> {
+        let index = self.runs.partition_point(|run| run.list < list);
+        let run = *self.runs.get(index)?;
+        if run.list != list || self.runs.get(index + 1).is_some_and(|next| next.list == list) {
+            return None;
+        }
+        Some((index, run))
+    }
+
     /// Old minus new, expressed as ranges. Never enumerate kept row keys.
     fn visit_retired(&self, next: &Self, mut visit: impl FnMut(RowRun)) {
         let mut j = 0;
@@ -651,8 +662,8 @@ impl RowNotificationRouting {
         }
     }
 
-    /// The boundary admission certifies that the committed row index covers
-    /// the whole single-list domain. Only departing edges need counting.
+    /// The committed row index covers all lists. Only departing edges need
+    /// counting; unrelated readers conservatively protect their dependency.
     fn boundary_retirement_reads(
         &self, retired: &FxHashMap<RowDependencyKey, usize>,
     ) -> Option<(RenderDependencies, RenderDependencies)> {
@@ -1185,7 +1196,9 @@ struct BoundaryRowUpdate {
 
 struct BoundaryRowAdoption {
     key: u64,
+    membership_slot: usize,
     binding: RowPlacementBinding,
+    sibling_bindings: Vec<(u64, Option<crate::DispatchNodeId>)>,
     updates: Vec<BoundaryRowUpdate>,
     retired_keys: Vec<RowKey>,
     retired: Vec<RowRecord>,
@@ -1227,10 +1240,17 @@ impl BoundaryRowAdoption {
             routing.reset_cursor(oldest);
         }
         old.oldest_notification_epoch = Some(oldest);
-        old.membership.runs.clear();
-        old.membership.runs.push(RowRun {
-            list: self.key, start: self.binding.captured.start, end: self.binding.captured.end,
-        });
+        let run = &mut old.membership.runs[self.membership_slot];
+        debug_assert_eq!(run.list, self.key);
+        run.start = self.binding.captured.start;
+        run.end = self.binding.captured.end;
+        for (key, parent) in self.sibling_bindings {
+            let binding = old.row_placements.get_mut(&key).expect("validated sibling binding");
+            binding.proof = None;
+            if let Some(parent) = parent {
+                binding.builder.as_mut().expect("validated sibling builder").dispatch_parent = parent;
+            }
+        }
         old.changed_rows.clear();
         old.row_placements.insert(self.key, self.binding);
         self.retired
@@ -1850,7 +1870,31 @@ impl Window {
         let retired_keys: Vec<_> = old_range.clone().filter(|row| !new_range.contains(row))
             .map(|row| (key, row)).collect();
         let retired = Vec::with_capacity(retired_keys.len());
-        let rows = BoundaryRowAdoption { key, binding, updates, retired_keys, retired };
+        // Every other captured row retains its content and layout claims.
+        // The structural edit may nevertheless relocate its native frame
+        // coordinates. Empty checkpoints at ambiguous insertions reject
+        // the whole candidate rather than silently misbind a sibling.
+        for (&row_key, record) in &old.scroll_rows.rows {
+            if row_key.0 == key { continue; }
+            let prepaint = maps.retained_prepaint(&record.prepaint.records)?;
+            let paint = maps.retained_paint(&record.paint)?;
+            if prepaint != record.prepaint.records || paint != record.paint {
+                updates.push(BoundaryRowUpdate {
+                    key: row_key, origin: record.prepaint.origin, prepaint, paint, fresh_claims: None,
+                });
+            }
+        }
+        let mut sibling_bindings = Vec::new();
+        for (&sibling, binding) in &old.scroll_rows.row_placements {
+            if sibling == key { continue; }
+            let parent = if let Some(builder) = &binding.builder {
+                let index = builder.dispatch_parent.0;
+                Some(crate::DispatchNodeId(dispatch.retained_range(index..index.checked_add(1)?)?.start))
+            } else { None };
+            sibling_bindings.push((sibling, parent));
+        }
+        let membership_slot = old.scroll_rows.membership.single_run(key)?.0;
+        let rows = BoundaryRowAdoption { key, membership_slot, binding, sibling_bindings, updates, retired_keys, retired };
 
         // All fallible work completes before consuming the placement
         // epoch. The native owners cannot change between these checks
@@ -1907,29 +1951,35 @@ impl Window {
     ) -> Option<StaticUniformBoundary> {
         let frame = &self.rendered_frame;
         let rows = &frame.scroll_rows;
-        if rows.row_placements.len() != 1 || !self.scroll_hover_deadline_active(cx) {
+        if !self.scroll_hover_deadline_active(cx) {
             return None;
         }
-        let (&key, binding) = rows.row_placements.iter().next()?;
-        let builder = binding.builder.as_ref()?;
-        if binding.owner != owner || binding.revision != epoch.content
-            || binding.row_revision.is_none() || builder.paint_context.is_none()
-            || !matches!(&binding.source, RowPlacementSource::Uniform { measurement: None, .. })
-            || rows.rows.len() != binding.captured.len()
-            || rows.membership.runs.as_slice() != [RowRun {
-                list: key, start: binding.captured.start, end: binding.captured.end,
-            }]
-        {
-            return None;
-        }
-        let membership = binding.boundary_membership()?;
-        let sample_read = StateRead::new(&membership.version);
+        // One structurally changing source is allowed among stable
+        // sibling lists. Multiple changed sources still require a shared
+        // scratch materialization transaction.
         let mut changed = frame.mounted_scroll_sources.iter().enumerate()
             .filter(|(_, source)| !source.unchanged());
         let (mounted_source, source) = changed.next()?;
-        if changed.next().is_some() || !source.changed_for(owner, &membership.version) {
+        if changed.next().is_some() { return None; }
+        let mut candidates = rows.row_placements.iter().filter_map(|(&key, binding)| {
+            if binding.owner != owner { return None; }
+            let membership = binding.boundary_membership()?;
+            source.changed_for(owner, &membership.version)
+                .then_some((key, binding, membership))
+        });
+        let (key, binding, membership) = candidates.next()?;
+        if candidates.next().is_some() { return None; }
+        let builder = binding.builder.as_ref()?;
+        if binding.revision != epoch.content
+            || binding.row_revision.is_none() || builder.paint_context.is_none()
+            || !matches!(&binding.source, RowPlacementSource::Uniform { measurement: None, .. })
+            || rows.membership.single_run(key)?.1 != (RowRun {
+                list: key, start: binding.captured.start, end: binding.captured.end,
+            })
+        {
             return None;
         }
+        let sample_read = StateRead::new(&membership.version);
         let first = rows.rows.get(&(key, binding.captured.start))?;
         let committed_text = self.text_system.committed_layout_index()?;
         let generation = committed_text.components().0;
@@ -2989,6 +3039,27 @@ mod scoped_row_tests {
                 assert_eq!(retired, old & !new);
             }
         }
+    }
+
+    #[test]
+    fn row_run_replacement_preserves_independent_list_membership() {
+        let mut runs = RowRuns::default();
+        for key in [(9, 5), (9, 6), (3, 1), (3, 2), (7, 0), (7, 2)] {
+            runs.record(key);
+        }
+        runs.normalize();
+        let (slot, run) = runs.single_run(3).unwrap();
+        assert_eq!(run, RowRun { list: 3, start: 1, end: 3 });
+        assert!(runs.single_run(7).is_none());
+        assert!(runs.single_run(4).is_none());
+        runs.runs[slot].start = 4;
+        runs.runs[slot].end = 8;
+        assert_eq!(runs.runs, [
+            RowRun { list: 3, start: 4, end: 8 },
+            RowRun { list: 7, start: 0, end: 1 },
+            RowRun { list: 7, start: 2, end: 3 },
+            RowRun { list: 9, start: 5, end: 7 },
+        ]);
     }
 
     #[test]
