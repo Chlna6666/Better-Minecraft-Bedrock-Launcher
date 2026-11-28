@@ -2141,9 +2141,23 @@ mod tests {
         assert_eq!(engine.persistent_nodes[&owner(&keep)].id, kept);
         assert!(!engine.persistent_nodes.contains_key(&owner(&exit)));
         assert_eq!(engine.claimed_this_frame, 0);
+        let epoch = engine.request_frame;
+        let kept_stamp = engine.persistent_nodes[&owner(&keep)].claimed_in_frame;
+        // Reverse scroll must be able to recreate the retired key while
+        // retaining both the enclosing layout and the other row.
+        assert_eq!(engine.begin_detached_boundary(&[(entering, entering_claims)]), Some(4));
+        let returning = engine.request_layout(Some(owner(&exit)), true, Style::default(), crate::px(16.), 1., &[]);
+        assert_ne!(returning, leaving);
+        engine.commit_detached_boundary().unwrap();
+        assert_eq!(engine.request_frame, epoch);
+        assert_eq!(engine.persistent_nodes[&owner(&keep)].claimed_in_frame, kept_stamp);
+        assert!(!engine.persistent_nodes.contains_key(&owner(&enter)));
+        assert_eq!(engine.detached_claim_proof, Some((epoch, engine.layout_changes)));
+        assert!(engine.committed_claim_log[3].is_none());
+        assert_eq!(engine.committed_claim_log[4].unwrap().id, returning);
         assert!(engine.try_keep_retained(&LayoutClaimBlocks::request(0..1), root).is_some());
         assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(2..3), kept).is_some());
-        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(3..4), entering).is_some());
+        assert!(engine.try_keep_detached_row_claims(&LayoutClaimBlocks::prepaint(4..5), returning).is_some());
     }
 
     #[test]
