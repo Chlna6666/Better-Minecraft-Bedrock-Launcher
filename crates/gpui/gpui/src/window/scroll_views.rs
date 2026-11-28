@@ -1324,8 +1324,17 @@ mod binding_tests {
 
     #[gpui::test]
     fn independent_fixed_uniform_boundary_builds_only_entering_rows(cx: &mut crate::TestAppContext) {
+        assert_independent_uniform_boundary(cx, false);
+    }
+
+    #[gpui::test]
+    fn independent_uniform_text_boundary_preserves_shared_text_accesses(cx: &mut crate::TestAppContext) {
+        assert_independent_uniform_boundary(cx, true);
+    }
+
+    fn assert_independent_uniform_boundary(cx: &mut crate::TestAppContext, with_text: bool) {
         use crate::{
-            Context, IntoElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
+            Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
             UniformListScrollHandle, div, uniform_list_each,
         };
         use std::cell::Cell;
@@ -1334,15 +1343,18 @@ mod binding_tests {
             roots: Rc<Cell<usize>>,
             builds: Rc<Cell<usize>>,
             scroll: UniformListScrollHandle,
+            with_text: bool,
         }
         impl Render for Rows {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 self.roots.set(self.roots.get() + 1);
                 let builds = self.builds.clone();
+                let with_text = self.with_text;
                 uniform_list_each("detached-static-rows", 100, move |row, _, _| {
                     builds.set(builds.get() + 1);
-                    div().h(px(24.)).w_full()
-                        .bg(if row % 2 == 0 { crate::blue() } else { crate::red() })
+                    let element = div().h(px(24.)).w_full()
+                        .bg(if row % 2 == 0 { crate::blue() } else { crate::red() });
+                    if with_text { element.child("shared text layout") } else { element }
                 })
                 .with_item_height(px(24.))
                 .with_row_revision(|_| 0)
@@ -1354,7 +1366,7 @@ mod binding_tests {
         let builds = Rc::new(Cell::new(0));
         let (_, cx) = cx.add_window_view(|window, _| {
             window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
-            Rows { roots: roots.clone(), builds: builds.clone(), scroll: UniformListScrollHandle::new() }
+            Rows { roots: roots.clone(), builds: builds.clone(), scroll: UniformListScrollHandle::new(), with_text }
         });
         let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: point(px(8.), px(48.)),
