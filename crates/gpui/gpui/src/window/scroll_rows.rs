@@ -1377,8 +1377,7 @@ impl Window {
     /// Frame, not a duplicate of the committed Frame or layout tree.
     pub(super) fn try_commit_uniform_boundary(&mut self, cx: &mut App, started: std::time::Instant) -> bool {
         let Some((epoch, owners)) = self.invalidator.pending_placement() else { return false; };
-        let [owner] = owners.as_slice() else { return false; };
-        let owner = *owner;
+        if owners.is_empty() { return false; }
         if self.next_frame.scene().len() != 0
             || self.next_frame.dispatch_tree.len() != 0
             || !self.next_frame.scroll_rows.rows.is_empty()
@@ -1390,7 +1389,7 @@ impl Window {
         {
             return false;
         }
-        let Some(boundaries) = self.prepare_static_uniform_boundaries(cx, epoch, owner) else { return false; };
+        let Some(boundaries) = self.prepare_static_uniform_boundaries(cx, epoch, &owners) else { return false; };
         let retired_claims: Vec<_> = boundaries.iter().flat_map(|boundary| boundary.retired_claims.iter().cloned()).collect();
         if self.element_states.begin_boundary().is_none() { return false; }
         if self.layout_engine.as_mut().and_then(|engine| engine.begin_detached_boundary(&retired_claims)).is_none() {
@@ -1402,10 +1401,9 @@ impl Window {
         let input_owner = self.input_dependency_owner.take();
         let autoscroll = self.requested_autoscroll.take();
         cx.entities.begin_frame_dependencies();
-        cx.entities.set_render_dependency_owner(Some(owner));
         let result = {
             let _reads = cx.entities.begin_state_reads();
-            self.execute_static_uniform_boundary(boundaries, epoch, owner, cx)
+            self.execute_static_uniform_boundary(boundaries, epoch, &owners, cx)
         };
         cx.entities.discard_frame_dependencies();
         cx.entities.frame_entity_scratch = scratch;
@@ -1417,7 +1415,7 @@ impl Window {
         self.text_system.cancel_boundary_layouts();
         self.element_states.cancel_boundary();
         if let Some((paint, damage, retired_records, retired_rows, retired_states)) = result {
-            self.scroll_hover.row_owners.insert(owner);
+            self.scroll_hover.row_owners.extend(owners.iter().copied());
             self.finish_scroll_placement_publication(paint, std::iter::once(damage), true, started, cx);
             // Do not destroy committed callback, row or scene owners until
             // the replacement CPU records and GPU publication are visible.
@@ -1448,7 +1446,7 @@ impl Window {
     /// any committed CPU/GPU owner can move.
     fn execute_static_uniform_boundary(
         &mut self, boundaries: Vec<StaticUniformBoundary>, epoch: super::lifecycle::PlacementEpoch,
-        owner: crate::EntityId, cx: &mut App,
+        owners: &[crate::EntityId], cx: &mut App,
     ) -> Option<(Arc<super::Paint>, Bounds<crate::ScaledPixels>, super::frame::RetiredBoundaryRecords, Vec<RowRecord>, Vec<Box<dyn std::any::Any>>)> {
         use super::frame::{BoundaryIndexSplices, RecordSplicePlan};
         let source_revision = self.rendered_frame.scene().revision;
@@ -1463,9 +1461,12 @@ impl Window {
         let notification_epoch = self.invalidator.row_notification_epoch();
         let mut scratch = Vec::with_capacity(boundaries.len());
         let mut entered_claim_domains = Vec::with_capacity(boundaries.len());
+        let mut domain_reads = Vec::with_capacity(boundaries.len());
         self.invalidator.set_phase(super::DrawPhase::Prepaint);
         for boundary in &boundaries {
             let key = boundary.key;
+            cx.entities.set_render_dependency_owner(Some(boundary.binding.owner));
+            let domain_read_start = cx.entities.dependency_read_index();
             let builder = boundary.binding.builder.as_ref()?.clone();
             let membership = &boundary.membership;
             let mut binding = boundary.binding.clone();
@@ -1493,11 +1494,14 @@ impl Window {
             }
             self.next_frame.dispatch_tree.pop_node();
             entered_claim_domains.push(claim_start..self.claim_log_len());
+            domain_reads.push(cx.entities.dependency_reads_since(domain_read_start));
             scratch.push((binding, builder, anchor, plan, items));
         }
         let prepaint_end = self.prepaint_index();
         self.invalidator.set_phase(super::DrawPhase::Paint);
-        for (_, builder, anchor, plan, items) in &mut scratch {
+        for ((binding, builder, anchor, plan, items), reads) in scratch.iter_mut().zip(&mut domain_reads) {
+            cx.entities.set_render_dependency_owner(Some(binding.owner));
+            let domain_read_start = cx.entities.dependency_read_index();
             self.next_frame.dispatch_tree.set_active_node(*anchor);
             for (row, item) in items.drain(..) {
                 builder.paint_materialized(self, *anchor, row, item, plan, cx)?;
@@ -1506,7 +1510,9 @@ impl Window {
                 return None;
             }
             self.next_frame.dispatch_tree.pop_node();
+            reads.merge_replayed(&cx.entities.dependency_reads_since(domain_read_start));
         }
+        cx.entities.set_render_dependency_owner(None);
         self.invalidator.set_phase(super::DrawPhase::None);
 
         // Only admit reads accounted for by the entering row records.
@@ -1552,12 +1558,15 @@ impl Window {
         let mut fresh_mouse_end = 0;
         let mut fresh_marker = 0;
         let mut row_reads = RenderDependencies::default();
+        let mut owner_reads = FxHashMap::<crate::EntityId, RenderDependencies>::default();
         let mut fresh_prepaint_end = 0;
         let mut fresh_paint_end = prepaint_end.accessed_element_states_index;
         let (prepaint_generation, prepaint_lines, prepaint_wrapped) = prepaint_end.line_layout_index.components();
         if prepaint_generation != generation { return None; }
         let mut text_cursors = [[0, 0], [prepaint_lines, prepaint_wrapped]];
-        for (boundary, (binding, builder, anchor, _, _)) in boundaries.iter().zip(&scratch) {
+        for ((boundary, (binding, builder, anchor, _, _)), actual_reads) in boundaries.iter().zip(&scratch).zip(&domain_reads) {
+            let mut scoped_reads = RenderDependencies::default();
+            if !actual_reads.states.is_empty() { return None; }
             if anchor.0 != fresh_dispatch_end { return None; }
             fresh_dispatch_end = anchor.0.checked_add(1)?;
             let viewport = builder.context.inherited.visual_content_mask;
@@ -1594,10 +1603,14 @@ impl Window {
                         *cursor = span.end;
                     }
                 }
-                row_reads.merge_replayed(&record.prepaint.reads);
+                if record.context.owner != binding.owner { return None; }
+                scoped_reads.merge_replayed(&record.prepaint.reads);
                 fresh_dispatch_end = span.end;
                 fresh_marker += 1;
             }
+            if !scoped_reads.same_routes(actual_reads) { return None; }
+            row_reads.merge_replayed(&scoped_reads);
+            owner_reads.entry(binding.owner).or_default().merge_replayed(&scoped_reads);
         }
         let current_text = self.text_system.layout_index();
         let (current_generation, current_lines, current_wrapped) = current_text.components();
@@ -1612,15 +1625,17 @@ impl Window {
         { return None; }
 
         if !row_reads.same_routes(&reads)
-            || !self.rendered_frame.dispatch_tree.has_view_route(owner)
+            || owners.iter().any(|&owner| !self.rendered_frame.dispatch_tree.has_view_route(owner))
             || !self.invalidator.row_dependencies_unchanged(notification_epoch, &reads)
         { return None; }
-        let mut retiring_counts = FxHashMap::default();
+        let mut owner_retirements = FxHashMap::<crate::EntityId, FxHashMap<RowDependencyKey, usize>>::default();
         for boundary in &boundaries {
+            let owner = boundary.binding.owner;
+            let retiring_counts = owner_retirements.entry(owner).or_default();
             for row in boundary.membership.delta.exited.iter().cloned().flatten() {
                 let record = old.scroll_rows.rows.get(&(boundary.key, row))?;
                 let reads = &record.prepaint.reads;
-                if !reads.states.is_empty() { return None; }
+                if record.context.owner != owner || !reads.states.is_empty() { return None; }
                 for &entity in reads.entities.iter() {
                     *retiring_counts.entry(RowDependencyKey::Entity(entity)).or_insert(0) += 1;
                 }
@@ -1632,20 +1647,29 @@ impl Window {
         // Reuse the existing reverse row index as a reference count. The
         // first retirement may build it; subsequent boundary adoptions
         // already maintain it in place. No surviving row union is needed.
-        let (retired_reads, kept_reads) = if retiring_counts.is_empty() {
-            (RenderDependencies::default(), RenderDependencies::default())
-        } else {
-            let mut routing = old.scroll_rows.notification_routing.borrow_mut();
-            if routing.cursor.is_none() {
-                routing.build(&old.scroll_rows.rows, self.invalidator.row_notification_epoch());
+        let mut prepared_reads = SmallVec::<[super::lifecycle::BoundaryRowReads; 4]>::new();
+        let mut routing = old.scroll_rows.notification_routing.borrow_mut();
+        for &owner in owners {
+            let entered = owner_reads.remove(&owner)?;
+            let retiring_counts = owner_retirements.remove(&owner)?;
+            let (retired_reads, kept_reads) = if retiring_counts.is_empty() {
+                (RenderDependencies::default(), RenderDependencies::default())
+            } else {
+                if routing.cursor.is_none() {
+                    routing.build(&old.scroll_rows.rows, self.invalidator.row_notification_epoch());
+                }
+                routing.boundary_retirement_reads(&retiring_counts, |row| {
+                    Some(old.scroll_rows.rows.get(&row)?.context.owner == owner)
+                })?
+            };
+            if !entered.entities.is_empty() || !entered.globals.is_empty()
+                || !retired_reads.entities.is_empty() || !retired_reads.globals.is_empty()
+            {
+                prepared_reads.push(self.invalidator.prepare_boundary_row_delta(owner, &entered, &retired_reads, &kept_reads)?);
             }
-            routing.boundary_retirement_reads(&retiring_counts, |row| {
-                Some(old.scroll_rows.rows.get(&row)?.context.owner == owner)
-            })?
-        };
-        let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
-            && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
-            else { Some(self.invalidator.prepare_boundary_row_delta(owner, &reads, &retired_reads, &kept_reads)?) };
+        }
+        drop(routing);
+        if !owner_reads.is_empty() || !owner_retirements.is_empty() { return None; }
 
         let mut scene_edits = Vec::new();
         let mut dispatch_edits = Vec::new();
@@ -2057,12 +2081,12 @@ impl Window {
             // authoritative; the cancellation path restores current slots.
             self.text_system.prepare_boundary_layouts(generation, &lines, &wrapped)?;
         }
-        if !self.invalidator.commit_placement(epoch, &[owner]) { return None; }
+        if !self.invalidator.commit_placement(epoch, owners) { return None; }
         self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
             .expect("reserved detached layout commit");
         let retired_states = prepared_states.map_or_else(Vec::new, |prepared| self.element_states.commit_boundary(prepared));
-        if let Some(prepared) = prepared_reads {
-            let retired_entities = self.invalidator.commit_boundary_row_reads_batch(std::iter::once(prepared));
+        if !prepared_reads.is_empty() {
+            let retired_entities = self.invalidator.commit_boundary_row_reads_batch(prepared_reads);
             cx.unregister_boundary_entities(self.handle, &retired_entities);
             cx.register_boundary_entities(self.handle, self.invalidator.clone(), &reads.entities);
         }
@@ -2081,16 +2105,16 @@ impl Window {
     /// Do not execute any application callback until native ownership of
     /// the old domain and all retired rows has been certified.
     fn prepare_static_uniform_boundaries(
-        &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+        &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owners: &[crate::EntityId],
     ) -> Option<Vec<StaticUniformBoundary>> {
         let frame = &self.rendered_frame;
         if !self.scroll_hover_deadline_active(cx) { return None; }
         let mut boundaries = Vec::new();
         for (mounted_source, source) in frame.mounted_scroll_sources.iter().enumerate().filter(|(_, source)| !source.unchanged()) {
             let mut candidates = frame.scroll_rows.row_placements.iter().filter_map(|(&key, binding)| {
-                if binding.owner != owner { return None; }
+                if !owners.contains(&binding.owner) { return None; }
                 let membership = binding.boundary_membership()?;
-                source.changed_for(owner, &membership.version).then_some((key, binding, membership))
+                source.changed_for(binding.owner, &membership.version).then_some((key, binding, membership))
             });
             let (key, binding, membership) = candidates.next()?;
             if candidates.next().is_some() || boundaries.iter().any(|boundary: &StaticUniformBoundary| boundary.key == key) {
@@ -2098,7 +2122,9 @@ impl Window {
             }
             boundaries.push(self.prepare_static_uniform_domain(epoch, key, binding, membership, mounted_source)?);
         }
-        if boundaries.is_empty() { return None; }
+        if boundaries.is_empty() || owners.iter().any(|owner|
+            !boundaries.iter().any(|boundary| boundary.binding.owner == *owner))
+        { return None; }
         // Scratch follows committed scene order. Reject domains whose
         // native streams require a different order or overlap.
         boundaries.sort_unstable_by_key(|boundary| boundary.scene.start);
