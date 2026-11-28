@@ -398,6 +398,12 @@ fn append_row_input_move(
     Ok(())
 }
 
+pub(super) fn experimental_row_boundary_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(test) || *ENABLED.get_or_init(|| std::env::var_os("GPUI_EXPERIMENTAL_ROW_BOUNDARY")
+        .is_some_and(|value| value == "1"))
+}
+
 type RowKey = (u64, usize);
 
 /// Exact captured row membership, compacted by logical list and contiguous
@@ -1062,8 +1068,8 @@ struct RowRecord {
 
 /// First runtime boundary domain: static, fixed-height independent rows.
 /// The surrounding list may remain interactive. Only the rows being
-/// spliced may own fixed-clip hitboxes and isolated element state, but
-/// not callbacks, text or nested view records.
+/// spliced may own fixed-clip hitboxes, isolated element state and text,
+/// but not callbacks or nested view records.
 struct StaticUniformBoundary {
     key: u64,
     binding: RowPlacementBinding,
@@ -1075,9 +1081,49 @@ struct StaticUniformBoundary {
     hitboxes: Range<usize>,
     prepaint_states: Range<usize>,
     paint_states: Range<usize>,
+    text: RowTextDomain,
     prepaint_base: PrepaintStateIndex,
     paint_base: PaintIndex,
     retired_claims: Vec<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
+}
+
+/// Phase-major ranges, with independent plain and wrapped text streams.
+struct RowTextDomain {
+    generation: u64,
+    spans: [[Range<usize>; 2]; 2],
+}
+
+impl RowTextDomain {
+    fn at_start(row: &RowRecord, generation: u64) -> Option<Self> {
+        let prepaint = row.text_spans(false, generation)?;
+        let paint = row.text_spans(true, generation)?;
+        Some(Self { generation, spans: [
+            prepaint.map(|span| span.start..span.start),
+            paint.map(|span| span.start..span.start),
+        ] })
+    }
+
+    fn append(&mut self, row: &RowRecord) -> Option<()> {
+        for phase in 0..2 {
+            let spans = row.text_spans(phase == 1, self.generation)?;
+            for (domain, span) in self.spans[phase].iter_mut().zip(spans) {
+                if span.start != domain.end || span.start > span.end { return None; }
+                domain.end = span.end;
+            }
+        }
+        Some(())
+    }
+
+    fn within(&self, end: &super::LineLayoutIndex, exact: bool) -> bool {
+        let (generation, lines, wrapped) = end.components();
+        if generation != self.generation { return false; }
+        [lines, wrapped].into_iter().enumerate().all(|(stream, limit)| {
+            let prepaint = &self.spans[0][stream];
+            let paint = &self.spans[1][stream];
+            prepaint.end <= paint.start && paint.end <= limit
+                && (!exact || (prepaint.start == 0 && prepaint.end == paint.start && paint.end == limit))
+        })
+    }
 }
 
 struct BoundaryRowUpdate {
@@ -1153,11 +1199,15 @@ impl RowRecord {
         prepaint.end.hitboxes_index = 0;
         prepaint.start.accessed_element_states_index = 0;
         prepaint.end.accessed_element_states_index = 0;
+        prepaint.start.line_layout_index = Default::default();
+        prepaint.end.line_layout_index = Default::default();
         let mut paint = self.paint.clone();
         paint.start.scene_index = 0;
         paint.end.scene_index = 0;
         paint.start.accessed_element_states_index = 0;
         paint.end.accessed_element_states_index = 0;
+        paint.start.line_layout_index = Default::default();
+        paint.end.line_layout_index = Default::default();
         if prepaint.start != prepaint.end || paint.start != paint.end
             || !self.prepaint.fixed_input_clip
             || self.prepaint.layout_claims.is_none()
@@ -1167,6 +1217,18 @@ impl RowRecord {
             return None;
         }
         Some((prepaint.start, paint.start))
+    }
+
+    fn text_spans(&self, paint: bool, generation: u64) -> Option<[Range<usize>; 2]> {
+        let (start, end) = if paint {
+            (&self.paint.start.line_layout_index, &self.paint.end.line_layout_index)
+        } else {
+            (&self.prepaint.records.start.line_layout_index, &self.prepaint.records.end.line_layout_index)
+        };
+        let (a, line_start, wrapped_start) = start.components();
+        let (b, line_end, wrapped_end) = end.components();
+        if a != generation || b != generation || line_start > line_end || wrapped_start > wrapped_end { return None; }
+        Some([line_start..line_end, wrapped_start..wrapped_end])
     }
 
     fn state_span(&self, paint: bool) -> Range<usize> {
@@ -1275,7 +1337,12 @@ impl Window {
         let scale = self.scale_factor();
         let viewport = builder.context.inherited.visual_content_mask;
         let opaque = self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque;
+        let committed_text = self.text_system.committed_layout_index()?;
         let text_start = self.text_system.layout_index();
+        let generation = boundary.text.generation;
+        if text_start.components() != (generation, 0, 0)
+            || !boundary.text.within(&committed_text, false)
+        { return None; }
         let read_start = cx.entities.dependency_read_index();
 
         let mut binding = boundary.binding.clone();
@@ -1314,7 +1381,6 @@ impl Window {
         let reads = cx.entities.dependency_reads_since(read_start);
         if !reads.entities.is_empty() || !reads.globals.is_empty() || !reads.states.is_empty()
             || !cx.entities.frame_entity_scratch.is_empty()
-            || self.text_system.layout_index() != text_start
             || self.rendered_frame.scene().revision != source_revision
             || self.draw_was_degraded
             || self.requested_autoscroll.is_some()
@@ -1343,10 +1409,6 @@ impl Window {
         if fresh.scroll_rows.rows.len() != entered_count
             || fresh.painter.len() != entered_count
             || !fresh.dispatch_tree.inert_row_range(0..fresh.dispatch_tree.len())
-            || boundary.prepaint_base.line_layout_index.rebased_from(
-                &boundary.prepaint_base.line_layout_index, &text_start).is_none()
-            || boundary.paint_base.line_layout_index.rebased_from(
-                &boundary.paint_base.line_layout_index, &text_start).is_none()
         {
             return None;
         }
@@ -1358,6 +1420,8 @@ impl Window {
         let mut fresh_prepaint_end = 0;
         let mut fresh_paint_start = None;
         let mut fresh_paint_end = 0;
+        let first_entered = new_range.clone().find(|row| !old_range.contains(row))?;
+        let mut fresh_text = RowTextDomain::at_start(fresh.scroll_rows.rows.get(&(key, first_entered))?, generation)?;
         for (marker, row) in new_range.clone().filter(|row| !old_range.contains(row)).enumerate() {
             let record = fresh.scroll_rows.rows.get(&(key, row))?;
             record.static_boundary_checkpoints()?;
@@ -1386,12 +1450,16 @@ impl Window {
             if paint.start != fresh_paint_end { return None; }
             fresh_prepaint_end = prepaint.end;
             fresh_paint_end = paint.end;
+            fresh_text.append(record)?;
             fresh_dispatch_end = span.end;
         }
         if fresh_dispatch_end != fresh.dispatch_tree.len()
             || fresh_hitbox_end != fresh.hitboxes.len()
             || fresh_paint_start.unwrap_or(0) != fresh_prepaint_end
             || fresh_paint_end != fresh.accessed_element_states.len() { return None; }
+
+        let current_text = self.text_system.layout_index();
+        if !fresh_text.within(&current_text, true) { return None; }
 
         // The left and right gaps are independent native stream edits.
         // A jump with no retained intersection replaces the domain once.
@@ -1408,6 +1476,8 @@ impl Window {
         let mut hitbox_edits = Vec::with_capacity(groups.len());
         let mut prepaint_state_edits = Vec::with_capacity(groups.len());
         let mut paint_state_edits = Vec::with_capacity(groups.len());
+        let mut text_edits: [[Vec<(Range<usize>, Range<usize>)>; 2]; 2] =
+            std::array::from_fn(|_| std::array::from_fn(|_| Vec::with_capacity(groups.len())));
         let old_dispatch_at = |row: usize| -> Option<usize> {
             if row == old_range.end { Some(boundary.dispatch.end) }
             else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
@@ -1451,6 +1521,22 @@ impl Window {
                     edits.push((old_states, new_states));
                 }
             }
+            for (phase, streams) in text_edits.iter_mut().enumerate() {
+                for (stream, edits) in streams.iter_mut().enumerate() {
+                    let at = |row: usize| -> Option<usize> {
+                        if row == old_range.end { Some(boundary.text.spans[phase][stream].end) }
+                        else { Some(old.scroll_rows.rows.get(&(key, row))?.text_spans(phase == 1, generation)?[stream].start) }
+                    };
+                    let retired_text = at(retired.start)?..at(retired.end)?;
+                    let entering_text = if entered.is_empty() { 0..0 } else {
+                        fresh.scroll_rows.rows.get(&(key, entered.start))?.text_spans(phase == 1, generation)?[stream].start
+                            ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.text_spans(phase == 1, generation)?[stream].end
+                    };
+                    if !retired_text.is_empty() || !entering_text.is_empty() {
+                        edits.push((retired_text, entering_text));
+                    }
+                }
+            }
         }
 
         self.next_frame.painter.finish();
@@ -1467,11 +1553,32 @@ impl Window {
         let states = RecordSplicePlan::new(old.accessed_element_states.len(), fresh.accessed_element_states.len(), &prepaint_state_edits)?;
         let prepaint_state_domain = states.enclosing_phase_span(boundary.prepaint_states.clone(), 0..state_split)?;
         let paint_state_domain = states.enclosing_phase_span(boundary.paint_states.clone(), state_split..states.edit_count())?;
+        let [[mut line_edits, mut wrapped_edits], [paint_line_edits, paint_wrapped_edits]] = text_edits;
+        let line_split = line_edits.len();
+        let wrapped_split = wrapped_edits.len();
+        line_edits.extend(paint_line_edits);
+        wrapped_edits.extend(paint_wrapped_edits);
+        let (_, old_lines, old_wrapped) = committed_text.components();
+        let (_, fresh_lines, fresh_wrapped) = current_text.components();
+        let lines = RecordSplicePlan::new(old_lines, fresh_lines, &line_edits)?;
+        let wrapped = RecordSplicePlan::new(old_wrapped, fresh_wrapped, &wrapped_edits)?;
+        let text_plans = [&lines, &wrapped];
+        let text_splits = [line_split, wrapped_split];
+        let mut text_targets = boundary.text.spans.clone();
+        for (phase, streams) in text_targets.iter_mut().enumerate() {
+            for (stream, target) in streams.iter_mut().enumerate() {
+                let plan = text_plans[stream];
+                let split = text_splits[stream];
+                *target = plan.enclosing_phase_span(target.clone(),
+                    if phase == 0 { 0..split } else { split..plan.edit_count() })?;
+            }
+        }
         let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), 0, &[])?;
         let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
         let maps = BoundaryIndexSplices {
             scene: &scene, dispatch: &dispatch, hitboxes: &hitboxes, states: &states,
-            state_prepaint_edits: Some(state_split), mouse: &mouse, ime: &ime, text: None,
+            state_prepaint_edits: Some(state_split), mouse: &mouse, ime: &ime,
+            text: Some((generation, &lines, &wrapped)), text_prepaint_edits: Some((line_split, wrapped_split)),
         };
         let mut candidate = old.prepare_boundary_records_under(
             fresh, &scene_edits, &hitboxes, &states, &dispatch, builder.dispatch_parent,
@@ -1494,6 +1601,7 @@ impl Window {
         let mut hitbox_cursor = boundary.hitboxes.start;
         let mut prepaint_state_cursor = prepaint_state_domain.start;
         let mut paint_state_cursor = paint_state_domain.start;
+        let mut text_cursors = text_targets.clone().map(|streams| streams.map(|span| span.start));
         for row in new_range.clone() {
             let row_key = (key, row);
             let entering = !old_range.contains(&row);
@@ -1559,10 +1667,35 @@ impl Window {
             paint_end.scene_index = marker.checked_add(1)?;
             paint_start.accessed_element_states_index = paint_states.start;
             paint_end.accessed_element_states_index = paint_states.end;
+            let mut project_text = |phase: usize| -> Option<Range<super::LineLayoutIndex>> {
+                let sources = record.text_spans(phase == 1, generation)?;
+                let mut target = [0..0, 0..0];
+                for (stream, source) in sources.into_iter().enumerate() {
+                    let cursor = &mut text_cursors[phase][stream];
+                    let next = *cursor..cursor.checked_add(source.len())?;
+                    if !source.is_empty() {
+                        let plan = text_plans[stream];
+                        let mapped = if entering { plan.replacement_span(source)? }
+                            else { plan.retained_range(source)? };
+                        if mapped != next { return None; }
+                    }
+                    *cursor = next.end;
+                    target[stream] = next;
+                }
+                Some(super::LineLayoutIndex::from_components(generation, target[0].start, target[1].start)
+                    ..super::LineLayoutIndex::from_components(generation, target[0].end, target[1].end))
+            };
+            let prepaint_text = project_text(0)?;
+            let paint_text = project_text(1)?;
+            start.line_layout_index = prepaint_text.start;
+            end.line_layout_index = prepaint_text.end;
+            paint_start.line_layout_index = paint_text.start;
+            paint_end.line_layout_index = paint_text.end;
             updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
                 paint: paint_start..paint_end, fresh_claims });
         }
         if prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end { return None; }
+        if text_cursors != text_targets.clone().map(|streams| streams.map(|span| span.end)) { return None; }
         let damage = damage?;
         if !placements.is_empty() {
             candidate.paint = candidate.paint.with_scroll_placements(&placements, opaque)?;
@@ -1592,6 +1725,12 @@ impl Window {
             || self.force_full_redraw.get() || self.force_view_cache_refresh
         { return None; }
         self.layout_engine.as_mut()?.prepare_detached_boundary_commit()?;
+        let adopt_text = lines.edit_count() != 0 || wrapped.edit_count() != 0;
+        if adopt_text {
+            // A failed placement epoch still leaves the old text log
+            // authoritative; the cancellation path restores current slots.
+            self.text_system.splice_layouts(generation, &lines, &wrapped)?;
+        }
         if !self.invalidator.commit_placement(epoch, &[owner]) { return None; }
         self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
             .expect("reserved detached layout commit");
@@ -1604,6 +1743,7 @@ impl Window {
         self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&membership.version);
         self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
         self.global_ids.get_mut().finish_partial_frame();
+        if adopt_text { self.text_system.finish_frame(); }
         Some((paint, damage, retired_records, retired_rows, retired_states))
     }
 
@@ -1639,6 +1779,9 @@ impl Window {
             return None;
         }
         let first = rows.rows.get(&(key, binding.captured.start))?;
+        let committed_text = self.text_system.committed_layout_index()?;
+        let generation = committed_text.components().0;
+        let mut text = RowTextDomain::at_start(first, generation)?;
         let (prepaint_base, paint_base) = first.static_boundary_checkpoints()?;
         let scene_start = first.paint.start.scene_index;
         let dispatch_start = first.dispatch_span().start;
@@ -1690,18 +1833,19 @@ impl Window {
             { return None; }
             prepaint_state_end = prepaint_states.end;
             paint_state_end = paint_states.end;
+            text.append(record)?;
             dispatch_end = span.end;
             if !membership.captured.contains(&row) {
                 retired_claims.push(record.prepaint.layout_claims.as_ref()?.clone());
             }
         }
-        if prepaint_state_end > paint_state_start { return None; }
+        if prepaint_state_end > paint_state_start || !text.within(&committed_text, false) { return None; }
         Some(StaticUniformBoundary {
             key, binding: binding.clone(), membership, sample_read, mounted_source,
             scene: scene_start..scene_start.checked_add(binding.captured.len())?,
             dispatch: dispatch_start..dispatch_end, hitboxes: hitbox_start..hitbox_end,
             prepaint_states: prepaint_state_start..prepaint_state_end,
-            paint_states: paint_state_start..paint_state_end,
+            paint_states: paint_state_start..paint_state_end, text,
             prepaint_base, paint_base, retired_claims,
         })
     }
@@ -2066,6 +2210,9 @@ impl Window {
         let claim_start = (capture && matches!(&plan.context.identity, RowListIdentity::Uniform(..)))
             .then(|| self.layout_engine.as_ref().map(|engine| (engine.claim_log_len(), engine.transient_count())))
             .flatten();
+        let text_system = self.text_system.clone();
+        let _text_access = (capture && plan.row_revision.is_some() && experimental_row_boundary_enabled())
+            .then(|| text_system.record_row_accesses());
         self.with_list_item_layout_key(row, |window| {
             item.layout_as_root(available_space, window, cx);
             item.prepaint_at(origin, window, cx);
@@ -2295,7 +2442,7 @@ impl Window {
         if (plan.placement_only && record.revision != plan.revision)
             || (plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some())
                 && record.prepaint.layout_claims.is_none()
-                && (cfg!(test) || std::env::var_os("GPUI_EXPERIMENTAL_ROW_BOUNDARY").is_some_and(|value| value == "1")))
+                && experimental_row_boundary_enabled())
             || !plan.matches_context(&record.context)
             || record.prepaint.row_revision != plan.row_revision(row)
         {
@@ -2417,6 +2564,9 @@ impl Window {
         let start = self.paint_index();
         let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
             .map(|previous| Arc::clone(&previous.content));
+        let text_system = self.text_system.clone();
+        let _text_access = (plan.row_revision.is_some() && matches!(&plan.context.identity, RowListIdentity::Uniform(..))
+            && experimental_row_boundary_enabled()).then(|| text_system.record_row_accesses());
         let content = self.capture_scroll_paint(prepaint.origin, suppress_hover,
             previous_source.as_deref(), target, cx, |window, cx| item.paint(window, cx));
         if suppress_hover {
