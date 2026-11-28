@@ -729,11 +729,23 @@ impl Frame {
         ime: &'a RecordSplicePlan,
         window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
+        self.prepare_boundary_records_under(replacement, scene_edits, hitboxes, states, dispatch,
+            replacement_parent, None, mouse, ime, window_opaque)
+    }
+
+    pub(super) fn prepare_boundary_records_under<'a>(
+        &self, replacement: &Self,
+        scene_edits: &[(Range<usize>, Range<usize>)],
+        hitboxes: &RecordSplicePlan, states: &RecordSplicePlan,
+        dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
+        replacement_anchor: Option<DispatchNodeId>, mouse: &RecordSplicePlan,
+        ime: &'a RecordSplicePlan, window_opaque: bool,
+    ) -> Option<BoundaryRecordCandidate<'a>> {
         let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
         // other candidates own only new descriptors and shared payloads.
-        let dispatch = self.dispatch_tree.with_spliced_records(
-            &replacement.dispatch_tree, dispatch, replacement_parent,
+        let dispatch = self.dispatch_tree.with_spliced_records_under(
+            &replacement.dispatch_tree, dispatch, replacement_parent, replacement_anchor,
         )?;
         let hitboxes = self.hitboxes.with_spliced_records(&replacement.hitboxes, hitboxes)?;
         let state_access = self.accessed_element_states.with_spliced_records(
