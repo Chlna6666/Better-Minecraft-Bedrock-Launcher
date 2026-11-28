@@ -341,12 +341,15 @@ struct LayoutStore<V> {
     used_count: usize,
     // Allocated only after the first independent text boundary.
     boundary_counts: Option<FxHashMap<usize, usize>>,
+    // Lazily built reverse key ownership; no extra Arc clones on ordinary inserts.
+    boundary_keys: Option<FxHashMap<usize, Arc<CacheKey>>>,
     boundary_inactive_limit: usize,
 }
 
 struct PreparedTextAccesses {
     log: AccessLog,
     changes: Vec<(usize, usize)>,
+    retired: Vec<usize>,
 }
 
 struct LayoutEntry<V> {
@@ -364,6 +367,7 @@ impl<V> Default for LayoutStore<V> {
             current: AccessLog::default(),
             used_count: 0,
             boundary_counts: None,
+            boundary_keys: None,
             boundary_inactive_limit: 0,
         }
     }
@@ -407,6 +411,9 @@ impl<V> LayoutStore<V> {
                 self.slots.push(Some(entry));
                 id
             };
+            if let Some(keys) = self.boundary_keys.as_mut() {
+                keys.insert(id, Arc::clone(&key));
+            }
             self.keys.insert(key, id);
             self.used_count += 1;
             id
@@ -511,6 +518,7 @@ impl<V> LayoutStore<V> {
             // to the ordinary ownership-aware sweep, with bounded growth.
             self.boundary_inactive_limit = self.keys.len().checked_sub(counts.len())?
                 .saturating_add(256).max(512);
+            self.boundary_keys = Some(self.keys.iter().map(|(key, &id)| (id, Arc::clone(key))).collect());
             self.boundary_counts = Some(counts);
         }
         let counts = self.boundary_counts.as_ref()?;
@@ -542,10 +550,16 @@ impl<V> LayoutStore<V> {
         if self.keys.len().checked_sub(active)? > self.boundary_inactive_limit { return None; }
         self.boundary_counts.as_mut()?.try_reserve(additions).ok()?;
         let log = self.splice_pages(plan)?;
-        Some(PreparedTextAccesses { log, changes: changes.into_iter().collect() })
+        let retired: Vec<_> = changes.iter().filter_map(|(&id, &count)|
+            (count == 0).then_some(id)).collect();
+        if !retired.iter().all(|id| self.boundary_keys.as_ref().is_some_and(|keys| keys.contains_key(id))) {
+            return None;
+        }
+        self.free.try_reserve(retired.len()).ok()?;
+        Some(PreparedTextAccesses { log, changes: changes.into_iter().collect(), retired })
     }
 
-    fn commit_boundary_accesses(&mut self, prepared: PreparedTextAccesses) {
+    fn commit_boundary_accesses(&mut self, prepared: PreparedTextAccesses) -> Vec<usize> {
         let counts = self.boundary_counts.as_mut().expect("prepared text counts");
         for (id, count) in prepared.changes {
             if count == 0 { counts.remove(&id); }
@@ -554,6 +568,28 @@ impl<V> LayoutStore<V> {
         self.previous = prepared.log;
         self.current.clear();
         self.used_count = 0;
+        prepared.retired
+    }
+
+    /// Retire only zero-reference IDs from the edited ranges. External
+    /// layout owners keep the slot live; the normal sweep handles them
+    /// once their last external reference goes away.
+    fn retire_boundary_slots(
+        &mut self, retired: Vec<usize>, mut retire: impl FnMut(&Arc<CacheKey>, Arc<V>),
+    ) {
+        let counts = self.boundary_counts.as_ref().expect("committed text counts");
+        let keys = self.boundary_keys.as_mut().expect("committed reverse keys");
+        for id in retired {
+            debug_assert!(!counts.contains_key(&id));
+            let Some(entry) = self.slots.get(id).and_then(Option::as_ref) else { continue; };
+            if Arc::strong_count(&entry.layout) > 1 { continue; }
+            let key = keys.remove(&id).expect("validated retired text key");
+            debug_assert_eq!(self.keys.get(&key), Some(&id));
+            self.keys.remove(&key);
+            let entry = self.slots[id].take().expect("validated retired slot");
+            self.free.push(id);
+            retire(&key, entry.layout);
+        }
     }
 
     /// Adopt only after both text streams have been prepared and their
@@ -579,6 +615,7 @@ impl<V> LayoutStore<V> {
 
     fn finish(&mut self, epoch: u64, mut retire: impl FnMut(&Arc<CacheKey>, Arc<V>)) {
         self.boundary_counts = None;
+        self.boundary_keys = None;
         self.boundary_inactive_limit = 0;
         debug_assert!(self.used_count <= self.keys.len());
         // Every key was used: no unused slot can be retired. Unlike an
@@ -606,6 +643,7 @@ impl<V> LayoutStore<V> {
 
     fn clear(&mut self) {
         self.boundary_counts = None;
+        self.boundary_keys = None;
         self.boundary_inactive_limit = 0;
         self.keys.clear();
         self.slots.clear();
@@ -621,6 +659,7 @@ impl<V> LayoutStore<V> {
     fn compact_slots(&mut self) {
         if self.free.is_empty() { return; }
         self.boundary_counts = None;
+        self.boundary_keys = None;
         self.boundary_inactive_limit = 0;
         let mut relocated = vec![usize::MAX; self.slots.len()];
         let mut write = 0;
@@ -1043,8 +1082,22 @@ impl LineLayoutCache {
     pub(crate) fn commit_boundary_layouts(&self) -> LineLayoutFrameMetrics {
         let mut frame = self.frame.borrow_mut();
         let (lines, wrapped) = frame.prepared_boundary.take().expect("prepared text boundary");
-        frame.wrapped_lines.commit_boundary_accesses(wrapped);
-        frame.lines.commit_boundary_accesses(lines);
+        let retired_wrapped = frame.wrapped_lines.commit_boundary_accesses(wrapped);
+        let retired_lines = frame.lines.commit_boundary_accesses(lines);
+        // Wrappers can own plain line layouts. Drop eligible wrappers
+        // before inspecting the retired plain slots, as in full finish().
+        frame.wrapped_lines.retire_boundary_slots(retired_wrapped, |_, _| {});
+        let generation = self.cached_font_generation.load(Ordering::Acquire);
+        let mut recent = None;
+        frame.lines.retire_boundary_slots(retired_lines, |key, layout| {
+            if let Some(units) = RecentShapes::units(key, &layout) {
+                let recent = recent.get_or_insert_with(|| self.recent_shapes.lock());
+                if self.font_generation.load(Ordering::Acquire) == generation {
+                    recent.sync_generation(generation);
+                    recent.insert(Arc::clone(key), layout, units);
+                }
+            }
+        });
         frame.epoch = frame.epoch.checked_add(1).expect("validated text epoch");
         self.frame_metrics.finish_frame()
     }
@@ -1731,9 +1784,9 @@ mod tests {
             let frame = cache.frame.borrow();
             assert!(frame.wrapped_lines.previous.is_empty());
             assert!(frame.wrapped_lines.boundary_counts.as_ref().unwrap().is_empty());
-            assert!(frame.wrapped_lines.slots[old_id].is_some(), "deferred physical retirement");
+            assert!(frame.wrapped_lines.slots[old_id].is_none(), "unshared zero-reference wrapper retires locally");
         }
-        // Normal frame traversal remains authoritative for unused slots.
+        // Normal frame traversal remains authoritative for unedited or externally shared slots.
         cache.finish_frame();
         let frame = cache.frame.borrow();
         assert!(frame.wrapped_lines.boundary_counts.is_none());
