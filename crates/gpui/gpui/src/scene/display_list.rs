@@ -107,8 +107,56 @@ impl Scene {
         {
             return None;
         }
+        let operations = self.paint_operations.with_scroll_placements(placements)?;
+        Some(self.with_shared_root_draws(operations))
+    }
+
+    /// Prepare a variable-length row-marker Scene without touching the
+    /// ordinary root draw indices. New rows already own their independent
+    /// scroll paint payload; they must not introduce ordinary root primitives.
+    /// The caller must validate retained CPU records and layer composition
+    /// before publishing this candidate.
+    #[allow(dead_code)] // Used by the forthcoming boundary Frame transaction.
+    pub(crate) fn with_spliced_row_markers(
+        &self,
+        replacement: &super::Operations,
+        edits: &[(Range<usize>, Range<usize>)],
+    ) -> Option<Self> {
+        if self.revision == 0 || !self.surfaces.is_empty() || !self.backdrop_blurs.is_empty()
+            || !self.blurs.is_empty() || !self.capture_groups.is_empty()
+            || !self.renderer_extensions.is_empty() || !self.animation_values.is_empty()
+        {
+            return None;
+        }
+
+        // Unlike an ordinary draw edit, a deferred row marker has no root
+        // BoundsTree leaf or prepared draw batch. Restrict both sides of
+        // every edit to these records, including hidden buffered rows.
+        let row_markers = |operations: &super::Operations, range: Range<usize>| {
+            operations.get_range(range).is_some_and(|range| {
+                range.runs().all(|run| {
+                    run.is_scroll_only() && run.iter().all(|operation| {
+                        matches!(operation, PaintOperationRef::DeferredScroll(row) if row.is_row_placement())
+                    })
+                })
+            })
+        };
+        for (old, new) in edits {
+            if !row_markers(&self.paint_operations, old.clone())
+                || !row_markers(replacement, new.clone())
+            {
+                return None;
+            }
+        }
+        let operations = self.paint_operations.with_spliced_ranges(replacement, edits)?;
+        Some(self.with_shared_root_draws(operations))
+    }
+
+    /// Both equal-length placement and marker-only boundary candidates
+    /// have exactly the same ordinary root draw topology.
+    fn with_shared_root_draws(&self, operations: super::Operations) -> Self {
         let mut scene = Self {
-            paint_operations: self.paint_operations.with_scroll_placements(placements)?,
+            paint_operations: operations,
             // Fixed draw indices keep their order. Path copies share the
             // immutable triangle allocation with the previous publication.
             paths: self.paths.clone(),
@@ -122,7 +170,7 @@ impl Scene {
         scene.prepared_batches.share_from(&self.prepared_batches);
         scene.replayed_primitives = self.primitive_count();
         scene.revision = next_scene_revision();
-        Some(scene)
+        scene
     }
 
     pub(crate) fn has_time_dependent_extensions(&self) -> bool {
