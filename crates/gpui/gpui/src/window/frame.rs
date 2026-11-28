@@ -551,11 +551,60 @@ impl BoundaryIndexSplices<'_> {
 /// relocation before this can become a published Paint.
 #[allow(dead_code)]
 pub(super) struct BoundaryRecordCandidate<'a> {
+    source_revision: u64,
     pub(super) callbacks: BoundaryCallbackCandidate<'a>,
     pub(super) paint: Arc<Paint>,
     pub(super) hitboxes: HitboxStore,
     pub(super) state_access: state_access::StateAccessLog,
     pub(super) dispatch: DispatchTree,
+}
+
+/// Old storage remains alive until the caller has published all associated
+/// row/view/layout records and notified the presentation owner. In
+/// particular dropping a callback can execute an application destructor.
+#[allow(dead_code)]
+pub(super) struct RetiredBoundaryRecords {
+    paint: Option<Arc<Paint>>,
+    retained_paint: Arc<crate::window::retained::RetainedPaint>,
+    hitboxes: HitboxStore,
+    state_access: state_access::StateAccessLog,
+    dispatch: DispatchTree,
+    mouse: Vec<MouseListener>,
+    mounted_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
+    ime: Vec<Option<PlatformInputHandler>>,
+}
+
+impl BoundaryRecordCandidate<'_> {
+    /// Final physical adoption. The caller must have validated every
+    /// remaining Frame range and external owner, and must not run callbacks
+    /// between here and publication. The old Paint revision is a lease.
+    #[allow(dead_code)]
+    pub(super) fn adopt(
+        self, old: &mut Frame, replacement: &mut Frame,
+    ) -> Option<RetiredBoundaryRecords> {
+        if old.published_paint_ref()?.scene.revision != self.source_revision {
+            return None;
+        }
+        // Unique owner admission occurs before changing any of the shared
+        // stores. take_input_handlers cannot reject after taking a slot.
+        let (ime, mouse, mounted_sources) = self.callbacks.take_input_handlers(old, replacement)?;
+        let continuous = mouse.iter()
+            .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
+        let retained_paint = Arc::clone(&self.paint.retained_paint);
+        let retired = RetiredBoundaryRecords {
+            paint: old.paint.replace(self.paint),
+            retained_paint: std::mem::replace(&mut old.retained_paint, retained_paint),
+            hitboxes: std::mem::replace(&mut old.hitboxes, self.hitboxes),
+            state_access: std::mem::replace(&mut old.accessed_element_states, self.state_access),
+            dispatch: std::mem::replace(&mut old.dispatch_tree, self.dispatch),
+            mouse: std::mem::replace(&mut old.mouse_listeners, mouse),
+            mounted_sources: std::mem::replace(&mut old.mounted_scroll_sources, mounted_sources),
+            ime: std::mem::replace(&mut old.input_handlers, ime),
+        };
+        old.has_continuous_mouse_move_listener = continuous;
+        old.input_clip_epoch = old.input_clip_epoch.wrapping_add(1);
+        Some(retired)
+    }
 }
 
 /// Prepared callback ownership. Mouse listeners already support shared
@@ -651,7 +700,10 @@ impl Frame {
         let paint = self.published_paint_ref()?.with_spliced_row_markers(
             replacement.scene(), scene_edits, window_opaque,
         )?;
-        Some(BoundaryRecordCandidate { paint, hitboxes, state_access, dispatch, callbacks })
+        Some(BoundaryRecordCandidate {
+            source_revision: self.scene().revision,
+            paint, hitboxes, state_access, dispatch, callbacks,
+        })
     }
 
     /// Borrows the sole Paint payload for this frame's current lifecycle phase.
@@ -1394,6 +1446,42 @@ mod publication_tests {
             &replacement, &[], &empty, &empty, &plan, root, &empty, &empty, true,
         ).is_none());
         assert!(old.dispatch_tree.has_view_route(owner));
+    }
+
+    #[test]
+    fn prepared_boundary_adopts_paint_and_dispatch_together() {
+        let keymap = Rc::new(RefCell::new(crate::Keymap::default()));
+        let actions = Rc::new(crate::ActionRegistry::default());
+        let mut old = Frame::new(DispatchTree::new(keymap.clone(), actions.clone()));
+        let mut replacement = Frame::new(DispatchTree::new(keymap, actions));
+        let root = old.dispatch_tree.push_node();
+        old.dispatch_tree.push_node();
+        old.dispatch_tree.pop_node();
+        old.dispatch_tree.pop_node();
+        old.dispatch_tree.freeze();
+        replacement.dispatch_tree.push_node();
+        replacement.dispatch_tree.push_node();
+        replacement.dispatch_tree.pop_node();
+        replacement.dispatch_tree.pop_node();
+        replacement.dispatch_tree.freeze();
+        old.painter.finish();
+        Arc::get_mut(&mut old.retained_paint).unwrap().finish(&mut old.painter.scene);
+        let previous = old.publish(PaintGeometry::default(), None, true);
+        replacement.painter.finish();
+        let empty = RecordSplicePlan::new(0, 0, &[]).unwrap();
+        let dispatch = RecordSplicePlan::new(2, 2, &[(1..2, 0..2)]).unwrap();
+        let candidate = old.prepare_boundary_records(
+            &replacement, &[], &empty, &empty, &dispatch, root, &empty, &empty, true,
+        ).unwrap();
+        let expected = candidate.paint.clone();
+        let retired = candidate.adopt(&mut old, &mut replacement).unwrap();
+        assert!(Arc::ptr_eq(&old.published_paint(), &expected));
+        assert!(Arc::ptr_eq(retired.paint.as_ref().unwrap(), &previous));
+        assert_eq!(old.dispatch_tree.len(), 3);
+        assert_eq!(retired.dispatch.len(), 2);
+        assert_eq!(old.dispatch_tree.dispatch_path(DispatchNodeId(2)).as_slice(),
+            &[root, DispatchNodeId(1), DispatchNodeId(2)]);
+        assert_eq!(old.input_clip_epoch, 1);
     }
 
     #[test]
