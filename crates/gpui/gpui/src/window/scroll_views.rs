@@ -481,6 +481,17 @@ impl Window {
         let transaction = match self.prepare_scroll_placement(cx) {
             Ok(transaction) => transaction,
             Err(outcome) => {
+                // Keep the unvalidated detached materialization path
+                // opt-in until native cross-platform regressions pass.
+                // The fixed-membership fast path above stays unchanged.
+                if matches!(outcome, Outcome::MissingCapture)
+                    && self.rendered_frame.scroll_views.views.is_empty()
+                    && (cfg!(test) || std::env::var_os("GPUI_EXPERIMENTAL_ROW_BOUNDARY")
+                        .is_some_and(|value| value == "1"))
+                    && self.try_commit_uniform_boundary(cx, started)
+                {
+                    return true;
+                }
                 scroll_placement::record(outcome);
                 log::trace!(target: "gpui::diagnostics", "gpui placement rejected: {outcome:?}");
                 return false;
