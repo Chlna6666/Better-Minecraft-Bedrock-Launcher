@@ -138,7 +138,7 @@ use frame::{
 };
 pub(crate) use frame::{
     DeferredDraw, Frame, LayerFrame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
-    RetainedPaintContext, RetainedSceneSegment,
+    RetainedPaintContext, RetainedSceneSegment, RecordSplicePlan, SpliceSource,
 };
 #[cfg(test)]
 pub(crate) use frame::SceneLayers;
