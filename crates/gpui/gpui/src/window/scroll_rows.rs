@@ -1171,6 +1171,262 @@ impl RowRecord {
 }
 
 impl Window {
+    /// Build and paint exactly the entering rows into the existing scratch
+    /// Frame. All unsupported side streams reject the candidate before
+    /// any committed CPU/GPU owner can move.
+    fn execute_static_uniform_boundary(
+        &mut self, boundary: StaticUniformBoundary, epoch: super::lifecycle::PlacementEpoch,
+        cx: &mut App,
+    ) -> Option<(Arc<super::Paint>, Bounds<crate::ScaledPixels>, super::frame::RetiredBoundaryRecords, Vec<RowRecord>)> {
+        use super::frame::{BoundaryIndexSplices, RecordSplicePlan};
+        let source_revision = self.rendered_frame.scene().revision;
+        let key = boundary.key;
+        let builder = boundary.binding.builder.as_ref()?.clone();
+        let owner = boundary.binding.owner;
+        let membership = &boundary.membership;
+        let old_range = boundary.binding.captured.clone();
+        let new_range = membership.captured.clone();
+        let scale = self.scale_factor();
+        let viewport = builder.context.inherited.visual_content_mask;
+        let opaque = self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque;
+        let text_start = self.text_system.layout_index();
+        let read_start = cx.entities.dependency_read_index();
+
+        let mut binding = boundary.binding.clone();
+        binding.sampled = membership.sampled;
+        binding.visible = membership.visible.clone();
+        binding.captured = new_range.clone();
+        binding.proof = None;
+        let mut plan = RowPlan {
+            key, revision: epoch.content, notification_epoch: self.invalidator.row_notification_epoch(),
+            placement_only: true, allow_reuse: false,
+            row_placement: Some(binding.clone()), buffered_visible: Some(membership.visible.clone()),
+            row_revision: binding.row_revision.clone(), context: builder.context.clone(),
+            previous_context: RefCell::new(None), hover_held: true, prepainted: VecDeque::new(),
+        };
+        self.invalidator.set_phase(super::DrawPhase::Prepaint);
+        let anchor = self.next_frame.dispatch_tree.push_node();
+        let mut items = Vec::new();
+        for row in new_range.clone().filter(|row| !old_range.contains(row)) {
+            let origin = binding.origin(row, membership.sampled, Point::default());
+            let item = builder.materialize(self, anchor, row, &membership.visible, origin, &mut plan, cx)?;
+            items.push((row, item));
+        }
+        self.invalidator.set_phase(super::DrawPhase::Paint);
+        for (row, item) in items {
+            builder.paint_materialized(self, anchor, row, item, &mut plan, cx)?;
+        }
+        if !plan.prepainted.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(anchor) {
+            return None;
+        }
+        self.next_frame.dispatch_tree.pop_node();
+        self.invalidator.set_phase(super::DrawPhase::None);
+
+        // Do not extend the App's committed owner dependency graph from an
+        // incomplete traversal. The first production experiment admits
+        // only rows without new entity/global/state dependencies.
+        let reads = cx.entities.dependency_reads_since(read_start);
+        if !reads.entities.is_empty() || !reads.globals.is_empty() || !reads.states.is_empty()
+            || !cx.entities.frame_entity_scratch.is_empty()
+            || self.text_system.layout_index() != text_start
+            || self.rendered_frame.scene().revision != source_revision
+            || self.draw_was_degraded
+            || self.next_frame.accessed_element_states.len() != 0
+            || !self.next_frame.hitboxes.is_empty()
+            || !self.next_frame.mouse_listeners.is_empty()
+            || !self.next_frame.mounted_scroll_sources.is_empty()
+            || !self.next_frame.input_handlers.is_empty()
+            || !self.next_frame.cursor_styles.is_empty()
+            || !self.next_frame.window_control_hitboxes.is_empty()
+            || !self.next_frame.tooltip_requests.is_empty()
+            || !self.next_frame.deferred_draws.is_empty()
+            || !self.next_frame.layer_inputs.is_empty()
+            || self.next_frame.tab_stops.paint_index() != 0
+            || self.next_frame.focus.is_some()
+            || !self.next_frame.view_retention_records.is_empty()
+            || !self.next_frame.retained_scene_segments.is_empty()
+            || !self.next_frame.scroll_rows.row_placements.is_empty()
+            || !self.next_input_readers.borrow().is_empty()
+        {
+            return None;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if !self.next_frame.debug_bounds_records.is_empty() { return None; }
+        let old = &self.rendered_frame;
+        let fresh = &self.next_frame;
+        let entered_count = new_range.clone().filter(|row| !old_range.contains(row)).count();
+        if fresh.scroll_rows.rows.len() != entered_count
+            || fresh.painter.len() != entered_count
+            || !fresh.dispatch_tree.inert_row_range(0..fresh.dispatch_tree.len())
+            || boundary.prepaint_base.line_layout_index.rebased_from(
+                &boundary.prepaint_base.line_layout_index, &text_start).is_none()
+            || boundary.paint_base.line_layout_index.rebased_from(
+                &boundary.paint_base.line_layout_index, &text_start).is_none()
+        {
+            return None;
+        }
+
+        // Entering rows are materialized in logical order. Their native
+        // dispatch records must be contiguous beneath the temporary anchor.
+        let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
+        for (marker, row) in new_range.clone().filter(|row| !old_range.contains(row)).enumerate() {
+            let record = fresh.scroll_rows.rows.get(&(key, row))?;
+            record.static_boundary_checkpoints()?;
+            let span = record.dispatch_span();
+            if !record.dependency_free() || record.paint.start.scene_index != marker
+                || span.start != fresh_dispatch_end
+                || record.prepaint.origin != binding.origin(row, membership.sampled, Point::default())
+                || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
+            {
+                return None;
+            }
+            fresh_dispatch_end = span.end;
+        }
+        if fresh_dispatch_end != fresh.dispatch_tree.len() { return None; }
+
+        // The left and right gaps are independent native stream edits.
+        // A jump with no retained intersection replaces the domain once.
+        let kept = &membership.delta.kept;
+        let mut groups = SmallVec::<[(Range<usize>, Range<usize>); 2]>::new();
+        if kept.is_empty() {
+            groups.push((old_range.clone(), new_range.clone()));
+        } else {
+            groups.push((old_range.start..kept.start, new_range.start..kept.start));
+            groups.push((kept.end..old_range.end, kept.end..new_range.end));
+        }
+        let mut scene_edits = Vec::with_capacity(groups.len());
+        let mut dispatch_edits = Vec::with_capacity(groups.len());
+        let old_dispatch_at = |row: usize| -> Option<usize> {
+            if row == old_range.end { Some(boundary.dispatch.end) }
+            else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
+        };
+        for (retired, entered) in groups {
+            if retired.is_empty() && entered.is_empty() { continue; }
+            let start = boundary.scene.start.checked_add(retired.start.checked_sub(old_range.start)?)?;
+            let end = start.checked_add(retired.len())?;
+            let old_dispatch = old_dispatch_at(retired.start)?..old_dispatch_at(retired.end)?;
+            let (new_scene, new_dispatch) = if entered.is_empty() {
+                (0..0, 0..0)
+            } else {
+                let first = fresh.scroll_rows.rows.get(&(key, entered.start))?;
+                let last = fresh.scroll_rows.rows.get(&(key, entered.end - 1))?;
+                (first.paint.start.scene_index..last.paint.end.scene_index,
+                    first.dispatch_span().start..last.dispatch_span().end)
+            };
+            scene_edits.push((start..end, new_scene));
+            dispatch_edits.push((old_dispatch, new_dispatch));
+        }
+
+        self.next_frame.painter.finish();
+        self.next_frame.dispatch_tree.freeze();
+        self.next_frame.hitboxes.freeze();
+        self.next_frame.accessed_element_states.freeze();
+        let old = &self.rendered_frame;
+        let fresh = &self.next_frame;
+        let scene = RecordSplicePlan::new(old.scene().len(), fresh.scene().len(), &scene_edits)?;
+        let dispatch = RecordSplicePlan::new(old.dispatch_tree.len(), fresh.dispatch_tree.len(), &dispatch_edits)?;
+        let hitboxes = RecordSplicePlan::new(old.hitboxes.len(), 0, &[])?;
+        let states = RecordSplicePlan::new(old.accessed_element_states.len(), 0, &[])?;
+        let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), 0, &[])?;
+        let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
+        let maps = BoundaryIndexSplices {
+            scene: &scene, dispatch: &dispatch, hitboxes: &hitboxes, states: &states,
+            mouse: &mouse, ime: &ime, text: None,
+        };
+        let mut candidate = old.prepare_boundary_records_under(
+            fresh, &scene_edits, &hitboxes, &states, &dispatch, builder.dispatch_parent,
+            Some(anchor), &mouse, &ime, opaque,
+        )?;
+
+        let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
+        let mut include_damage = |bounds: Bounds<crate::ScaledPixels>| {
+            if !bounds.is_empty() { damage = Some(damage.map_or(bounds, |old| old.union(&bounds))); }
+        };
+        for marker in boundary.scene.clone() {
+            let Some(crate::scene::PaintOperationRef::DeferredScroll(row)) = old.scene().paint_operations.view(marker)
+            else { return None; };
+            include_damage(row.visual_bounds());
+        }
+        let mut updates = Vec::with_capacity(new_range.len());
+        let mut placements = Vec::new();
+        for row in new_range.clone() {
+            let row_key = (key, row);
+            let entering = !old_range.contains(&row);
+            let record = if entering { fresh.scroll_rows.rows.get(&row_key)? }
+                else { old.scroll_rows.rows.get(&row_key)? };
+            let source_scene = record.paint.start.scene_index..record.paint.end.scene_index;
+            let source_dispatch = record.dispatch_span();
+            let (marker, node_span) = if entering {
+                (scene.replacement_span(source_scene)?.start, dispatch.replacement_span(source_dispatch)?)
+            } else {
+                (scene.retained_range(source_scene)?.start, dispatch.retained_range(source_dispatch)?)
+            };
+            let origin = binding.origin(row, membership.sampled, record.prepaint.origin);
+            let delta = record.content.translation(origin, scale)?;
+            let placement = ScrollPaintTarget::BufferedRow { visible: membership.visible.contains(&row) }
+                .placement(&record.content, viewport, scale, delta)?;
+            let Some(crate::scene::PaintOperationRef::DeferredScroll(previous)) =
+                candidate.paint.scene.paint_operations.view(marker) else { return None; };
+            include_damage(placement.visual_bounds());
+            if !placement.same_paint(previous) {
+                if entering { return None; }
+                placements.push((marker, placement));
+            }
+            let fresh_claims = if entering {
+                let (root, local) = record.prepaint.layout_claims.as_ref()?;
+                Some((*root, self.layout_engine.as_ref()?.detached_boundary_row_claims(*root, local)?))
+            } else { None };
+            let mut start = boundary.prepaint_base.clone();
+            let mut end = start.clone();
+            start.dispatch_tree_index = node_span.start;
+            end.dispatch_tree_index = node_span.end;
+            let mut paint_start = boundary.paint_base.clone();
+            let mut paint_end = paint_start.clone();
+            paint_start.scene_index = marker;
+            paint_end.scene_index = marker.checked_add(1)?;
+            updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
+                paint: paint_start..paint_end, fresh_claims });
+        }
+        let damage = damage?;
+        if !placements.is_empty() {
+            candidate.paint = candidate.paint.with_scroll_placements(&placements, opaque)?;
+        }
+        candidate.prepare_view_records(old, fresh, &maps, self.layout_engine.as_ref()?, owner, damage)?;
+        let parent_index = builder.dispatch_parent.0;
+        binding.builder.as_mut()?.dispatch_parent = crate::DispatchNodeId(
+            dispatch.retained_range(parent_index..parent_index.checked_add(1)?)?.start);
+        let retired_keys: Vec<_> = old_range.clone().filter(|row| !new_range.contains(row))
+            .map(|row| (key, row)).collect();
+        let retired = Vec::with_capacity(retired_keys.len());
+        let rows = BoundaryRowAdoption { key, binding, updates, retired_keys, retired };
+
+        // All fallible work completes before consuming the placement
+        // epoch. The native owners cannot change between these checks
+        // and the swaps on the exclusive UI thread.
+        self.rendered_frame.scroll_rows.rows.try_reserve(entered_count).ok()?;
+        if !self.global_ids.borrow().can_finish_partial_frame()
+            || boundary.sample_read.status() != crate::StateReadStatus::Unchanged
+            || self.rendered_frame.scene().revision != source_revision
+            || self.focus != self.rendered_frame.focus
+            || self.viewport_epoch != self.committed_epoch
+            || self.scale_factor != self.committed_scale_factor
+            || self.force_full_redraw.get() || self.force_view_cache_refresh
+        { return None; }
+        self.layout_engine.as_mut()?.prepare_detached_boundary_commit()?;
+        if !self.invalidator.commit_placement(epoch, &[owner]) { return None; }
+        self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
+            .expect("reserved detached layout commit");
+        let paint = candidate.paint.clone();
+        let retired_records = candidate.adopt(&mut self.rendered_frame, &mut self.next_frame)
+            .expect("validated exclusive Frame adoption");
+        let retired_rows = rows.adopt(&mut self.rendered_frame.scroll_rows,
+            &mut self.next_frame.scroll_rows, self.invalidator.row_notification_epoch());
+        self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&membership.version);
+        self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
+        self.global_ids.get_mut().finish_partial_frame();
+        Some((paint, damage, retired_records, retired_rows))
+    }
+
     /// This runs only after the common position-transaction admission.
     /// Do not execute any application callback until native ownership of
     /// the old domain and all retired rows has been certified.
