@@ -238,6 +238,8 @@ impl Interactivity {
                                 );
                                 if let (Some(viewport), Some(offset)) = (viewport, self.scroll_offset.as_ref()) {
                                     let final_offset = *offset.borrow();
+                                    let previous_layers = window.next_frame.layer_inputs.len();
+                                    let layout_owner = crate::fast::layout_key::prepaint_layout_key(window);
                                     // UniformList can resolve a deferred scroll inside the
                                     // callback. Do not publish a false geometry proof.
                                     if final_offset == scroll_offset {
@@ -247,6 +249,7 @@ impl Interactivity {
                                     } else {
                                         window.next_frame.record_layer_input(input_start, viewport.bounds);
                                     }
+                                    window.next_frame.bind_layer_input_owner(previous_layers, layout_owner);
                                 }
                                 (result, element_state)
                             },
