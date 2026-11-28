@@ -55,7 +55,7 @@ impl MouseListener {
         self.event_type == event_type && !self.dispatch_on_unchanged_hit_test
     }
 
-    pub(super) fn listener_mut(&mut self) -> Option<RefMut<'_, AnyMouseListener>> {
+    pub(super) fn listener_mut(&self) -> Option<RefMut<'_, AnyMouseListener>> {
         RefMut::filter_map(self.listener.borrow_mut(), |listener| listener.as_mut()).ok()
     }
 }

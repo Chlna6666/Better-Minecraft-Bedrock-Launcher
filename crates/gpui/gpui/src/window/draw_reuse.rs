@@ -473,11 +473,9 @@ impl Window {
             range.start.mouse_listeners_index..range.end.mouse_listeners_index,
             self.next_frame.mouse_listeners.len(),
         );
-        self.next_frame.mouse_listeners.extend(
-            self.rendered_frame.mouse_listeners
-                [range.start.mouse_listeners_index..range.end.mouse_listeners_index]
-                .iter()
-                .cloned(),
+        self.next_frame.mouse_listeners.share(
+            &self.rendered_frame.mouse_listeners,
+            range.start.mouse_listeners_index..range.end.mouse_listeners_index,
         );
         self.next_frame.accessed_element_states.share(
             &self.rendered_frame.accessed_element_states,

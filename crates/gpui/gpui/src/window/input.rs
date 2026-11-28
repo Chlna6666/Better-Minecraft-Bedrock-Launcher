@@ -516,9 +516,9 @@ impl Window {
             modifiers: self.modifiers,
         };
         let event_type = TypeId::of::<MouseMoveEvent>();
-        let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
+        let mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
 
-        for listener in &mut mouse_listeners {
+        for listener in mouse_listeners.iter() {
             if !listener.handles_input_modality_transition(event_type) {
                 continue;
             }
@@ -527,7 +527,7 @@ impl Window {
             }
         }
 
-        for listener in mouse_listeners.iter_mut().rev() {
+        for listener in mouse_listeners.iter().rev() {
             if !listener.handles_input_modality_transition(event_type) {
                 continue;
             }
@@ -747,12 +747,12 @@ impl Window {
         }
 
         let active_drag_before_dispatch = cx.has_active_drag();
-        let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
+        let mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
         let event_type = event.type_id();
 
         // Capture phase, events bubble from back to front. Handlers for this phase are used for
         // special purposes, such as detecting events outside of a given Bounds.
-        for listener in &mut mouse_listeners {
+        for listener in mouse_listeners.iter() {
             if !listener.handles(event_type, hit_test_unchanged) {
                 continue;
             }
@@ -767,7 +767,7 @@ impl Window {
 
         // Bubble phase, where most normal handlers do their work.
         if cx.propagate_event {
-            for listener in mouse_listeners.iter_mut().rev() {
+            for listener in mouse_listeners.iter().rev() {
                 if !listener.handles(event_type, hit_test_unchanged) {
                     continue;
                 }

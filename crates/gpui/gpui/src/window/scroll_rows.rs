@@ -1250,9 +1250,10 @@ impl RowRecord {
     /// before dispatching non-wheel input. Wheel handlers must remain
     /// live throughout scrolling, so they cannot use that contract.
     fn boundary_mouse_is_safe(&self, frame: &super::Frame) -> bool {
-        frame.mouse_listeners.get(self.mouse_span()).is_some_and(|listeners| {
-            listeners.iter().all(|listener| !listener.handles(TypeId::of::<crate::ScrollWheelEvent>(), false))
-        })
+        let range = self.mouse_span();
+        frame.mouse_listeners.contains(&range)
+            && frame.mouse_listeners.range(range)
+                .all(|listener| !listener.handles(TypeId::of::<crate::ScrollWheelEvent>(), false))
     }
 
     fn state_span(&self, paint: bool) -> Range<usize> {

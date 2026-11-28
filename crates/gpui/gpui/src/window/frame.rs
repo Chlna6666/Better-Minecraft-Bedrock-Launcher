@@ -5,6 +5,8 @@ mod paint;
 mod hitboxes;
 pub(super) use hitboxes::HitboxStore;
 mod state_access;
+mod mouse_listeners;
+pub(crate) use mouse_listeners::MouseListenerStore;
 mod retained_scene_index;
 mod layers;
 pub(crate) use layers::{LayerFrame, SceneLayers};
@@ -83,7 +85,7 @@ pub(crate) struct Frame {
     pub(crate) window_active: bool,
     // Tombstones cancel speculative layout-state replay without shifting frame ranges.
     pub(super) accessed_element_states: state_access::StateAccessLog,
-    pub(crate) mouse_listeners: Vec<MouseListener>,
+    pub(crate) mouse_listeners: MouseListenerStore,
     pub(super) mounted_scroll_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     /// Whether the completed frame contains an application listener that needs every MouseMove
     /// sample, even when the hit-test result did not change. Computed once when the frame finishes
@@ -652,7 +654,7 @@ pub(super) struct RetiredBoundaryRecords {
     layer_inputs: Vec<LayerInput>,
     state_access: state_access::StateAccessLog,
     dispatch: DispatchTree,
-    mouse: Vec<MouseListener>,
+    mouse: MouseListenerStore,
     mounted_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     ime: Vec<Option<PlatformInputHandler>>,
 }
@@ -691,8 +693,7 @@ impl BoundaryRecordCandidate<'_> {
         // Unique owner admission occurs before changing any of the shared
         // stores. take_input_handlers cannot reject after taking a slot.
         let (ime, mouse, mounted_sources) = self.callbacks.take_input_handlers(old, replacement)?;
-        let continuous = mouse.iter()
-            .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
+        let continuous = mouse.has_continuous_move();
         let retained_paint = Arc::clone(&self.paint.retained_paint);
         if let Some(views) = self.views.as_mut() { views.adopt(old); }
         let retired = RetiredBoundaryRecords {
@@ -718,7 +719,7 @@ impl BoundaryRecordCandidate<'_> {
 /// all remaining Frame admission and epoch checks have succeeded.
 #[allow(dead_code)]
 pub(super) struct BoundaryCallbackCandidate<'a> {
-    pub(super) mouse: Vec<MouseListener>,
+    pub(super) mouse: MouseListenerStore,
     pub(super) mounted_sources: Vec<super::scroll_dependencies::MountedScrollSource>,
     ime_plan: &'a RecordSplicePlan,
     ime: Vec<Option<PlatformInputHandler>>,
@@ -737,8 +738,7 @@ impl BoundaryCallbackCandidate<'_> {
         {
             return None;
         }
-        let mut mouse = Vec::new();
-        mouse.try_reserve_exact(mouse_plan.len()).ok()?;
+        let mut mouse = MouseListenerStore::default();
         let mut mounted_sources = Vec::new();
         mounted_sources.try_reserve_exact(
             old.mounted_scroll_sources.len().checked_add(replacement.mounted_scroll_sources.len())?,
@@ -751,8 +751,10 @@ impl BoundaryCallbackCandidate<'_> {
             super::scroll_dependencies::carry_scroll_sources(
                 &source.mounted_scroll_sources, &mut mounted_sources, range.clone(), mouse.len(),
             );
-            mouse.extend_from_slice(&source.mouse_listeners[range]);
+            mouse.share(&source.mouse_listeners, range);
         });
+        mouse.freeze();
+        if mouse.len() != mouse_plan.len() { return None; }
         let mut ime = Vec::new();
         ime.try_reserve_exact(ime_plan.len()).ok()?;
         Some(BoundaryCallbackCandidate { mouse, mounted_sources, ime_plan, ime })
@@ -764,7 +766,7 @@ impl BoundaryCallbackCandidate<'_> {
     /// Retired handlers remain in source slots until post-publication cleanup.
     pub(super) fn take_input_handlers(
         self, old: &mut Frame, replacement: &mut Frame,
-    ) -> Option<(Vec<Option<PlatformInputHandler>>, Vec<MouseListener>,
+    ) -> Option<(Vec<Option<PlatformInputHandler>>, MouseListenerStore,
         Vec<super::scroll_dependencies::MountedScrollSource>)> {
         if !self.ime_plan.can_move_owners(old.input_handlers.len(), replacement.input_handlers.len())
             || !old.replayed_input_handlers.is_empty()
@@ -951,7 +953,7 @@ impl Frame {
             focus: None,
             window_active: false,
             accessed_element_states: state_access::StateAccessLog::default(),
-            mouse_listeners: Vec::new(),
+            mouse_listeners: MouseListenerStore::default(),
             mounted_scroll_sources: Vec::new(),
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
@@ -1273,10 +1275,8 @@ impl Frame {
         // A complete Frame is committed atomically, so speculative IME
         // transfers no longer need an abort journal after publication.
         self.replayed_input_handlers.clear();
-        self.has_continuous_mouse_move_listener = self
-            .mouse_listeners
-            .iter()
-            .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
+        self.mouse_listeners.freeze();
+        self.has_continuous_mouse_move_listener = self.mouse_listeners.has_continuous_move();
         let (same_paint, placement_only) = self.painter.finish_against_with_storage(prev_frame.scene());
         let retention = Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention");
@@ -1328,11 +1328,11 @@ impl Frame {
     fn trim_retained_capacity(&mut self) {
         self.accessed_element_states.trim(false);
         self.dispatch_tree.trim_retained_capacity(false);
-        trim_frame_vec_capacity(
-            &mut self.mouse_listeners,
-            FRAME_MIN_RETAINED_CAPACITY,
-            FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.mouse_listeners.capacity() > FRAME_MIN_RETAINED_CAPACITY
+            .max(self.mouse_listeners.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.mouse_listeners.shrink_to(FRAME_MIN_RETAINED_CAPACITY);
+        }
         trim_frame_vec_capacity(
             &mut self.mounted_scroll_sources,
             FRAME_MIN_RETAINED_CAPACITY,
