@@ -210,6 +210,28 @@ impl Painter {
                 index = end;
                 continue;
             }
+            // GPUI Fast replays flat layers under one draw order. Here a
+            // layer already occupies one ordering-tree leaf. When a dirty
+            // prefix prevents sharing the old order, copy its glyphs directly
+            // into the pending draw page and bind them to the current layer.
+            // Committed glyphs already passed clipping with these same bounds.
+            if self.frame_builder
+                && (!retain_order || self.retained_prefix_invalid)
+                && self.blur_captures.is_empty()
+                && prev_scene.animation_values.is_empty()
+                && let Some(&order) = self.layer_stack.last()
+                && matches!(operation, PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(_)))
+            {
+                let start = index - (run_end - run.len());
+                let count = self.scene.paint_operations.replay_glyphs(
+                    run.range(start..run.len()),
+                    order,
+                );
+                self.draw_payload_pending = true;
+                self.scene.replayed_primitives = self.scene.replayed_primitives.saturating_add(count);
+                index += count;
+                continue;
+            }
             index += 1;
             match operation {
                 PaintOperationRef::Primitive(primitive) => {

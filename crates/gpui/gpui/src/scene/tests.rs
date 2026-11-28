@@ -1245,6 +1245,55 @@ fn ordinary_static_glyph_and_quad_replay_shares_operation_payload() {
 }
 
 #[test]
+fn flat_glyph_replay_rebinds_a_dirty_prefix_in_logical_order() {
+    let glyph = monochrome_sprite(0, 1);
+    let mut other = monochrome_sprite(0, 2);
+    other.tile.tile_id = crate::TileId(1);
+    let layer = glyph.content_mask.bounds;
+    let overlapping_quad = Quad {
+        bounds: glyph.bounds,
+        content_mask: glyph.content_mask,
+        ..Quad::default()
+    };
+
+    let mut previous = crate::scene::Painter::for_frame();
+    previous.push_layer(layer);
+    previous.insert_primitive(other);
+    previous.insert_primitive(glyph);
+    previous.insert_primitive(other);
+    previous.pop_layer();
+    previous.finish();
+
+    let mut replayed = crate::scene::Painter::for_frame();
+    replayed.insert_primitive(overlapping_quad);
+    assert!(!replayed.replay_with_ordering(0..previous.len(), &previous, [], Some(&previous)));
+    replayed.finish();
+
+    let mut expected = crate::scene::Painter::default();
+    expected.insert_primitive(overlapping_quad);
+    expected.replay(0..previous.len(), &previous, []);
+    expected.finish();
+
+    assert_ne!(replayed.monochrome_sprites[0].order, previous.monochrome_sprites[0].order);
+    assert!(replayed.monochrome_sprites.iter().eq(expected.monochrome_sprites.iter()));
+    assert!(replayed.paint_operations.all().matches_views(expected.paint_operations.all(), |a, b| {
+        match (a, b) {
+            (PaintOperationRef::StartLayer(a), PaintOperationRef::StartLayer(b)) => a == b,
+            (PaintOperationRef::EndLayer, PaintOperationRef::EndLayer) => true,
+            (
+                PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(a)),
+                PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(b)),
+            ) => a == b,
+            (
+                PaintOperationRef::Primitive(PrimitiveRef::Quad(a)),
+                PaintOperationRef::Primitive(PrimitiveRef::Quad(b)),
+            ) => a == b,
+            _ => false,
+        }
+    }));
+}
+
+#[test]
 fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
     let content_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(40.0), px(40.0))).scale(1.0);
     let first = Quad {

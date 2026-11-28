@@ -471,7 +471,12 @@ fn all_deferred_scrolls_planned(scene: &crate::Scene, plans: &[LayerPlan<'_>]) -
     let mut plans = plans.iter().peekable();
     scene.paint_operations.deferred_scroll_indices().all(|index| {
         while plans.peek().is_some_and(|plan| plan.span.end <= index) { plans.next(); }
-        plans.next().is_some_and(|plan| plan.span.start == index && plan.span.end == index + 1)
+        if plans.peek().is_some_and(|plan| plan.span.start == index && plan.span.end == index + 1) {
+            plans.next();
+            return true;
+        }
+        matches!(scene.paint_operations.view(index),
+            Some(PaintOperationRef::DeferredScroll(placement)) if !placement.is_visible())
     })
 }
 
@@ -571,7 +576,13 @@ impl OutsideRoot {
         if ranges.len() != self.source_ends.len() { return false; }
         let mut start = 0;
         for (range, &end) in ranges.iter().zip(&self.source_ends) {
-            if !self.source.range(start..end).matches_views(scene.range(range.clone()), |left, right| left.same_paint(right)) {
+            if !self.source.range(start..end).matches_views(scene.range(range.clone()), |left, right| {
+                match (left, right) {
+                    (PaintOperationRef::DeferredScroll(a), PaintOperationRef::DeferredScroll(b)) =>
+                        !a.is_visible() && !b.is_visible(),
+                    _ => left.same_paint(right),
+                }
+            }) {
                 return false;
             }
             start = end;
@@ -611,6 +622,7 @@ impl OutsideRoot {
                         split = false;
                     }
                     PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer => {}
+                    PaintOperationRef::DeferredScroll(placement) if !placement.is_visible() => {}
                     _ => return None,
                 }
             }

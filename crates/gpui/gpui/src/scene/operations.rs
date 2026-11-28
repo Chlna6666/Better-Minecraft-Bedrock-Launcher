@@ -1,5 +1,5 @@
 //! Ordered Paint storage; shared payloads do not retain earlier Scenes.
-use super::{PaintOperation, PaintOperationRef, operation_page::OperationPage};
+use super::{DrawOrder, PaintOperation, PaintOperationRef, operation_page::OperationPage};
 use crate::{Bounds, ScaledPixels};
 use std::{
     ops::Range,
@@ -344,6 +344,20 @@ impl Operations {
         self.len += 1;
         self.record_boundary(self.len, change);
         self.pending.push(operation);
+    }
+
+    pub(super) fn replay_glyphs(&mut self, run: OperationRun<'_>, order: DrawOrder) -> usize {
+        if !self.pending.is_empty() && self.pending.is_scroll_only() {
+            self.finish();
+        }
+        let count = self.pending.replay_glyphs(
+            run.owner.expect("nonempty glyph replay"),
+            run.start..run.end,
+            order,
+        );
+        // Glyphs do not change the sparse layer/blur scope table.
+        self.len += count;
+        count
     }
 
     /// Caller has published any pending typed draw payloads. Keep mutable

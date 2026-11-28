@@ -101,8 +101,7 @@ impl Scene {
     pub(crate) fn with_scroll_placements(
         &self, placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
     ) -> Option<Self> {
-        if self.revision == 0 || !self.paths.is_empty() || !self.underlines.is_empty()
-            || !self.surfaces.is_empty() || !self.backdrop_blurs.is_empty()
+        if self.revision == 0 || !self.surfaces.is_empty() || !self.backdrop_blurs.is_empty()
             || !self.blurs.is_empty() || !self.capture_groups.is_empty()
             || !self.renderer_extensions.is_empty() || !self.animation_values.is_empty()
         {
@@ -110,6 +109,10 @@ impl Scene {
         }
         let mut scene = Self {
             paint_operations: self.paint_operations.with_scroll_placements(placements)?,
+            // Fixed draw indices keep their order. Path copies share the
+            // immutable triangle allocation with the previous publication.
+            paths: self.paths.clone(),
+            underlines: self.underlines.clone(),
             ..Self::default()
         };
         scene.shadows.share(&self.shadows, 0..self.shadows.len());

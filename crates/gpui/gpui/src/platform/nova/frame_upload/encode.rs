@@ -299,6 +299,7 @@ impl FrameUpload {
     ) -> FrameUploadSummary {
         if reset {
             self.encode_generation = self.encode_generation.wrapping_add(1);
+            self.path_rasterization_cache.begin_frame();
             self.globals.clear();
             self.text_raster_params.clear();
             self.quads.clear();

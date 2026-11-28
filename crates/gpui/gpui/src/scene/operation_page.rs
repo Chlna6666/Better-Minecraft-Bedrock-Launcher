@@ -338,6 +338,31 @@ impl OperationPage {
         self.indices.push(index);
     }
 
+    /// Copy a glyph prefix in logical order into the destination's typed
+    /// payload. The source page may already have been sorted for drawing.
+    pub(super) fn replay_glyphs(
+        &mut self,
+        source: &Self,
+        range: Range<usize>,
+        order: DrawOrder,
+    ) -> usize {
+        let mut source_indices = source.indices[range].iter();
+        let first = source_indices.next().expect("nonempty glyph replay");
+        debug_assert_eq!(first.kind(), 4);
+        let indices =
+            std::iter::once(first).chain(source_indices.take_while(|index| index.kind() == 4));
+        let sprites = Arc::get_mut(self.mono.0.get_or_insert_with(Arc::default))
+            .expect("mutable operation payload must be unique");
+        let start = sprites.len();
+        for index in indices {
+            let mut sprite = source.mono[index.slot()];
+            sprite.order = order;
+            self.indices.push(OperationIndex::new(4, sprites.len()));
+            sprites.push(sprite);
+        }
+        sprites.len() - start
+    }
+
     pub(super) fn view(&self, index: usize) -> PaintOperationRef<'_> {
         let index = self.indices[index];
         let slot = index.slot();

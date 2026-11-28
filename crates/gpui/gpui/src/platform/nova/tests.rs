@@ -1629,9 +1629,16 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     );
     assert_eq!(first.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 0);
-    assert_eq!(upload.path_rasterization_cache_misses, 1);
-    let payload_bytes = upload.path_rasterization_cache.payload_bytes();
-    assert_eq!(payload_bytes, (3 * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64);
+    assert_eq!(upload.path_rasterization_cache_misses, 0);
+    assert_eq!(upload.path_rasterization_cache.payload_bytes(), 0);
+    let direct_bytes = upload.path_rasterization_vertices.clone();
+    let path = &scene.paths[0];
+    let content_mask = crate::ContentMask::new(path.clipped_bounds());
+    let mut expected = Vec::new();
+    for vertex in path.vertices.iter() {
+        write_path_rasterization_vertex(&mut expected, vertex, &path.color, &content_mask);
+    }
+    assert_eq!(direct_bytes, expected);
 
     let second = upload.encode(
         &mut chunk_cache,
@@ -1645,8 +1652,27 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(second.path_vertex_count, 3);
+    assert_eq!(upload.path_rasterization_cache_hits, 0);
+    assert_eq!(upload.path_rasterization_cache_misses, 1);
+    let payload_bytes = upload.path_rasterization_cache.payload_bytes();
+    assert_eq!(payload_bytes, direct_bytes.len() as u64);
+    assert_eq!(upload.path_rasterization_vertices, direct_bytes);
+
+    let third = upload.encode(
+        &mut chunk_cache,
+        &scene,
+        &crate::window::retained::RetainedPaint::default(),
+        &[],
+        drawable_size,
+        drawable_size,
+        &RenderingParameters::system(),
+        true,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(third.path_vertex_count, 3);
     assert_eq!(upload.path_rasterization_cache_hits, 1);
     assert_eq!(upload.path_rasterization_cache_misses, 1);
+    assert_eq!(upload.path_rasterization_vertices, direct_bytes);
     assert_eq!(
         upload.path_rasterization_cache.payload_bytes(),
         payload_bytes,

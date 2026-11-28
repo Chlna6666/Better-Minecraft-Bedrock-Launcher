@@ -20,19 +20,17 @@ impl FrameUpload {
             / PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u32;
         let mut vertex_count = 0_u32;
         for path in paths {
-            let Some(encoded) = self.encoded_path_rasterization(path) else {
+            if path.vertices.is_empty() {
                 continue;
-            };
+            }
             let remaining_vertices = MAX_PATH_VERTICES.saturating_sub(
                 self.path_rasterization_vertices.len() / PACKED_PATH_RASTERIZATION_VERTEX_BYTES,
             );
-            let encoded_vertex_count = encoded.vertex_count as usize;
-            if encoded_vertex_count > remaining_vertices {
+            if path.vertices.len() > remaining_vertices {
                 break;
             }
-            self.path_rasterization_vertices
-                .extend_from_slice(&encoded.bytes);
-            vertex_count = vertex_count.saturating_add(encoded.vertex_count);
+            self.encode_path_rasterization(path);
+            vertex_count += path.vertices.len() as u32;
         }
         if vertex_count > 0 {
             self.batches.push(UploadedBatch::PathRasterization {
@@ -80,15 +78,7 @@ impl FrameUpload {
         }
     }
 
-    fn encoded_path_rasterization(
-        &mut self,
-        path: &crate::Path<crate::ScaledPixels>,
-    ) -> Option<PathRasterizationCacheEntry> {
-        let vertex_count = u32::try_from(path.vertices.len()).ok()?;
-        if vertex_count == 0 {
-            return None;
-        }
-
+    fn encode_path_rasterization(&mut self, path: &crate::Path<crate::ScaledPixels>) {
         let clipped_bounds = path.clipped_bounds();
         let content_mask = crate::ContentMask {
             bounds: clipped_bounds,
@@ -100,42 +90,41 @@ impl FrameUpload {
             },
         };
         self.path_paint_key_scratch.clear();
-        write_content_mask(&mut self.path_paint_key_scratch, &content_mask);
         write_background(&mut self.path_paint_key_scratch, &path.color);
-        let paint_hash = fnv1a_bytes(&self.path_paint_key_scratch);
+        write_content_mask(&mut self.path_paint_key_scratch, &content_mask);
+        if !self.path_rasterization_cache.eligible(path.cache_id) {
+            write_path_rasterization_vertices(
+                &mut self.path_rasterization_vertices,
+                &path.vertices,
+                &self.path_paint_key_scratch,
+            );
+            return;
+        }
 
         let key = PathRasterizationCacheKey {
             path_id: path.cache_id,
             generation: path.geometry_generation,
             vertex_count: path.vertices.len(),
             geometry_hash: self.path_geometry_hash_for(path),
-            paint_hash,
+            paint_hash: fnv1a_bytes(&self.path_paint_key_scratch),
         };
         if let Some(entry) = self.path_rasterization_cache.get(&key) {
             self.path_rasterization_cache_hits =
                 self.path_rasterization_cache_hits.saturating_add(1);
-            return Some(entry.clone());
+            self.path_rasterization_vertices.extend_from_slice(&entry.bytes);
+            return;
         }
 
-        let encoded_bytes = path
-            .vertices
-            .len()
-            .saturating_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        // The cache entry owns the encoder's original allocation. Do not
-        // retain a second high-water scratch buffer or copy its entire payload.
+        let encoded_bytes = path.vertices.len() * PACKED_PATH_RASTERIZATION_VERTEX_BYTES;
         let mut bytes = Vec::with_capacity(encoded_bytes);
-        for vertex in path.vertices.iter() {
-            write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &content_mask);
-        }
-        debug_assert_eq!(bytes.len(), encoded_bytes);
+        write_path_rasterization_vertices(&mut bytes, &path.vertices, &self.path_paint_key_scratch);
+        self.path_rasterization_vertices.extend_from_slice(&bytes);
         let entry = PathRasterizationCacheEntry {
             bytes: Arc::new(bytes),
-            vertex_count,
         };
-        self.path_rasterization_cache.insert(key, entry.clone());
+        self.path_rasterization_cache.insert(key, entry);
         self.path_rasterization_cache_misses =
             self.path_rasterization_cache_misses.saturating_add(1);
-        Some(entry)
     }
 
     fn path_geometry_hash_for(&mut self, path: &crate::Path<crate::ScaledPixels>) -> u64 {

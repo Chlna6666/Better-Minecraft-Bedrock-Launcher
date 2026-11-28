@@ -412,7 +412,6 @@ impl Path<Pixels> {
 }
 
 impl Path<ScaledPixels> {
-    #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn transform_uniform(
         mut self,
         scale: f32,

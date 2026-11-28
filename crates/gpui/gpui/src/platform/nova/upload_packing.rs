@@ -264,6 +264,27 @@ pub(super) fn write_shadow(bytes: &mut Vec<u8>, shadow: &Shadow) {
     write_rgba(bytes, shadow.color);
 }
 
+pub(super) fn write_path_rasterization_vertices(
+    bytes: &mut Vec<u8>,
+    vertices: &[crate::PathVertex_ScaledPixels],
+    paint: &[u8],
+) {
+    debug_assert_eq!(paint.len() + 16, PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+    bytes.reserve(vertices.len() * PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+    for vertex in vertices {
+        let position = [
+            vertex.xy_position.x.0,
+            vertex.xy_position.y.0,
+            vertex.st_position.x,
+            vertex.st_position.y,
+        ]
+        .map(f32::to_ne_bytes);
+        bytes.extend_from_slice(position.as_flattened());
+        bytes.extend_from_slice(paint);
+    }
+}
+
+#[cfg(test)]
 pub(super) fn write_path_rasterization_vertex(
     bytes: &mut Vec<u8>,
     vertex: &crate::PathVertex_ScaledPixels,

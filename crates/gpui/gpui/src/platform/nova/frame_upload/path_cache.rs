@@ -13,10 +13,9 @@ pub(in crate::platform::nova) struct PathRasterizationCacheKey {
     pub(in crate::platform::nova) paint_hash: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(in crate::platform::nova) struct PathRasterizationCacheEntry {
     pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
-    pub(in crate::platform::nova) vertex_count: u32,
 }
 
 /// Bounded retained path cache with recency-aware eviction.
@@ -31,9 +30,23 @@ pub(in crate::platform::nova) struct PathRasterizationCache {
     access_order: VecDeque<(u64, PathRasterizationCacheKey)>,
     next_stamp: u64,
     retained_bytes: usize,
+    previous_max_id: Option<usize>,
+    max_id: Option<usize>,
 }
 
 impl PathRasterizationCache {
+    pub(super) fn begin_frame(&mut self) {
+        self.previous_max_id = self.max_id;
+    }
+
+    /// IDs increase when paths are created. A path newer than all paths
+    /// seen in earlier encodes can write directly into this frame's buffer.
+    /// Older IDs still use the normal cache key, including geometry and paint.
+    pub(super) fn eligible(&mut self, path_id: crate::PathCacheId) -> bool {
+        self.max_id = Some(self.max_id.map_or(path_id.0, |max| max.max(path_id.0)));
+        self.previous_max_id.is_some_and(|max| path_id.0 <= max)
+    }
+
     pub(in crate::platform::nova) fn payload_bytes(&self) -> u64 {
         let mut seen = FxHashSet::default();
         self.entries
@@ -124,6 +137,8 @@ impl PathRasterizationCache {
         self.access_order.clear();
         self.next_stamp = 0;
         self.retained_bytes = 0;
+        self.previous_max_id = None;
+        self.max_id = None;
     }
 
     pub(in crate::platform::nova) fn shrink_to(&mut self, min_capacity: usize) {
@@ -229,7 +244,6 @@ mod tests {
     fn entry(value: u8) -> PathRasterizationCacheEntry {
         PathRasterizationCacheEntry {
             bytes: Arc::new(vec![value]),
-            vertex_count: 3,
         }
     }
 
@@ -261,7 +275,6 @@ mod tests {
                 key(id),
                 PathRasterizationCacheEntry {
                     bytes: Arc::new(vec![id as u8; payload_len]),
-                    vertex_count: 3,
                 },
             );
         }
@@ -274,7 +287,6 @@ mod tests {
             key(3),
             PathRasterizationCacheEntry {
                 bytes: Arc::new(vec![3; payload_len]),
-                vertex_count: 3,
             },
         );
         assert!(cache.retained_bytes <= MAX_PATH_RASTERIZATION_CACHE_BYTES);
@@ -294,7 +306,6 @@ mod tests {
             key(0),
             PathRasterizationCacheEntry {
                 bytes: Arc::new(vec![2; 8]),
-                vertex_count: 3,
             },
         );
         assert_eq!(cache.retained_bytes, 8);
@@ -313,7 +324,6 @@ mod tests {
         cache.insert(key(0), entry(1));
         let oversized = PathRasterizationCacheEntry {
             bytes: Arc::new(vec![0; MAX_PATH_RASTERIZATION_CACHE_BYTES + 1]),
-            vertex_count: 3,
         };
         let released = Arc::downgrade(&oversized.bytes);
         cache.insert(key(1), oversized);
@@ -332,7 +342,6 @@ mod tests {
         let ptr = bytes.as_ptr();
         cache.insert(key(0), PathRasterizationCacheEntry {
             bytes: Arc::new(bytes),
-            vertex_count: 3,
         });
         assert_eq!(cache.retained_bytes, capacity);
         assert_eq!(cache.get(&key(0)).unwrap().bytes.as_ptr(), ptr);
