@@ -525,6 +525,22 @@ impl Window {
             list.commit(frame);
         }
         frame.commit_scroll_placements(Arc::clone(&transaction.paint), &transaction.input_moves);
+        let stale_input = stale_rows || transaction.members.iter().any(|member| member.stale_input);
+        self.finish_scroll_placement_publication(
+            transaction.paint,
+            transaction.members.iter().map(|member| member.damage).chain(row_damage),
+            stale_input, started, cx,
+        );
+        true
+    }
+
+    /// Identical presentation lifecycle for fixed and variable native
+    /// placement transactions. All CPU records must already be adopted.
+    pub(super) fn finish_scroll_placement_publication(
+        &mut self, paint: Arc<super::Paint>,
+        damage: impl IntoIterator<Item = Bounds<crate::ScaledPixels>>,
+        stale_input: bool, started: Instant, cx: &mut App,
+    ) {
         self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
         if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
             self.active_dirty_to_present_started_at = Some(
@@ -533,11 +549,8 @@ impl Window {
         if !self.needs_present.get() {
             self.render_dirty_region = super::DirtyRegion::empty();
         }
-        for member in &transaction.members {
-            self.render_dirty_region.push(member.damage);
-        }
-        for damage in row_damage {
-            self.render_dirty_region.push(damage);
+        for bounds in damage {
+            self.render_dirty_region.push(bounds);
         }
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
         self.render_dirty_region.coalesce_if_large(viewport, super::DIRTY_REGION_FULL_REDRAW_RATIO);
@@ -547,7 +560,7 @@ impl Window {
         self.render_trim_policy = super::RetainedResourceTrimPolicy::None;
         self.idle_render_frames = 0;
         self.backdrop_blur_damage = Default::default();
-        self.presentation_state.publish_pending(transaction.paint, Vec::new());
+        self.presentation_state.publish_pending(paint, Vec::new());
         self.needs_present.set(true);
         self.refreshing = false;
         self.dirty_frame_scheduled = false;
@@ -565,12 +578,11 @@ impl Window {
         super::record_scene_frame_metrics(self.last_generation_stats.scene);
         super::record_frame_retained_capacity(self.last_generation_stats.frame_retained_capacity);
         self.reset_cursor_style(cx);
-        if stale_rows || transaction.members.iter().any(|member| member.stale_input) {
+        if stale_input {
             self.schedule_scroll_hover_restore(cx);
         }
         scroll_placement::record(Outcome::Committed);
         log::trace!(target: "gpui::diagnostics", "gpui placement-only frame committed without root traversal");
-        true
     }
 
     pub(crate) fn with_scroll_viewport<R>(
