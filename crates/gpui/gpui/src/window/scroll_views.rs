@@ -486,8 +486,7 @@ impl Window {
                 // The fixed-membership fast path above stays unchanged.
                 if matches!(outcome, Outcome::MissingCapture)
                     && self.rendered_frame.scroll_views.views.is_empty()
-                    && (cfg!(test) || std::env::var_os("GPUI_EXPERIMENTAL_ROW_BOUNDARY")
-                        .is_some_and(|value| value == "1"))
+                    && super::scroll_rows::experimental_row_boundary_enabled()
                     && self.try_commit_uniform_boundary(cx, started)
                 {
                     return true;
