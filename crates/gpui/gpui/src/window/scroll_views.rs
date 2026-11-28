@@ -1442,6 +1442,92 @@ mod binding_tests {
     }
 
     #[gpui::test]
+    fn independent_boundary_preserves_stable_sibling_list(cx: &mut crate::TestAppContext) {
+        use crate::{Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
+            ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
+        use std::cell::Cell;
+
+        struct Pair {
+            roots: Rc<Cell<usize>>,
+            left_builds: Rc<Cell<usize>>,
+            right_builds: Rc<Cell<usize>>,
+            left: UniformListScrollHandle,
+            right: UniformListScrollHandle,
+        }
+        impl Render for Pair {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.roots.set(self.roots.get() + 1);
+                let list = |id: &'static str, builds: Rc<Cell<usize>>, scroll: UniformListScrollHandle| {
+                    uniform_list_each(id, 100, move |row, _, _| {
+                        builds.set(builds.get() + 1);
+                        div().w_full().h(px(24.)).bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                    })
+                    .with_item_height(px(24.))
+                    .with_row_revision(|_| 0)
+                    .track_scroll(scroll)
+                    .w(px(200.)).h(px(120.)).flex_shrink_0()
+                };
+                div().flex().flex_row()
+                    .child(list("left", self.left_builds.clone(), self.left.clone()))
+                    .child(list("right", self.right_builds.clone(), self.right.clone()))
+            }
+        }
+        let roots = Rc::new(Cell::new(0));
+        let left = Rc::new(Cell::new(0));
+        let right = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Pair {
+                roots: roots.clone(), left_builds: left.clone(), right_builds: right.clone(),
+                left: UniformListScrollHandle::new(), right: UniformListScrollHandle::new(),
+            }
+        });
+        let wheel = |x, delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(x), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            for _ in 0..2 {
+                window.dispatch_event(wheel(8., -1.), app);
+                window.dispatch_event(wheel(208., -1.), app);
+                window.draw(app).clear();
+                assert!(window.test_present().is_accepted());
+            }
+            assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
+            let initial = (roots.get(), left.get(), right.get());
+            window.dispatch_event(wheel(8., -120.), app);
+            assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::MissingCapture)));
+            let (_, _, entered, _) = window.rendered_frame.scroll_rows.uniform_boundary_runs()
+                .expect("left list leaves overscan");
+            assert!(!entered.is_empty());
+            window.draw(app).clear();
+            assert_eq!((roots.get(), left.get(), right.get()), (initial.0, initial.1 + entered.len(), initial.2));
+            assert!(window.test_present().is_accepted());
+            assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
+
+            // The unaffected list must still have valid marker, input and
+            // dispatch coordinates for a later structural or position edit.
+            window.dispatch_event(wheel(208., -1.), app);
+            assert!(window.prepare_scroll_placement(app).is_ok());
+            window.draw(app).clear();
+            assert_eq!(right.get(), initial.2);
+            assert_eq!(roots.get(), initial.0);
+            assert!(window.test_present().is_accepted());
+
+            window.dispatch_event(wheel(208., -120.), app);
+            let (_, _, entered, _) = window.rendered_frame.scroll_rows.uniform_boundary_runs()
+                .expect("right list leaves overscan");
+            let before = (left.get(), right.get());
+            window.draw(app).clear();
+            assert_eq!(roots.get(), initial.0);
+            assert_eq!((left.get(), right.get()), (before.0, before.1 + entered.len()));
+            assert!(window.test_present().is_accepted());
+        });
+    }
+
+    #[gpui::test]
     fn measured_uniform_rows_reuse_overscan_without_rebuilding(cx: &mut crate::TestAppContext) {
         use crate::{
             Context, InteractiveElement, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
