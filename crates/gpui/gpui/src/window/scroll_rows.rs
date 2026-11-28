@@ -1003,6 +1003,9 @@ pub(crate) struct RowPrepaint {
     pub(crate) records: Range<PrepaintStateIndex>,
     pub(crate) reads: RenderDependencies,
     pub(crate) validation: StateReadValidation,
+    /// Native layout ownership is optional: ordinary paint replay remains
+    /// valid even when a row has transient nodes or no detached claim proof.
+    pub(crate) layout_claims: Option<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
 }
 
 struct RowRecord {
@@ -1354,9 +1357,17 @@ impl Window {
             self.prepaint_index(), cx.entities.dependency_read_index(),
             self.next_frame.input_clip_epoch,
         ));
+        let claim_start = (capture && plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some()))
+            .then(|| self.layout_engine.as_ref().map(|engine| (engine.claim_log_len(), engine.transient_count())))
+            .flatten();
         self.with_list_item_layout_key(row, |window| {
             item.layout_as_root(available_space, window, cx);
             item.prepaint_at(origin, window, cx);
+        });
+        let layout_claims = claim_start.and_then(|(start, transients)| {
+            let engine = self.layout_engine.as_ref()?;
+            if engine.transient_count() != transients { return None; }
+            engine.capture_detached_row_range(start..engine.claim_log_len())
         });
         if let Some((start, read_start, clip_epoch)) = before {
             let extra = cx.entities.row_reads_since(read_start);
@@ -1369,6 +1380,7 @@ impl Window {
                 records: start..self.prepaint_index(),
                 reads,
                 validation: Default::default(),
+                layout_claims,
             });
         }
         Some(item)
@@ -1621,6 +1633,10 @@ impl Window {
         let validation = record.prepaint.validation.clone();
         let row_revision = record.prepaint.row_revision;
         let fixed_input_clip = record.prepaint.fixed_input_clip;
+        let layout_claims = record.prepaint.layout_claims.as_ref().and_then(|(root, spans)| {
+            self.layout_engine.as_mut()?.try_keep_detached_row_claims(spans, *root)
+                .map(|kept| (*root, kept))
+        });
         let start = self.prepaint_index();
         let delta = origin - record.prepaint.origin;
         if !hitbox_range(&record.prepaint).is_empty() {
@@ -1639,6 +1655,7 @@ impl Window {
             records: start..self.prepaint_index(),
             reads,
             validation,
+            layout_claims,
         }
     }
 
@@ -1762,6 +1779,10 @@ impl Window {
         paint: Range<PaintIndex>,
         content: Arc<ScrollPaint>,
     ) {
+        if let Some((_, claims)) = prepaint.layout_claims.as_mut() {
+            self.layout_engine.as_ref().expect("native layout engine")
+                .resolve_claim_blocks_in_place(claims);
+        }
         let key = (plan.key, row);
         let previous = &self.rendered_frame.scroll_rows;
         let next = &mut self.next_frame.scroll_rows;
