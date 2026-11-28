@@ -272,6 +272,39 @@ pub(crate) enum SpliceSource {
     Replacement,
 }
 
+/// Reserved unique-owner publication. Neither source is consumed during
+/// admission; discarded records remain owned until after publication.
+#[allow(dead_code)]
+pub(super) struct RecordOwnerSplice<'a, T> {
+    plan: &'a RecordSplicePlan,
+    records: Vec<T>,
+    retired: Vec<T>,
+}
+
+#[allow(dead_code)]
+impl<T> RecordOwnerSplice<'_, T> {
+    pub(super) fn adopt(mut self, old: &mut Vec<T>, replacement: &mut Vec<T>) -> Vec<T> {
+        assert!(self.plan.can_move_owners(old.len(), replacement.len()));
+        let mut old_records = std::mem::take(old).into_iter();
+        let mut new_records = std::mem::take(replacement).into_iter();
+        let (mut old_index, mut new_index) = (0, 0);
+        self.plan.visit_ranges(|source, range| {
+            let (records, index) = match source {
+                SpliceSource::Retained => (&mut old_records, &mut old_index),
+                SpliceSource::Replacement => (&mut new_records, &mut new_index),
+            };
+            self.retired.extend(records.by_ref().take(range.start - *index));
+            self.records.extend(records.by_ref().take(range.len()));
+            *index = range.end;
+        });
+        self.retired.extend(old_records);
+        self.retired.extend(new_records);
+        debug_assert_eq!(self.records.len(), self.plan.len());
+        *old = self.records;
+        self.retired
+    }
+}
+
 #[allow(dead_code)] // Frame publication will consume the retained index mapping.
 impl RecordSplicePlan {
     pub(crate) fn new(
@@ -474,33 +507,22 @@ impl RecordSplicePlan {
         true
     }
 
-    /// Consume two unique record streams only after admission. Reserve all
-    /// destination storage before taking either source. Retirement occurs
-    /// when the remaining source iterators are dropped. No Clone bound.
-    fn move_owners<T>(&self, old: &mut Vec<T>, replacement: &mut Vec<T>) -> Option<Vec<T>> {
-        if !self.can_move_owners(old.len(), replacement.len()) { return None; }
-        let mut result = Vec::new();
-        result.try_reserve_exact(self.new_len).ok()?;
-        Some(self.move_owners_into(old, replacement, result))
-    }
-
-    fn move_owners_into<T>(&self, old: &mut Vec<T>, replacement: &mut Vec<T>, mut result: Vec<T>) -> Vec<T> {
-        debug_assert!(self.can_move_owners(old.len(), replacement.len()));
-        debug_assert!(result.is_empty() && result.capacity() >= self.new_len);
-        let mut old = std::mem::take(old).into_iter();
-        let mut replacement = std::mem::take(replacement).into_iter();
-        let (mut old_index, mut new_index) = (0, 0);
-        self.visit_ranges(|source, range| {
-            let (records, index) = match source {
-                SpliceSource::Retained => (&mut old, &mut old_index),
-                SpliceSource::Replacement => (&mut replacement, &mut new_index),
-            };
-            let skip = range.start - *index;
-            result.extend(records.by_ref().skip(skip).take(range.len()));
-            *index = range.end;
-        });
-        debug_assert_eq!(result.len(), self.new_len);
-        result
+    /// Reserve destination and retirement storage before moving unique
+    /// records. A rejected candidate must leave both source vectors intact.
+    pub(super) fn prepare_owners<T>(
+        &self,
+        old: &[T],
+        replacement: &[T],
+    ) -> Option<RecordOwnerSplice<'_, T>> {
+        if !self.can_move_owners(old.len(), replacement.len()) {
+            return None;
+        }
+        let retired_len = old.len().checked_add(replacement.len())?.checked_sub(self.new_len)?;
+        let mut records = Vec::new();
+        let mut retired = Vec::new();
+        records.try_reserve_exact(self.new_len).ok()?;
+        retired.try_reserve_exact(retired_len).ok()?;
+        Some(RecordOwnerSplice { plan: self, records, retired })
     }
 
     /// Transfer optional platform owners without dropping retired handlers
@@ -1795,16 +1817,26 @@ mod publication_tests {
         let mut old = (0..6).map(|i| Owner(i, drops.clone())).collect::<Vec<_>>();
         let mut new = (10..14).map(|i| Owner(i, drops.clone())).collect::<Vec<_>>();
         let invalid = RecordSplicePlan::new(6, 4, &[(1..2, 0..2), (3..4, 1..3)]).unwrap();
-        assert!(invalid.move_owners(&mut old, &mut new).is_none());
+        assert!(invalid.prepare_owners(&old, &new).is_none());
         assert_eq!(old.len(), 6);
         assert_eq!(new.len(), 4);
         assert_eq!(drops.get(), 0);
         let plan = RecordSplicePlan::new(6, 4, &[(1..3, 0..1), (5..5, 2..4)]).unwrap();
-        let result = plan.move_owners(&mut old, &mut new).unwrap();
-        assert_eq!(result.iter().map(|owner| owner.0).collect::<Vec<_>>(), vec![0, 10, 3, 4, 12, 13, 5]);
-        assert!(old.is_empty() && new.is_empty());
+        let candidate = plan.prepare_owners(&old, &new).unwrap();
+        drop(candidate);
+        assert_eq!(old.len(), 6);
+        assert_eq!(new.len(), 4);
+        assert_eq!(drops.get(), 0);
+
+        let candidate = plan.prepare_owners(&old, &new).unwrap();
+        let retired = candidate.adopt(&mut old, &mut new);
+        assert_eq!(old.iter().map(|owner| owner.0).collect::<Vec<_>>(), vec![0, 10, 3, 4, 12, 13, 5]);
+        assert!(new.is_empty());
+        assert_eq!(retired.len(), 3);
+        assert_eq!(drops.get(), 0);
+        drop(retired);
         assert_eq!(drops.get(), 3);
-        drop(result);
+        drop(old);
         assert_eq!(drops.get(), 10);
     }
 
