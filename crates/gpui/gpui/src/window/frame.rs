@@ -243,7 +243,7 @@ impl PaintIndex {
 /// Transient old-coordinate edit plan for one physical Frame record stream.
 /// All destinations are calculated before any record ownership is changed.
 /// Not stored in Frame: consumers adopt the resulting pages and indices.
-pub(super) struct RecordSplicePlan {
+pub(crate) struct RecordSplicePlan {
     old_len: usize,
     replacement_len: usize,
     new_len: usize,
@@ -256,7 +256,7 @@ struct RecordSpliceEdit {
     target: Range<usize>,
 }
 
-pub(super) enum SpliceSource {
+pub(crate) enum SpliceSource {
     Retained,
     Replacement,
 }
@@ -291,17 +291,17 @@ impl RecordSplicePlan {
         Some(Self { old_len, replacement_len, new_len, edits: validated })
     }
 
-    pub(super) fn matches_sources(&self, old_len: usize, replacement_len: usize) -> bool {
+    pub(crate) fn matches_sources(&self, old_len: usize, replacement_len: usize) -> bool {
         self.old_len == old_len && self.replacement_len == replacement_len
     }
 
-    pub(super) fn len(&self) -> usize { self.new_len }
+    pub(crate) fn len(&self) -> usize { self.new_len }
 
     /// A nonempty retained interval may touch an edit boundary but must
     /// not cross an insertion or own any retired records. The start is
     /// right-affine and the end left-affine. Empty checkpoints require
     /// explicit ownership and are deliberately not inferred here.
-    pub(super) fn retained_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+    pub(crate) fn retained_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         if range.start >= range.end || range.end > self.old_len { return None; }
         let next = self.edits.partition_point(|edit| edit.old.end <= range.start);
         if self.edits.get(next).is_some_and(|edit| edit.old.start < range.end) {
@@ -315,7 +315,7 @@ impl RecordSplicePlan {
         Some(start..start.checked_add(range.len())?)
     }
 
-    pub(super) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
+    pub(crate) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
         let mut cursor = 0;
         for edit in &self.edits {
             if cursor < edit.old.start {
