@@ -560,6 +560,7 @@ impl TaffyLayoutEngine {
     pub(crate) fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
         // Idle trimming cannot retire native slots while a boundary is open.
         if self.detached_boundary.is_some() { return; }
+        if !matches!(level, GpuiMemoryTrimLevel::Light) { self.detached_claim_proof = None; }
         let floor = match level {
             GpuiMemoryTrimLevel::Light => Self::MIN_RETAINED_CAPACITY,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive => 0,
@@ -641,6 +642,7 @@ impl TaffyLayoutEngine {
         if self.detached_boundary.is_some() || !self.claimed_key_log.is_empty()
             || self.claimed_this_frame != 0 || !self.anonymous_nodes.is_empty()
             || !self.pending_replays.is_empty()
+            || !self.bounds_mutations.is_empty()
             // Bound tombstone accumulation; normal full traversal compacts it.
             || self.committed_claim_log.len() > self.persistent_nodes.len().max(32).saturating_mul(2)
         {
@@ -691,11 +693,15 @@ impl TaffyLayoutEngine {
     /// Detect writes to pre-existing native state before executing them.
     /// The ordinary path is one predictable None check.
     fn observe_boundary_write(&mut self, id: LayoutId) {
-        if let Some(boundary) = self.detached_boundary.as_mut()
-            && !boundary.created.contains(&id)
-        {
-            boundary.rejected = true;
-            boundary.touched_existing = true;
+        if let Some(boundary) = self.detached_boundary.as_mut() {
+            if !boundary.created.contains(&id) {
+                boundary.rejected = true;
+                boundary.touched_existing = true;
+            }
+        } else {
+            // Non-boundary native writes revoke cached admission even
+            // if they only change bounds and not layout_changes.
+            self.detached_claim_proof = None;
         }
     }
 
