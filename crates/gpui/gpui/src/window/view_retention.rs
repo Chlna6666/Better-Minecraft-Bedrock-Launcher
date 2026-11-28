@@ -268,6 +268,74 @@ impl BoundaryViewRecords {
     }
 }
 
+#[cfg(test)]
+mod boundary_update_tests {
+    use super::*;
+
+    #[test]
+    fn coordinate_adoption_keeps_view_identity_and_clean_claims() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.)));
+        let mask = ContentMask::new(bounds);
+        let context = Rc::new(RetainedPaintContext {
+            device_scale_factor: 1.,
+            opacity: 1.,
+            scale: 1.,
+            translation: Point::default(),
+            element_offset: Point::default(),
+            text_raster_scale: 1.,
+            content_mask: mask,
+            visual_content_mask: mask,
+            text_style: TextStyle::default(),
+            rem_size: px(16.),
+        });
+        let mut record = RetainedViewRecord {
+            layout_root: LayoutId::from(taffy::NodeId::from(1_u64)),
+            layout_claims: LayoutClaimBlocks::request(1..3),
+            prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
+            paint_range: PaintIndex::default()..PaintIndex::default(),
+            bounds,
+            context: context.clone(),
+            rebuild: None,
+            splice_safe: true,
+            nested: 2..4,
+            scene_segments: 5..7,
+            layout_state_range: StateAccessBlocks::from_range(1..2),
+        };
+        let old_claims = record.layout_claims.clone();
+        let mut update = BoundaryViewUpdate {
+            slot: 1,
+            prepaint: PrepaintStateIndex::default()..PrepaintStateIndex {
+                hitboxes_index: 3,
+                ..Default::default()
+            },
+            paint: PaintIndex::default()..PaintIndex {
+                scene_index: 4,
+                ..Default::default()
+            },
+            states: StateAccessBlocks::from_range(4..5),
+            claims: None,
+        };
+        update.adopt(&mut record);
+        assert!(Rc::ptr_eq(&record.context, &context));
+        assert_eq!(Rc::strong_count(&context), 2);
+        assert_eq!(record.layout_claims, old_claims);
+        assert_eq!(record.nested, 2..4);
+        assert_eq!(record.scene_segments, 5..7);
+        assert!(record.splice_safe);
+        assert_eq!(record.prepaint_range.end.hitboxes_index, 3);
+        assert_eq!(record.paint_range.end.scene_index, 4);
+        assert_eq!(record.layout_state_range, StateAccessBlocks::from_range(4..5));
+        assert_eq!(update.states, StateAccessBlocks::from_range(1..2));
+
+        update.claims = Some(LayoutClaimBlocks::request(6..9));
+        update.adopt(&mut record);
+        assert_eq!(record.layout_claims, LayoutClaimBlocks::request(6..9));
+        assert_eq!(update.claims.as_ref(), Some(&old_claims));
+        assert!(!record.splice_safe);
+        assert!(Rc::ptr_eq(&record.context, &context));
+    }
+}
+
 /// Where the view's own record is inserted once it has painted.
 pub(crate) struct ViewRetentionSlot(usize);
 
