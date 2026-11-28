@@ -1186,6 +1186,33 @@ impl RowTextDomain {
     }
 }
 
+/// Record the exact edit interval for each independent row domain.
+/// State and text have phase-major source logs; their paint edit offsets
+/// are translated only after all prepaint edits have been collected.
+#[derive(Default)]
+struct RowDomainEdits {
+    scene: Range<usize>,
+    dispatch: Range<usize>,
+    hitboxes: Range<usize>,
+    mouse: Range<usize>,
+    states: [Range<usize>; 2],
+    text: [[Range<usize>; 2]; 2],
+}
+
+impl RowDomainEdits {
+    fn shift_paint(&mut self, state_split: usize, text_splits: [usize; 2]) -> Option<()> {
+        let shift = |range: &mut Range<usize>, offset: usize| -> Option<()> {
+            *range = range.start.checked_add(offset)?..range.end.checked_add(offset)?;
+            Some(())
+        };
+        shift(&mut self.states[1], state_split)?;
+        for (range, offset) in self.text[1].iter_mut().zip(text_splits) {
+            shift(range, offset)?;
+        }
+        Some(())
+    }
+}
+
 struct BoundaryRowUpdate {
     key: RowKey,
     origin: Point<Pixels>,
@@ -1195,9 +1222,7 @@ struct BoundaryRowUpdate {
 }
 
 struct BoundaryRowAdoption {
-    key: u64,
-    membership_slot: usize,
-    binding: RowPlacementBinding,
+    bindings: Vec<(u64, usize, RowPlacementBinding)>,
     sibling_bindings: Vec<(u64, Option<crate::DispatchNodeId>)>,
     updates: Vec<BoundaryRowUpdate>,
     retired_keys: Vec<RowKey>,
@@ -1240,10 +1265,13 @@ impl BoundaryRowAdoption {
             routing.reset_cursor(oldest);
         }
         old.oldest_notification_epoch = Some(oldest);
-        let run = &mut old.membership.runs[self.membership_slot];
-        debug_assert_eq!(run.list, self.key);
-        run.start = self.binding.captured.start;
-        run.end = self.binding.captured.end;
+        for (key, membership_slot, binding) in self.bindings {
+            let run = &mut old.membership.runs[membership_slot];
+            debug_assert_eq!(run.list, key);
+            run.start = binding.captured.start;
+            run.end = binding.captured.end;
+            old.row_placements.insert(key, binding);
+        }
         for (key, parent) in self.sibling_bindings {
             let binding = old.row_placements.get_mut(&key).expect("validated sibling binding");
             binding.proof = None;
@@ -1252,7 +1280,6 @@ impl BoundaryRowAdoption {
             }
         }
         old.changed_rows.clear();
-        old.row_placements.insert(self.key, self.binding);
         self.retired
     }
 }
@@ -1602,6 +1629,7 @@ impl Window {
             groups.push((old_range.start..kept.start, new_range.start..kept.start));
             groups.push((kept.end..old_range.end, kept.end..new_range.end));
         }
+        let mut domain_edits = RowDomainEdits::default();
         let mut scene_edits = Vec::with_capacity(groups.len());
         let mut dispatch_edits = Vec::with_capacity(groups.len());
         let mut hitbox_edits = Vec::with_capacity(groups.len());
@@ -1639,13 +1667,17 @@ impl Window {
             };
             scene_edits.push((start..end, new_scene));
             dispatch_edits.push((old_dispatch, new_dispatch));
-            hitbox_edits.push((old_hitboxes, new_hitboxes));
+            if !old_hitboxes.is_empty() || !new_hitboxes.is_empty() {
+                hitbox_edits.push((old_hitboxes, new_hitboxes));
+            }
             let retired_mouse = old_mouse_at(retired.start)?..old_mouse_at(retired.end)?;
             let entered_mouse = if entered.is_empty() { 0..0 } else {
                 fresh.scroll_rows.rows.get(&(key, entered.start))?.mouse_span().start
                     ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.mouse_span().end
             };
-            mouse_edits.push((retired_mouse, entered_mouse));
+            if !retired_mouse.is_empty() || !entered_mouse.is_empty() {
+                mouse_edits.push((retired_mouse, entered_mouse));
+            }
             for (paint, edits, domain) in [
                 (false, &mut prepaint_state_edits, &boundary.prepaint_states),
                 (true, &mut paint_state_edits, &boundary.paint_states),
@@ -1681,6 +1713,18 @@ impl Window {
             }
         }
 
+        domain_edits.scene.end = scene_edits.len();
+        domain_edits.dispatch.end = dispatch_edits.len();
+        domain_edits.hitboxes.end = hitbox_edits.len();
+        domain_edits.mouse.end = mouse_edits.len();
+        domain_edits.states[0].end = prepaint_state_edits.len();
+        domain_edits.states[1].end = paint_state_edits.len();
+        for (phase, streams) in text_edits.iter().enumerate() {
+            for (stream, edits) in streams.iter().enumerate() {
+                domain_edits.text[phase][stream].end = edits.len();
+            }
+        }
+
         self.next_frame.painter.finish();
         self.next_frame.dispatch_tree.freeze();
         self.next_frame.hitboxes.freeze();
@@ -1693,8 +1737,8 @@ impl Window {
         let state_split = prepaint_state_edits.len();
         prepaint_state_edits.extend(paint_state_edits);
         let states = RecordSplicePlan::new(old.accessed_element_states.len(), fresh.accessed_element_states.len(), &prepaint_state_edits)?;
-        let prepaint_state_domain = states.enclosing_edit_span(boundary.prepaint_states.clone(), 0..state_split)?;
-        let paint_state_domain = states.enclosing_edit_span(boundary.paint_states.clone(), state_split..states.edit_count())?;
+        // Both state phases and the two text streams use explicitly
+        // owned edit intervals, including empty domains at shared edges.
         let [[mut line_edits, mut wrapped_edits], [paint_line_edits, paint_wrapped_edits]] = text_edits;
         let line_split = line_edits.len();
         let wrapped_split = wrapped_edits.len();
@@ -1706,13 +1750,14 @@ impl Window {
         let wrapped = RecordSplicePlan::new(old_wrapped, fresh_wrapped, &wrapped_edits)?;
         let text_plans = [&lines, &wrapped];
         let text_splits = [line_split, wrapped_split];
+        domain_edits.shift_paint(state_split, text_splits)?;
+        let prepaint_state_domain = states.enclosing_edit_span(boundary.prepaint_states.clone(), domain_edits.states[0].clone())?;
+        let paint_state_domain = states.enclosing_edit_span(boundary.paint_states.clone(), domain_edits.states[1].clone())?;
         let mut text_targets = boundary.text.spans.clone();
         for (phase, streams) in text_targets.iter_mut().enumerate() {
             for (stream, target) in streams.iter_mut().enumerate() {
                 let plan = text_plans[stream];
-                let split = text_splits[stream];
-                *target = plan.enclosing_edit_span(target.clone(),
-                    if phase == 0 { 0..split } else { split..plan.edit_count() })?;
+                *target = plan.enclosing_edit_span(target.clone(), domain_edits.text[phase][stream].clone())?;
             }
         }
         let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), fresh.mouse_listeners.len(), &mouse_edits)?;
@@ -1729,7 +1774,7 @@ impl Window {
             &[super::frame::RowInputDomain {
                 owner: key,
                 hitboxes: boundary.hitboxes.clone(),
-                edits: 0..hitboxes.edit_count(),
+                edits: domain_edits.hitboxes.clone(),
             }],
         )?;
 
@@ -1746,9 +1791,9 @@ impl Window {
         let mut placements = Vec::new();
         // The rows own every record in the old contiguous hitbox domain.
         // This explicit cursor resolves even zero-length row checkpoints.
-        let hitbox_domain = hitboxes.enclosing_span(boundary.hitboxes.clone())?;
+        let hitbox_domain = hitboxes.enclosing_edit_span(boundary.hitboxes.clone(), domain_edits.hitboxes.clone())?;
         let mut hitbox_cursor = hitbox_domain.start;
-        let mouse_domain = mouse.enclosing_span(boundary.mouse.clone())?;
+        let mouse_domain = mouse.enclosing_edit_span(boundary.mouse.clone(), domain_edits.mouse.clone())?;
         let mut mouse_cursor = mouse_domain.start;
         let mut prepaint_state_cursor = prepaint_state_domain.start;
         let mut paint_state_cursor = paint_state_domain.start;
@@ -1894,7 +1939,10 @@ impl Window {
             sibling_bindings.push((sibling, parent));
         }
         let membership_slot = old.scroll_rows.membership.single_run(key)?.0;
-        let rows = BoundaryRowAdoption { key, membership_slot, binding, sibling_bindings, updates, retired_keys, retired };
+        let rows = BoundaryRowAdoption {
+            bindings: vec![(key, membership_slot, binding)],
+            sibling_bindings, updates, retired_keys, retired,
+        };
 
         // All fallible work completes before consuming the placement
         // epoch. The native owners cannot change between these checks
@@ -3039,6 +3087,20 @@ mod scoped_row_tests {
                 assert_eq!(retired, old & !new);
             }
         }
+    }
+
+    #[test]
+    fn row_domain_edits_shift_only_paint_phase_offsets() {
+        let mut domain = RowDomainEdits {
+            states: [2..4, 1..3],
+            text: [[1..2, 0..0], [3..5, 2..2]],
+            hitboxes: 2..3,
+            ..Default::default()
+        };
+        domain.shift_paint(7, [8, 4]).unwrap();
+        assert_eq!(domain.states, [2..4, 8..10]);
+        assert_eq!(domain.text, [[1..2, 0..0], [11..13, 6..6]]);
+        assert_eq!(domain.hitboxes, 2..3);
     }
 
     #[test]
