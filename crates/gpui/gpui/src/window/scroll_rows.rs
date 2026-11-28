@@ -1813,6 +1813,20 @@ impl Window {
             fresh, &scene_edits, &hitboxes, &states, &dispatch,
             &attachments, &mouse, &ime, opaque, &input_domains,
         )?;
+        // Independent row edits may move wheel listeners, but never
+        // create or retire mounted scroll sources. Certify the complete
+        // carried source sequence before acknowledging any sampled state.
+        if candidate.callbacks.mounted_sources.len() != old.mounted_scroll_sources.len()
+            || candidate.callbacks.mounted_sources.iter().zip(&old.mounted_scroll_sources)
+                .any(|(next, previous)| !next.matches_relocated(previous, &mouse))
+        { return None; }
+        for boundary in &boundaries {
+            let source = candidate.callbacks.mounted_sources.get_mut(boundary.mounted_source)?;
+            if !source.changed_for(boundary.binding.owner, &boundary.membership.version) {
+                return None;
+            }
+            source.acknowledge(&boundary.membership.version);
+        }
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
         let mut include_damage = |bounds: Bounds<crate::ScaledPixels>| {
@@ -2047,9 +2061,6 @@ impl Window {
             .expect("validated exclusive Frame adoption");
         let retired_rows = rows.adopt(&mut self.rendered_frame.scroll_rows,
             &mut self.next_frame.scroll_rows, self.invalidator.row_notification_epoch());
-        for boundary in &boundaries {
-            self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&boundary.membership.version);
-        }
         self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
         self.global_ids.get_mut().finish_partial_frame();
         if adopt_text { self.text_system.commit_boundary_layouts(); }

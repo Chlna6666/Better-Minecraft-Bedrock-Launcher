@@ -80,6 +80,17 @@ impl MountedScrollSource {
         self.read.status() == StateReadStatus::Unchanged
     }
 
+    /// A boundary may move a wheel listener but must retain its exact
+    /// mounted state identity and owning Entity.
+    pub(super) fn matches_relocated(
+        &self, previous: &Self, mouse: &super::RecordSplicePlan,
+    ) -> bool {
+        self.owner == previous.owner && self.read.id() == previous.read.id()
+            && previous.listener_index.checked_add(1)
+                .and_then(|end| mouse.retained_range(previous.listener_index..end))
+                .is_some_and(|range| range.start == self.listener_index)
+    }
+
     pub(super) fn acknowledge(&mut self, version: &StateVersion) {
         debug_assert!(self.read.belongs_to(version));
         self.read = StateRead::new(version);
@@ -269,6 +280,21 @@ mod tests {
         assert_eq!(reads[0].status(), StateReadStatus::Unchanged);
         state.borrow_mut().y = crate::px(10.);
         assert_eq!(reads[0].status(), StateReadStatus::Changed);
+    }
+
+    #[test]
+    fn boundary_mounted_source_matches_identity_and_relocated_listener() {
+        let state = StateVersion::placement();
+        let other = StateVersion::placement();
+        let owner = EntityId::from(1);
+        let original = MountedScrollSource::new(4, owner, &state);
+        let plan = super::super::RecordSplicePlan::new(6, 2, &[(1..2, 0..2)]).unwrap();
+        assert!(MountedScrollSource::new(5, owner, &state).matches_relocated(&original, &plan));
+        assert!(!MountedScrollSource::new(4, owner, &state).matches_relocated(&original, &plan));
+        assert!(!MountedScrollSource::new(5, owner, &other).matches_relocated(&original, &plan));
+        assert!(!MountedScrollSource::new(5, EntityId::from(2), &state).matches_relocated(&original, &plan));
+        let retired = super::super::RecordSplicePlan::new(6, 0, &[(4..5, 0..0)]).unwrap();
+        assert!(!MountedScrollSource::new(4, owner, &state).matches_relocated(&original, &retired));
     }
 
     #[test]
