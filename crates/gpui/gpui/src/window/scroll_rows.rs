@@ -662,26 +662,47 @@ impl RowNotificationRouting {
         }
     }
 
-    /// The committed row index covers all lists. Only departing edges need
-    /// counting; unrelated readers conservatively protect their dependency.
+    /// The reverse index spans the whole Window, but a scoped dependency
+    /// snapshot may only be protected by readers belonging to that owner.
+    /// The caller counts departing edges from that owner's actual rows.
     fn boundary_retirement_reads(
         &self, retired: &FxHashMap<RowDependencyKey, usize>,
+        mut belongs_to_owner: impl FnMut(RowKey) -> Option<bool>,
     ) -> Option<(RenderDependencies, RenderDependencies)> {
         let mut retired_entities = Vec::new();
         let mut retired_globals = Vec::new();
         let mut kept_entities = Vec::new();
         let mut kept_globals = Vec::new();
         for (&key, &count) in retired {
-            let readers = self.edges.get(&key)?.len();
-            if count == 0 || count > readers { return None; }
+            let readers = self.edges.get(&key)?;
+            let total = readers.len();
+            if count == 0 || count > total { return None; }
+            // If every reader departs, no surviving reader can protect
+            // this edge. Otherwise inspect only this affected reverse
+            // chain, not unrelated rows or dependency snapshots.
+            let mut surviving = false;
+            if count != total {
+                let mut scoped = 0usize;
+                let mut valid = true;
+                readers.visit(|row| {
+                    if !valid || scoped > count { return; }
+                    match belongs_to_owner(row) {
+                        Some(true) => scoped += 1,
+                        Some(false) => {}
+                        None => valid = false,
+                    }
+                });
+                if !valid || scoped < count { return None; }
+                surviving = scoped > count;
+            }
             match key {
                 RowDependencyKey::Entity(entity) => {
                     retired_entities.push(entity);
-                    if count < readers { kept_entities.push(entity); }
+                    if surviving { kept_entities.push(entity); }
                 }
                 RowDependencyKey::Global(global, exists) => {
                     retired_globals.push((global, exists));
-                    if count < readers { kept_globals.push((global, exists)); }
+                    if surviving { kept_globals.push((global, exists)); }
                 }
                 RowDependencyKey::State(_) => return None,
             }
@@ -1640,7 +1661,9 @@ impl Window {
             if routing.cursor.is_none() {
                 routing.build(&old.scroll_rows.rows, self.invalidator.row_notification_epoch());
             }
-            routing.boundary_retirement_reads(&retiring_counts)?
+            routing.boundary_retirement_reads(&retiring_counts, |row| {
+                Some(old.scroll_rows.rows.get(&row)?.context.owner == owner)
+            })?
         };
         let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
             && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
@@ -3327,7 +3350,7 @@ mod scoped_row_tests {
             (RowDependencyKey::Entity(model), 64),
             (RowDependencyKey::Global(global, Some(true)), 64),
         ]);
-        let (retired, surviving) = routing.boundary_retirement_reads(&counts).unwrap();
+        let (retired, surviving) = routing.boundary_retirement_reads(&counts, |_| Some(true)).unwrap();
         assert_eq!(retired.entities.as_ref(), &[model]);
         assert_eq!(retired.globals.as_ref(), &[(global, Some(true))]);
         assert_eq!(surviving.entities.as_ref(), &[model]);
@@ -3338,15 +3361,41 @@ mod scoped_row_tests {
         counts.clear();
         counts.insert(RowDependencyKey::Entity(model), 1);
         counts.insert(RowDependencyKey::Global(global, None), 1);
-        let (retired, surviving) = routing.boundary_retirement_reads(&counts).unwrap();
+        let (retired, surviving) = routing.boundary_retirement_reads(&counts, |_| Some(true)).unwrap();
         assert_eq!(retired.globals.as_ref(), &[(global, None)]);
         assert!(surviving.entities.is_empty());
         assert!(surviving.globals.is_empty());
         counts.insert(RowDependencyKey::Entity(model), 2);
-        assert!(routing.boundary_retirement_reads(&counts).is_none());
+        assert!(routing.boundary_retirement_reads(&counts, |_| Some(true)).is_none());
         counts.clear();
         counts.insert(RowDependencyKey::Entity(other), 0);
-        assert!(routing.boundary_retirement_reads(&counts).is_none());
+        assert!(routing.boundary_retirement_reads(&counts, |_| Some(true)).is_none());
+    }
+
+    #[test]
+    fn boundary_retirement_does_not_treat_other_owner_rows_as_local_readers() {
+        let model = EntityId::from(1);
+        let global = TypeId::of::<u32>();
+        let reads = RenderDependencies {
+            entities: Rc::from([model]), globals: Rc::from([(global, None)]),
+            ..Default::default()
+        };
+        let mut routing = RowNotificationRouting::default();
+        for row in [(1, 0), (1, 1), (2, 0)] {
+            routing.update(row, None, Some(&reads));
+        }
+        let counts = FxHashMap::from_iter([
+            (RowDependencyKey::Entity(model), 2),
+            (RowDependencyKey::Global(global, None), 2),
+        ]);
+        let (retired, kept) = routing.boundary_retirement_reads(&counts, |row| Some(row.0 == 1)).unwrap();
+        assert_eq!(retired.entities.as_ref(), &[model]);
+        assert_eq!(retired.globals.as_ref(), &[(global, None)]);
+        assert!(kept.entities.is_empty() && kept.globals.is_empty());
+        let (retired, kept) = routing.boundary_retirement_reads(&counts, |_| Some(true)).unwrap();
+        assert_eq!(retired.entities.as_ref(), kept.entities.as_ref());
+        assert_eq!(retired.globals.as_ref(), kept.globals.as_ref());
+        assert!(routing.boundary_retirement_reads(&counts, |row| Some(row.0 == 2)).is_none());
     }
 
     #[test]
