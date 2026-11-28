@@ -375,7 +375,19 @@ impl RecordSplicePlan {
             || phase.start > phase.end || phase.end > self.edits.len()
         { return None; }
         let selected = &self.edits[phase.clone()];
-        if selected.is_empty() { return self.retained_span(range); }
+        if selected.is_empty() {
+            // Explicit phase ordering resolves a zero-length checkpoint
+            // between an insertion owned by the previous phase and one
+            // owned by the next phase. No edit may cross this phase.
+            let previous = self.edits[..phase.start].last();
+            let following = self.edits[phase.end..].first();
+            if previous.is_some_and(|edit| edit.old.end > range.start)
+                || following.is_some_and(|edit| edit.old.start < range.end)
+            { return None; }
+            let (old_base, target_base) = previous.map_or((0, 0), |edit| (edit.old.end, edit.target.end));
+            let start = target_base.checked_add(range.start.checked_sub(old_base)?)?;
+            return Some(start..start.checked_add(range.len())?);
+        }
         let first = selected.first()?;
         let last = selected.last()?;
         if range.start > first.old.start || range.end < last.old.end { return None; }
@@ -1613,6 +1625,10 @@ mod publication_tests {
         assert_eq!(plan.enclosing_phase_span(1..3, 0..1), Some(1..5));
         assert_eq!(plan.enclosing_phase_span(3..6, 1..2), Some(5..10));
         assert_eq!(plan.enclosing_phase_span(1..4, 0..1), None);
+        assert_eq!(plan.enclosing_phase_span(3..3, 0..0), Some(3..3));
+        assert_eq!(plan.enclosing_phase_span(3..3, 1..1), Some(5..5));
+        assert_eq!(plan.enclosing_phase_span(3..3, 2..2), Some(7..7));
+        assert_eq!(plan.enclosing_phase_span(2..4, 1..1), None);
         assert_eq!(plan.retained_span(3..3), None);
         assert_eq!(plan.edit_count(), 2);
     }
