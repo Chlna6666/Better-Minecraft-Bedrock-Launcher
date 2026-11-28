@@ -1370,6 +1370,32 @@ mod tests {
     }
 
     #[test]
+    fn row_scoped_text_hits_keep_independent_access_records() {
+        use crate::window::RecordSplicePlan;
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = Arc::new(CacheKey {
+            text: SharedString::from("shared"), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        store.insert(key.clone(), Arc::new(LineLayout::default()), 1);
+        let id = store.current[0];
+        assert!(!store.lookup_recorded(key.as_ref(), 1, false).unwrap().1);
+        assert_eq!(store.current, vec![id]);
+        assert!(!store.lookup_recorded(key.as_ref(), 1, true).unwrap().1);
+        assert!(!store.lookup_recorded(key.as_ref(), 1, true).unwrap().1);
+        assert_eq!(store.current, vec![id, id, id]);
+        assert_eq!(store.used_count, 1);
+        store.finish(1, |_, _| {});
+        let plan = RecordSplicePlan::new(3, 0, &[(0..2, 0..0)]).unwrap();
+        let accesses = store.spliced_accesses(&plan).unwrap();
+        assert_eq!(accesses, vec![id]);
+        assert_eq!(store.adopt_spliced_accesses(accesses, 2), 1);
+        store.finish(2, |_, _| panic!("kept row must retain shared text layout"));
+        assert_eq!(store.previous, vec![id]);
+        assert_eq!(store.keys[&key], id);
+    }
+
+    #[test]
     fn cancelled_boundary_text_accesses_can_be_recorded_again() {
         let mut store = LayoutStore::<LineLayout>::default();
         let key = Arc::new(CacheKey {
