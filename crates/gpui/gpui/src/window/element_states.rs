@@ -286,6 +286,34 @@ mod tests {
     }
 
     #[test]
+    fn boundary_delta_counts_shared_owners_and_reuses_index() {
+        let shared = (GlobalElementId::default(), TypeId::of::<u64>());
+        let fresh = (GlobalElementId::default(), TypeId::of::<u32>());
+        let mut states = ElementStates::default();
+        states.begin_frame();
+        states.store(shared.clone(), Box::new(8_u64));
+        states.finish_frame(std::iter::empty());
+        states.begin_boundary().unwrap();
+        states.store(fresh.clone(), Box::new(9_u32));
+        let prepared = states.prepare_boundary_delta(
+            [&shared, &shared].into_iter(), [&shared].into_iter(), [&fresh].into_iter(),
+        ).unwrap();
+        assert!(states.commit_boundary(prepared).is_empty());
+        assert_eq!(states.boundary_access_counts.as_ref().unwrap()[&shared], 1);
+        states.begin_boundary().unwrap();
+        // A second transaction must not traverse the full committed log.
+        let prepared = states.prepare_boundary_delta(
+            std::iter::from_fn(|| -> Option<&ElementStateKey> { panic!("full log scanned") }),
+            [&shared].into_iter(), std::iter::empty(),
+        ).unwrap();
+        let retired = states.commit_boundary(prepared);
+        assert_eq!(retired.len(), 1);
+        assert!(!states.slots.contains_key(&shared));
+        assert!(states.slots.contains_key(&fresh));
+        assert_eq!(states.boundary_access_counts.as_ref().unwrap()[&fresh], 1);
+    }
+
+    #[test]
     fn boundary_adopts_new_states_and_defers_retirement() {
         use std::{cell::Cell, rc::Rc};
         struct Owner(Rc<Cell<usize>>);
