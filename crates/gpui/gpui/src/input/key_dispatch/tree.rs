@@ -501,6 +501,73 @@ impl DispatchTree {
         true
     }
 
+    /// Prepare an independent subtree replacement without consuming committed
+    /// listener ownership. The new forest must have no parents outside each
+    /// replacement range; its roots are attached to an explicit retained node.
+    /// Retained external edges must still resolve after all edits.
+    #[allow(dead_code)] // Boundary Frame transaction supplies the materialized forest.
+    pub(crate) fn with_spliced_records(
+        &self,
+        replacement: &Self,
+        plan: &crate::window::RecordSplicePlan,
+        replacement_parent: DispatchNodeId,
+    ) -> Option<Self> {
+        use crate::window::SpliceSource;
+        if !self.node_stack.is_empty() || !replacement.node_stack.is_empty()
+            || !self.nodes.pending.is_empty() || !replacement.nodes.pending.is_empty()
+            || !Rc::ptr_eq(&self.keymap, &replacement.keymap)
+            || !Rc::ptr_eq(&self.action_registry, &replacement.action_registry)
+            || self.focus_routes_may_shadow || self.view_routes_may_shadow
+            || replacement.focus_routes_may_shadow || replacement.view_routes_may_shadow
+            || !plan.matches_sources(self.len(), replacement.len())
+            || plan.len() > NO_PARENT as usize
+            || plan.retained_range(0..1) != Some(0..1)
+        {
+            return None;
+        }
+        let remap = |node: DispatchNodeId| {
+            let end = node.0.checked_add(1)?;
+            plan.retained_range(node.0..end).map(|range| DispatchNodeId(range.start))
+        };
+        let parent = remap(replacement_parent)?;
+        let mut offset = 0;
+        let mut valid = true;
+        plan.visit_ranges(|source, range| {
+            if !valid { return; }
+            valid = match source {
+                SpliceSource::Retained => self.parents.all_external_parents(range.clone(), |old| {
+                    old.is_none_or(|old| remap(old).is_some_and(|new| new.0 < offset))
+                }),
+                SpliceSource::Replacement => parent.0 < offset
+                    && replacement.parents.all_external_parents(range.clone(), |old| old.is_none()),
+            };
+            offset += range.len();
+        });
+        if !valid { return None; }
+
+        let mut result = Self::new(Rc::clone(&self.keymap), Rc::clone(&self.action_registry));
+        plan.visit_ranges(|source, range| {
+            match source {
+                SpliceSource::Retained => {
+                    result.replay_segment(range, self, None, |old| old.map(|old| {
+                        remap(old).expect("validated retained parent")
+                    }));
+                }
+                SpliceSource::Replacement => {
+                    result.replay_segment(range, replacement, None, |_| Some(parent));
+                }
+            }
+        });
+        // Do not silently change focus or view route precedence when an
+        // independently materialized subtree conflicts with a retained one.
+        if result.focus_routes_may_shadow || result.view_routes_may_shadow {
+            return None;
+        }
+        result.freeze();
+        debug_assert_eq!(result.len(), plan.len());
+        Some(result)
+    }
+
     /// Append a contiguous dispatch segment, translating in-segment parents
     /// by offset. The caller resolves parents outside the segment (including
     /// across splice gaps). No active key-context or view stack is traversed.
