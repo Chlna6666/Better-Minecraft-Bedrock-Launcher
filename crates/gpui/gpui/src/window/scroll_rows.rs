@@ -1413,7 +1413,10 @@ impl Window {
             self.prepaint_index(), cx.entities.dependency_read_index(),
             self.next_frame.input_clip_epoch,
         ));
-        let claim_start = (capture && plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some()))
+        // Capture native ownership before buffering first becomes eligible.
+        // Otherwise a row replayed from the initial visible-only frame
+        // can never acquire a detached claim proof.
+        let claim_start = (capture && matches!(&plan.context.identity, RowListIdentity::Uniform(..)))
             .then(|| self.layout_engine.as_ref().map(|engine| (engine.claim_log_len(), engine.transient_count())))
             .flatten();
         self.with_list_item_layout_key(row, |window| {
