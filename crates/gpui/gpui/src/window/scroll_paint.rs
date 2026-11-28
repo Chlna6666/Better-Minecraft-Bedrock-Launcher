@@ -1216,6 +1216,52 @@ mod tests {
         assert!(!relocated.inherit_native_identity(&original, 1.));
     }
 
+    #[test]
+    fn native_recapture_adopts_unaffected_tiles_across_flat_operation_count_changes() {
+        let rect = |y, height| Bounds::new(point(px(0.), px(y)), size(px(40.), px(height))).scale(1.);
+        let coverage = rect(-96., 288.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(96.))));
+        let capture = |rows: &[f32]| {
+            let mut ops = Operations::default();
+            for &y in rows {
+                ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                    bounds: rect(y, 8.),
+                    content_mask: ContentMask::new(coverage),
+                    background: crate::rgb(0x123456).into(),
+                    ..Default::default()
+                })));
+            }
+            ScrollPaint::new(Point::default(), coverage, ops)
+        };
+        let publish = |source: &Arc<ScrollPaint>| {
+            let mut painter = Painter::default();
+            assert!(painter.push_deferred_scroll(source.native_placement(viewport, 1., Point::default()).unwrap()));
+            painter.finish();
+            painter.into_scene()
+        };
+        let original = Arc::new(capture(&[8., 80.]));
+        let first = publish(&original);
+        let old = crate::window::SceneLayers::capture(&first, None, true);
+        let mut inserted = capture(&[8., 48., 80.]);
+        assert!(inserted.inherit_native_identity(&original, 1.));
+        let inserted = Arc::new(inserted);
+        let next = publish(&inserted);
+        let layers = crate::window::SceneLayers::capture(&next, Some(&old), true);
+        let layer = &layers.frames[0];
+        assert_eq!(layer.adopt_tile(1, [0, 0, 40, 32], 1.), Some(2));
+        assert_eq!(layer.adopt_tile(1, [0, 32, 40, 64], 1.), None);
+        assert_eq!(layer.adopt_tile(1, [0, 64, 40, 96], 1.), Some(2));
+
+        let mut removed = capture(&[8., 80.]);
+        assert!(removed.inherit_native_identity(&inserted, 1.));
+        let next = publish(&Arc::new(removed));
+        let layers = crate::window::SceneLayers::capture(&next, Some(&layers), true);
+        let layer = &layers.frames[0];
+        assert_eq!(layer.adopt_tile(2, [0, 0, 40, 32], 1.), Some(3));
+        assert_eq!(layer.adopt_tile(2, [0, 32, 40, 64], 1.), None);
+        assert_eq!(layer.adopt_tile(2, [0, 64, 40, 96], 1.), Some(3));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn lcd_tiles_require_and_track_the_opaque_underlay() {

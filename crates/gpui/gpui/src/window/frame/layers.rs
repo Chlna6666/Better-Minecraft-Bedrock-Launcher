@@ -71,14 +71,15 @@ impl LayerContent {
     // render correctly but require a full refresh on recapture.
     fn native_damage_from(&self, previous: &Self) -> LayerDamage {
         let (current, old) = (self.raster, previous.raster);
-        if self.operations.len() != previous.operations.len() {
-            return LayerDamage::Full;
-        }
         let current_origin = translation_point(current.source_origin);
         let old_origin = translation_point(old.source_origin);
         let delta = current_origin - old_origin;
         let current_mask = ContentMask::new(translated_bounds(current.coverage, current_origin));
         let old_mask = ContentMask::new(translated_bounds(old.coverage, old_origin));
+        if self.operations.len() != previous.operations.len() {
+            return self.flat_edit_damage(previous, current_origin, old_origin, current_mask, old_mask)
+                .unwrap_or(LayerDamage::Full);
+        }
         let mut damage = None;
         for (current_op, old_op) in self.operations.views().zip(previous.operations.views()) {
             match (current_op, old_op) {
@@ -91,21 +92,8 @@ impl LayerContent {
                     if *a.content_mask() != current_mask || *b.content_mask() != old_mask {
                         return LayerDamage::Full;
                     }
-                    macro_rules! equal {
-                        ($a:ident, $b:ident) => {{
-                            let mut moved = *$b;
-                            moved.bounds = translated_bounds(moved.bounds, delta);
-                            moved.content_mask = current_mask;
-                            *$a == moved
-                        }};
-                    }
-                    let equal = match (a, b) {
-                        (PrimitiveRef::Quad(a), PrimitiveRef::Quad(b)) => equal!(a, b),
-                        (PrimitiveRef::Shadow(a), PrimitiveRef::Shadow(b)) => equal!(a, b),
-                        (PrimitiveRef::Underline(a), PrimitiveRef::Underline(b)) => equal!(a, b),
-                        (PrimitiveRef::MonochromeSprite(a), PrimitiveRef::MonochromeSprite(b)) => equal!(a, b),
-                        (PrimitiveRef::PolychromeSprite(a), PrimitiveRef::PolychromeSprite(b)) => equal!(a, b),
-                        _ => return LayerDamage::Full,
+                    let Some(equal) = native_primitive_equal(a, b, delta, current_mask) else {
+                        return LayerDamage::Full;
                     };
                     if !equal {
                         let changed = translated_bounds(a_bounds, Point::default() - current_origin)
@@ -119,7 +107,71 @@ impl LayerContent {
         damage.map_or(LayerDamage::Clean, LayerDamage::Bounds)
     }
 
+    /// A changed operation count need not invalidate every tile. For a
+    /// flat primitive stream, unchanged ordered prefix/suffix draws can
+    /// be proven independently of the inserted or removed middle. Reject
+    /// scopes and uncertified clips rather than infer their ordering.
+    fn flat_edit_damage(
+        &self,
+        previous: &Self,
+        current_origin: Point<ScaledPixels>,
+        old_origin: Point<ScaledPixels>,
+        current_mask: ContentMask<ScaledPixels>,
+        old_mask: ContentMask<ScaledPixels>,
+    ) -> Option<LayerDamage> {
+        let delta = current_origin - old_origin;
+        let equal = |a: PaintOperationRef<'_>, b: PaintOperationRef<'_>| {
+            let (PaintOperationRef::Primitive(a), PaintOperationRef::Primitive(b)) = (a, b) else {
+                return false;
+            };
+            *a.content_mask() == current_mask && *b.content_mask() == old_mask
+                && static_raster_bounds(a).is_some() && static_raster_bounds(b).is_some()
+                && native_primitive_equal(a, b, delta, current_mask) == Some(true)
+        };
+        let prefix = self.operations.views().zip(previous.operations.views())
+            .take_while(|(a, b)| equal(*a, *b)).count();
+        let suffix = self.operations.views().rev().zip(previous.operations.views().rev())
+            .take(self.operations.len().min(previous.operations.len()) - prefix)
+            .take_while(|(a, b)| equal(*a, *b)).count();
+        let mut damage = None;
+        for (operations, origin, mask) in [
+            (&self.operations, current_origin, current_mask),
+            (&previous.operations, old_origin, old_mask),
+        ] {
+            let middle = operations.get_range(prefix..operations.len() - suffix)?;
+            for operation in middle.views() {
+                let PaintOperationRef::Primitive(primitive) = operation else { return None; };
+                if *primitive.content_mask() != mask { return None; }
+                let bounds = static_raster_bounds(primitive)?;
+                union_visual(&mut damage, translated_bounds(bounds, Point::default() - origin));
+            }
+        }
+        Some(damage.map_or(LayerDamage::Clean, LayerDamage::Bounds))
+    }
+}
 
+fn native_primitive_equal(
+    a: PrimitiveRef<'_>,
+    b: PrimitiveRef<'_>,
+    delta: Point<ScaledPixels>,
+    current_mask: ContentMask<ScaledPixels>,
+) -> Option<bool> {
+    macro_rules! equal {
+        ($a:ident, $b:ident) => {{
+            let mut moved = *$b;
+            moved.bounds = translated_bounds(moved.bounds, delta);
+            moved.content_mask = current_mask;
+            *$a == moved
+        }};
+    }
+    Some(match (a, b) {
+        (PrimitiveRef::Quad(a), PrimitiveRef::Quad(b)) => equal!(a, b),
+        (PrimitiveRef::Shadow(a), PrimitiveRef::Shadow(b)) => equal!(a, b),
+        (PrimitiveRef::Underline(a), PrimitiveRef::Underline(b)) => equal!(a, b),
+        (PrimitiveRef::MonochromeSprite(a), PrimitiveRef::MonochromeSprite(b)) => equal!(a, b),
+        (PrimitiveRef::PolychromeSprite(a), PrimitiveRef::PolychromeSprite(b)) => equal!(a, b),
+        _ => return None,
+    })
 }
 
 /// Rasterization uses the source's original coordinates; only the signed
