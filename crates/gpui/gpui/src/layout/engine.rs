@@ -263,6 +263,17 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
     ROW_NODE_LINGER_FRAMES
 }
 
+/// Temporary detached-row transaction, allocated only while entering rows
+/// are built. Existing native layout IDs are never copied into a second tree.
+struct DetachedBoundary {
+    retired: Vec<Range<usize>>,
+    created: FxHashSet<LayoutId>,
+    // A colliding key is diverted to a temporary node; an external native
+    // write requires full layout recovery rather than pretending to undo it.
+    rejected: bool,
+    touched_existing: bool,
+}
+
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<()>,
     // Zed GPUI #67223: measurement ownership uses the native generational node key.
@@ -281,6 +292,7 @@ pub struct TaffyLayoutEngine {
     claimed_this_frame: usize,
     claimed_key_log: Vec<Option<LayoutClaim>>,
     committed_claim_log: Vec<Option<LayoutClaim>>,
+    detached_boundary: Option<DetachedBoundary>,
     claim_relocations: SpanRelocations,
     pending_replays: Vec<LayoutId>,
     layout_changes: u64,
@@ -348,6 +360,7 @@ impl TaffyLayoutEngine {
             claimed_this_frame: 0,
             claimed_key_log: Vec::new(),
             committed_claim_log: Vec::new(),
+            detached_boundary: None,
             claim_relocations: SpanRelocations::default(),
             pending_replays: Vec::new(),
             layout_changes: 0,
@@ -450,6 +463,7 @@ impl TaffyLayoutEngine {
     /// committed. Discard native nodes (preserving Taffy's generational IDs)
     /// and let the next request rebuild them; the committed paint stays intact.
     pub(crate) fn abort_frame(&mut self) {
+        self.detached_boundary = None;
         let ids: Vec<_> = self.persistent_nodes.drain().map(|(_, node)| node.id).collect();
         for id in ids {
             self.remove_native_node(id);
@@ -464,6 +478,7 @@ impl TaffyLayoutEngine {
     }
 
     pub fn clear(&mut self) {
+        debug_assert!(self.detached_boundary.is_none(), "unfinished detached boundary");
         // Observe the frame that just finished before clearing it. This is the real active layout
         // working set and lets a large-to-small page transition return excess buckets without
         // disturbing stable large pages.
@@ -608,6 +623,131 @@ impl TaffyLayoutEngine {
         self.claimed_key_log.len()
     }
 
+    /// Start from an idle native engine. Existing claim offsets stay stable:
+    /// retired intervals will become tombstones and fresh claims are appended
+    /// only on commit. Return the offset for new row claim blocks.
+    #[allow(dead_code)]
+    pub(crate) fn begin_detached_boundary(
+        &mut self, retired: &[(LayoutId, LayoutClaimBlocks)],
+    ) -> Option<usize> {
+        if self.detached_boundary.is_some() || !self.claimed_key_log.is_empty()
+            || self.claimed_this_frame != 0 || !self.anonymous_nodes.is_empty()
+            || !self.pending_replays.is_empty()
+            // Bound tombstone accumulation; normal full traversal compacts it.
+            || self.committed_claim_log.len() > self.persistent_nodes.len().max(32).saturating_mul(2)
+        {
+            return None;
+        }
+        let mut ranges = Vec::with_capacity(retired.len());
+        for (root, blocks) in retired {
+            if !blocks.request_blocks().is_empty() || blocks.prepaint_blocks().len() != 1 {
+                return None;
+            }
+            let range = blocks.prepaint_blocks()[0].clone();
+            let claims = self.committed_claim_log.get(range.clone())?;
+            if claims.is_empty() || !self.claims_valid(claims) { return None; }
+            let mut roots = 0usize;
+            let mut edges = 0usize;
+            for claim in claims {
+                let claim = claim.as_ref()?;
+                let node = self.persistent_nodes.get(&claim.key)?;
+                if !node.lingers || self.stale_style_fingerprints.contains(&claim.id) { return None; }
+                if claim.id == *root {
+                    if self.layout_parent(*root).is_some() { return None; }
+                    roots += 1;
+                } else if !self.layout_reaches(*root, claim.id) {
+                    return None;
+                }
+                edges = edges.checked_add(self.taffy.child_count(claim.id.into()))?;
+            }
+            if roots != 1 || edges != claims.len() - 1 { return None; }
+            ranges.push(range);
+        }
+        ranges.sort_unstable_by_key(|range| range.start);
+        if ranges.windows(2).any(|pair| pair[0].end > pair[1].start) { return None; }
+        let offset = self.committed_claim_log.len();
+        self.detached_boundary = Some(DetachedBoundary {
+            retired: ranges, created: FxHashSet::default(),
+            rejected: false, touched_existing: false,
+        });
+        Some(offset)
+    }
+
+    /// Detect writes to pre-existing native state before executing them.
+    /// The ordinary path is one predictable None check.
+    fn observe_boundary_write(&mut self, id: LayoutId) {
+        if let Some(boundary) = self.detached_boundary.as_mut()
+            && !boundary.created.contains(&id)
+        {
+            boundary.rejected = true;
+            boundary.touched_existing = true;
+        }
+    }
+
+    /// Cancel an append-only candidate without destroying committed nodes.
+    /// False means full native recovery was necessary; the caller must
+    /// invalidate retained layout admission and rebuild before publication.
+    #[allow(dead_code)]
+    pub(crate) fn cancel_detached_boundary(&mut self) -> bool {
+        let Some(boundary) = self.detached_boundary.take() else { return false; };
+        if boundary.touched_existing {
+            self.abort_frame();
+            return false;
+        }
+        self.persistent_nodes.retain(|_, node| !boundary.created.contains(&node.id));
+        for id in boundary.created {
+            self.computed_layouts.remove(&id);
+            self.remove_native_node(id);
+        }
+        self.anonymous_nodes.clear();
+        self.claimed_key_log.clear();
+        self.claimed_this_frame = 0;
+        self.pending_replays.clear();
+        self.claim_relocations.clear();
+        self.bounds_mutations.clear();
+        true
+    }
+
+    /// Final native adoption, after all other Frame candidates are validated.
+    /// Existing indices are unchanged, retired slots are tombstoned, and
+    /// new row claims use begin_detached_boundary's returned offset.
+    /// A rejected candidate remains open for cancel_detached_boundary.
+    #[allow(dead_code)]
+    pub(crate) fn commit_detached_boundary(&mut self) -> Option<()> {
+        let boundary = self.detached_boundary.as_ref()?;
+        if boundary.rejected || !self.anonymous_nodes.is_empty()
+            || !self.pending_replays.is_empty()
+            || self.claimed_this_frame != self.claimed_key_log.len()
+            || !self.claimed_key_log.iter().all(|entry| entry.as_ref().is_some_and(|claim| {
+                boundary.created.contains(&claim.id)
+                    && self.persistent_nodes.get(&claim.key).is_some_and(|node| {
+                        node.id == claim.id && node.claimed_in_frame == self.request_frame
+                    })
+            }))
+            || !self.claims_valid(&self.committed_claim_log)
+        {
+            return None;
+        }
+        // Complete the only fallible allocation before updating any epoch.
+        self.committed_claim_log.try_reserve(self.claimed_key_log.len()).ok()?;
+        let boundary = self.detached_boundary.take().expect("validated boundary");
+        for range in boundary.retired {
+            self.committed_claim_log[range].fill(None);
+        }
+        for claim in self.committed_claim_log.iter().flatten() {
+            let node = self.persistent_nodes.get_mut(&claim.key).expect("validated retained claim");
+            if node.claimed_in_frame != self.request_frame {
+                node.claimed_in_frame = self.request_frame;
+                self.claimed_this_frame += 1;
+            }
+        }
+        self.committed_claim_log.append(&mut self.claimed_key_log);
+        // clear() performs the ordinary epoch advance and retirement policy.
+        std::mem::swap(&mut self.committed_claim_log, &mut self.claimed_key_log);
+        self.clear();
+        Some(())
+    }
+
     /// A row layout is a detached native subtree. Record its actual claim
     /// range only if every node belongs to that subtree and every child is
     /// represented. Transient nodes or external child edges disqualify it.
@@ -700,6 +840,7 @@ impl TaffyLayoutEngine {
     }
 
     fn try_keep_intervals(&mut self, intervals: &[Range<usize>], root: LayoutId) -> Option<Range<usize>> {
+        if self.detached_boundary.is_some() { return None; }
         // Reject overlapping blocks before claiming any nodes.
         let mut ordered: smallvec::SmallVec<[&Range<usize>; 4]> = intervals.iter().collect();
         ordered.sort_unstable_by_key(|range| range.start);
@@ -892,7 +1033,7 @@ impl TaffyLayoutEngine {
     pub(crate) fn adopt_claim_blocks(
         &mut self, blocks: &LayoutClaimBlocks, root: LayoutId,
     ) -> Option<LayoutClaimBlocks> {
-        if !blocks.prepaint_blocks().is_empty() { return None; }
+        if self.detached_boundary.is_some() || !blocks.prepaint_blocks().is_empty() { return None; }
         let blocks = self.resolve_claim_blocks(blocks);
         let mut ordered: smallvec::SmallVec<[&Range<usize>; 4]> = blocks.iter().collect();
         ordered.sort_unstable_by_key(|range| range.start);
@@ -962,6 +1103,15 @@ impl TaffyLayoutEngine {
         );
         // Keep the lazy conversion monomorphized. Boxing this closure allocated
         // for every request, including the fingerprint-hit path that never calls it.
+        // Never overwrite a committed slot (including lingering offscreen
+        // slots) during the append-only transaction. Materialize a transient
+        // instead and reject the candidate after normal lifecycle execution.
+        let owner = if let Some(boundary) = self.detached_boundary.as_mut() {
+            if owner.is_some_and(|key| self.persistent_nodes.contains_key(&key)) {
+                boundary.rejected = true;
+                None
+            } else { owner }
+        } else { owner };
         let Some(key) = owner else {
             let style = build_style();
             let id = self.create_taffy_node(style, children, measure.map(MeasureRequest::into_context));
@@ -1133,6 +1283,9 @@ impl TaffyLayoutEngine {
         children: &[LayoutId],
         measure: Option<NodeContext>,
     ) -> LayoutId {
+        for &child in children {
+            self.observe_boundary_write(child);
+        }
         self.layout_changes = self.layout_changes.wrapping_add(1);
         if measure.is_some() {
             self.remeasures = self.remeasures.wrapping_add(1);
@@ -1144,7 +1297,7 @@ impl TaffyLayoutEngine {
         );
         Self::detach_reparented_children(&mut self.taffy, &mut self.robbed_parents,
             None, children);
-        match measure {
+        let id: LayoutId = match measure {
             Some(context) => {
                 let id = self.taffy.new_leaf(style).expect(EXPECT_MESSAGE);
                 self.contexts.insert(node_key(id), context);
@@ -1156,7 +1309,11 @@ impl TaffyLayoutEngine {
                 .new_with_children(style, LayoutId::to_taffy_slice(children))
                 .expect(EXPECT_MESSAGE)
                 .into(),
+        };
+        if let Some(boundary) = self.detached_boundary.as_mut() {
+            boundary.created.insert(id);
         }
+        id
     }
 
     pub fn request_layout(
@@ -1215,6 +1372,7 @@ impl TaffyLayoutEngine {
     /// Obtain the previous plain text state only for an unclaimed matching slot.
     /// A slot already claimed in this frame cannot lend its mutable text.
     pub(crate) fn previous_plain_text(&mut self, owner: &u64) -> Option<crate::TextLayout> {
+        if self.detached_boundary.is_some() { return None; }
         let node = self.persistent_nodes.get(owner)?;
         if node.claimed_in_frame == self.request_frame {
             return None;
@@ -1225,6 +1383,7 @@ impl TaffyLayoutEngine {
     /// Attach state to the actual node returned by the request (including
     /// transient collision nodes). Replayed views retain their native claims.
     pub(crate) fn set_plain_text(&mut self, id: LayoutId, state: crate::TextLayout) {
+        self.observe_boundary_write(id);
         self.contexts.get_mut(node_key(id.into()))
             .expect("plain text has a native measurement context")
             .plain_text = Some(state);
@@ -1375,6 +1534,7 @@ impl TaffyLayoutEngine {
     /// Settle text at its final native content width, not a cached sizing probe.
     /// This prepares paint state only; it must not record a new Taffy measurement.
     pub(crate) fn settle_text_measure(&mut self, id: LayoutId, window: &mut Window, cx: &mut App) {
+        self.observe_boundary_write(id);
         let scale = window.scale_factor();
         let Ok(layout) = self.taffy.layout(id.into()) else { return; };
         let content = size(
@@ -1399,6 +1559,7 @@ impl TaffyLayoutEngine {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
+        self.observe_boundary_write(id);
         self.replay_pending_measures(window, cx);
         if !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE)
             && !self.robbed_parents.contains(&id)
@@ -1443,6 +1604,7 @@ impl TaffyLayoutEngine {
             crate::window::element_work::ElementWorkPhase::Layout,
         );
         let started_at = Instant::now();
+        self.observe_boundary_write(id);
         self.roots_computed = self.roots_computed.saturating_add(1);
         self.replay_pending_measures(window, cx);
         let scale_factor = window.scale_factor();
@@ -1755,6 +1917,7 @@ impl TaffyLayoutEngine {
             native.size.height = taffy::style::Dimension::percent(1.0);
         }
         if child != &native {
+            self.observe_boundary_write(child_id);
             self.taffy.set_style(child_id.into(), native).expect(EXPECT_MESSAGE);
             self.layout_changes = self.layout_changes.wrapping_add(1);
             // Rewritten child styles must be restored on their next request;
