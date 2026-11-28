@@ -498,10 +498,19 @@ impl BoundaryIndexSplices<'_> {
     pub(super) fn retained_prepaint(
         &self, source: &Range<PrepaintStateIndex>,
     ) -> Option<Range<PrepaintStateIndex>> {
+        self.project_prepaint(source, false)
+    }
+
+    pub(super) fn enclosing_prepaint(&self, source: &Range<PrepaintStateIndex>) -> Option<Range<PrepaintStateIndex>> {
+        self.project_prepaint(source, true)
+    }
+
+    fn project_prepaint(&self, source: &Range<PrepaintStateIndex>, enclosing: bool) -> Option<Range<PrepaintStateIndex>> {
+        let map = |plan: &RecordSplicePlan, range| if enclosing { plan.enclosing_span(range) } else { plan.retained_span(range) };
         let mut result = source.clone();
-        let hitboxes = self.hitboxes.retained_span(source.start.hitboxes_index..source.end.hitboxes_index)?;
-        let dispatch = self.dispatch.retained_span(source.start.dispatch_tree_index..source.end.dispatch_tree_index)?;
-        let states = self.states.retained_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        let hitboxes = map(self.hitboxes, source.start.hitboxes_index..source.end.hitboxes_index)?;
+        let dispatch = map(self.dispatch, source.start.dispatch_tree_index..source.end.dispatch_tree_index)?;
+        let states = map(self.states, source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
         result.start.hitboxes_index = hitboxes.start;
         result.end.hitboxes_index = hitboxes.end;
         result.start.dispatch_tree_index = dispatch.start;
@@ -509,9 +518,9 @@ impl BoundaryIndexSplices<'_> {
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
         if let Some((generation, lines, wrapped)) = self.text {
-            let mapped = LineLayoutIndex::retained_splice(
+            let mapped = LineLayoutIndex::project_splice(
                 &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
-                generation, lines, wrapped,
+                generation, lines, wrapped, enclosing,
             )?;
             result.start.line_layout_index = mapped.start;
             result.end.line_layout_index = mapped.end;
@@ -520,13 +529,22 @@ impl BoundaryIndexSplices<'_> {
     }
 
     pub(super) fn retained_paint(&self, source: &Range<PaintIndex>) -> Option<Range<PaintIndex>> {
+        self.project_paint(source, false)
+    }
+
+    pub(super) fn enclosing_paint(&self, source: &Range<PaintIndex>) -> Option<Range<PaintIndex>> {
+        self.project_paint(source, true)
+    }
+
+    fn project_paint(&self, source: &Range<PaintIndex>, enclosing: bool) -> Option<Range<PaintIndex>> {
+        let map = |plan: &RecordSplicePlan, range| if enclosing { plan.enclosing_span(range) } else { plan.retained_span(range) };
         let mut result = source.clone();
-        let scene = self.scene.retained_span(source.start.scene_index..source.end.scene_index)?;
-        let states = self.states.retained_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        let scene = map(self.scene, source.start.scene_index..source.end.scene_index)?;
+        let states = map(self.states, source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
         result.start.scene_index = scene.start;
         result.end.scene_index = scene.end;
-        let mouse = self.mouse.retained_span(source.start.mouse_listeners_index..source.end.mouse_listeners_index)?;
-        let ime = self.ime.retained_span(source.start.input_handlers_index..source.end.input_handlers_index)?;
+        let mouse = map(self.mouse, source.start.mouse_listeners_index..source.end.mouse_listeners_index)?;
+        let ime = map(self.ime, source.start.input_handlers_index..source.end.input_handlers_index)?;
         result.start.mouse_listeners_index = mouse.start;
         result.end.mouse_listeners_index = mouse.end;
         result.start.input_handlers_index = ime.start;
@@ -534,9 +552,9 @@ impl BoundaryIndexSplices<'_> {
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
         if let Some((generation, lines, wrapped)) = self.text {
-            let mapped = LineLayoutIndex::retained_splice(
+            let mapped = LineLayoutIndex::project_splice(
                 &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
-                generation, lines, wrapped,
+                generation, lines, wrapped, enclosing,
             )?;
             result.start.line_layout_index = mapped.start;
             result.end.line_layout_index = mapped.end;
