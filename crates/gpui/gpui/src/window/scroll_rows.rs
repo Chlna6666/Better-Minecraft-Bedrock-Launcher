@@ -1068,8 +1068,8 @@ struct RowRecord {
 
 /// First runtime boundary domain: static, fixed-height independent rows.
 /// The surrounding list may remain interactive. Only the rows being
-/// spliced may own fixed-clip hitboxes, isolated element state and text,
-/// but not callbacks or nested view records.
+/// spliced may own fixed-clip hitboxes, isolated state, text and non-wheel
+/// callbacks under the existing hover-restoration contract.
 struct StaticUniformBoundary {
     key: u64,
     binding: RowPlacementBinding,
@@ -1079,6 +1079,7 @@ struct StaticUniformBoundary {
     scene: Range<usize>,
     dispatch: Range<usize>,
     hitboxes: Range<usize>,
+    mouse: Range<usize>,
     prepaint_states: Range<usize>,
     paint_states: Range<usize>,
     text: RowTextDomain,
@@ -1204,6 +1205,8 @@ impl RowRecord {
         let mut paint = self.paint.clone();
         paint.start.scene_index = 0;
         paint.end.scene_index = 0;
+        paint.start.mouse_listeners_index = 0;
+        paint.end.mouse_listeners_index = 0;
         paint.start.accessed_element_states_index = 0;
         paint.end.accessed_element_states_index = 0;
         paint.start.line_layout_index = Default::default();
@@ -1229,6 +1232,19 @@ impl RowRecord {
         let (b, line_end, wrapped_end) = end.components();
         if a != generation || b != generation || line_start > line_end || wrapped_start > wrapped_end { return None; }
         Some([line_start..line_end, wrapped_start..wrapped_end])
+    }
+
+    fn mouse_span(&self) -> Range<usize> {
+        self.paint.start.mouse_listeners_index..self.paint.end.mouse_listeners_index
+    }
+
+    /// The existing scroll-hover lifecycle refreshes positional callbacks
+    /// before dispatching non-wheel input. Wheel handlers must remain
+    /// live throughout scrolling, so they cannot use that contract.
+    fn boundary_mouse_is_safe(&self, frame: &super::Frame) -> bool {
+        frame.mouse_listeners.get(self.mouse_span()).is_some_and(|listeners| {
+            listeners.iter().all(|listener| !listener.handles(TypeId::of::<crate::ScrollWheelEvent>(), false))
+        })
     }
 
     fn state_span(&self, paint: bool) -> Range<usize> {
@@ -1384,7 +1400,6 @@ impl Window {
             || self.rendered_frame.scene().revision != source_revision
             || self.draw_was_degraded
             || self.requested_autoscroll.is_some()
-            || !self.next_frame.mouse_listeners.is_empty()
             || !self.next_frame.mounted_scroll_sources.is_empty()
             || !self.next_frame.input_handlers.is_empty()
             || !self.next_frame.cursor_styles.is_empty()
@@ -1417,6 +1432,7 @@ impl Window {
         // dispatch records must be contiguous beneath the temporary anchor.
         let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
         let mut fresh_hitbox_end = 0;
+        let mut fresh_mouse_end = 0;
         let mut fresh_prepaint_end = 0;
         let mut fresh_paint_start = None;
         let mut fresh_paint_end = 0;
@@ -1440,6 +1456,9 @@ impl Window {
                 })
             { return None; }
             fresh_hitbox_end = hitboxes.end;
+            let mouse = record.mouse_span();
+            if mouse.start != fresh_mouse_end || !record.boundary_mouse_is_safe(fresh) { return None; }
+            fresh_mouse_end = mouse.end;
             let prepaint = record.state_span(false);
             let paint = record.state_span(true);
             if prepaint.start != fresh_prepaint_end || !fresh.accessed_element_states.contains(prepaint.clone())
@@ -1455,6 +1474,7 @@ impl Window {
         }
         if fresh_dispatch_end != fresh.dispatch_tree.len()
             || fresh_hitbox_end != fresh.hitboxes.len()
+            || fresh_mouse_end != fresh.mouse_listeners.len()
             || fresh_paint_start.unwrap_or(0) != fresh_prepaint_end
             || fresh_paint_end != fresh.accessed_element_states.len() { return None; }
 
@@ -1474,6 +1494,7 @@ impl Window {
         let mut scene_edits = Vec::with_capacity(groups.len());
         let mut dispatch_edits = Vec::with_capacity(groups.len());
         let mut hitbox_edits = Vec::with_capacity(groups.len());
+        let mut mouse_edits = Vec::with_capacity(groups.len());
         let mut prepaint_state_edits = Vec::with_capacity(groups.len());
         let mut paint_state_edits = Vec::with_capacity(groups.len());
         let mut text_edits: [[Vec<(Range<usize>, Range<usize>)>; 2]; 2] =
@@ -1485,6 +1506,10 @@ impl Window {
         let old_hitbox_at = |row: usize| -> Option<usize> {
             if row == old_range.end { Some(boundary.hitboxes.end) }
             else { Some(hitbox_range(&old.scroll_rows.rows.get(&(key, row))?.prepaint).start) }
+        };
+        let old_mouse_at = |row: usize| -> Option<usize> {
+            if row == old_range.end { Some(boundary.mouse.end) }
+            else { Some(old.scroll_rows.rows.get(&(key, row))?.mouse_span().start) }
         };
         for (retired, entered) in groups {
             if retired.is_empty() && entered.is_empty() { continue; }
@@ -1504,6 +1529,12 @@ impl Window {
             scene_edits.push((start..end, new_scene));
             dispatch_edits.push((old_dispatch, new_dispatch));
             hitbox_edits.push((old_hitboxes, new_hitboxes));
+            let retired_mouse = old_mouse_at(retired.start)?..old_mouse_at(retired.end)?;
+            let entered_mouse = if entered.is_empty() { 0..0 } else {
+                fresh.scroll_rows.rows.get(&(key, entered.start))?.mouse_span().start
+                    ..fresh.scroll_rows.rows.get(&(key, entered.end - 1))?.mouse_span().end
+            };
+            mouse_edits.push((retired_mouse, entered_mouse));
             for (paint, edits, domain) in [
                 (false, &mut prepaint_state_edits, &boundary.prepaint_states),
                 (true, &mut paint_state_edits, &boundary.paint_states),
@@ -1573,7 +1604,7 @@ impl Window {
                     if phase == 0 { 0..split } else { split..plan.edit_count() })?;
             }
         }
-        let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), 0, &[])?;
+        let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), fresh.mouse_listeners.len(), &mouse_edits)?;
         let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
         let maps = BoundaryIndexSplices {
             scene: &scene, dispatch: &dispatch, hitboxes: &hitboxes, states: &states,
@@ -1600,6 +1631,8 @@ impl Window {
         // This explicit cursor resolves even zero-length row checkpoints.
         let hitbox_domain = hitboxes.enclosing_span(boundary.hitboxes.clone())?;
         let mut hitbox_cursor = hitbox_domain.start;
+        let mouse_domain = mouse.enclosing_span(boundary.mouse.clone())?;
+        let mut mouse_cursor = mouse_domain.start;
         let mut prepaint_state_cursor = prepaint_state_domain.start;
         let mut paint_state_cursor = paint_state_domain.start;
         let mut text_cursors = text_targets.clone().map(|streams| streams.map(|span| span.start));
@@ -1666,6 +1699,16 @@ impl Window {
             let mut paint_end = paint_start.clone();
             paint_start.scene_index = marker;
             paint_end.scene_index = marker.checked_add(1)?;
+            let source_mouse = record.mouse_span();
+            let target_mouse = mouse_cursor..mouse_cursor.checked_add(source_mouse.len())?;
+            if !source_mouse.is_empty() {
+                let projected = if entering { mouse.replacement_span(source_mouse)? }
+                    else { mouse.retained_range(source_mouse)? };
+                if projected != target_mouse { return None; }
+            }
+            paint_start.mouse_listeners_index = target_mouse.start;
+            paint_end.mouse_listeners_index = target_mouse.end;
+            mouse_cursor = target_mouse.end;
             paint_start.accessed_element_states_index = paint_states.start;
             paint_end.accessed_element_states_index = paint_states.end;
             let mut project_text = |phase: usize| -> Option<Range<super::LineLayoutIndex>> {
@@ -1695,7 +1738,7 @@ impl Window {
             updates.push(BoundaryRowUpdate { key: row_key, origin, prepaint: start..end,
                 paint: paint_start..paint_end, fresh_claims });
         }
-        if hitbox_cursor != hitbox_domain.end
+        if hitbox_cursor != hitbox_domain.end || mouse_cursor != mouse_domain.end
             || prepaint_state_cursor != prepaint_state_domain.end || paint_state_cursor != paint_state_domain.end
         { return None; }
         if text_cursors != text_targets.clone().map(|streams| streams.map(|span| span.end)) { return None; }
@@ -1789,6 +1832,7 @@ impl Window {
         let scene_start = first.paint.start.scene_index;
         let dispatch_start = first.dispatch_span().start;
         let hitbox_start = hitbox_range(&first.prepaint).start;
+        let mouse_start = first.mouse_span().start;
         let prepaint_state_start = first.state_span(false).start;
         let paint_state_start = first.state_span(true).start;
         if builder.dispatch_parent.0 >= dispatch_start { return None; }
@@ -1796,6 +1840,7 @@ impl Window {
         let viewport = builder.context.inherited.visual_content_mask;
         let mut dispatch_end = dispatch_start;
         let mut hitbox_end = hitbox_start;
+        let mut mouse_end = mouse_start;
         let mut prepaint_state_end = prepaint_state_start;
         let mut paint_state_end = paint_state_start;
         let mut retired_claims = Vec::new();
@@ -1828,6 +1873,9 @@ impl Window {
                 })
             { return None; }
             hitbox_end = input.end;
+            let mouse = record.mouse_span();
+            if mouse.start != mouse_end || !record.boundary_mouse_is_safe(frame) { return None; }
+            mouse_end = mouse.end;
             let prepaint_states = record.state_span(false);
             let paint_states = record.state_span(true);
             if prepaint_states.start != prepaint_state_end || paint_states.start != paint_state_end
@@ -1847,6 +1895,7 @@ impl Window {
             key, binding: binding.clone(), membership, sample_read, mounted_source,
             scene: scene_start..scene_start.checked_add(binding.captured.len())?,
             dispatch: dispatch_start..dispatch_end, hitboxes: hitbox_start..hitbox_end,
+            mouse: mouse_start..mouse_end,
             prepaint_states: prepaint_state_start..prepaint_state_end,
             paint_states: paint_state_start..paint_state_end, text,
             prepaint_base, paint_base, retired_claims,
@@ -2442,7 +2491,12 @@ impl Window {
         let Some(record) = rows.rows.get(&key) else {
             return false;
         };
-        if (plan.placement_only && record.revision != plan.revision)
+        // A callback may capture arbitrary absolute geometry. Once the
+        // wheel hold ends, never replay it even if the row is not under
+        // the pointer yet. The synchronous input restoration draw must
+        // regenerate all such callbacks before the next positional event.
+        if (!plan.hover_held && !record.mouse_span().is_empty())
+            || (plan.placement_only && record.revision != plan.revision)
             || (plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some())
                 && record.prepaint.layout_claims.is_none()
                 && experimental_row_boundary_enabled())
