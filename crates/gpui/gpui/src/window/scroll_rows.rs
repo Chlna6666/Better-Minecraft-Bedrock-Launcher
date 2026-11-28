@@ -1060,6 +1060,192 @@ struct RowRecord {
     content: Arc<ScrollPaint>,
 }
 
+/// First runtime boundary domain: static, fixed-height independent rows.
+/// The surrounding list may remain interactive. Only the rows being
+/// spliced must have no additional input, state, text or nested view
+/// records. This deliberately preserves all other Frame stream offsets.
+struct StaticUniformBoundary {
+    key: u64,
+    binding: RowPlacementBinding,
+    membership: UniformBoundaryMembership,
+    sample_read: StateRead,
+    mounted_source: usize,
+    scene: Range<usize>,
+    dispatch: Range<usize>,
+    prepaint_base: PrepaintStateIndex,
+    paint_base: PaintIndex,
+    retired_claims: Vec<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
+}
+
+struct BoundaryRowUpdate {
+    key: RowKey,
+    origin: Point<Pixels>,
+    prepaint: Range<PrepaintStateIndex>,
+    paint: Range<PaintIndex>,
+    fresh_claims: Option<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
+}
+
+struct BoundaryRowAdoption {
+    key: u64,
+    binding: RowPlacementBinding,
+    updates: Vec<BoundaryRowUpdate>,
+    retired_keys: Vec<RowKey>,
+    retired: Vec<RowRecord>,
+}
+
+impl BoundaryRowAdoption {
+    /// Move only entered/retired row owners; kept records remain in the
+    /// existing map. Their content and dependency allocation stay intact.
+    fn adopt(mut self, old: &mut ScrollRows, replacement: &mut ScrollRows, now: u64) -> Vec<RowRecord> {
+        let routing = old.notification_routing.get_mut();
+        for key in self.retired_keys {
+            let row = old.rows.remove(&key).expect("validated retired row");
+            if routing.cursor.is_some() {
+                routing.update(key, Some(&row.prepaint.reads), None);
+                routing.dirty.remove(&key);
+                routing.state_dirty.remove(&key);
+            }
+            self.retired.push(row);
+        }
+        for update in self.updates {
+            let key = update.key;
+            let row = if let Some(claims) = update.fresh_claims {
+                let mut row = replacement.rows.remove(&key).expect("validated entering row");
+                row.prepaint.layout_claims = Some(claims);
+                if routing.cursor.is_some() {
+                    routing.update(key, None, Some(&row.prepaint.reads));
+                }
+                old.rows.insert(key, row);
+                old.rows.get_mut(&key).expect("inserted row")
+            } else {
+                old.rows.get_mut(&key).expect("validated kept row")
+            };
+            row.prepaint.origin = update.origin;
+            row.prepaint.records = update.prepaint;
+            row.paint = update.paint;
+        }
+        let oldest = RowNotificationRouting::oldest_epoch(&old.rows, now);
+        if routing.cursor.is_some() {
+            routing.reset_cursor(oldest);
+        }
+        old.oldest_notification_epoch = Some(oldest);
+        old.membership.runs.clear();
+        old.membership.runs.push(RowRun {
+            list: self.key, start: self.binding.captured.start, end: self.binding.captured.end,
+        });
+        old.changed_rows.clear();
+        old.row_placements.insert(self.key, self.binding);
+        self.retired
+    }
+}
+
+impl RowRecord {
+    /// Return the unchanged side-stream checkpoints for the initial
+    /// detached domain. Paint and prepaint text checkpoints are separate.
+    fn static_boundary_checkpoints(&self) -> Option<(PrepaintStateIndex, PaintIndex)> {
+        let mut prepaint = self.prepaint.records.clone();
+        prepaint.start.dispatch_tree_index = 0;
+        prepaint.end.dispatch_tree_index = 0;
+        let mut paint = self.paint.clone();
+        paint.start.scene_index = 0;
+        paint.end.scene_index = 0;
+        if prepaint.start != prepaint.end || paint.start != paint.end
+            || !self.prepaint.fixed_input_clip
+            || self.prepaint.layout_claims.is_none()
+            || self.paint.start.scene_index.checked_add(1)? != self.paint.end.scene_index
+            || self.prepaint.records.start.dispatch_tree_index >= self.prepaint.records.end.dispatch_tree_index
+        {
+            return None;
+        }
+        Some((prepaint.start, paint.start))
+    }
+
+    fn dispatch_span(&self) -> Range<usize> {
+        self.prepaint.records.start.dispatch_tree_index..self.prepaint.records.end.dispatch_tree_index
+    }
+
+    fn dependency_free(&self) -> bool {
+        let reads = &self.prepaint.reads;
+        reads.entities.is_empty() && reads.globals.is_empty() && reads.states.is_empty()
+    }
+}
+
+impl Window {
+    /// This runs only after the common position-transaction admission.
+    /// Do not execute any application callback until native ownership of
+    /// the old domain and all retired rows has been certified.
+    fn prepare_static_uniform_boundary(
+        &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+    ) -> Option<StaticUniformBoundary> {
+        let frame = &self.rendered_frame;
+        let rows = &frame.scroll_rows;
+        if rows.row_placements.len() != 1 || !self.scroll_hover_deadline_active(cx) {
+            return None;
+        }
+        let (&key, binding) = rows.row_placements.iter().next()?;
+        let builder = binding.builder.as_ref()?;
+        if binding.owner != owner || binding.revision != epoch.content
+            || binding.row_revision.is_none() || builder.paint_context.is_none()
+            || !matches!(&binding.source, RowPlacementSource::Uniform { measurement: None, .. })
+            || rows.rows.len() != binding.captured.len()
+            || rows.membership.runs.as_slice() != [RowRun {
+                list: key, start: binding.captured.start, end: binding.captured.end,
+            }]
+        {
+            return None;
+        }
+        let membership = binding.boundary_membership()?;
+        let sample_read = StateRead::new(&membership.version);
+        let mut changed = frame.mounted_scroll_sources.iter().enumerate()
+            .filter(|(_, source)| !source.unchanged());
+        let (mounted_source, source) = changed.next()?;
+        if changed.next().is_some() || !source.changed_for(owner, &membership.version) {
+            return None;
+        }
+        let first = rows.rows.get(&(key, binding.captured.start))?;
+        let (prepaint_base, paint_base) = first.static_boundary_checkpoints()?;
+        let scene_start = first.paint.start.scene_index;
+        let dispatch_start = first.dispatch_span().start;
+        if builder.dispatch_parent.0 >= dispatch_start { return None; }
+        let scale = self.scale_factor();
+        let viewport = builder.context.inherited.visual_content_mask;
+        let mut dispatch_end = dispatch_start;
+        let mut retired_claims = Vec::new();
+        for (index, row) in binding.captured.clone().enumerate() {
+            let record = rows.rows.get(&(key, row))?;
+            let marker = scene_start.checked_add(index)?;
+            let span = record.dispatch_span();
+            if record.static_boundary_checkpoints()? != (prepaint_base.clone(), paint_base.clone())
+                || !Rc::ptr_eq(&record.context, &builder.context) && *record.context != *builder.context
+                || record.revision != epoch.content
+                || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
+                || record.prepaint.origin != binding.origin(row, binding.sampled, record.prepaint.origin)
+                || !record.dependency_free()
+                || record.paint.start.scene_index != marker
+                || span.start != dispatch_end
+                || !frame.dispatch_tree.inert_row_range(span.clone())
+            {
+                return None;
+            }
+            let Some(crate::scene::PaintOperationRef::DeferredScroll(old)) = frame.scene().paint_operations.view(marker)
+            else { return None; };
+            let delta = record.content.translation(record.prepaint.origin, scale)?;
+            let expected = ScrollPaintTarget::BufferedRow { visible: binding.visible.contains(&row) }
+                .placement(&record.content, viewport, scale, delta)?;
+            if !old.same_paint(&expected) { return None; }
+            dispatch_end = span.end;
+            if !membership.captured.contains(&row) {
+                retired_claims.push(record.prepaint.layout_claims.as_ref()?.clone());
+            }
+        }
+        Some(StaticUniformBoundary {
+            key, binding: binding.clone(), membership, sample_read, mounted_source,
+            scene: scene_start..scene_start.checked_add(binding.captured.len())?,
+            dispatch: dispatch_start..dispatch_end, prepaint_base, paint_base, retired_claims,
+        })
+    }
+}
+
 struct RowMeasurement {
     owner: crate::EntityId,
     index: usize,
