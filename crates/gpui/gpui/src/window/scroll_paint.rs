@@ -2,7 +2,7 @@
 
 use crate::{
     App, Bounds, ContentMask, Pixels, Point, ScaledPixels, Window, point,
-    scene::{Operations, PaintOperationRef, Painter, Primitive, PrimitiveRef},
+    scene::{CapturedViewRange, Operations, PaintOperationRef, Painter, Primitive, PrimitiveRef},
 };
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub(in crate::window) struct ScrollPaint {
     pub(super) origin: Point<Pixels>,
     coverage: Bounds<ScaledPixels>,
     operations: Arc<Operations>,
+    captured_views: Box<[CapturedViewRange]>,
     replayable: bool,
     static_order: bool,
     scoped_order: bool,
@@ -118,9 +119,10 @@ impl Window {
         self.scroll_hover.painting = false;
         self.visual_content_mask_stack.pop();
         self.content_mask_stack.pop();
-        let operations = self.next_frame.painter.end_scroll_capture();
+        let (operations, views) = self.next_frame.painter.end_scroll_capture();
         let scale = self.scale_factor();
         let mut content = ScrollPaint::new(origin, capture.scale(scale).bounds, operations);
+        content.captured_views = views.into_boxed_slice();
         if let Some(previous) = previous {
             content.inherit_native_identity(previous, scale);
         }
@@ -199,6 +201,7 @@ impl ScrollPaint {
             origin,
             coverage,
             operations: Arc::new(operations),
+            captured_views: Box::default(),
             replayable,
             static_order,
             scoped_order,
@@ -211,6 +214,24 @@ impl ScrollPaint {
             has_paths,
             block_bounds,
         }
+    }
+
+    /// Query a captured View's local operation range and bounds without
+    /// translating it into the root Scene's placement marker coordinates.
+    /// Empty views retain their identity even when they emit no operations.
+    #[allow(dead_code)]
+    pub(super) fn captured_view_bounds(
+        &self,
+        owner: crate::EntityId,
+    ) -> impl Iterator<Item = (std::ops::Range<usize>, Option<Bounds<ScaledPixels>>)> + '_ {
+        self.captured_views.iter().filter(move |view| view.owner == owner).map(|view| {
+            let range = view.operations.clone();
+            let bounds = self.operations.get_range(range.clone())
+                .and_then(|operations| operations.views()
+                    .filter_map(|operation| operation.visual_bounds())
+                    .reduce(|bounds, next| bounds.union(&next)));
+            (range, bounds)
+        })
     }
 
     /// Keep the original content-space anchor across integral recaptures.
@@ -633,6 +654,30 @@ mod tests {
     use super::*;
     use crate::scene::PaintOperation;
     use crate::{Quad, px, size};
+
+    #[test]
+    fn captured_view_ranges_are_independent_of_root_scene_indices() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(40.), px(40.))).scale(1.);
+        let mut painter = Painter::default();
+        let quad = || Quad { bounds, content_mask: ContentMask::new(bounds), ..Default::default() };
+        painter.insert_primitive(quad());
+        painter.begin_scroll_capture();
+        let outer = painter.scroll_capture_index().unwrap();
+        painter.insert_primitive(quad());
+        let inner = painter.scroll_capture_index().unwrap();
+        painter.insert_primitive(quad());
+        painter.record_scroll_view(crate::EntityId::from(2_u64), inner);
+        painter.record_scroll_view(crate::EntityId::from(1_u64), outer);
+        assert_eq!(painter.len(), 1);
+        let (operations, views) = painter.end_scroll_capture();
+        assert!(painter.scroll_capture_index().is_none());
+        let mut source = ScrollPaint::new(Point::default(), bounds, operations);
+        source.captured_views = views.into_boxed_slice();
+        assert_eq!(source.captured_view_bounds(crate::EntityId::from(2_u64)).collect::<Vec<_>>(),
+            vec![(1..2, Some(bounds))]);
+        assert_eq!(source.captured_view_bounds(crate::EntityId::from(1_u64)).collect::<Vec<_>>(),
+            vec![(0..2, Some(bounds))]);
+    }
 
     #[test]
     fn retained_path_row_moves_vertices_and_keeps_fixed_viewport() {

@@ -902,6 +902,12 @@ impl Window {
         mut record: RetainedViewRecord,
         reused: Option<&RetainedViewRecord>,
     ) {
+        // Root PaintIndex cannot describe a capture-local operation span.
+        // Leave a reservation hole rather than publish a false root replay
+        // proof. Structural nested capture adoption remains gated.
+        if self.next_frame.painter.scroll_capture_index().is_some() {
+            return;
+        }
         self.layout_engine.as_ref().expect("layout engine installed")
             .resolve_claim_blocks_in_place(&mut record.layout_claims);
         record.layout_claims.normalize();

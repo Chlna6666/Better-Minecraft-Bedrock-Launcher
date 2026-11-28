@@ -24,7 +24,7 @@ pub(crate) use batch::*;
 pub(crate) use bounds_tree::BoundsTree;
 pub(crate) use display_list::*;
 pub(crate) use operations::{OperationRange, OperationRun, Operations};
-pub(crate) use painter::Painter;
+pub(crate) use painter::{CapturedViewRange, Painter};
 pub(crate) use prepared::*;
 pub(crate) use primitive::*;
 pub(crate) use primitive_stream::{PayloadIdentity, PrimitiveStream, QuadReplay};

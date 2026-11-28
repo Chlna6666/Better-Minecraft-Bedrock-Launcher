@@ -1,4 +1,4 @@
-use crate::{Bounds, ScaledPixels};
+use crate::{Bounds, EntityId, ScaledPixels};
 use collections::FxHashSet;
 
 use super::BoundsTree;
@@ -27,7 +27,7 @@ pub(crate) struct Painter {
     recent_peak_paint_operations: usize,
     recent_peak_primitives: usize,
     blur_captures: Vec<BlurCaptureState>,
-    scroll_capture: Option<Operations>,
+    scroll_capture: Option<ScrollCaptureRecords>,
     // Window Frame construction exposes logical operations immediately,
     // but only exposes sorted draw payload at finish. Standalone painters
     // preserve the older immediate draw-read contract.
@@ -36,6 +36,19 @@ pub(crate) struct Painter {
     draw_permutation: super::primitive_stream::DrawPermutation,
     draw_scratch_low_frames: u16,
 }
+#[derive(Default)]
+struct ScrollCaptureRecords {
+    operations: Operations,
+    views: Vec<CapturedViewRange>,
+}
+
+/// Operation coordinates belong exclusively to the frozen scroll source,
+/// never to the root Scene containing its placement marker.
+pub(crate) struct CapturedViewRange {
+    pub(crate) owner: EntityId,
+    pub(crate) operations: Range<usize>,
+}
+
 struct BlurCaptureState {
     config: BlurCapture,
     operation_start: usize,
@@ -83,11 +96,23 @@ impl Painter {
 
     pub(crate) fn begin_scroll_capture(&mut self) {
         debug_assert!(self.scroll_capture.is_none() && self.blur_captures.is_empty());
-        self.scroll_capture = Some(Operations::default());
+        self.scroll_capture = Some(ScrollCaptureRecords::default());
     }
 
-    pub(crate) fn end_scroll_capture(&mut self) -> Operations {
-        self.scroll_capture.take().expect("open scroll paint capture")
+    pub(crate) fn end_scroll_capture(&mut self) -> (Operations, Vec<CapturedViewRange>) {
+        let capture = self.scroll_capture.take().expect("open scroll paint capture");
+        (capture.operations, capture.views)
+    }
+
+    pub(crate) fn scroll_capture_index(&self) -> Option<usize> {
+        self.scroll_capture.as_ref().map(|capture| capture.operations.len())
+    }
+
+    pub(crate) fn record_scroll_view(&mut self, owner: EntityId, start: usize) {
+        let capture = self.scroll_capture.as_mut().expect("active scroll capture");
+        let end = capture.operations.len();
+        debug_assert!(start <= end);
+        capture.views.push(CapturedViewRange { owner, operations: start..end });
     }
 
     /// An image can be evicted while its element is still being captured.
@@ -106,7 +131,7 @@ impl Painter {
         live: &mut FxHashSet<(crate::AtlasTextureId, u32)>,
     ) {
         if let Some(capture) = &self.scroll_capture {
-            for operation in capture.views() {
+            for operation in capture.operations.views() {
                 if let PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(sprite)) = operation {
                     live.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
@@ -183,7 +208,7 @@ impl Painter {
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         if let Some(capture) = &mut self.scroll_capture {
-            capture.push(PaintOperation::StartLayer(bounds));
+            capture.operations.push(PaintOperation::StartLayer(bounds));
             return;
         }
         self.scene.revision = 0;
@@ -207,7 +232,7 @@ impl Painter {
 
     pub fn pop_layer(&mut self) {
         if let Some(capture) = &mut self.scroll_capture {
-            capture.push(PaintOperation::EndLayer);
+            capture.operations.push(PaintOperation::EndLayer);
             return;
         }
         self.scene.revision = 0;
@@ -227,7 +252,7 @@ impl Painter {
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let primitive = primitive.into();
         if let Some(capture) = &mut self.scroll_capture {
-            capture.push(PaintOperation::Primitive(primitive));
+            capture.operations.push(PaintOperation::Primitive(primitive));
             return;
         }
         self.scene.revision = 0;

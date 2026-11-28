@@ -613,6 +613,17 @@ impl Window {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.rendered_entity_stack.push(id);
+        // A captured child is not a root Scene fragment. Record its
+        // source-local range and leave the enclosing root bounds scope
+        // untouched until the actual placement is emitted.
+        if self.invalidator.phase() == DrawPhase::Paint
+            && let Some(start) = self.next_frame.painter.scroll_capture_index()
+        {
+            let result = f(self);
+            self.next_frame.painter.record_scroll_view(id, start);
+            self.rendered_entity_stack.pop();
+            return result;
+        }
         let scene_start = (self.invalidator.phase() == DrawPhase::Paint)
             .then(|| self.next_frame.painter.len());
         if let Some(scene_start) = scene_start {
@@ -664,6 +675,9 @@ impl Window {
         range: Range<usize>,
         bounds: Option<Bounds<ScaledPixels>>,
     ) {
+        if self.next_frame.painter.scroll_capture_index().is_some() {
+            return;
+        }
         let Some(scanned_until) = self.view_bounds_stack.last().map(|frame| frame.scanned_until)
         else {
             return;

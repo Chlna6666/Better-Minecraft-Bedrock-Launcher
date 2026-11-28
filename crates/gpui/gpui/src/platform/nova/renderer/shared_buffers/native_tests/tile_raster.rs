@@ -63,7 +63,8 @@ fn verify(backend: RendererBackend) {
         crate::point(crate::px(0.), crate::px(0.)),
         crate::size(crate::px(64.), crate::px(64.)),
     ));
-    paint.layers.raster_fixture(capture.end_scroll_capture(), coverage, viewport, [0, -128]);
+    let (operations, _) = capture.end_scroll_capture();
+    paint.layers.raster_fixture(operations, coverage, viewport, [0, -128]);
     let layer = &paint.layers.frames[0];
     let (operations, origin) = layer.raster_source_for_tile([16, 152, 32, 168])
         .expect("published content-space tile source");
