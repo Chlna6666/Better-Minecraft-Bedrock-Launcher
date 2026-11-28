@@ -61,6 +61,33 @@ struct UniformRowBuilder {
 }
 
 impl UniformRowBuilder {
+    /// The independent path deliberately uses the same materialization
+    /// implementation as the ordinary UniformList. The caller must hold
+    /// the native speculative claim transaction and remap the parent first.
+    #[allow(dead_code)]
+    fn materialize(
+        &self, window: &mut Window, parent: crate::DispatchNodeId,
+        row: usize, visible: &Range<usize>, origin: Point<Pixels>,
+        plan: &mut RowPlan, cx: &mut App,
+    ) -> Option<AnyElement> {
+        if row >= self.context.item_count || plan.key != self.layout_parent
+            || !plan.matches_context(&self.context)
+        {
+            return None;
+        }
+        self.with_prepaint_scope(window, parent, |window| {
+            let read_start = cx.entities.dependency_read_index();
+            let item = (self.renderer)(row, window, cx);
+            let reads = cx.entities.row_reads_since(read_start);
+            window.with_content_mask(Some(self.row_mask), |window| {
+                window.materialize_uniform_row(
+                    item, row, visible, origin, self.context.available_space,
+                    &reads, plan, cx,
+                )
+            })
+        }).flatten()
+    }
+
     /// Restore only native scopes, not an Element or a second layout tree.
     /// The caller owns a live speculative prepaint transaction and has
     /// already relocated the dispatch parent into that transaction.
@@ -83,7 +110,7 @@ impl UniformRowBuilder {
         // and effective values are sufficient; no copied ancestor Elements.
         use std::mem;
         let application = mem::replace(&mut window.element_id_stack,
-            crate::ElementIdStack::from_prefix(self.application_prefix.clone()));
+            crate::element::ElementIdStack::from_prefix(self.application_prefix.clone()));
         let owners = mem::replace(&mut window.rendered_entity_stack, self.owner_path.clone());
         let text = mem::replace(&mut window.text_style_stack,
             crate::fast::text_style::TextStyleStack::with_inherited(&context.text_style));
@@ -1308,6 +1335,43 @@ impl Window {
             }
             self.next_frame.scroll_rows.row_placements.insert(plan.key, binding);
         }
+    }
+
+    /// Shared native row build/measure/prepaint path. The caller supplies
+    /// the original list scope and row-specific clip. No frame-local
+    /// Element is retained across a publication.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn materialize_uniform_row(
+        &mut self, mut item: AnyElement, row: usize, visible: &Range<usize>,
+        origin: Point<Pixels>, available_space: Size<AvailableSpace>,
+        build_reads: &RenderDependencies, plan: &mut RowPlan, cx: &mut App,
+    ) -> Option<AnyElement> {
+        let capture = plan.can_capture(&mut item);
+        if !capture && !visible.contains(&row) {
+            return None;
+        }
+        let before = capture.then(|| (
+            self.prepaint_index(), cx.entities.dependency_read_index(),
+            self.next_frame.input_clip_epoch,
+        ));
+        self.with_list_item_layout_key(row, |window| {
+            item.layout_as_root(available_space, window, cx);
+            item.prepaint_at(origin, window, cx);
+        });
+        if let Some((start, read_start, clip_epoch)) = before {
+            let extra = cx.entities.row_reads_since(read_start);
+            let mut reads = build_reads.clone();
+            reads.merge_replayed(&extra);
+            plan.record_prepaint(row, RowPrepaint {
+                row_revision: plan.row_revision(row),
+                fixed_input_clip: clip_epoch == self.next_frame.input_clip_epoch,
+                origin,
+                records: start..self.prepaint_index(),
+                reads,
+                validation: Default::default(),
+            });
+        }
+        Some(item)
     }
 
     /// Stable-membership measured lists use the same atomic publication
