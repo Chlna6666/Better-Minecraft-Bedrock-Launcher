@@ -1652,6 +1652,43 @@ mod tests {
     }
 
     #[test]
+    fn boundary_text_count_delta_adopts_duplicate_replacement_ids() {
+        use crate::window::RecordSplicePlan;
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = |text: &'static str| Arc::new(CacheKey {
+            text: SharedString::from(text), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        let a = key("old");
+        let b = key("new");
+        store.insert(a.clone(), Arc::new(LineLayout::default()), 1);
+        store.lookup_recorded(a.as_ref(), 1, true).unwrap();
+        let old_id = store.keys[&a];
+        store.finish(1, |_, _| {});
+        store.insert(b.clone(), Arc::new(LineLayout::default()), 2);
+        let new_id = store.keys[&b];
+        let plan = RecordSplicePlan::new(2, 1, &[(0..1, 0..1), (2..2, 0..1)]).unwrap();
+        let prepared = store.prepare_boundary_accesses(&plan).unwrap();
+        assert_eq!(store.previous, vec![old_id, old_id]);
+        store.commit_boundary_accesses(prepared);
+        assert_eq!(store.previous, vec![new_id, old_id, new_id]);
+        let counts = store.boundary_counts.as_ref().unwrap();
+        assert_eq!(counts[&old_id], 1);
+        assert_eq!(counts[&new_id], 2);
+        assert_eq!(store.slots[old_id].as_ref().unwrap().last_used, 1);
+        assert_eq!(store.used_count, 0);
+        let plan = RecordSplicePlan::new(3, 0, &[(1..2, 0..0)]).unwrap();
+        let prepared = store.prepare_boundary_accesses(&plan).unwrap();
+        store.commit_boundary_accesses(prepared);
+        assert!(!store.boundary_counts.as_ref().unwrap().contains_key(&old_id));
+        assert_eq!(store.boundary_counts.as_ref().unwrap()[&new_id], 2);
+        assert_eq!(store.replay(0..2, 4), 1);
+        store.finish(4, |key, _| assert_eq!(key, &a));
+        assert_eq!(store.previous, vec![new_id, new_id]);
+        assert!(!store.keys.contains_key(&a));
+    }
+
+    #[test]
     fn boundary_text_counts_update_only_changed_slots_and_survive_cancel() {
         use crate::window::RecordSplicePlan;
         let generation = Arc::new(AtomicU64::new(0));
