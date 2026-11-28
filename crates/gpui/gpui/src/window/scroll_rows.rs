@@ -52,6 +52,64 @@ struct UniformRowBuilder {
     context: Rc<ListContext>,
     layout_parent: u64,
     dispatch_parent: crate::DispatchNodeId,
+    // The factory runs before the list's row-specific mask is pushed.
+    // Preserve that scope separately from the clipped row context.
+    application_prefix: GlobalElementId,
+    owner_path: Vec<crate::EntityId>,
+    factory_context: RetainedPaintContext,
+    row_mask: crate::ContentMask<Pixels>,
+}
+
+impl UniformRowBuilder {
+    /// Restore only native scopes, not an Element or a second layout tree.
+    /// The caller owns a live speculative prepaint transaction and has
+    /// already relocated the dispatch parent into that transaction.
+    /// In particular this must not run against the committed Frame.
+    #[allow(dead_code)]
+    fn with_prepaint_scope<R>(
+        &self, window: &mut Window, parent: crate::DispatchNodeId,
+        f: impl FnOnce(&mut Window) -> R,
+    ) -> Option<R> {
+        let context = &self.factory_context;
+        if window.invalidator.phase() != super::DrawPhase::Prepaint
+            || window.next_frame.dispatch_tree.active_node_id() != Some(parent)
+            || window.scale_factor() != context.device_scale_factor
+            || self.owner_path.last().copied() != Some(self.context.owner)
+            || window.scene_animation.is_some()
+        {
+            return None;
+        }
+        // Move the enclosing stacks aside. The captured immutable path
+        // and effective values are sufficient; no copied ancestor Elements.
+        use std::mem;
+        let application = mem::replace(&mut window.element_id_stack,
+            crate::ElementIdStack::from_prefix(self.application_prefix.clone()));
+        let owners = mem::replace(&mut window.rendered_entity_stack, self.owner_path.clone());
+        let text = mem::replace(&mut window.text_style_stack,
+            crate::fast::text_style::TextStyleStack::with_inherited(&context.text_style));
+        let logical = mem::replace(&mut window.content_mask_stack, vec![context.content_mask]);
+        let visual = mem::replace(&mut window.visual_content_mask_stack, vec![context.visual_content_mask]);
+        let offsets = mem::replace(&mut window.element_offset_stack, vec![context.element_offset]);
+        let opacity = mem::replace(&mut window.element_opacity, context.opacity);
+        let transform = mem::replace(&mut window.element_visual_transform,
+            super::state::ElementVisualTransform { scale: context.scale, translation: context.translation });
+        let raster = mem::replace(&mut window.scene_text_raster_scale, context.text_raster_scale);
+        let enclosing = crate::fast::layout_key::enter_prepaint_scope(window, self.layout_parent);
+        let result = window.with_rem_size(Some(context.rem_size), |window| {
+            window.with_parent_layout_key(Some(self.layout_parent), f)
+        });
+        crate::fast::layout_key::exit_prepaint_scope(window, enclosing);
+        window.scene_text_raster_scale = raster;
+        window.element_visual_transform = transform;
+        window.element_opacity = opacity;
+        window.element_offset_stack = offsets;
+        window.visual_content_mask_stack = visual;
+        window.content_mask_stack = logical;
+        window.text_style_stack = text;
+        window.rendered_entity_stack = owners;
+        window.element_id_stack = application;
+        Some(result)
+    }
 }
 
 /// Fixed CPU record topology is certified once per committed frame.
@@ -1212,6 +1270,7 @@ impl Window {
     /// context gates that admitted buffering constrain future execution.
     pub(crate) fn retain_uniform_row_builder(
         &self, plan: &mut RowPlan, renderer: &UniformRowRenderer,
+        row_mask: crate::ContentMask<Pixels>,
     ) {
         let Some(binding) = plan.row_placement.as_mut() else { return; };
         if !binding.buffered() || !plan.allow_reuse || !plan.placement_only {
@@ -1223,6 +1282,10 @@ impl Window {
         binding.builder = Some(UniformRowBuilder {
             renderer: Rc::clone(renderer), context: Rc::clone(&plan.context),
             layout_parent, dispatch_parent,
+            application_prefix: self.element_id_stack.global_id(),
+            owner_path: self.rendered_entity_stack.clone(),
+            factory_context: self.current_retained_paint_context(),
+            row_mask,
         });
     }
 
