@@ -315,6 +315,42 @@ impl RecordSplicePlan {
         Some(start..start.checked_add(range.len())?)
     }
 
+    /// Empty spans can be relocated only at unambiguous boundaries.
+    /// A nonempty insertion at this checkpoint needs explicit before/after
+    /// ownership, and a checkpoint inside retired records is invalid.
+    fn retained_span(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if !range.is_empty() || range.start > range.end {
+            return self.retained_range(range);
+        }
+        let index = range.start;
+        if index > self.old_len { return None; }
+        let first = self.edits.partition_point(|edit| edit.old.end < index);
+        let mut mapped = None;
+        for edit in self.edits[first..].iter().take_while(|edit| edit.old.start <= index) {
+            if edit.old.is_empty() { return None; }
+            let target = if index == edit.old.start {
+                edit.target.start
+            } else if index == edit.old.end {
+                edit.target.end
+            } else {
+                return None;
+            };
+            if mapped.is_some_and(|previous| previous != target) { return None; }
+            mapped = Some(target);
+        }
+        let index = match mapped {
+            Some(target) => target,
+            None => {
+                let (old_base, target_base) = first.checked_sub(1).map_or((0, 0), |i| {
+                    let edit = &self.edits[i];
+                    (edit.old.end, edit.target.end)
+                });
+                target_base.checked_add(index.checked_sub(old_base)?)?
+            }
+        };
+        Some(index..index)
+    }
+
     pub(crate) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
         let mut cursor = 0;
         for edit in &self.edits {
@@ -350,6 +386,47 @@ impl Window {
             frame.hitboxes.account_storage(&mut accounting);
         }
         accounting.finish()
+    }
+}
+
+/// Index projection for the four currently supported boundary streams.
+/// Callers must separately certify that the other record streams, including
+/// text layout logs, have not changed before adopting these mapped ranges.
+#[allow(dead_code)]
+pub(super) struct BoundaryIndexSplices<'a> {
+    pub(super) scene: &'a RecordSplicePlan,
+    pub(super) hitboxes: &'a RecordSplicePlan,
+    pub(super) states: &'a RecordSplicePlan,
+    pub(super) dispatch: &'a RecordSplicePlan,
+}
+
+#[allow(dead_code)]
+impl BoundaryIndexSplices<'_> {
+    pub(super) fn retained_prepaint(
+        &self, source: &Range<PrepaintStateIndex>,
+    ) -> Option<Range<PrepaintStateIndex>> {
+        let mut result = source.clone();
+        let hitboxes = self.hitboxes.retained_span(source.start.hitboxes_index..source.end.hitboxes_index)?;
+        let dispatch = self.dispatch.retained_span(source.start.dispatch_tree_index..source.end.dispatch_tree_index)?;
+        let states = self.states.retained_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        result.start.hitboxes_index = hitboxes.start;
+        result.end.hitboxes_index = hitboxes.end;
+        result.start.dispatch_tree_index = dispatch.start;
+        result.end.dispatch_tree_index = dispatch.end;
+        result.start.accessed_element_states_index = states.start;
+        result.end.accessed_element_states_index = states.end;
+        Some(result)
+    }
+
+    pub(super) fn retained_paint(&self, source: &Range<PaintIndex>) -> Option<Range<PaintIndex>> {
+        let mut result = source.clone();
+        let scene = self.scene.retained_span(source.start.scene_index..source.end.scene_index)?;
+        let states = self.states.retained_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index)?;
+        result.start.scene_index = scene.start;
+        result.end.scene_index = scene.end;
+        result.start.accessed_element_states_index = states.start;
+        result.end.accessed_element_states_index = states.end;
+        Some(result)
     }
 }
 
@@ -1087,7 +1164,11 @@ mod publication_tests {
         replacement.dispatch_tree.pop_node();
         replacement.dispatch_tree.freeze();
 
-        old.painter.insert_primitive(Quad::default());
+        let bounds = Bounds::new(point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(16.), ScaledPixels(16.)));
+        old.painter.insert_primitive(Quad {
+            bounds, content_mask: ContentMask::new(bounds), ..Default::default()
+        });
         old.painter.finish();
         replacement.painter.finish();
         let empty = RecordSplicePlan::new(0, 0, &[]).unwrap();
@@ -1124,6 +1205,39 @@ mod publication_tests {
             &replacement, &[], &empty, &empty, &plan, root,
         ).is_none());
         assert!(old.dispatch_tree.has_view_route(owner));
+    }
+
+    #[test]
+    fn boundary_indices_relocate_each_stream_without_guessing_empty_ownership() {
+        let scene = RecordSplicePlan::new(10, 2, &[(2..3, 0..2)]).unwrap();
+        let hitboxes = RecordSplicePlan::new(10, 0, &[(2..4, 0..0)]).unwrap();
+        let states = RecordSplicePlan::new(10, 3, &[(1..1, 0..3)]).unwrap();
+        let dispatch = RecordSplicePlan::new(10, 1, &[(2..5, 0..1)]).unwrap();
+        let maps = BoundaryIndexSplices {
+            scene: &scene, hitboxes: &hitboxes, states: &states, dispatch: &dispatch,
+        };
+        let pre = PrepaintStateIndex {
+            hitboxes_index: 5, dispatch_tree_index: 6, accessed_element_states_index: 7,
+            tooltips_index: 2, ..Default::default()
+        }..PrepaintStateIndex {
+            hitboxes_index: 7, dispatch_tree_index: 8, accessed_element_states_index: 9,
+            tooltips_index: 3, ..Default::default()
+        };
+        let moved = maps.retained_prepaint(&pre).unwrap();
+        assert_eq!(moved.start.hitboxes_index..moved.end.hitboxes_index, 3..5);
+        assert_eq!(moved.start.dispatch_tree_index..moved.end.dispatch_tree_index, 4..6);
+        assert_eq!(moved.start.accessed_element_states_index..moved.end.accessed_element_states_index, 10..12);
+        assert_eq!(moved.start.tooltips_index..moved.end.tooltips_index, 2..3);
+        let paint = PaintIndex { scene_index: 4, accessed_element_states_index: 5, ..Default::default() }
+            ..PaintIndex { scene_index: 8, accessed_element_states_index: 9, ..Default::default() };
+        let moved = maps.retained_paint(&paint).unwrap();
+        assert_eq!(moved.start.scene_index..moved.end.scene_index, 5..9);
+        assert_eq!(moved.start.accessed_element_states_index..moved.end.accessed_element_states_index, 8..12);
+        assert_eq!(states.retained_span(1..1), None);
+        assert_eq!(hitboxes.retained_span(3..3), None);
+        assert_eq!(hitboxes.retained_span(4..4), Some(2..2));
+        assert_eq!(scene.retained_span(2..2), Some(2..2));
+        assert_eq!(scene.retained_span(3..3), Some(4..4));
     }
 
     #[test]
