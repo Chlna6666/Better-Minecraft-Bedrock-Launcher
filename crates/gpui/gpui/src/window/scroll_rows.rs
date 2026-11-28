@@ -1631,7 +1631,7 @@ impl Window {
         };
         let mut candidate = old.prepare_boundary_records_under(
             fresh, &scene_edits, &hitboxes, &states, &dispatch, builder.dispatch_parent,
-            Some(anchor), &mouse, &ime, opaque,
+            Some(anchor), &mouse, &ime, opaque, Some((key, boundary.hitboxes.clone())),
         )?;
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
