@@ -653,26 +653,44 @@ impl RowNotificationRouting {
 
     /// The boundary admission certifies that the committed row index covers
     /// the whole single-list domain. Only departing edges need counting.
-    fn boundary_surviving_reads(
+    fn boundary_retirement_reads(
         &self, retired: &FxHashMap<RowDependencyKey, usize>,
-    ) -> Option<RenderDependencies> {
-        let mut entities = Vec::new();
-        let mut globals = Vec::new();
+    ) -> Option<(RenderDependencies, RenderDependencies)> {
+        let mut retired_entities = Vec::new();
+        let mut retired_globals = Vec::new();
+        let mut kept_entities = Vec::new();
+        let mut kept_globals = Vec::new();
         for (&key, &count) in retired {
             let readers = self.edges.get(&key)?.len();
             if count == 0 || count > readers { return None; }
-            if count == readers { continue; }
             match key {
-                RowDependencyKey::Entity(entity) => entities.push(entity),
-                RowDependencyKey::Global(global, exists) => globals.push((global, exists)),
+                RowDependencyKey::Entity(entity) => {
+                    retired_entities.push(entity);
+                    if count < readers { kept_entities.push(entity); }
+                }
+                RowDependencyKey::Global(global, exists) => {
+                    retired_globals.push((global, exists));
+                    if count < readers { kept_globals.push((global, exists)); }
+                }
                 RowDependencyKey::State(_) => return None,
             }
         }
-        entities.sort_unstable();
-        globals.sort_unstable();
-        Some(RenderDependencies {
-            entities: entities.into(), globals: globals.into(), ..Default::default()
-        })
+        // Build each unique dependency snapshot once, rather than merge
+        // progressively larger immutable slices for every departing row.
+        retired_entities.sort_unstable();
+        retired_globals.sort_unstable();
+        kept_entities.sort_unstable();
+        kept_globals.sort_unstable();
+        Some((
+            RenderDependencies {
+                entities: retired_entities.into(), globals: retired_globals.into(),
+                ..Default::default()
+            },
+            RenderDependencies {
+                entities: kept_entities.into(), globals: kept_globals.into(),
+                ..Default::default()
+            },
+        ))
     }
 
     fn mark_state(&mut self, identity: usize) {
@@ -1524,13 +1542,11 @@ impl Window {
             || !self.rendered_frame.dispatch_tree.has_view_route(owner)
             || !self.invalidator.row_dependencies_unchanged(plan.notification_epoch, &reads)
         { return None; }
-        let mut retired_reads = RenderDependencies::default();
         let mut retiring_counts = FxHashMap::default();
         for row in membership.delta.exited.iter().cloned().flatten() {
             let record = old.scroll_rows.rows.get(&(key, row))?;
             let reads = &record.prepaint.reads;
             if !reads.states.is_empty() { return None; }
-            retired_reads.merge_replayed(reads);
             for &entity in reads.entities.iter() {
                 *retiring_counts.entry(RowDependencyKey::Entity(entity)).or_insert(0) += 1;
             }
@@ -1541,14 +1557,14 @@ impl Window {
         // Reuse the existing reverse row index as a reference count. The
         // first retirement may build it; subsequent boundary adoptions
         // already maintain it in place. No surviving row union is needed.
-        let kept_reads = if retiring_counts.is_empty() {
-            RenderDependencies::default()
+        let (retired_reads, kept_reads) = if retiring_counts.is_empty() {
+            (RenderDependencies::default(), RenderDependencies::default())
         } else {
             let mut routing = old.scroll_rows.notification_routing.borrow_mut();
             if routing.cursor.is_none() {
                 routing.build(&old.scroll_rows.rows, self.invalidator.row_notification_epoch());
             }
-            routing.boundary_surviving_reads(&retiring_counts)?
+            routing.boundary_retirement_reads(&retiring_counts)?
         };
         let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
             && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
@@ -3058,7 +3074,9 @@ mod scoped_row_tests {
             (RowDependencyKey::Entity(model), 64),
             (RowDependencyKey::Global(global, Some(true)), 64),
         ]);
-        let surviving = routing.boundary_surviving_reads(&counts).unwrap();
+        let (retired, surviving) = routing.boundary_retirement_reads(&counts).unwrap();
+        assert_eq!(retired.entities.as_ref(), &[model]);
+        assert_eq!(retired.globals.as_ref(), &[(global, Some(true))]);
         assert_eq!(surviving.entities.as_ref(), &[model]);
         assert!(surviving.globals.is_empty());
         // Preparing retirement never mutates the committed index.
@@ -3067,11 +3085,15 @@ mod scoped_row_tests {
         counts.clear();
         counts.insert(RowDependencyKey::Entity(model), 1);
         counts.insert(RowDependencyKey::Global(global, None), 1);
-        let surviving = routing.boundary_surviving_reads(&counts).unwrap();
+        let (retired, surviving) = routing.boundary_retirement_reads(&counts).unwrap();
+        assert_eq!(retired.globals.as_ref(), &[(global, None)]);
         assert!(surviving.entities.is_empty());
         assert!(surviving.globals.is_empty());
         counts.insert(RowDependencyKey::Entity(model), 2);
-        assert!(routing.boundary_surviving_reads(&counts).is_none());
+        assert!(routing.boundary_retirement_reads(&counts).is_none());
+        counts.clear();
+        counts.insert(RowDependencyKey::Entity(other), 0);
+        assert!(routing.boundary_retirement_reads(&counts).is_none());
     }
 
     #[test]
