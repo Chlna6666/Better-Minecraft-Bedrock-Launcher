@@ -516,10 +516,29 @@ pub(super) struct BoundaryIndexSplices<'a> {
     pub(super) mouse: &'a RecordSplicePlan,
     pub(super) ime: &'a RecordSplicePlan,
     pub(super) text: Option<(u64, &'a RecordSplicePlan, &'a RecordSplicePlan)>,
+    pub(super) text_prepaint_edits: Option<(usize, usize)>,
 }
 
 #[allow(dead_code)]
 impl BoundaryIndexSplices<'_> {
+    fn project_text(
+        &self, range: Range<LineLayoutIndex>, enclosing: bool, paint: bool,
+    ) -> Option<Range<LineLayoutIndex>> {
+        let Some((generation, lines, wrapped)) = self.text else { return Some(range); };
+        if let (true, Some((line_split, wrapped_split))) = (enclosing, self.text_prepaint_edits) {
+            let (start_gen, start_line, start_wrapped) = range.start.components();
+            let (end_gen, end_line, end_wrapped) = range.end.components();
+            if start_gen != generation || end_gen != generation { return None; }
+            let l = lines.enclosing_phase_span(start_line..end_line,
+                if paint { line_split..lines.edit_count() } else { 0..line_split })?;
+            let w = wrapped.enclosing_phase_span(start_wrapped..end_wrapped,
+                if paint { wrapped_split..wrapped.edit_count() } else { 0..wrapped_split })?;
+            return Some(LineLayoutIndex::from_components(generation, l.start, w.start)
+                ..LineLayoutIndex::from_components(generation, l.end, w.end));
+        }
+        LineLayoutIndex::project_splice(&range, generation, lines, wrapped, enclosing)
+    }
+
     pub(super) fn retained_prepaint(
         &self, source: &Range<PrepaintStateIndex>,
     ) -> Option<Range<PrepaintStateIndex>> {
@@ -546,14 +565,9 @@ impl BoundaryIndexSplices<'_> {
         result.end.dispatch_tree_index = dispatch.end;
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
-        if let Some((generation, lines, wrapped)) = self.text {
-            let mapped = LineLayoutIndex::project_splice(
-                &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
-                generation, lines, wrapped, enclosing,
-            )?;
-            result.start.line_layout_index = mapped.start;
-            result.end.line_layout_index = mapped.end;
-        }
+        let mapped = self.project_text(source.start.line_layout_index.clone()..source.end.line_layout_index.clone(), enclosing, false)?;
+        result.start.line_layout_index = mapped.start;
+        result.end.line_layout_index = mapped.end;
         Some(result)
     }
 
@@ -584,14 +598,9 @@ impl BoundaryIndexSplices<'_> {
         result.end.input_handlers_index = ime.end;
         result.start.accessed_element_states_index = states.start;
         result.end.accessed_element_states_index = states.end;
-        if let Some((generation, lines, wrapped)) = self.text {
-            let mapped = LineLayoutIndex::project_splice(
-                &(source.start.line_layout_index.clone()..source.end.line_layout_index.clone()),
-                generation, lines, wrapped, enclosing,
-            )?;
-            result.start.line_layout_index = mapped.start;
-            result.end.line_layout_index = mapped.end;
-        }
+        let mapped = self.project_text(source.start.line_layout_index.clone()..source.end.line_layout_index.clone(), enclosing, true)?;
+        result.start.line_layout_index = mapped.start;
+        result.end.line_layout_index = mapped.end;
         Some(result)
     }
 }
@@ -1631,7 +1640,7 @@ mod publication_tests {
         let dispatch = RecordSplicePlan::new(10, 1, &[(2..5, 0..1)]).unwrap();
         let maps = BoundaryIndexSplices {
             scene: &scene, hitboxes: &hitboxes, states: &states, state_prepaint_edits: None, dispatch: &dispatch,
-            mouse: &states, ime: &scene, text: None,
+            mouse: &states, ime: &scene, text: None, text_prepaint_edits: None,
         };
         let pre = PrepaintStateIndex {
             hitboxes_index: 5, dispatch_tree_index: 6, accessed_element_states_index: 7,
