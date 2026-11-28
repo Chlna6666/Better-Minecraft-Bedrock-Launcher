@@ -20,6 +20,13 @@ struct BoundaryStates {
     conflict: bool,
 }
 
+/// Prepared under exclusive Window ownership. No callbacks or fallible
+/// admission may run between preparation and final transfer.
+pub(super) struct PreparedBoundaryStates {
+    retired_keys: Vec<ElementStateKey>,
+    retired: Vec<Box<dyn Any>>,
+}
+
 struct Slot {
     value: Option<Box<dyn Any>>,
     generation: u64,
@@ -82,9 +89,9 @@ impl ElementStates {
     /// before transferring ownership. Retire values into caller-owned
     /// storage so destructors cannot reenter before Frame publication.
     #[allow(dead_code)]
-    pub(super) fn adopt_boundary<'a>(
+    pub(super) fn prepare_boundary<'a>(
         &mut self, accesses: impl Iterator<Item = &'a ElementStateKey>,
-    ) -> Option<Vec<Box<dyn Any>>> {
+    ) -> Option<PreparedBoundaryStates> {
         let boundary = self.boundary.as_ref()?;
         if boundary.conflict { return None; }
         let mut live = FxHashSet::default();
@@ -104,10 +111,16 @@ impl ElementStates {
         self.slots.try_reserve(fresh_count).ok()?;
         let mut retired = Vec::new();
         retired.try_reserve_exact(retired_keys.len()).ok()?;
+        Some(PreparedBoundaryStates { retired_keys, retired })
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn commit_boundary(&mut self, mut prepared: PreparedBoundaryStates) -> Vec<Box<dyn Any>> {
         let boundary = self.boundary.take().expect("validated boundary");
-        for key in retired_keys {
+        debug_assert!(!boundary.conflict);
+        for key in prepared.retired_keys {
             if let Some(slot) = self.slots.remove(&key) {
-                retired.extend(slot.value);
+                prepared.retired.extend(slot.value);
             }
         }
         for (key, value) in boundary.fresh {
@@ -116,7 +129,13 @@ impl ElementStates {
         // A boundary does not advance the ordinary state generation.
         // All surviving slots are owned by the validated access log.
         self.accessed = self.slots.len();
-        Some(retired)
+        prepared.retired
+    }
+
+    #[cfg(test)]
+    fn adopt_boundary<'a>(&mut self, accesses: impl Iterator<Item = &'a ElementStateKey>) -> Option<Vec<Box<dyn Any>>> {
+        let prepared = self.prepare_boundary(accesses)?;
+        Some(self.commit_boundary(prepared))
     }
 
     /// Retained views and scroll rows keep their states live by replaying access ranges.
