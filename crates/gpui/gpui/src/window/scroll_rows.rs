@@ -1498,6 +1498,7 @@ impl Window {
             scratch.push((binding, builder, anchor, plan, items));
         }
         let prepaint_end = self.prepaint_index();
+        let prepaint_claim_end = self.claim_log_len();
         self.invalidator.set_phase(super::DrawPhase::Paint);
         for ((binding, builder, anchor, plan, items), reads) in scratch.iter_mut().zip(&mut domain_reads) {
             cx.entities.set_render_dependency_owner(Some(binding.owner));
@@ -1514,6 +1515,7 @@ impl Window {
         }
         cx.entities.set_render_dependency_owner(None);
         self.invalidator.set_phase(super::DrawPhase::None);
+        if self.claim_log_len() != prepaint_claim_end { return None; }
 
         // Only admit reads accounted for by the entering row records.
         // Preserve other committed owners and conservatively add the new
@@ -1564,7 +1566,10 @@ impl Window {
         let (prepaint_generation, prepaint_lines, prepaint_wrapped) = prepaint_end.line_layout_index.components();
         if prepaint_generation != generation { return None; }
         let mut text_cursors = [[0, 0], [prepaint_lines, prepaint_wrapped]];
-        for ((boundary, (binding, builder, anchor, _, _)), actual_reads) in boundaries.iter().zip(&scratch).zip(&domain_reads) {
+        for (((boundary, (binding, builder, anchor, _, _)), actual_reads), claims) in
+            boundaries.iter().zip(&scratch).zip(&domain_reads).zip(&entered_claim_domains)
+        {
+            let mut claim_cursor = claims.start;
             let mut scoped_reads = RenderDependencies::default();
             if !actual_reads.states.is_empty() { return None; }
             if anchor.0 != fresh_dispatch_end { return None; }
@@ -1573,6 +1578,12 @@ impl Window {
             for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
                 let record = fresh.scroll_rows.rows.get(&(boundary.key, row))?;
                 record.static_boundary_checkpoints()?;
+                let (_, local) = record.prepaint.layout_claims.as_ref()?;
+                let [claim_span] = local.prepaint_blocks() else { return None; };
+                if !local.request_blocks().is_empty() || claim_span.start != claim_cursor
+                    || claim_span.end > claims.end || claim_span.is_empty()
+                { return None; }
+                claim_cursor = claim_span.end;
                 let span = record.dispatch_span();
                 if !record.boundary_dependencies_unchanged(&self.invalidator)
                     || record.paint.start.scene_index != fresh_marker || span.start != fresh_dispatch_end
@@ -1608,7 +1619,7 @@ impl Window {
                 fresh_dispatch_end = span.end;
                 fresh_marker += 1;
             }
-            if !scoped_reads.same_routes(actual_reads) { return None; }
+            if claim_cursor != claims.end || !scoped_reads.same_routes(actual_reads) { return None; }
             row_reads.merge_replayed(&scoped_reads);
             owner_reads.entry(binding.owner).or_default().merge_replayed(&scoped_reads);
         }

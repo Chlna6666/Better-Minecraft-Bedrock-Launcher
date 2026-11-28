@@ -1708,6 +1708,108 @@ mod binding_tests {
     }
 
     #[gpui::test]
+    fn independent_owner_boundaries_share_atomic_publication(cx: &mut crate::TestAppContext) {
+        use crate::{AppContext as _, Context, Entity, IntoElement, ParentElement, PlatformInput,
+            Render, ScrollDelta, ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
+        use std::cell::Cell;
+
+        struct Rows {
+            renders: Rc<Cell<usize>>,
+            builds: Rc<Cell<usize>>,
+            model: Entity<u32>,
+            shared: Entity<u32>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.renders.set(self.renders.get() + 1);
+                let builds = self.builds.clone();
+                let model = self.model.clone();
+                let shared = self.shared.clone();
+                uniform_list_each("rows", 100, move |row, _, cx| {
+                    builds.set(builds.get() + 1);
+                    let value = *model.read(cx) + *shared.read(cx);
+                    div().w_full().h(px(24.)).bg(if (row + value as usize) % 2 == 0 {
+                        crate::red()
+                    } else { crate::blue() })
+                })
+                .with_item_height(px(24.))
+                .with_row_revision(|_| 0)
+                .track_scroll(self.scroll.clone())
+                .w(px(200.)).h(px(120.)).flex_shrink_0()
+            }
+        }
+        struct Pair {
+            left: Entity<Rows>,
+            right: Entity<Rows>,
+            renders: Rc<Cell<usize>>,
+        }
+        impl Render for Pair {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.renders.set(self.renders.get() + 1);
+                div().flex().flex_row().child(self.left.clone()).child(self.right.clone())
+            }
+        }
+        let root = Rc::new(Cell::new(0));
+        let left = Rc::new(Cell::new(0));
+        let right = Rc::new(Cell::new(0));
+        let left_rows = Rc::new(Cell::new(0));
+        let right_rows = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            let shared = cx.new(|_| 1u32);
+            let left_model = cx.new(|_| 2u32);
+            let right_model = cx.new(|_| 3u32);
+            Pair {
+                left: cx.new(|_| Rows {
+                    renders: left.clone(), builds: left_rows.clone(), model: left_model,
+                    shared: shared.clone(), scroll: UniformListScrollHandle::new(),
+                }),
+                right: cx.new(|_| Rows {
+                    renders: right.clone(), builds: right_rows.clone(), model: right_model,
+                    shared, scroll: UniformListScrollHandle::new(),
+                }),
+                renders: root.clone(),
+            }
+        });
+        let wheel = |x, delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(x), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            for _ in 0..2 {
+                window.dispatch_event(wheel(8., -1.), app);
+                window.dispatch_event(wheel(208., -1.), app);
+                window.draw(app).clear();
+                assert!(window.test_present().is_accepted());
+            }
+            let before = (root.get(), left.get(), right.get());
+            let row_before = left_rows.get() + right_rows.get();
+            window.dispatch_event(wheel(8., -120.), app);
+            window.dispatch_event(wheel(208., -144.), app);
+            let (_, owners) = window.invalidator.pending_placement().expect("pending owner set");
+            assert_eq!(owners.len(), 2);
+            let entered = window.rendered_frame.scroll_rows.uniform_boundary_entered_counts();
+            assert_eq!(entered.len(), 2);
+            assert!(entered.iter().all(|count| *count > 0));
+            window.draw(app).clear();
+            assert_eq!((root.get(), left.get(), right.get()), before);
+            assert_eq!(left_rows.get() + right_rows.get(), row_before + entered.iter().sum::<usize>());
+            assert!(window.rendered_frame.scroll_rows.uniform_boundary_entered_counts().is_empty());
+            assert!(!window.invalidator.is_dirty());
+            assert!(window.test_present().is_accepted());
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -1.), app);
+            assert!(window.prepare_scroll_placement(app).is_ok());
+            window.draw(app).clear();
+            assert_eq!((root.get(), left.get(), right.get()), before);
+            assert!(window.test_present().is_accepted());
+        });
+    }
+
+    #[gpui::test]
     fn independent_uniform_lists_share_one_atomic_placement(cx: &mut crate::TestAppContext) {
         use crate::{AppContext as _, Context, Entity, IntoElement, ParentElement, PlatformInput,
             Render, ScrollDelta, ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
