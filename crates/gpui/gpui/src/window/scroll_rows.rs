@@ -721,6 +721,21 @@ pub(super) struct ScrollRows {
 }
 
 impl ScrollRows {
+    #[cfg(test)]
+    pub(super) fn retained_uniform_builder_count(&self) -> usize {
+        self.row_placements.values().filter(|binding| binding.builder.is_some()).count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn uniform_boundary_runs(&self) -> Option<(Range<usize>, Range<usize>, Vec<usize>, Vec<usize>)> {
+        let mut candidates = self.row_placements.values().filter_map(RowPlacementBinding::boundary_membership);
+        let boundary = candidates.next()?;
+        if candidates.next().is_some() { return None; }
+        Some((boundary.visible, boundary.captured,
+            boundary.delta.entered.into_iter().flatten().collect(),
+            boundary.delta.exited.into_iter().flatten().collect()))
+    }
+
     pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
         for row in self.rows.values() {
             row.content.collect_atlas_tile_ids_into(live);
@@ -1216,7 +1231,19 @@ impl Window {
             self.restore_scroll_row_after_wheel(cx);
         }
         if let Some(binding) = &plan.row_placement {
-            self.next_frame.scroll_rows.row_placements.insert(plan.key, binding.clone());
+            let mut binding = binding.clone();
+            // A factory is not sufficient proof of the committed domain.
+            // Do not retain captures if any row failed native capture.
+            if binding.builder.is_some() && !binding.captured.clone().all(|row| {
+                self.next_frame.scroll_rows.rows.get(&(plan.key, row)).is_some_and(|record| {
+                    record.paint.end.scene_index.checked_sub(record.paint.start.scene_index) == Some(1)
+                        && matches!(self.next_frame.painter.paint_operations.view(record.paint.start.scene_index),
+                            Some(crate::scene::PaintOperationRef::DeferredScroll(_)))
+                })
+            }) {
+                binding.builder = None;
+            }
+            self.next_frame.scroll_rows.row_placements.insert(plan.key, binding);
         }
     }
 
