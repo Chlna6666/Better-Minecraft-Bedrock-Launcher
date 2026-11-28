@@ -353,7 +353,44 @@ impl Window {
     }
 }
 
+/// One unpublished boundary candidate. All four native stores must agree
+/// before any ownership can move out of the committed Frame. Other CPU
+/// records (including noncloneable callbacks) still need admission and
+/// relocation before this can become a published Paint.
+#[allow(dead_code)]
+pub(super) struct BoundaryRecordCandidate {
+    pub(super) scene: Scene,
+    pub(super) hitboxes: HitboxStore,
+    pub(super) state_access: state_access::StateAccessLog,
+    pub(super) dispatch: DispatchTree,
+}
+
 impl Frame {
+    #[allow(dead_code)]
+    pub(super) fn prepare_boundary_records(
+        &self,
+        replacement: &Self,
+        scene_edits: &[(Range<usize>, Range<usize>)],
+        hitboxes: &RecordSplicePlan,
+        states: &RecordSplicePlan,
+        dispatch: &RecordSplicePlan,
+        replacement_parent: DispatchNodeId,
+    ) -> Option<BoundaryRecordCandidate> {
+        // Validate the structural and route constraints first. The three
+        // other candidates own only new descriptors and shared payloads.
+        let dispatch = self.dispatch_tree.with_spliced_records(
+            &replacement.dispatch_tree, dispatch, replacement_parent,
+        )?;
+        let hitboxes = self.hitboxes.with_spliced_records(&replacement.hitboxes, hitboxes)?;
+        let state_access = self.accessed_element_states.with_spliced_records(
+            &replacement.accessed_element_states, states,
+        )?;
+        let scene = self.scene().with_spliced_row_markers(
+            &replacement.scene().paint_operations, scene_edits,
+        )?;
+        Some(BoundaryRecordCandidate { scene, hitboxes, state_access, dispatch })
+    }
+
     /// Borrows the sole Paint payload for this frame's current lifecycle phase.
     pub(crate) fn scene(&self) -> &Scene {
         self.paint
@@ -1025,6 +1062,69 @@ fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize)
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn boundary_candidate_rebases_dispatch_and_preserves_committed_frame() {
+        let keymap = Rc::new(RefCell::new(crate::Keymap::default()));
+        let actions = Rc::new(crate::ActionRegistry::default());
+        let mut old = Frame::new(DispatchTree::new(keymap.clone(), actions.clone()));
+        let mut replacement = Frame::new(DispatchTree::new(keymap, actions));
+        let root = old.dispatch_tree.push_node();
+        old.dispatch_tree.push_node(); // retired sibling
+        old.dispatch_tree.pop_node();
+        let kept = old.dispatch_tree.push_node();
+        let owner = EntityId::from(71_u64);
+        old.dispatch_tree.set_view_id(owner);
+        let child = old.dispatch_tree.push_node();
+        old.dispatch_tree.pop_node();
+        old.dispatch_tree.pop_node();
+        old.dispatch_tree.pop_node();
+        old.dispatch_tree.freeze();
+
+        replacement.dispatch_tree.push_node();
+        replacement.dispatch_tree.push_node();
+        replacement.dispatch_tree.pop_node();
+        replacement.dispatch_tree.pop_node();
+        replacement.dispatch_tree.freeze();
+
+        old.painter.insert_primitive(Quad::default());
+        old.painter.finish();
+        replacement.painter.finish();
+        let empty = RecordSplicePlan::new(0, 0, &[]).unwrap();
+        let plan = RecordSplicePlan::new(4, 2, &[(1..2, 0..2)]).unwrap();
+        let next = old.prepare_boundary_records(
+            &replacement, &[], &empty, &empty, &plan, root,
+        ).expect("independent child replacement");
+        assert_eq!(next.dispatch.len(), 5);
+        assert_eq!(next.dispatch.dispatch_path(DispatchNodeId(2)).as_slice(),
+            &[root, DispatchNodeId(1), DispatchNodeId(2)]);
+        assert_eq!(next.dispatch.dispatch_path(DispatchNodeId(4)).as_slice(),
+            &[root, DispatchNodeId(3), DispatchNodeId(4)]);
+        assert!(next.dispatch.has_view_route(owner));
+        assert_eq!(next.hitboxes.len(), 0);
+        assert_eq!(next.state_access.len(), 0);
+        assert_eq!(next.scene.len(), old.scene().len());
+        assert!(std::ptr::eq(&next.scene.quads[0], &old.scene().quads[0]));
+
+        // A retained child cannot refer to a retired parent. The old
+        // record stream and routes remain untouched after rejection.
+        let orphan = RecordSplicePlan::new(4, 2, &[(2..3, 0..0)]).unwrap();
+        assert!(old.prepare_boundary_records(
+            &replacement, &[], &empty, &empty, &orphan, root,
+        ).is_none());
+        assert_eq!(old.dispatch_tree.len(), 4);
+        assert_eq!(old.dispatch_tree.dispatch_path(child).as_slice(), &[root, kept, child]);
+        assert!(old.dispatch_tree.has_view_route(owner));
+
+        replacement.dispatch_tree.set_active_node(DispatchNodeId(0));
+        replacement.dispatch_tree.set_view_id(owner);
+        replacement.dispatch_tree.pop_node();
+        replacement.dispatch_tree.freeze();
+        assert!(old.prepare_boundary_records(
+            &replacement, &[], &empty, &empty, &plan, root,
+        ).is_none());
+        assert!(old.dispatch_tree.has_view_route(owner));
+    }
 
     #[test]
     fn record_splice_plan_maps_retained_intervals_without_crossing_edits() {
