@@ -16,6 +16,22 @@ impl App {
         })
     }
 
+    /// A partial row publication adds only the entities observed by its
+    /// entering rows. Never reconcile the rest of the window from a
+    /// speculative partial read log.
+    pub(crate) fn register_boundary_entities(
+        &mut self, window_handle: AnyWindowHandle, invalidator: WindowInvalidator,
+        entities: &[EntityId],
+    ) {
+        let tracked = self.tracked_entities.entry(window_handle.id).or_default();
+        for &entity in entities {
+            if tracked.insert(entity) {
+                self.window_invalidators_by_entity.entry(entity).or_default()
+                    .insert(window_handle.id, invalidator.clone());
+            }
+        }
+    }
+
     pub(crate) fn record_entities_accessed(
         &mut self,
         window_handle: AnyWindowHandle,
