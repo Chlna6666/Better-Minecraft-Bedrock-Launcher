@@ -574,6 +574,7 @@ pub(super) struct BoundaryRecordCandidate<'a> {
     pub(super) callbacks: BoundaryCallbackCandidate<'a>,
     pub(super) paint: Arc<Paint>,
     pub(super) hitboxes: HitboxStore,
+    layer_inputs: Vec<LayerInput>,
     pub(super) state_access: state_access::StateAccessLog,
     pub(super) dispatch: DispatchTree,
 }
@@ -587,6 +588,7 @@ pub(super) struct RetiredBoundaryRecords {
     paint: Option<Arc<Paint>>,
     retained_paint: Arc<crate::window::retained::RetainedPaint>,
     hitboxes: HitboxStore,
+    layer_inputs: Vec<LayerInput>,
     state_access: state_access::StateAccessLog,
     dispatch: DispatchTree,
     mouse: Vec<MouseListener>,
@@ -637,6 +639,7 @@ impl BoundaryRecordCandidate<'_> {
             paint: old.paint.replace(self.paint),
             retained_paint: std::mem::replace(&mut old.retained_paint, retained_paint),
             hitboxes: std::mem::replace(&mut old.hitboxes, self.hitboxes),
+            layer_inputs: std::mem::replace(&mut old.layer_inputs, self.layer_inputs),
             state_access: std::mem::replace(&mut old.accessed_element_states, self.state_access),
             dispatch: std::mem::replace(&mut old.dispatch_tree, self.dispatch),
             mouse: std::mem::replace(&mut old.mouse_listeners, mouse),
@@ -747,6 +750,29 @@ impl Frame {
         let dispatch = self.dispatch_tree.with_spliced_records_under(
             &replacement.dispatch_tree, dispatch, replacement_parent, replacement_anchor,
         )?;
+        // Replacement rows with their own moving clips are not admitted.
+        // Existing layer ranges may survive outside the edit, or strictly
+        // enclose the complete edited domain. Boundary-touching insertions
+        // need an explicit owner proof and therefore reject here.
+        if !replacement.layer_inputs.is_empty() { return None; }
+        let mut layer_inputs = Vec::with_capacity(self.layer_inputs.len());
+        for layer in &self.layer_inputs {
+            let range = layer.hitboxes.clone();
+            let relocated = if let Some(mapped) = hitboxes.retained_span(range.clone()) {
+                mapped
+            } else {
+                let first = hitboxes.edits.first()?;
+                let last = hitboxes.edits.last()?;
+                if range.start >= first.old.start || range.end <= last.old.end { return None; }
+                hitboxes.enclosing_span(range)?
+            };
+            layer_inputs.push(LayerInput {
+                hitboxes: relocated, viewport: layer.viewport,
+                // A retained row can also translate without editing its
+                // records. Never inherit a stale aggregate offset proof.
+                geometry: None,
+            });
+        }
         let hitboxes = self.hitboxes.with_spliced_records(&replacement.hitboxes, hitboxes)?;
         let state_access = self.accessed_element_states.with_spliced_records(
             &replacement.accessed_element_states, states,
@@ -757,7 +783,7 @@ impl Frame {
         Some(BoundaryRecordCandidate {
             source_revision: self.scene().revision,
             views: None,
-            paint, hitboxes, state_access, dispatch, callbacks,
+            paint, hitboxes, layer_inputs, state_access, dispatch, callbacks,
         })
     }
 
