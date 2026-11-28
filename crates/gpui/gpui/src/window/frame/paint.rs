@@ -90,6 +90,23 @@ impl Paint {
         Some(Arc::new(result))
     }
 
+    /// A variable-length row-only publication shares ordinary draw
+    /// streams and prepares retention/layer metadata in its new coordinates.
+    /// The UI must still adopt every corresponding CPU record atomically.
+    #[allow(dead_code)]
+    pub(in crate::window) fn with_spliced_row_markers(
+        &self, replacement: &Scene, edits: &[(Range<usize>, Range<usize>)], window_opaque: bool,
+    ) -> Option<Arc<Self>> {
+        let plan = RecordSplicePlan::new(self.scene.len(), replacement.len(), edits)?;
+        let scene = self.scene.with_spliced_row_markers(&replacement.paint_operations, edits)?;
+        let retention = Arc::new(self.retained_paint.row_marker_variant(&self.scene, &scene, &plan)?);
+        let mut result = Self::new(scene, retention, self.geometry);
+        result.layers = SceneLayers::capture_against(
+            &result.scene, Some((&self.scene, &self.layers)), window_opaque,
+        );
+        Some(Arc::new(result))
+    }
+
     /// Owner-side fallback reconstruction is intentionally independent of
     /// UI history. The materialized Scene has new operation indices and
     /// therefore receives fresh retention metadata.
