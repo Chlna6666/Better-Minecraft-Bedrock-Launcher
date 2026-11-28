@@ -570,6 +570,7 @@ impl BoundaryIndexSplices<'_> {
 #[allow(dead_code)]
 pub(super) struct BoundaryRecordCandidate<'a> {
     source_revision: u64,
+    views: Option<super::view_retention::BoundaryViewRecords>,
     pub(super) callbacks: BoundaryCallbackCandidate<'a>,
     pub(super) paint: Arc<Paint>,
     pub(super) hitboxes: HitboxStore,
@@ -582,6 +583,7 @@ pub(super) struct BoundaryRecordCandidate<'a> {
 /// particular dropping a callback can execute an application destructor.
 #[allow(dead_code)]
 pub(super) struct RetiredBoundaryRecords {
+    views: Option<super::view_retention::BoundaryViewRecords>,
     paint: Option<Arc<Paint>>,
     retained_paint: Arc<crate::window::retained::RetainedPaint>,
     hitboxes: HitboxStore,
@@ -593,14 +595,34 @@ pub(super) struct RetiredBoundaryRecords {
 }
 
 impl BoundaryRecordCandidate<'_> {
+    /// Add actual retained view and scene segment ownership before final
+    /// adoption. This is performed while the native layout transaction
+    /// remains open and all source coordinates are still committed.
+    #[allow(dead_code)]
+    pub(super) fn prepare_view_records(
+        &mut self, old: &Frame, replacement: &Frame, maps: &BoundaryIndexSplices<'_>,
+        engine: &crate::layout::TaffyLayoutEngine, owner: EntityId, damage: Bounds<ScaledPixels>,
+    ) -> Option<()> {
+        if old.scene().revision != self.source_revision { return None; }
+        self.views = Some(super::view_retention::BoundaryViewRecords::prepare(
+            old, replacement, maps, engine, owner, damage,
+        )?);
+        Some(())
+    }
+
     /// Final physical adoption. The caller must have validated every
     /// remaining Frame range and external owner, and must not run callbacks
     /// between here and publication. The old Paint revision is a lease.
     #[allow(dead_code)]
     pub(super) fn adopt(
-        self, old: &mut Frame, replacement: &mut Frame,
+        mut self, old: &mut Frame, replacement: &mut Frame,
     ) -> Option<RetiredBoundaryRecords> {
-        if old.published_paint_ref()?.scene.revision != self.source_revision {
+        if old.published_paint_ref()?.scene.revision != self.source_revision
+            || (self.views.is_none() && (!old.view_retention_records.is_empty()
+                || !old.retained_scene_segments.is_empty()
+                || !replacement.view_retention_records.is_empty()
+                || !replacement.retained_scene_segments.is_empty()))
+        {
             return None;
         }
         // Unique owner admission occurs before changing any of the shared
@@ -609,7 +631,9 @@ impl BoundaryRecordCandidate<'_> {
         let continuous = mouse.iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
         let retained_paint = Arc::clone(&self.paint.retained_paint);
+        if let Some(views) = self.views.as_mut() { views.adopt(old); }
         let retired = RetiredBoundaryRecords {
+            views: self.views,
             paint: old.paint.replace(self.paint),
             retained_paint: std::mem::replace(&mut old.retained_paint, retained_paint),
             hitboxes: std::mem::replace(&mut old.hitboxes, self.hitboxes),
@@ -720,6 +744,7 @@ impl Frame {
         )?;
         Some(BoundaryRecordCandidate {
             source_revision: self.scene().revision,
+            views: None,
             paint, hitboxes, state_access, dispatch, callbacks,
         })
     }
