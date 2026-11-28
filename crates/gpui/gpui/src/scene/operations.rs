@@ -754,6 +754,63 @@ impl Operations {
             }
         }
     }
+    /// Prepare a variable-length replacement of independent, finalized operation
+    /// ranges. All source coordinates refer to this stream before any edit;
+    /// replacement coordinates refer to the independent materialization stream.
+    ///
+    /// Retain immutable payload pages, not the old Scene. Sparse replay
+    /// boundaries are reconstructed by `share` at the new logical offsets.
+    /// This prepares operation storage only: the caller must also prepare the
+    /// draw streams, input/dispatch ranges and retained records before publishing.
+    /// The existing equal-length scroll placement path deliberately keeps its
+    /// shared boundary table instead of using this more general transaction.
+    #[allow(dead_code)] // Boundary publication must adopt the other Frame records first.
+    pub(crate) fn with_spliced_ranges(
+        &self,
+        replacement: &Self,
+        edits: &[(Range<usize>, Range<usize>)],
+    ) -> Option<Self> {
+        if !self.pending.is_empty() || !replacement.pending.is_empty()
+            || !self.boundary_at(self.len).independent()
+        {
+            return None;
+        }
+
+        // Validate the entire batch before sharing any page. In particular,
+        // an empty insertion range still needs an independent scope boundary.
+        let mut previous_end = 0;
+        let mut len = self.len;
+        for (old, new) in edits {
+            if old.start < previous_end || old.start > old.end || old.end > self.len
+                || new.start > new.end || new.end > replacement.len
+                || !self.boundary_at(old.start).independent()
+                || !self.boundary_at(old.end).independent()
+                || !replacement.boundary_at(new.start).independent()
+                || !replacement.boundary_at(new.end).independent()
+            {
+                return None;
+            }
+            len = len.checked_sub(old.len())?.checked_add(new.len())?;
+            previous_end = old.end;
+        }
+
+        let mut result = Self::default();
+        let mut cursor = 0;
+        for (old, new) in edits {
+            if old.is_empty() && new.is_empty() {
+                continue;
+            }
+            result.share(self, cursor..old.start);
+            result.share(replacement, new.clone());
+            cursor = old.end;
+        }
+        result.share(self, cursor..self.len);
+        debug_assert_eq!(result.len, len);
+        debug_assert!(result.pending.is_empty());
+        debug_assert!(result.boundary_at(result.len).independent());
+        Some(result)
+    }
+
     /// Share a finished range without copying operations or retaining its source Scene.
     pub(crate) fn share(&mut self, previous: &Self, range: Range<usize>) {
         assert!(previous.pending.is_empty(), "shared Paint must be finished");
@@ -773,7 +830,7 @@ impl Operations {
         for boundary in previous.boundaries[first_boundary..].iter().take_while(|b| b.after <= range.end) {
             // The immutable sparse record already owns the exact marker
             // tag. No operation-page lookup or enum dispatch is needed.
-            self.record_boundary(destination + boundary.after - range.start, boundary.change);
+            self.record_boundary(destination + (boundary.after - range.start), boundary.change);
         }
         let first = previous
             .segments
@@ -1006,6 +1063,120 @@ impl Extend<PaintOperation> for Operations {
     fn extend<T: IntoIterator<Item = PaintOperation>>(&mut self, operations: T) {
         for operation in operations {
             self.push(operation);
+        }
+    }
+}
+
+#[cfg(test)]
+mod boundary_splice_tests {
+    use super::*;
+    use crate::{Primitive, Quad};
+
+    fn primitives(count: usize) -> Operations {
+        let mut stream = Operations::default();
+        stream.extend((0..count).map(|_| PaintOperation::Primitive(Primitive::Quad(Quad::default()))));
+        stream.finish();
+        stream
+    }
+
+    #[test]
+    fn variable_splice_preserves_physical_pages_and_relocates_suffix() {
+        let mut old = primitives(10);
+        let mut inserted = primitives(5);
+        let next = old.with_spliced_ranges(&inserted, &[
+            (0..0, 0..1), (2..5, 1..3), (7..9, 3..3), (10..10, 3..5),
+        ]).unwrap();
+        let expected = [
+            inserted.storage_identity(0),
+            old.storage_identity(0), old.storage_identity(1),
+            inserted.storage_identity(1), inserted.storage_identity(2),
+            old.storage_identity(5), old.storage_identity(6), old.storage_identity(9),
+            inserted.storage_identity(3), inserted.storage_identity(4),
+        ];
+        assert_eq!(next.len(), expected.len());
+        old.clear();
+        inserted.clear();
+        for (index, identity) in expected.into_iter().enumerate() {
+            assert_eq!(next.storage_identity(index), identity);
+        }
+    }
+
+    #[test]
+    fn variable_splice_rebases_sparse_scope_boundaries() {
+        let mut old = primitives(1);
+        old.push(PaintOperation::StartLayer(Bounds::default()));
+        old.push(PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+        old.push(PaintOperation::EndLayer);
+        old.push(PaintOperation::StartLayer(Bounds::default()));
+        old.push(PaintOperation::EndLayer);
+        old.finish();
+
+        let inserted = primitives(2);
+        let next = old.with_spliced_ranges(&inserted, &[(1..4, 0..2)]).unwrap();
+        assert_eq!(next.len(), 5);
+        assert_eq!(next.storage_identity(3), old.storage_identity(4));
+        assert_eq!(next.storage_identity(4), old.storage_identity(5));
+        assert_eq!(next.boundaries.len(), 2);
+        assert_eq!(next.boundaries[0].after, 4);
+        assert_eq!(next.boundaries[1].after, 5);
+        assert!(!next.boundary_at(4).independent());
+        assert!(next.range_is_replayable(3..5));
+        assert!(old.with_spliced_ranges(&inserted, &[(2..2, 0..1)]).is_none());
+        assert!(old.with_spliced_ranges(&inserted, &[(1..2, 0..0)]).is_none());
+        assert!(inserted.with_spliced_ranges(&old, &[(0..0, 2..2)]).is_none());
+    }
+
+    #[test]
+    fn variable_splice_rejects_invalid_batch_without_source_mutation() {
+        let old = primitives(8);
+        let replacement = primitives(3);
+        let identity = old.storage_identity(4);
+        for edits in [
+            vec![(1..4, 0..1), (3..5, 1..2)],
+            vec![(4..5, 0..1), (1..2, 1..2)],
+            vec![(0..9, 0..1)],
+            vec![(0..1, 0..4)],
+            vec![(3..2, 0..1)],
+            vec![(0..1, 2..1)],
+        ] {
+            assert!(old.with_spliced_ranges(&replacement, &edits).is_none());
+            assert_eq!(old.len(), 8);
+            assert_eq!(old.storage_identity(4), identity);
+        }
+        let mut pending = Operations::default();
+        pending.push(PaintOperation::Primitive(Primitive::Quad(Quad::default())));
+        assert!(old.with_spliced_ranges(&pending, &[(0..1, 0..1)]).is_none());
+        assert!(pending.with_spliced_ranges(&replacement, &[]).is_none());
+        let unchanged = old.with_spliced_ranges(&replacement, &[]).unwrap();
+        assert!(unchanged.same_physical_ranges(&old));
+        let deleted = old.with_spliced_ranges(&replacement, &[(0..8, 0..0)]).unwrap();
+        assert_eq!(deleted.len(), 0);
+    }
+
+    #[test]
+    fn variable_splice_matches_exhaustive_two_edit_reference() {
+        let old = primitives(6);
+        let replacement = primitives(3);
+        for a in 0..=6 {
+            for b in a..=6 {
+                for c in b..=6 {
+                    for d in c..=6 {
+                        for first in 0..=3 {
+                            for second in 0..=3 {
+                                let next = old.with_spliced_ranges(&replacement, &[
+                                    (a..b, 0..first), (c..d, 0..second),
+                                ]).unwrap();
+                                let expected = (0..a).map(|i| old.storage_identity(i))
+                                    .chain((0..first).map(|i| replacement.storage_identity(i)))
+                                    .chain((b..c).map(|i| old.storage_identity(i)))
+                                    .chain((0..second).map(|i| replacement.storage_identity(i)))
+                                    .chain((d..6).map(|i| old.storage_identity(i)));
+                                assert!(expected.eq((0..next.len()).map(|i| next.storage_identity(i))));
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
