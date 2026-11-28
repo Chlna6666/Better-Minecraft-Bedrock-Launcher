@@ -922,6 +922,13 @@ impl ScrollRows {
             boundary.delta.exited.into_iter().flatten().collect()))
     }
 
+    #[cfg(test)]
+    pub(super) fn uniform_boundary_entered_counts(&self) -> Vec<usize> {
+        self.row_placements.values().filter_map(RowPlacementBinding::boundary_membership)
+            .map(|boundary| boundary.delta.entered.iter().flatten().map(Range::len).sum())
+            .collect()
+    }
+
     pub(super) fn collect_atlas_tile_ids_into(&self, live: &mut collections::FxHashSet<(crate::AtlasTextureId, u32)>) {
         for row in self.rows.values() {
             row.content.collect_atlas_tile_ids_into(live);

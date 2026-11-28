@@ -1443,6 +1443,15 @@ mod binding_tests {
 
     #[gpui::test]
     fn independent_boundary_preserves_stable_sibling_list(cx: &mut crate::TestAppContext) {
+        assert_multi_list_boundary(cx, false);
+    }
+
+    #[gpui::test]
+    fn simultaneous_boundaries_share_one_scratch_and_placement_epoch(cx: &mut crate::TestAppContext) {
+        assert_multi_list_boundary(cx, true);
+    }
+
+    fn assert_multi_list_boundary(cx: &mut crate::TestAppContext, simultaneous: bool) {
         use crate::{Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
             ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
         use std::cell::Cell;
@@ -1497,6 +1506,33 @@ mod binding_tests {
             }
             assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
             let initial = (roots.get(), left.get(), right.get());
+            if simultaneous {
+                window.dispatch_event(wheel(8., -120.), app);
+                window.dispatch_event(wheel(208., -144.), app);
+                assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::MissingCapture)));
+                let entered = window.rendered_frame.scroll_rows.uniform_boundary_entered_counts();
+                assert_eq!(entered.len(), 2);
+                assert!(entered.iter().all(|count| *count != 0));
+                let previous = window.rendered_frame.published_paint();
+                window.draw(app).clear();
+                assert_eq!(roots.get(), initial.0, "both boundaries must skip Root Render");
+                assert!(left.get() > initial.1 && right.get() > initial.2);
+                assert_eq!(left.get() + right.get(), initial.1 + initial.2 + entered.iter().sum::<usize>());
+                assert!(window.rendered_frame.scroll_rows.uniform_boundary_entered_counts().is_empty());
+                assert_eq!(window.rendered_frame.scroll_rows.retained_uniform_builder_count(), 2);
+                assert_ne!(previous.scene.revision, window.rendered_frame.published_paint().scene.revision);
+                assert!(!window.invalidator.is_dirty());
+                assert!(window.test_present().is_accepted());
+
+                let before = (left.get(), right.get());
+                window.dispatch_event(wheel(8., -1.), app);
+                window.dispatch_event(wheel(208., -1.), app);
+                assert!(window.prepare_scroll_placement(app).is_ok());
+                window.draw(app).clear();
+                assert_eq!((roots.get(), left.get(), right.get()), (initial.0, before.0, before.1));
+                assert!(window.test_present().is_accepted());
+                return;
+            }
             window.dispatch_event(wheel(8., -120.), app);
             assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::MissingCapture)));
             let (_, _, entered, _) = window.rendered_frame.scroll_rows.uniform_boundary_runs()
