@@ -1062,8 +1062,8 @@ struct RowRecord {
 
 /// First runtime boundary domain: static, fixed-height independent rows.
 /// The surrounding list may remain interactive. Only the rows being
-/// spliced must have no additional input, state, text or nested view
-/// records. This deliberately preserves all other Frame stream offsets.
+/// spliced may own fixed-clip hitboxes, but not callbacks, state, text or
+/// nested view records. Other side-stream offsets remain fixed.
 struct StaticUniformBoundary {
     key: u64,
     binding: RowPlacementBinding,
@@ -1072,6 +1072,7 @@ struct StaticUniformBoundary {
     mounted_source: usize,
     scene: Range<usize>,
     dispatch: Range<usize>,
+    hitboxes: Range<usize>,
     prepaint_base: PrepaintStateIndex,
     paint_base: PaintIndex,
     retired_claims: Vec<(crate::LayoutId, crate::layout::LayoutClaimBlocks)>,
@@ -1146,6 +1147,8 @@ impl RowRecord {
         let mut prepaint = self.prepaint.records.clone();
         prepaint.start.dispatch_tree_index = 0;
         prepaint.end.dispatch_tree_index = 0;
+        prepaint.start.hitboxes_index = 0;
+        prepaint.end.hitboxes_index = 0;
         let mut paint = self.paint.clone();
         paint.start.scene_index = 0;
         paint.end.scene_index = 0;
@@ -1302,7 +1305,6 @@ impl Window {
             || self.next_frame.accessed_element_states.len() != 0
             || !self.element_states.boundary_is_untouched()
             || self.requested_autoscroll.is_some()
-            || !self.next_frame.hitboxes.is_empty()
             || !self.next_frame.mouse_listeners.is_empty()
             || !self.next_frame.mounted_scroll_sources.is_empty()
             || !self.next_frame.input_handlers.is_empty()
@@ -1339,6 +1341,7 @@ impl Window {
         // Entering rows are materialized in logical order. Their native
         // dispatch records must be contiguous beneath the temporary anchor.
         let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
+        let mut fresh_hitbox_end = 0;
         for (marker, row) in new_range.clone().filter(|row| !old_range.contains(row)).enumerate() {
             let record = fresh.scroll_rows.rows.get(&(key, row))?;
             record.static_boundary_checkpoints()?;
@@ -1350,9 +1353,17 @@ impl Window {
             {
                 return None;
             }
+            let hitboxes = hitbox_range(&record.prepaint);
+            if hitboxes.start != fresh_hitbox_end || !fresh.hitboxes.contains(&hitboxes)
+                || fresh.hitboxes.slices(hitboxes.clone()).any(|(slice, _)| {
+                    slice.iter().any(|hitbox| hitbox.content_mask != viewport)
+                })
+            { return None; }
+            fresh_hitbox_end = hitboxes.end;
             fresh_dispatch_end = span.end;
         }
-        if fresh_dispatch_end != fresh.dispatch_tree.len() { return None; }
+        if fresh_dispatch_end != fresh.dispatch_tree.len()
+            || fresh_hitbox_end != fresh.hitboxes.len() { return None; }
 
         // The left and right gaps are independent native stream edits.
         // A jump with no retained intersection replaces the domain once.
@@ -1366,25 +1377,33 @@ impl Window {
         }
         let mut scene_edits = Vec::with_capacity(groups.len());
         let mut dispatch_edits = Vec::with_capacity(groups.len());
+        let mut hitbox_edits = Vec::with_capacity(groups.len());
         let old_dispatch_at = |row: usize| -> Option<usize> {
             if row == old_range.end { Some(boundary.dispatch.end) }
             else { Some(old.scroll_rows.rows.get(&(key, row))?.dispatch_span().start) }
+        };
+        let old_hitbox_at = |row: usize| -> Option<usize> {
+            if row == old_range.end { Some(boundary.hitboxes.end) }
+            else { Some(hitbox_range(&old.scroll_rows.rows.get(&(key, row))?.prepaint).start) }
         };
         for (retired, entered) in groups {
             if retired.is_empty() && entered.is_empty() { continue; }
             let start = boundary.scene.start.checked_add(retired.start.checked_sub(old_range.start)?)?;
             let end = start.checked_add(retired.len())?;
             let old_dispatch = old_dispatch_at(retired.start)?..old_dispatch_at(retired.end)?;
-            let (new_scene, new_dispatch) = if entered.is_empty() {
-                (0..0, 0..0)
+            let old_hitboxes = old_hitbox_at(retired.start)?..old_hitbox_at(retired.end)?;
+            let (new_scene, new_dispatch, new_hitboxes) = if entered.is_empty() {
+                (0..0, 0..0, 0..0)
             } else {
                 let first = fresh.scroll_rows.rows.get(&(key, entered.start))?;
                 let last = fresh.scroll_rows.rows.get(&(key, entered.end - 1))?;
                 (first.paint.start.scene_index..last.paint.end.scene_index,
-                    first.dispatch_span().start..last.dispatch_span().end)
+                    first.dispatch_span().start..last.dispatch_span().end,
+                    hitbox_range(&first.prepaint).start..hitbox_range(&last.prepaint).end)
             };
             scene_edits.push((start..end, new_scene));
             dispatch_edits.push((old_dispatch, new_dispatch));
+            hitbox_edits.push((old_hitboxes, new_hitboxes));
         }
 
         self.next_frame.painter.finish();
@@ -1395,7 +1414,7 @@ impl Window {
         let fresh = &self.next_frame;
         let scene = RecordSplicePlan::new(old.scene().len(), fresh.scene().len(), &scene_edits)?;
         let dispatch = RecordSplicePlan::new(old.dispatch_tree.len(), fresh.dispatch_tree.len(), &dispatch_edits)?;
-        let hitboxes = RecordSplicePlan::new(old.hitboxes.len(), 0, &[])?;
+        let hitboxes = RecordSplicePlan::new(old.hitboxes.len(), fresh.hitboxes.len(), &hitbox_edits)?;
         let states = RecordSplicePlan::new(old.accessed_element_states.len(), 0, &[])?;
         let mouse = RecordSplicePlan::new(old.mouse_listeners.len(), 0, &[])?;
         let ime = RecordSplicePlan::new(old.input_handlers.len(), 0, &[])?;
@@ -1419,6 +1438,9 @@ impl Window {
         }
         let mut updates = Vec::with_capacity(new_range.len());
         let mut placements = Vec::new();
+        // The rows own every record in the old contiguous hitbox domain.
+        // This explicit cursor resolves even zero-length row checkpoints.
+        let mut hitbox_cursor = boundary.hitboxes.start;
         for row in new_range.clone() {
             let row_key = (key, row);
             let entering = !old_range.contains(&row);
@@ -1446,8 +1468,21 @@ impl Window {
                 let (root, local) = record.prepaint.layout_claims.as_ref()?;
                 Some((*root, self.layout_engine.as_ref()?.detached_boundary_row_claims(*root, local)?))
             } else { None };
+            let source_hitboxes = hitbox_range(&record.prepaint);
+            let next_hitboxes = hitbox_cursor..hitbox_cursor.checked_add(source_hitboxes.len())?;
+            if !source_hitboxes.is_empty() {
+                let projected = if entering { hitboxes.replacement_span(source_hitboxes)? }
+                    else { hitboxes.retained_range(source_hitboxes)? };
+                if projected != next_hitboxes { return None; }
+                if !entering {
+                    candidate.hitboxes.translate_committed(next_hitboxes.clone(), origin - record.prepaint.origin);
+                }
+            }
+            hitbox_cursor = next_hitboxes.end;
             let mut start = boundary.prepaint_base.clone();
             let mut end = start.clone();
+            start.hitboxes_index = next_hitboxes.start;
+            end.hitboxes_index = next_hitboxes.end;
             start.dispatch_tree_index = node_span.start;
             end.dispatch_tree_index = node_span.end;
             let mut paint_start = boundary.paint_base.clone();
@@ -1532,10 +1567,12 @@ impl Window {
         let (prepaint_base, paint_base) = first.static_boundary_checkpoints()?;
         let scene_start = first.paint.start.scene_index;
         let dispatch_start = first.dispatch_span().start;
+        let hitbox_start = hitbox_range(&first.prepaint).start;
         if builder.dispatch_parent.0 >= dispatch_start { return None; }
         let scale = self.scale_factor();
         let viewport = builder.context.inherited.visual_content_mask;
         let mut dispatch_end = dispatch_start;
+        let mut hitbox_end = hitbox_start;
         let mut retired_claims = Vec::new();
         for (index, row) in binding.captured.clone().enumerate() {
             let record = rows.rows.get(&(key, row))?;
@@ -1559,6 +1596,13 @@ impl Window {
             let expected = ScrollPaintTarget::BufferedRow { visible: binding.visible.contains(&row) }
                 .placement(&record.content, viewport, scale, delta)?;
             if !old.same_paint(&expected) { return None; }
+            let input = hitbox_range(&record.prepaint);
+            if input.start != hitbox_end || !frame.hitboxes.contains(&input)
+                || frame.hitboxes.slices(input.clone()).any(|(slice, _)| {
+                    slice.iter().any(|hitbox| hitbox.content_mask != viewport)
+                })
+            { return None; }
+            hitbox_end = input.end;
             dispatch_end = span.end;
             if !membership.captured.contains(&row) {
                 retired_claims.push(record.prepaint.layout_claims.as_ref()?.clone());
@@ -1567,7 +1611,8 @@ impl Window {
         Some(StaticUniformBoundary {
             key, binding: binding.clone(), membership, sample_read, mounted_source,
             scene: scene_start..scene_start.checked_add(binding.captured.len())?,
-            dispatch: dispatch_start..dispatch_end, prepaint_base, paint_base, retired_claims,
+            dispatch: dispatch_start..dispatch_end, hitboxes: hitbox_start..hitbox_end,
+            prepaint_base, paint_base, retired_claims,
         })
     }
 }
