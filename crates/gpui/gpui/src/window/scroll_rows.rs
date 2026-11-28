@@ -1673,8 +1673,8 @@ impl Window {
         let state_split = prepaint_state_edits.len();
         prepaint_state_edits.extend(paint_state_edits);
         let states = RecordSplicePlan::new(old.accessed_element_states.len(), fresh.accessed_element_states.len(), &prepaint_state_edits)?;
-        let prepaint_state_domain = states.enclosing_phase_span(boundary.prepaint_states.clone(), 0..state_split)?;
-        let paint_state_domain = states.enclosing_phase_span(boundary.paint_states.clone(), state_split..states.edit_count())?;
+        let prepaint_state_domain = states.enclosing_edit_span(boundary.prepaint_states.clone(), 0..state_split)?;
+        let paint_state_domain = states.enclosing_edit_span(boundary.paint_states.clone(), state_split..states.edit_count())?;
         let [[mut line_edits, mut wrapped_edits], [paint_line_edits, paint_wrapped_edits]] = text_edits;
         let line_split = line_edits.len();
         let wrapped_split = wrapped_edits.len();
@@ -1691,7 +1691,7 @@ impl Window {
             for (stream, target) in streams.iter_mut().enumerate() {
                 let plan = text_plans[stream];
                 let split = text_splits[stream];
-                *target = plan.enclosing_phase_span(target.clone(),
+                *target = plan.enclosing_edit_span(target.clone(),
                     if phase == 0 { 0..split } else { split..plan.edit_count() })?;
             }
         }
@@ -1705,7 +1705,12 @@ impl Window {
         let mut candidate = old.prepare_boundary_records_under(
             fresh, &scene_edits, &hitboxes, &states, &dispatch,
             &[(Some(anchor), builder.dispatch_parent)],
-            &mouse, &ime, opaque, Some((key, boundary.hitboxes.clone())),
+            &mouse, &ime, opaque,
+            &[super::frame::RowInputDomain {
+                owner: key,
+                hitboxes: boundary.hitboxes.clone(),
+                edits: 0..hitboxes.edit_count(),
+            }],
         )?;
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;

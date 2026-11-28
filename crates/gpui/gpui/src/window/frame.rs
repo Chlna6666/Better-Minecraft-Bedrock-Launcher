@@ -73,6 +73,14 @@ pub(super) struct LayerInput {
     geometry: Option<ScrollInputGeometry>,
 }
 
+/// The layout owner certifies the exact hitbox span and edit interval of
+/// one list. Adjacent empty ranges must not claim each other's insertions.
+pub(super) struct RowInputDomain {
+    pub(super) owner: u64,
+    pub(super) hitboxes: Range<usize>,
+    pub(super) edits: Range<usize>,
+}
+
 #[derive(Clone, Copy)]
 struct ScrollInputGeometry {
     offset: Point<Pixels>,
@@ -368,22 +376,24 @@ impl RecordSplicePlan {
         Some(start..end)
     }
 
-    /// A shared stream can contain distinct prepaint and paint domains.
-    /// The caller proves which edits belong to this phase. Other edits
-    /// may shift its coordinates but cannot own records within the range.
-    pub(crate) fn enclosing_phase_span(
-        &self, range: Range<usize>, phase: Range<usize>,
+    /// Project an explicitly owned contiguous edit interval. Other domains
+    /// may shift the coordinates but cannot own records inside this span.
+    /// The interval also resolves affinity at shared empty checkpoints.
+    pub(crate) fn enclosing_edit_span(
+        &self,
+        range: Range<usize>,
+        owned_edits: Range<usize>,
     ) -> Option<Range<usize>> {
         if range.start > range.end || range.end > self.old_len
-            || phase.start > phase.end || phase.end > self.edits.len()
+            || owned_edits.start > owned_edits.end || owned_edits.end > self.edits.len()
         { return None; }
-        let selected = &self.edits[phase.clone()];
+        let selected = &self.edits[owned_edits.clone()];
         if selected.is_empty() {
-            // Explicit phase ordering resolves a zero-length checkpoint
-            // between an insertion owned by the previous phase and one
-            // owned by the next phase. No edit may cross this phase.
-            let previous = self.edits[..phase.start].last();
-            let following = self.edits[phase.end..].first();
+            // Explicit domain ordering resolves a zero-length checkpoint
+            // between an insertion owned by the previous domain and one
+            // owned by the next domain. No edit may cross this domain.
+            let previous = self.edits[..owned_edits.start].last();
+            let following = self.edits[owned_edits.end..].first();
             if previous.is_some_and(|edit| edit.old.end > range.start)
                 || following.is_some_and(|edit| edit.old.start < range.end)
             { return None; }
@@ -394,12 +404,38 @@ impl RecordSplicePlan {
         let first = selected.first()?;
         let last = selected.last()?;
         if range.start > first.old.start || range.end < last.old.end { return None; }
-        // Earlier/later phases may touch the boundary, not cross it.
-        if self.edits[..phase.start].last().is_some_and(|edit| edit.old.end > range.start)
-            || self.edits[phase.end..].first().is_some_and(|edit| edit.old.start < range.end)
+        // Earlier/later domains may touch the boundary, not cross it.
+        if self.edits[..owned_edits.start].last().is_some_and(|edit| edit.old.end > range.start)
+            || self.edits[owned_edits.end..].first().is_some_and(|edit| edit.old.start < range.end)
         { return None; }
         Some(first.target.start.checked_sub(first.old.start - range.start)?
             ..last.target.end.checked_add(range.end - last.old.end)?)
+    }
+
+    fn project_layer(
+        &self,
+        layer: &LayerInput,
+        domains: &[RowInputDomain],
+    ) -> Option<Range<usize>> {
+        let range = &layer.hitboxes;
+        let mut owners = domains.iter().filter(|domain| {
+            layer.layout_owner == Some(domain.owner) && range == &domain.hitboxes
+        });
+        if let Some(domain) = owners.next() {
+            if owners.next().is_some() {
+                return None;
+            }
+            return self.enclosing_edit_span(range.clone(), domain.edits.clone());
+        }
+        if self.edits.iter().any(|edit| {
+            edit.old.is_empty() && (edit.old.start == range.start || edit.old.start == range.end)
+        }) {
+            // A layer without an explicit owner cannot decide endpoint
+            // insertion affinity. Keep the conservative fallback.
+            return None;
+        }
+        self.retained_span(range.clone())
+            .or_else(|| self.enclosing_span(range.clone()))
     }
 
     pub(crate) fn edit_count(&self) -> usize { self.edits.len() }
@@ -550,9 +586,9 @@ impl BoundaryIndexSplices<'_> {
             let (start_gen, start_line, start_wrapped) = range.start.components();
             let (end_gen, end_line, end_wrapped) = range.end.components();
             if start_gen != generation || end_gen != generation { return None; }
-            let l = lines.enclosing_phase_span(start_line..end_line,
+            let l = lines.enclosing_edit_span(start_line..end_line,
                 if paint { line_split..lines.edit_count() } else { 0..line_split })?;
-            let w = wrapped.enclosing_phase_span(start_wrapped..end_wrapped,
+            let w = wrapped.enclosing_edit_span(start_wrapped..end_wrapped,
                 if paint { wrapped_split..wrapped.edit_count() } else { 0..wrapped_split })?;
             return Some(LineLayoutIndex::from_components(generation, l.start, w.start)
                 ..LineLayoutIndex::from_components(generation, l.end, w.end));
@@ -577,7 +613,7 @@ impl BoundaryIndexSplices<'_> {
         let dispatch = map(self.dispatch, source.start.dispatch_tree_index..source.end.dispatch_tree_index)?;
         let state_range = source.start.accessed_element_states_index..source.end.accessed_element_states_index;
         let states = match (enclosing, self.state_prepaint_edits) {
-            (true, Some(split)) => self.states.enclosing_phase_span(state_range, 0..split)?,
+            (true, Some(split)) => self.states.enclosing_edit_span(state_range, 0..split)?,
             _ => map(self.states, state_range)?,
         };
         result.start.hitboxes_index = hitboxes.start;
@@ -606,7 +642,7 @@ impl BoundaryIndexSplices<'_> {
         let scene = map(self.scene, source.start.scene_index..source.end.scene_index)?;
         let state_range = source.start.accessed_element_states_index..source.end.accessed_element_states_index;
         let states = match (enclosing, self.state_prepaint_edits) {
-            (true, Some(split)) => self.states.enclosing_phase_span(state_range, split..self.states.edit_count())?,
+            (true, Some(split)) => self.states.enclosing_edit_span(state_range, split..self.states.edit_count())?,
             _ => map(self.states, state_range)?,
         };
         result.start.scene_index = scene.start;
@@ -796,7 +832,7 @@ impl Frame {
         window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         self.prepare_boundary_records_under(replacement, scene_edits, hitboxes, states, dispatch,
-            &[(None, replacement_parent)], mouse, ime, window_opaque, None)
+            &[(None, replacement_parent)], mouse, ime, window_opaque, &[])
     }
 
     pub(super) fn prepare_boundary_records_under<'a>(
@@ -807,7 +843,7 @@ impl Frame {
         attachments: &[(Option<DispatchNodeId>, DispatchNodeId)],
         mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan, window_opaque: bool,
-        row_input_domain: Option<(u64, Range<usize>)>,
+        row_input_domains: &[RowInputDomain],
     ) -> Option<BoundaryRecordCandidate<'a>> {
         let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
@@ -822,25 +858,7 @@ impl Frame {
         if !replacement.layer_inputs.is_empty() { return None; }
         let mut layer_inputs = Vec::with_capacity(self.layer_inputs.len());
         for layer in &self.layer_inputs {
-            let range = layer.hitboxes.clone();
-            let owns_rows = row_input_domain.as_ref().is_some_and(|(key, domain)| {
-                layer.layout_owner == Some(*key) && &range == domain
-            });
-            if !owns_rows && hitboxes.edits.iter().any(|edit| edit.old.is_empty()
-                && (edit.old.start == range.start || edit.old.start == range.end))
-            {
-                // Retained-span affinity alone cannot prove whether a
-                // layer owns a new hitbox at either of its endpoints.
-                return None;
-            }
-            let relocated = if owns_rows {
-                hitboxes.enclosing_span(range.clone())?
-            } else if let Some(mapped) = hitboxes.retained_span(range.clone()) {
-                mapped
-            } else {
-                // Nonempty retired records prove interval membership.
-                hitboxes.enclosing_span(range)?
-            };
+            let relocated = hitboxes.project_layer(layer, row_input_domains)?;
             layer_inputs.push(LayerInput {
                 hitboxes: relocated, viewport: layer.viewport, layout_owner: layer.layout_owner,
                 // A retained row can also translate without editing its
@@ -1654,15 +1672,39 @@ mod publication_tests {
     #[test]
     fn boundary_phase_spans_do_not_adopt_other_phase_insertions() {
         let plan = RecordSplicePlan::new(8, 4, &[(3..3, 0..2), (3..3, 2..4)]).unwrap();
-        assert_eq!(plan.enclosing_phase_span(1..3, 0..1), Some(1..5));
-        assert_eq!(plan.enclosing_phase_span(3..6, 1..2), Some(5..10));
-        assert_eq!(plan.enclosing_phase_span(1..4, 0..1), None);
-        assert_eq!(plan.enclosing_phase_span(3..3, 0..0), Some(3..3));
-        assert_eq!(plan.enclosing_phase_span(3..3, 1..1), Some(5..5));
-        assert_eq!(plan.enclosing_phase_span(3..3, 2..2), Some(7..7));
-        assert_eq!(plan.enclosing_phase_span(2..4, 1..1), None);
+        assert_eq!(plan.enclosing_edit_span(1..3, 0..1), Some(1..5));
+        assert_eq!(plan.enclosing_edit_span(3..6, 1..2), Some(5..10));
+        assert_eq!(plan.enclosing_edit_span(1..4, 0..1), None);
+        assert_eq!(plan.enclosing_edit_span(3..3, 0..0), Some(3..3));
+        assert_eq!(plan.enclosing_edit_span(3..3, 1..1), Some(5..5));
+        assert_eq!(plan.enclosing_edit_span(3..3, 2..2), Some(7..7));
+        assert_eq!(plan.enclosing_edit_span(2..4, 1..1), None);
         assert_eq!(plan.retained_span(3..3), None);
         assert_eq!(plan.edit_count(), 2);
+    }
+
+    #[test]
+    fn adjacent_layer_domains_claim_only_their_own_insertions() {
+        let plan = RecordSplicePlan::new(8, 4, &[(3..3, 0..2), (3..3, 2..4)]).unwrap();
+        let domains = [
+            RowInputDomain { owner: 1, hitboxes: 1..3, edits: 0..1 },
+            RowInputDomain { owner: 2, hitboxes: 3..6, edits: 1..2 },
+        ];
+        let layer = |owner, hitboxes| LayerInput {
+            hitboxes,
+            viewport: Bounds::default(),
+            layout_owner: owner,
+            geometry: None,
+        };
+        assert_eq!(plan.project_layer(&layer(Some(1), 1..3), &domains), Some(1..5));
+        assert_eq!(plan.project_layer(&layer(Some(2), 3..6), &domains), Some(5..10));
+        assert_eq!(plan.project_layer(&layer(None, 3..6), &domains), None);
+        assert_eq!(plan.project_layer(&layer(None, 6..8), &domains), Some(10..12));
+        let duplicate = [
+            RowInputDomain { owner: 1, hitboxes: 1..3, edits: 0..1 },
+            RowInputDomain { owner: 1, hitboxes: 1..3, edits: 1..2 },
+        ];
+        assert_eq!(plan.project_layer(&layer(Some(1), 1..3), &duplicate), None);
     }
 
     #[test]
