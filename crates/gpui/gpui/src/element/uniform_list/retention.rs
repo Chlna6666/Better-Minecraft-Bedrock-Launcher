@@ -36,6 +36,9 @@ pub(super) fn prepaint(
         Some(geometry) => window.bind_uniform_row_placement(&mut plan, geometry, visible.clone()),
         None => visible.clone(),
     };
+    if let RenderItems::Each(renderer) = render {
+        window.retain_uniform_row_builder(&mut plan, renderer);
+    }
     let reused: SmallVec<[bool; 64]> = range
         .clone()
         .map(|row| window.can_reuse_scroll_row(&plan, row, row_origin(row)))
