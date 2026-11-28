@@ -110,6 +110,10 @@ impl Window {
 pub(super) struct BoundaryRowReads {
     owner: EntityId,
     merged: crate::RenderDependencies,
+    added_entities: Vec<EntityId>,
+    removed_entities: Vec<EntityId>,
+    added_globals: Vec<(TypeId, Option<bool>)>,
+    removed_globals: Vec<(TypeId, Option<bool>)>,
 }
 
 struct CommittedReads {
@@ -470,18 +474,33 @@ impl WindowInvalidator {
         if !reads.states.is_empty() { return None; }
         let inner = self.inner.borrow();
         let mut merged = reads.clone();
+        let added_entities;
+        let added_globals;
         if let Some(old) = inner.view_reads.get(&Some(owner)) {
             if old.route != Some(owner) { return None; }
-            merged.merge_replayed(&old.reads);
+            added_entities = reads.entities.iter().copied()
+                .filter(|key| old.reads.entities.binary_search(key).is_err()).collect::<Vec<_>>();
+            added_globals = reads.globals.iter().copied()
+                .filter(|key| old.reads.globals.binary_search(key).is_err()).collect::<Vec<_>>();
+            if added_entities.is_empty() && added_globals.is_empty() {
+                merged = old.reads.clone();
+            } else {
+                merged.merge_replayed(&old.reads);
+            }
             // Bound conservative growth until a full traversal removes
             // retired edges. Already-known large owner sets stay valid.
             if merged.entities.len() > old.reads.entities.len().max(4096)
                 || merged.globals.len() > old.reads.globals.len().max(256)
             { return None; }
-        } else if merged.entities.len() > 4096 || merged.globals.len() > 256 {
-            return None;
+        } else {
+            if merged.entities.len() > 4096 || merged.globals.len() > 256 { return None; }
+            added_entities = reads.entities.to_vec();
+            added_globals = reads.globals.to_vec();
         }
-        Some(BoundaryRowReads { owner, merged })
+        Some(BoundaryRowReads {
+            owner, merged, added_entities, added_globals,
+            removed_entities: Vec::new(), removed_globals: Vec::new(),
+        })
     }
 
     /// Retire only reads proven to belong to the complete departing row
@@ -502,28 +521,21 @@ impl WindowInvalidator {
         if !retired.entities.iter().chain(kept.entities.iter()).all(|key| old.reads.entities.binary_search(key).is_ok())
             || !retired.globals.iter().chain(kept.globals.iter()).all(|key| old.reads.globals.binary_search(key).is_ok())
         { return None; }
-        if retired.entities.iter().any(|key| *key != owner
-            && kept.entities.binary_search(key).is_err()
-            && entered.entities.binary_search(key).is_err()
-            && old.own_reads.entities.binary_search(key).is_err())
-        {
-            prepared.merged.entities = prepared.merged.entities.iter().copied().filter(|key| {
-                *key == owner || retired.entities.binary_search(key).is_err()
-                    || kept.entities.binary_search(key).is_ok()
-                    || entered.entities.binary_search(key).is_ok()
-                    || old.own_reads.entities.binary_search(key).is_ok()
-            }).collect();
+        prepared.removed_entities = retired.entities.iter().copied().filter(|key|
+            *key != owner && kept.entities.binary_search(key).is_err()
+                && entered.entities.binary_search(key).is_err()
+                && old.own_reads.entities.binary_search(key).is_err()).collect();
+        prepared.removed_globals = retired.globals.iter().copied().filter(|key|
+            kept.globals.binary_search(key).is_err()
+                && entered.globals.binary_search(key).is_err()
+                && old.own_reads.globals.binary_search(key).is_err()).collect();
+        if !prepared.removed_entities.is_empty() {
+            prepared.merged.entities = prepared.merged.entities.iter().copied().filter(|key|
+                prepared.removed_entities.binary_search(key).is_err()).collect();
         }
-        if retired.globals.iter().any(|key| kept.globals.binary_search(key).is_err()
-            && entered.globals.binary_search(key).is_err()
-            && old.own_reads.globals.binary_search(key).is_err())
-        {
-            prepared.merged.globals = prepared.merged.globals.iter().copied().filter(|key| {
-                retired.globals.binary_search(key).is_err()
-                    || kept.globals.binary_search(key).is_ok()
-                    || entered.globals.binary_search(key).is_ok()
-                    || old.own_reads.globals.binary_search(key).is_ok()
-            }).collect();
+        if !prepared.removed_globals.is_empty() {
+            prepared.merged.globals = prepared.merged.globals.iter().copied().filter(|key|
+                prepared.removed_globals.binary_search(key).is_err()).collect();
         }
         Some(prepared)
     }
@@ -539,15 +551,25 @@ impl WindowInvalidator {
             state_validation: Default::default(), route, keep: true,
         });
         debug_assert_eq!(entry.route, route);
-        update_dependency_routes(&mut inner.render_dependencies,
-            &entry.reads.entities, route, &prepared.merged.entities, route);
-        update_dependency_routes(&mut inner.global_read_dependencies,
-            &entry.reads.globals, route, &prepared.merged.globals, route);
-        // The compact reverse index retains other scoped owners and
-        // unresolved readers. Only a vanished key can leave App routing.
-        let removed = entry.reads.entities.iter().copied().filter(|entity|
-            prepared.merged.entities.binary_search(entity).is_err()
-                && !inner.render_dependencies.contains_key(entity)).collect();
+        // The scoped route cannot become unresolved during a boundary
+        // transaction. Apply the certified edge delta directly rather than
+        // diffing the complete owner snapshots again after publication.
+        for entity in prepared.added_entities {
+            insert_dependency_owner(&mut inner.render_dependencies, entity, route);
+        }
+        for global in prepared.added_globals {
+            insert_dependency_owner(&mut inner.global_read_dependencies, global, route);
+        }
+        for &global in &prepared.removed_globals {
+            remove_dependency_owner(&mut inner.global_read_dependencies, global, route);
+        }
+        // Other scoped owners and unresolved readers still protect App
+        // routing. Check only entities whose scoped edge actually retired.
+        let mut removed = Vec::new();
+        for entity in prepared.removed_entities {
+            remove_dependency_owner(&mut inner.render_dependencies, entity, route);
+            if !inner.render_dependencies.contains_key(&entity) { removed.push(entity); }
+        }
         entry.reads = prepared.merged;
         entry.keep = true;
         removed
@@ -1411,6 +1433,14 @@ mod view_invalidation_tests {
         assert!(!invalidator.inner.borrow().render_dependencies.contains_key(&entering));
         invalidator.commit_boundary_row_reads(prepared);
         let prepared = invalidator.prepare_boundary_row_reads(owner, &reads).unwrap();
+        assert!(prepared.added_entities.is_empty());
+        assert!(prepared.added_globals.is_empty());
+        {
+            let inner = invalidator.inner.borrow();
+            let old = &inner.view_reads[&Some(owner)].reads;
+            assert!(Rc::ptr_eq(&prepared.merged.entities, &old.entities));
+            assert!(Rc::ptr_eq(&prepared.merged.globals, &old.globals));
+        }
         invalidator.commit_boundary_row_reads(prepared);
         {
             let inner = invalidator.inner.borrow();
@@ -1466,6 +1496,11 @@ mod view_invalidation_tests {
         };
         let prepared = invalidator.prepare_boundary_row_delta(owner, &entered, &retired_reads, &kept).unwrap();
         assert!(invalidator.inner.borrow().render_dependencies.contains_key(&retired));
+        assert_eq!(prepared.added_entities, vec![added]);
+        assert_eq!(prepared.removed_entities.len(), 2);
+        assert!(prepared.removed_entities.contains(&retired));
+        assert!(prepared.removed_entities.contains(&other_reader));
+        assert_eq!(prepared.removed_globals, vec![(global, None)]);
         let removed = invalidator.commit_boundary_row_reads(prepared);
         assert_eq!(removed, vec![retired]);
         let inner = invalidator.inner.borrow();
