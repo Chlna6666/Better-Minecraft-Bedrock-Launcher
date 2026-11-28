@@ -159,11 +159,12 @@ pub(crate) struct GlobalIdCache {
     entries: collections::FxHashMap<u64, GlobalIdEntry>,
     epoch: u64,
     used: usize,
+    last_full_count: usize,
 }
 
 impl Default for GlobalIdCache {
     fn default() -> Self {
-        Self { entries: collections::FxHashMap::default(), epoch: 1, used: 0 }
+        Self { entries: collections::FxHashMap::default(), epoch: 1, used: 0, last_full_count: 0 }
     }
 }
 
@@ -201,6 +202,25 @@ impl GlobalIdCache {
                 self.entries.shrink_to(target);
             }
         }
+        self.last_full_count = self.entries.len();
+        self.advance_epoch();
+    }
+
+    /// A detached boundary does not visit unrelated application paths.
+    /// Preserve their immutable Arc identities until a normal traversal
+    /// can sweep them, with a bounded working set between full frames.
+    #[allow(dead_code)]
+    pub(crate) fn can_finish_partial_frame(&self) -> bool {
+        self.entries.len() <= self.last_full_count.max(32).saturating_mul(2)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn finish_partial_frame(&mut self) {
+        debug_assert!(self.can_finish_partial_frame());
+        self.advance_epoch();
+    }
+
+    fn advance_epoch(&mut self) {
         self.used = 0;
         self.epoch = self.epoch.checked_add(1)
             .filter(|epoch| *epoch < CANDIDATE_ID).expect("global id epoch exhausted");
@@ -699,6 +719,36 @@ mod global_element_id_hash_tests {
         cache.finish_frame();
         assert_eq!(cache.entries.len(), 1);
         assert!(!Arc::ptr_eq(&committed_a.0, &cache.get(&a).0));
+    }
+
+    #[test]
+    fn partial_global_id_commit_preserves_unvisited_paths_and_abort_removes_only_new_paths() {
+        let path = |name: &'static str| {
+            let mut stack = ElementIdStack::default();
+            stack.push(ElementId::from(name));
+            stack
+        };
+        let a = path("a");
+        let b = path("b");
+        let c = path("c");
+        let d = path("d");
+        let mut cache = GlobalIdCache::default();
+        let old = cache.get(&a);
+        cache.get(&b);
+        cache.finish_frame();
+        let fresh = cache.get(&c);
+        assert!(cache.can_finish_partial_frame());
+        cache.finish_partial_frame();
+        let abandoned = cache.get(&d);
+        let weak = Arc::downgrade(&abandoned.0);
+        drop(abandoned);
+        cache.abort_frame();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(cache.entries.len(), 3);
+        assert!(Arc::ptr_eq(&old.0, &cache.get(&a).0));
+        assert!(Arc::ptr_eq(&fresh.0, &cache.get(&c).0));
+        cache.finish_frame();
+        assert_eq!(cache.entries.len(), 2);
     }
 
     #[test]
