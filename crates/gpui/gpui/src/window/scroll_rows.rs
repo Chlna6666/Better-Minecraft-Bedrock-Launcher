@@ -1189,8 +1189,8 @@ impl BoundaryRowAdoption {
 }
 
 impl RowRecord {
-    /// Return the unchanged side-stream checkpoints for the initial
-    /// detached domain. Paint and prepaint text checkpoints are separate.
+    /// Validate unchanged side streams after removing coordinates whose
+    /// actual ownership is independently certified and spliced.
     fn static_boundary_checkpoints(&self) -> Option<(PrepaintStateIndex, PaintIndex)> {
         let mut prepaint = self.prepaint.records.clone();
         prepaint.start.dispatch_tree_index = 0;
@@ -1644,7 +1644,7 @@ impl Window {
             let mut end = start.clone();
             start.hitboxes_index = next_hitboxes.start;
             end.hitboxes_index = next_hitboxes.end;
-            let mut project_states = |paint: bool, cursor: &mut usize| -> Option<Range<usize>> {
+            let project_states = |paint: bool, cursor: &mut usize| -> Option<Range<usize>> {
                 let source = record.state_span(paint);
                 let target = *cursor..cursor.checked_add(source.len())?;
                 if !source.is_empty() {
@@ -2210,9 +2210,9 @@ impl Window {
         let claim_start = (capture && matches!(&plan.context.identity, RowListIdentity::Uniform(..)))
             .then(|| self.layout_engine.as_ref().map(|engine| (engine.claim_log_len(), engine.transient_count())))
             .flatten();
-        let text_system = self.text_system.clone();
-        let _text_access = (capture && plan.row_revision.is_some() && experimental_row_boundary_enabled())
-            .then(|| text_system.record_row_accesses());
+        let text_system = (capture && plan.row_revision.is_some()
+            && experimental_row_boundary_enabled()).then(|| self.text_system.clone());
+        let _text_access = text_system.as_ref().map(|text| text.record_row_accesses());
         self.with_list_item_layout_key(row, |window| {
             item.layout_as_root(available_space, window, cx);
             item.prepaint_at(origin, window, cx);
@@ -2564,9 +2564,9 @@ impl Window {
         let start = self.paint_index();
         let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
             .map(|previous| Arc::clone(&previous.content));
-        let text_system = self.text_system.clone();
-        let _text_access = (plan.row_revision.is_some() && matches!(&plan.context.identity, RowListIdentity::Uniform(..))
-            && experimental_row_boundary_enabled()).then(|| text_system.record_row_accesses());
+        let text_system = (plan.row_revision.is_some() && matches!(&plan.context.identity, RowListIdentity::Uniform(..))
+            && experimental_row_boundary_enabled()).then(|| self.text_system.clone());
+        let _text_access = text_system.as_ref().map(|text| text.record_row_accesses());
         let content = self.capture_scroll_paint(prepaint.origin, suppress_hover,
             previous_source.as_deref(), target, cx, |window, cx| item.paint(window, cx));
         if suppress_hover {
