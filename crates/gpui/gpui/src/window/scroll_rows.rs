@@ -1797,7 +1797,7 @@ impl Window {
         if adopt_text {
             // A failed placement epoch still leaves the old text log
             // authoritative; the cancellation path restores current slots.
-            self.text_system.splice_layouts(generation, &lines, &wrapped)?;
+            self.text_system.prepare_boundary_layouts(generation, &lines, &wrapped)?;
         }
         if !self.invalidator.commit_placement(epoch, &[owner]) { return None; }
         self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
@@ -1815,7 +1815,7 @@ impl Window {
         self.rendered_frame.mounted_scroll_sources[boundary.mounted_source].acknowledge(&membership.version);
         self.mounted_scroll_routing.get_mut().reset_frame(self.rendered_frame.mounted_scroll_sources.len());
         self.global_ids.get_mut().finish_partial_frame();
-        if adopt_text { self.text_system.finish_frame(); }
+        if adopt_text { self.text_system.commit_boundary_layouts(); }
         Some((paint, damage, retired_records, retired_rows, retired_states))
     }
 
