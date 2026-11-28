@@ -276,6 +276,20 @@ impl<V> LayoutStore<V> {
         reused
     }
 
+    /// An abandoned independent boundary may have touched cache slots in
+    /// the current epoch. Restore their eligibility for the ordinary draw;
+    /// truncating the log alone would suppress the next lookup's record.
+    fn cancel_current_accesses(&mut self, epoch: u64) {
+        for id in self.current.drain(..) {
+            if let Some(entry) = self.slots[id].as_mut()
+                && entry.last_used == epoch
+            {
+                entry.last_used = epoch.wrapping_sub(1);
+            }
+        }
+        self.used_count = 0;
+    }
+
     /// Prepare the next access log from the committed and independently
     /// materialized streams. The slot table is authoritative for both.
     /// Duplicate IDs are deliberate and no layout Arc is cloned.
@@ -549,11 +563,24 @@ impl LineLayoutIndex {
         lines: &crate::window::RecordSplicePlan,
         wrapped: &crate::window::RecordSplicePlan,
     ) -> Option<Range<Self>> {
+        Self::project_splice(range, generation, lines, wrapped, false)
+    }
+
+    pub(crate) fn project_splice(
+        range: &Range<Self>,
+        generation: u64,
+        lines: &crate::window::RecordSplicePlan,
+        wrapped: &crate::window::RecordSplicePlan,
+        enclosing: bool,
+    ) -> Option<Range<Self>> {
         if range.start.font_generation != generation || range.end.font_generation != generation {
             return None;
         }
-        let l = lines.retained_span(range.start.lines_index..range.end.lines_index)?;
-        let w = wrapped.retained_span(range.start.wrapped_lines_index..range.end.wrapped_lines_index)?;
+        let map = |plan: &crate::window::RecordSplicePlan, range| {
+            if enclosing { plan.enclosing_span(range) } else { plan.retained_span(range) }
+        };
+        let l = map(lines, range.start.lines_index..range.end.lines_index)?;
+        let w = map(wrapped, range.start.wrapped_lines_index..range.end.wrapped_lines_index)?;
         Some(Self { font_generation: generation, lines_index: l.start, wrapped_lines_index: w.start }
             ..Self { font_generation: generation, lines_index: l.end, wrapped_lines_index: w.end })
     }
@@ -705,6 +732,16 @@ impl LineLayoutCache {
             + frame.wrapped_lines.adopt_spliced_accesses(next_wrapped, epoch);
         self.frame_metrics.reuse_many(reused);
         Some(())
+    }
+
+    /// Only valid for a detached candidate starting with empty current logs.
+    /// Do not finish the text frame: committed access offsets must survive.
+    #[allow(dead_code)]
+    pub(crate) fn cancel_boundary_layouts(&self) {
+        let mut frame = self.frame.borrow_mut();
+        let epoch = frame.epoch;
+        frame.lines.cancel_current_accesses(epoch);
+        frame.wrapped_lines.cancel_current_accesses(epoch);
     }
 
     pub fn truncate_layouts(&self, index: LineLayoutIndex) {
@@ -1293,6 +1330,26 @@ mod tests {
         assert_eq!(frame.wrapped_lines.previous.len(), 2);
         assert!(Arc::ptr_eq(&old, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[0]].as_ref().unwrap().layout));
         assert!(Arc::ptr_eq(&new, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[1]].as_ref().unwrap().layout));
+    }
+
+    #[test]
+    fn cancelled_boundary_text_accesses_can_be_recorded_again() {
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = Arc::new(CacheKey {
+            text: SharedString::from("a"), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        store.insert(key.clone(), Arc::new(LineLayout::default()), 1);
+        store.finish(1, |_, _| {});
+        let id = store.previous[0];
+        store.replay(0..1, 2);
+        store.replay(0..1, 2);
+        store.cancel_current_accesses(2);
+        assert_eq!(store.previous, vec![id]);
+        assert!(store.current.is_empty());
+        assert_eq!(store.used_count, 0);
+        assert_eq!(store.replay(0..1, 2), 1);
+        assert_eq!(store.current, vec![id]);
     }
 
     #[test]
