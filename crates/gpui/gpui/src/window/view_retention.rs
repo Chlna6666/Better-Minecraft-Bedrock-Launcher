@@ -176,31 +176,43 @@ impl BoundaryViewRecords {
         for (index, slot) in old.view_retention_records.iter().enumerate() {
             let Some(record) = slot.record.as_ref() else { continue; };
             let is_ancestor = enclosing(slot.owner);
-            let mut next = record.clone();
-            if is_ancestor {
-                next.prepaint_range = maps.enclosing_prepaint(&record.prepaint_range)?;
-                next.paint_range = maps.enclosing_paint(&record.paint_range)?;
-                next.layout_claims = engine.detached_boundary_ancestor_claims(&record.layout_claims)?;
-                // Nested dirty-gap splice proofs still refer to the old
-                // physical record topology.
-                next.splice_safe = false;
+            let (prepaint_range, paint_range) = if is_ancestor {
+                (
+                    maps.enclosing_prepaint(&record.prepaint_range)?,
+                    maps.enclosing_paint(&record.paint_range)?,
+                )
             } else {
-                next.prepaint_range = maps.retained_prepaint(&record.prepaint_range)?;
-                next.paint_range = maps.retained_paint(&record.paint_range)?;
-            }
+                (
+                    maps.retained_prepaint(&record.prepaint_range)?,
+                    maps.retained_paint(&record.paint_range)?,
+                )
+            };
             // Independent lazy row materialization does not own any
             // enclosing View's request-layout state accesses.
             let mut states = StateAccessBlocks::default();
             for span in record.layout_state_range.iter() {
                 states.push(maps.states.retained_span(span.clone())?);
             }
-            next.layout_state_range = states;
-            if is_ancestor || next.prepaint_range != record.prepaint_range
-                || next.paint_range != record.paint_range
-                || next.layout_state_range != record.layout_state_range
+            if !is_ancestor
+                && prepaint_range == record.prepaint_range
+                && paint_range == record.paint_range
+                && states == record.layout_state_range
             {
-                records.push((index, next));
+                continue;
             }
+            // Only a relocated record owns a replacement descriptor. Clean
+            // siblings do not clone their layout claim blocks or Rc context.
+            let mut next = record.clone();
+            next.prepaint_range = prepaint_range;
+            next.paint_range = paint_range;
+            next.layout_state_range = states;
+            if is_ancestor {
+                next.layout_claims = engine.detached_boundary_ancestor_claims(&record.layout_claims)?;
+                // Nested dirty-gap splice proofs still refer to the old
+                // physical record topology.
+                next.splice_safe = false;
+            }
+            records.push((index, next));
         }
         let mut segments = Vec::new();
         for (index, segment) in old.retained_scene_segments.iter().enumerate() {
