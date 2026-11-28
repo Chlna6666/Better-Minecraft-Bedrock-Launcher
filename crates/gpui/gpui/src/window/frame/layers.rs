@@ -704,6 +704,75 @@ impl SceneLayers {
         Some(Self { frames, ordered: true, flat_root: self.flat_root, window_opaque })
     }
 
+    /// Merge the changed visible marker set into an already certified
+    /// flat root. No ordinary operation is inspected; the scene variant
+    /// has already verified source identity and unchanged indices.
+    pub(in crate::window) fn with_row_visibility_delta(
+        &self,
+        placements: &[(usize, crate::window::scroll_paint::ScrollPlacement)],
+        window_opaque: bool,
+    ) -> Option<Self> {
+        if placements.is_empty()
+            || placements.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || !self.ordered || !self.flat_root || self.window_opaque != window_opaque
+            || self.frames.iter().any(|layer| layer.background.is_some() || layer.root_static_span().is_none())
+            || placements.iter().any(|(_, p)| p.has_lcd_glyphs()
+                || (p.is_visible() && !p.has_static_order()))
+        {
+            return None;
+        }
+        let mut old = self.frames.iter().peekable();
+        let mut frames = Vec::with_capacity(self.frames.len());
+        // Native cache identities must stay unique, including newly
+        // revealed rows. Existing layers have already proved uniqueness.
+        let mut ids: FxHashSet<_> = self.frames.iter().map(|layer| layer.source_id).collect();
+        for (index, placement) in placements {
+            while old.peek().is_some_and(|layer| layer.root_static_span().unwrap().start < *index) {
+                frames.push(old.next()?.clone());
+            }
+            let previous = if old.peek().is_some_and(|layer| layer.root_static_span().unwrap().start == *index) {
+                let layer = old.next()?;
+                if layer.root_static_span()? != &(*index..*index + 1) { return None; }
+                Some(layer)
+            } else { None };
+            let geometry = placement.native_geometry();
+            if let Some(previous) = previous {
+                if previous.source_id != geometry.id || previous.generation != geometry.generation
+                    || previous.source_viewport != placement.viewport() || previous.scale != geometry.scale {
+                    return None;
+                }
+            }
+            if !placement.is_visible() { continue; }
+            if previous.is_none() && !ids.insert(geometry.id) { return None; }
+            let viewport = placement.viewport();
+            let (operations, coverage, delta, atlas_tiles) = placement.raster_source();
+            let translation = [
+                geometry.source_origin[0].checked_add(delta.x.0 as i32)?,
+                geometry.source_origin[1].checked_add(delta.y.0 as i32)?,
+            ];
+            let content = LayerContent::from_scroll(
+                operations, coverage, delta, translation, viewport, atlas_tiles,
+                previous.map(|layer| &layer.content),
+            )?;
+            frames.push(LayerFrame {
+                id: geometry.id, source_id: geometry.id, background: None,
+                generation: geometry.generation,
+                static_root_span: Some(*index..*index + 1),
+                damage: LayerDamage::Full, previous_coverage: None,
+                translation, source_viewport: viewport, scale: geometry.scale, content,
+                row_raster: geometry.row_bounds.map(|bounds| {
+                    translated_bounds(bounds, Point::default() - translation_point(geometry.source_origin))
+                }),
+            });
+        }
+        frames.extend(old.cloned());
+        for frame in &mut frames {
+            frame.damage = LayerDamage::Full;
+            frame.previous_coverage = None;
+        }
+        Some(Self { frames, ordered: true, flat_root: true, window_opaque })
+    }
+
     pub(in crate::window) fn capture_against(
         scene: &Scene,
         previous: Option<(&Scene, &Self)>,

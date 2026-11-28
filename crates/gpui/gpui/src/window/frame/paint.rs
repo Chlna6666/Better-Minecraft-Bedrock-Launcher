@@ -79,9 +79,11 @@ impl Paint {
                 _ => visibility_changed = true,
             }
         }
-        result.layers = (!visibility_changed)
-            .then(|| self.layers.with_scroll_placements_checked(placements, window_opaque, bounds_changed))
-            .flatten()
+        result.layers = if visibility_changed {
+            self.layers.with_row_visibility_delta(placements, window_opaque)
+        } else {
+            self.layers.with_scroll_placements_checked(placements, window_opaque, bounds_changed)
+        }
             .unwrap_or_else(|| SceneLayers::capture_against(
                 &result.scene, Some((&self.scene, &self.layers)), window_opaque,
             ));

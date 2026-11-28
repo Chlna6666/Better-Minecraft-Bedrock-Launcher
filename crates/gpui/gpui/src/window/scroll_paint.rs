@@ -379,6 +379,10 @@ impl ScrollPaint {
         let row_bounds = self.row_raster_bounds?;
         // Rounded list clips are fixed; the owner reapplies the mask to
         // each primitive when a row's own rectangular clips move.
+        // Hidden rows have no projected pixels or native composition
+        // slot. Keep their marker canonical until they become visible.
+        // Their logical origin and input records still move in the Frame.
+        let delta = if visible { delta } else { Point::default() };
         let mut placement = self.placement_in_viewport(viewport, scale, delta, visible)?;
         placement.native.row_bounds = Some(row_bounds);
         placement.buffered_row = true;
@@ -672,6 +676,8 @@ mod tests {
         let outside_coverage = point(ScaledPixels(0.), ScaledPixels(-48.));
         let hidden = source.buffered_row_placement(viewport, 1., outside_coverage, false).unwrap();
         assert!(hidden.visual_bounds().is_empty());
+        let hidden_again = source.buffered_row_placement(viewport, 1., Point::default(), false).unwrap();
+        assert!(hidden.same_paint(&hidden_again));
         assert!(source.buffered_row_placement(viewport, 1., outside_coverage, true).is_none());
     }
 
@@ -720,6 +726,56 @@ mod tests {
         assert!(next.scene.paint_operations.shares_boundary_storage(&paint.scene.paint_operations));
         let expanded = next.owner_fallback().unwrap().unwrap();
         assert_eq!(expanded.scene.quads[0].bounds.origin.y, px(12.).scale(1.));
+    }
+
+    #[test]
+    fn buffered_row_visibility_splices_flat_layers_against_full_capture() {
+        let coverage = Bounds::new(point(px(0.), px(-64.)), size(px(40.), px(192.))).scale(1.);
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(64.))));
+        let source = |y| {
+            let mut ops = Operations::default();
+            ops.push(PaintOperation::Primitive(Primitive::Quad(Quad {
+                bounds: Bounds::new(point(px(0.), px(y)), size(px(40.), px(16.))).scale(1.),
+                content_mask: ContentMask::new(coverage), ..Default::default()
+            })));
+            Arc::new(ScrollPaint::new(Point::default(), coverage, ops))
+        };
+        let sources = [source(0.), source(16.), source(64.), source(80.)];
+        let old = sources.iter().enumerate().map(|(i, source)| {
+            source.buffered_row_placement(viewport, 1., Point::default(), i < 2).unwrap()
+        }).collect::<Vec<_>>();
+        let mut painter = Painter::for_frame();
+        for placement in &old {
+            assert!(painter.push_deferred_scroll(placement.clone()));
+        }
+        painter.finish();
+        let mut scene = painter.into_scene();
+        let mut retention = crate::window::retained::RetainedPaint::default();
+        retention.finish(&mut scene);
+        let mut paint = crate::window::Paint::new(scene, Arc::new(retention), Default::default());
+        paint.layers = crate::window::SceneLayers::capture(&paint.scene, None, true);
+        let delta = point(ScaledPixels(0.), ScaledPixels(-16.));
+        let replacements = (0..3).map(|i| {
+            (i, sources[i].buffered_row_placement(viewport, 1., delta, i != 0).unwrap())
+        }).collect::<Vec<_>>();
+        let direct = paint.layers.with_row_visibility_delta(&replacements, true)
+            .expect("flat boundary splice");
+        let next = paint.with_scroll_placements(&replacements, true).unwrap();
+        let rebuilt = crate::window::SceneLayers::capture(&next.scene, Some(&paint.layers), true);
+        assert_eq!(direct.frames.len(), 2);
+        assert_eq!(direct.frames.len(), rebuilt.frames.len());
+        for (actual, expected) in direct.frames.iter().zip(&rebuilt.frames) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.generation, expected.generation);
+            assert_eq!(actual.root_static_span(), expected.root_static_span());
+            assert_eq!(actual.root_static_raster(), expected.root_static_raster());
+            assert_eq!(actual.native_row_raster(), expected.native_row_raster());
+        }
+        assert!(Arc::ptr_eq(&direct.frames[0].content, &paint.layers.frames[1].content));
+        assert!(Arc::ptr_eq(&next.layers.frames[0].content, &paint.layers.frames[1].content));
+        assert!(matches!(next.scene.paint_operations.view(3), Some(PaintOperationRef::DeferredScroll(marker)) if marker.same_paint(&old[3])));
+        assert!(next.scene.paint_operations.shares_boundary_storage(&paint.scene.paint_operations));
+        assert!(paint.layers.with_row_visibility_delta(&replacements, false).is_none());
     }
 
     #[test]

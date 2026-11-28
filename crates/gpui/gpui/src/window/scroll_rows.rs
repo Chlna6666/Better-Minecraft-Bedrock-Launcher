@@ -151,6 +151,42 @@ impl RowPlacementCandidate {
     }
 }
 
+/// Difference of two contiguous visible ranges. Retained hidden rows are
+/// not marker replacements; entering/leaving rows change visibility and
+/// the intersection changes position. No per-row membership set needed.
+#[derive(Debug, PartialEq, Eq)]
+struct VisibleRangeDelta {
+    kept: Range<usize>,
+    entered: [Range<usize>; 2],
+    exited: [Range<usize>; 2],
+}
+
+impl VisibleRangeDelta {
+    fn between(old: &Range<usize>, new: &Range<usize>) -> Self {
+        let start = old.start.max(new.start);
+        let end = old.end.min(new.end);
+        if start >= end {
+            return Self { kept: start..start, entered: [new.clone(), 0..0], exited: [old.clone(), 0..0] };
+        }
+        Self {
+            kept: start..end,
+            entered: [new.start..start, end..new.end],
+            exited: [old.start..start, end..old.end],
+        }
+    }
+
+    fn changes_marker(&self, row: usize) -> bool {
+        self.kept.contains(&row)
+            || self.entered.iter().any(|range| range.contains(&row))
+            || self.exited.iter().any(|range| range.contains(&row))
+    }
+
+    fn marker_count(&self) -> usize {
+        self.kept.len() + self.entered.iter().map(Range::len).sum::<usize>()
+            + self.exited.iter().map(Range::len).sum::<usize>()
+    }
+}
+
 /// Adjacent records with the same translation share a single hitbox span
 /// update. Reject overlap rather than translate a record twice.
 fn append_row_input_move(
@@ -1139,13 +1175,19 @@ impl Window {
                 return Err(Outcome::CaptureDependencies);
             }
         }
-        let mut placements = Vec::with_capacity(binding.captured.len());
+        let visible_delta = VisibleRangeDelta::between(&binding.visible, &visible);
+        let mut placements = Vec::with_capacity(visible_delta.marker_count());
         let mut origins = Vec::with_capacity(binding.captured.len());
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
         let mut input_moves = SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
         let mut stale_input = false;
         let scale = self.scale_factor();
         let mut routing = rows.notification_routing.borrow_mut();
+        // Topology covers the entire captured range, not just the markers
+        // touched this frame. Later transactions can reveal hidden rows.
+        let mut first = usize::MAX;
+        let mut end = 0;
+        let mut previous_marker = None;
         for row in binding.captured.clone() {
             let row_key = (key, row);
             let record = rows.rows.get(&row_key).ok_or(Outcome::MissingCapture)?;
@@ -1180,6 +1222,12 @@ impl Window {
             }
             let marker = span.start.scene_index;
             if span.end.scene_index != marker + 1 { return Err(Outcome::Marker); }
+            if previous_marker.is_some_and(|previous| previous >= marker) {
+                return Err(Outcome::MultipleCaptures);
+            }
+            previous_marker = Some(marker);
+            first = first.min(marker);
+            end = end.max(marker + 1);
             let Some(crate::scene::PaintOperationRef::DeferredScroll(old)) =
                 paint.scene.paint_operations.view(marker) else { return Err(Outcome::Marker); };
             let viewport = record.context.inherited.visual_content_mask;
@@ -1214,6 +1262,13 @@ impl Window {
                 append_row_input_move(&mut input_moves, input, logical_delta)?;
             }
             let delta = record.content.translation(origin, scale).ok_or(Outcome::FractionalTranslation)?;
+            stale_input |= has_mouse_listeners;
+            origins.push((row_key, origin));
+            if buffered && !visible_delta.changes_marker(row) {
+                // Both old and new markers are hidden. Their immutable
+                // canonical page remains valid; do not clone a placement.
+                continue;
+            }
             let new_target = if buffered {
                 ScrollPaintTarget::BufferedRow { visible: visible.contains(&row) }
             } else {
@@ -1227,17 +1282,10 @@ impl Window {
                     damage = Some(damage.map_or(bounds, |current| current.union(&bounds)));
                 }
             }
-            stale_input |= has_mouse_listeners;
             placements.push((marker, placement));
-            origins.push((row_key, origin));
         }
         drop(routing);
-        placements.sort_unstable_by_key(|(marker, _)| *marker);
-        let first = placements.first().ok_or(Outcome::MissingCapture)?.0;
-        let end = placements.last().ok_or(Outcome::MissingCapture)?.0 + 1;
-        if placements.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(Outcome::MultipleCaptures);
-        }
+        if placements.is_empty() { return Err(Outcome::MissingCapture); }
         let damage = damage.ok_or(Outcome::Damage)?;
         // Retained view records must be fixed enclosing views. Do not
         // translate nested view/layout records or widen existing fragment
@@ -1553,6 +1601,28 @@ fn hitbox_range(prepaint: &RowPrepaint) -> Range<usize> {
 mod scoped_row_tests {
     use super::*;
     use crate::EntityId;
+
+    #[test]
+    fn visible_range_delta_matches_membership_union_and_difference() {
+        for a in 0..8 {
+            for b in a..8 {
+                for c in 0..8 {
+                    for d in c..8 {
+                        let old = a..b;
+                        let new = c..d;
+                        let delta = VisibleRangeDelta::between(&old, &new);
+                        for row in 0..8 {
+                            assert_eq!(delta.kept.contains(&row), old.contains(&row) && new.contains(&row));
+                            assert_eq!(delta.entered.iter().any(|r| r.contains(&row)), new.contains(&row) && !old.contains(&row));
+                            assert_eq!(delta.exited.iter().any(|r| r.contains(&row)), old.contains(&row) && !new.contains(&row));
+                            assert_eq!(delta.changes_marker(row), old.contains(&row) || new.contains(&row));
+                        }
+                        assert_eq!(delta.marker_count(), (0..8).filter(|&row| old.contains(&row) || new.contains(&row)).count());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn row_input_moves_coalesce_adjacent_spans_but_reject_overlap() {
