@@ -192,6 +192,19 @@ fn disjoint_placement_ranges(ranges: &mut [Range<usize>]) -> bool {
     true
 }
 
+/// Every candidate is admitted against the changed mounted-source list.
+/// Check both cardinality and exact identity: a skipped invalid sample or
+/// a duplicate binding must not consume a different source's epoch.
+fn complete_placement_sources(
+    sources: &mut [usize],
+    changed: &[(usize, &super::scroll_dependencies::MountedScrollSource)],
+) -> bool {
+    sources.sort_unstable();
+    sources.len() == changed.len()
+        && !sources.windows(2).any(|pair| pair[0] == pair[1])
+        && changed.iter().all(|(index, _)| sources.binary_search(index).is_ok())
+}
+
 fn normalize_input_moves(moves: &mut smallvec::SmallVec<[(Range<usize>, Point<Pixels>); 4]>) -> bool {
     moves.retain(|(range, _)| !range.is_empty());
     moves.sort_unstable_by_key(|(range, _)| range.start);
@@ -269,7 +282,7 @@ impl Window {
         let changed: smallvec::SmallVec<[_; 4]> = self.mounted_scroll_routing.borrow_mut()
             .changed_indices(&frame.mounted_scroll_sources).iter()
             .map(|&index| (index, &frame.mounted_scroll_sources[index])).collect();
-        if changed.len() != owners.len() {
+        if changed.len() < owners.len() {
             return Err(Outcome::MountedSources);
         }
         let mut rows = smallvec::SmallVec::<[super::scroll_rows::RowPlacementCandidate; 1]>::new();
@@ -300,20 +313,21 @@ impl Window {
                     members.push(member);
                 }
                 Err(Outcome::MissingCapture) => {
-                    let row = self.prepare_row_placement(cx, epoch, owner, &changed, old_paint)?;
-                    spans.push(row.scene_span.clone());
-                    input_moves.extend(row.input_moves.iter().cloned());
-                    damage.push(row.damage);
-                    sources.push(row.mounted_source);
-                    rows.push(row);
+                    let first = rows.len();
+                    self.prepare_row_placements(cx, epoch, owner, &changed, old_paint, &mut rows)?;
+                    for row in &rows[first..] {
+                        spans.push(row.scene_span.clone());
+                        input_moves.extend(row.input_moves.iter().cloned());
+                        damage.push(row.damage);
+                        sources.push(row.mounted_source);
+                    }
                 }
                 Err(outcome) => return Err(outcome),
             }
         }
         // Every pending source is consumed once; no partial publication
         // can acknowledge another owner's scroll or move its input twice.
-        sources.sort_unstable();
-        if sources.windows(2).any(|pair| pair[0] == pair[1])
+        if !complete_placement_sources(&mut sources, &changed)
             || !disjoint_placement_ranges(&mut spans)
             || !normalize_input_moves(&mut input_moves)
             || damage.iter().enumerate().any(|(index, current)| {
@@ -1642,6 +1656,78 @@ mod binding_tests {
 
             // One list leaves its captured range. Neither list may commit
             // a partial position variant before the normal draw fallback.
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -240.), app);
+            assert!(window.prepare_scroll_placement(app).is_err());
+            assert!(Arc::ptr_eq(&published, &window.rendered_frame.published_paint()));
+            assert!(window.invalidator.is_dirty());
+        });
+    }
+
+    #[gpui::test]
+    fn same_owner_uniform_lists_share_one_atomic_placement(cx: &mut crate::TestAppContext) {
+        use crate::{Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
+            ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
+        use std::cell::Cell;
+
+        struct Pair {
+            builds: Rc<Cell<usize>>,
+            left: UniformListScrollHandle,
+            right: UniformListScrollHandle,
+        }
+        impl Render for Pair {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                let list = |id: &'static str, scroll: UniformListScrollHandle| {
+                    uniform_list_each(id, 100, |row, _, _| {
+                        div().w_full().h(px(24.)).bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                    })
+                    .with_item_height(px(24.))
+                    .track_scroll(scroll)
+                    .w(px(200.)).h(px(120.)).flex_shrink_0()
+                };
+                div().flex().flex_row()
+                    .child(list("left", self.left.clone()))
+                    .child(list("right", self.right.clone()))
+            }
+        }
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Pair {
+                builds: builds.clone(),
+                left: UniformListScrollHandle::new(),
+                right: UniformListScrollHandle::new(),
+            }
+        });
+        let wheel = |x, delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(x), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -1.), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            let before = builds.get();
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -2.), app);
+            let candidate = window.prepare_scroll_placement(app).expect("same-owner list placement");
+            assert_eq!(candidate.owners.len(), 1);
+            assert_eq!(candidate.rows.len(), 2);
+            assert!(candidate.members.is_empty());
+            let previous = window.rendered_frame.published_paint();
+            window.draw(app).clear();
+            assert_eq!(builds.get(), before);
+            let published = window.rendered_frame.published_paint();
+            assert_ne!(published.scene.revision, previous.scene.revision);
+            assert!(!window.invalidator.is_dirty());
+            assert!(window.test_present().is_accepted());
+
+            // A source outside its captured membership cannot be skipped
+            // while the other source publishes against the shared epoch.
             window.dispatch_event(wheel(8., -1.), app);
             window.dispatch_event(wheel(208., -240.), app);
             assert!(window.prepare_scroll_placement(app).is_err());

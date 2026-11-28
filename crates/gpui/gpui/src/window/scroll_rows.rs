@@ -2401,19 +2401,34 @@ impl Window {
     /// as full scrolling views. Fixed-clip hitboxes can move in place, but
     /// arbitrary coordinate-capturing listeners and independently retained
     /// descendants still require normal row replay.
-    pub(super) fn prepare_row_placement(
+    pub(super) fn prepare_row_placements(
         &self, cx: &App, epoch: super::lifecycle::PlacementEpoch, owner: crate::EntityId,
+        changed: &[(usize, &MountedScrollSource)], paint: &super::Paint,
+        candidates: &mut SmallVec<[RowPlacementCandidate; 1]>,
+    ) -> Result<(), Outcome> {
+        let initial = candidates.len();
+        for (&key, binding) in &self.rendered_frame.scroll_rows.row_placements {
+            if binding.owner != owner { continue; }
+            let Some((sampled, version, visible)) = binding.sample() else { continue; };
+            if sampled == binding.sampled { continue; }
+            let candidate = self.prepare_row_placement(
+                cx, epoch, key, binding, sampled, version, visible, changed, paint,
+            )?;
+            candidates.push(candidate);
+        }
+        if candidates.len() == initial { return Err(Outcome::MissingCapture); }
+        Ok(())
+    }
+
+    fn prepare_row_placement(
+        &self, cx: &App, epoch: super::lifecycle::PlacementEpoch,
+        key: u64, binding: &RowPlacementBinding, sampled: Point<Pixels>,
+        version: crate::StateVersion, visible: Range<usize>,
         changed: &[(usize, &MountedScrollSource)], paint: &super::Paint,
     ) -> Result<RowPlacementCandidate, Outcome> {
         let frame = &self.rendered_frame;
         let rows = &frame.scroll_rows;
-        let mut bindings = rows.row_placements.iter().filter_map(|(&key, binding)| {
-            if binding.owner != owner { return None; }
-            let (sampled, version, visible) = binding.sample()?;
-            (sampled != binding.sampled).then_some((key, binding, version, sampled, visible))
-        });
-        let (key, binding, version, sampled, visible) = bindings.next().ok_or(Outcome::MissingCapture)?;
-        if bindings.next().is_some() { return Err(Outcome::MultipleCaptures); }
+        let owner = binding.owner;
         if binding.revision != epoch.content { return Err(Outcome::CaptureDependencies); }
         let mut matching = changed.iter().filter(|(_, source)| source.changed_for(owner, &version));
         let (mounted_source, _) = matching.next().copied().ok_or(Outcome::MountedSources)?;
