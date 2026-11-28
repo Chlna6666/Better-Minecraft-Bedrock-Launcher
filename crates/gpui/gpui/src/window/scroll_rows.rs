@@ -294,6 +294,26 @@ impl RowPlacementBinding {
         Some(UniformBoundaryMembership { sampled, version, visible, captured, delta })
     }
 
+    /// Mixed structural transactions keep an already captured list's
+    /// membership unchanged. They must not recalculate overscan or
+    /// materialize rows just because a sibling crosses its boundary.
+    fn transaction_membership(&self) -> Option<UniformBoundaryMembership> {
+        if let Some(boundary) = self.boundary_membership() {
+            return Some(boundary);
+        }
+        let builder = self.builder.as_ref()?;
+        let (sampled, version, visible) = self.sample_uniform()?;
+        if !self.buffered() || builder.context.owner != self.owner
+            || visible.start < self.captured.start || visible.end > self.captured.end
+            || sampled == self.sampled
+        {
+            return None;
+        }
+        let captured = self.captured.clone();
+        let delta = VisibleRangeDelta::between(&captured, &captured);
+        Some(UniformBoundaryMembership { sampled, version, visible, captured, delta })
+    }
+
     fn origin(&self, row: usize, offset: Point<Pixels>, previous: Point<Pixels>) -> Point<Pixels> {
         match &self.source {
             RowPlacementSource::Variable(_) => previous + (offset - self.sampled),
@@ -1481,18 +1501,21 @@ impl Window {
                 row_revision: binding.row_revision.clone(), context: builder.context.clone(),
                 previous_context: RefCell::new(None), hover_held: true, prepainted: VecDeque::new(),
             };
-            let anchor = self.next_frame.dispatch_tree.push_node();
+            let structural = binding.captured != boundary.binding.captured;
+            let anchor = structural.then(|| self.next_frame.dispatch_tree.push_node());
             let claim_start = self.claim_log_len();
             let mut items = Vec::new();
             for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
                 let origin = binding.origin(row, membership.sampled, Point::default());
-                let item = builder.materialize(self, anchor, row, &membership.visible, origin, &mut plan, cx)?;
+                let item = builder.materialize(self, anchor?, row, &membership.visible, origin, &mut plan, cx)?;
                 items.push((row, item));
             }
-            if items.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(anchor) {
+            if items.is_empty() != anchor.is_none() || self.next_frame.dispatch_tree.active_node_id() != anchor {
                 return None;
             }
-            self.next_frame.dispatch_tree.pop_node();
+            if anchor.is_some() {
+                self.next_frame.dispatch_tree.pop_node();
+            }
             entered_claim_domains.push(claim_start..self.claim_log_len());
             domain_reads.push(cx.entities.dependency_reads_since(domain_read_start));
             scratch.push((binding, builder, anchor, plan, items));
@@ -1503,14 +1526,18 @@ impl Window {
         for ((binding, builder, anchor, plan, items), reads) in scratch.iter_mut().zip(&mut domain_reads) {
             cx.entities.set_render_dependency_owner(Some(binding.owner));
             let domain_read_start = cx.entities.dependency_read_index();
-            self.next_frame.dispatch_tree.set_active_node(*anchor);
-            for (row, item) in items.drain(..) {
-                builder.paint_materialized(self, *anchor, row, item, plan, cx)?;
-            }
-            if !plan.prepainted.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(*anchor) {
+            if let Some(anchor) = *anchor {
+                self.next_frame.dispatch_tree.set_active_node(anchor);
+                for (row, item) in items.drain(..) {
+                    builder.paint_materialized(self, anchor, row, item, plan, cx)?;
+                }
+                if !plan.prepainted.is_empty() || self.next_frame.dispatch_tree.active_node_id() != Some(anchor) {
+                    return None;
+                }
+                self.next_frame.dispatch_tree.pop_node();
+            } else if !items.is_empty() || !plan.prepainted.is_empty() {
                 return None;
             }
-            self.next_frame.dispatch_tree.pop_node();
             reads.merge_replayed(&cx.entities.dependency_reads_since(domain_read_start));
         }
         cx.entities.set_render_dependency_owner(None);
@@ -1572,8 +1599,10 @@ impl Window {
             let mut claim_cursor = claims.start;
             let mut scoped_reads = RenderDependencies::default();
             if !actual_reads.states.is_empty() { return None; }
-            if anchor.0 != fresh_dispatch_end { return None; }
-            fresh_dispatch_end = anchor.0.checked_add(1)?;
+            if let Some(anchor) = anchor {
+                if anchor.0 != fresh_dispatch_end { return None; }
+                fresh_dispatch_end = anchor.0.checked_add(1)?;
+            }
             let viewport = builder.context.inherited.visual_content_mask;
             for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
                 let record = fresh.scroll_rows.rows.get(&(boundary.key, row))?;
@@ -1839,8 +1868,8 @@ impl Window {
             state_prepaint_edits: Some(state_split), mouse: &mouse, ime: &ime,
             text: Some((generation, &lines, &wrapped)), text_prepaint_edits: Some((line_split, wrapped_split)),
         };
-        let attachments: Vec<_> = scratch.iter().map(|(_, builder, anchor, _, _)|
-            (Some(*anchor), builder.dispatch_parent)).collect();
+        let attachments: Vec<_> = scratch.iter().filter_map(|(_, builder, anchor, _, _)|
+            anchor.map(|anchor| (Some(anchor), builder.dispatch_parent))).collect();
         let input_domains: Vec<_> = boundaries.iter().zip(&all_domain_edits).map(|(boundary, edits)|
             super::frame::RowInputDomain {
                 owner: boundary.key, hitboxes: boundary.hitboxes.clone(), edits: edits.hitboxes.clone(),
@@ -2124,7 +2153,7 @@ impl Window {
         for (mounted_source, source) in frame.mounted_scroll_sources.iter().enumerate().filter(|(_, source)| !source.unchanged()) {
             let mut candidates = frame.scroll_rows.row_placements.iter().filter_map(|(&key, binding)| {
                 if !owners.contains(&binding.owner) { return None; }
-                let membership = binding.boundary_membership()?;
+                let membership = binding.transaction_membership()?;
                 source.changed_for(binding.owner, &membership.version).then_some((key, binding, membership))
             });
             let (key, binding, membership) = candidates.next()?;
@@ -2133,8 +2162,10 @@ impl Window {
             }
             boundaries.push(self.prepare_static_uniform_domain(epoch, key, binding, membership, mounted_source)?);
         }
-        if boundaries.is_empty() || owners.iter().any(|owner|
-            !boundaries.iter().any(|boundary| boundary.binding.owner == *owner))
+        // Stable-only batches use the ordinary placement fast path.
+        if !boundaries.iter().any(|boundary| boundary.membership.captured != boundary.binding.captured)
+            || owners.iter().any(|owner|
+                !boundaries.iter().any(|boundary| boundary.binding.owner == *owner))
         { return None; }
         // Scratch follows committed scene order. Reject domains whose
         // native streams require a different order or overlap.
