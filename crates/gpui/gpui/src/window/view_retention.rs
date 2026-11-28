@@ -147,6 +147,89 @@ pub(crate) struct ViewRecordSlot {
     pub(crate) record: Option<RetainedViewRecord>,
 }
 
+/// The initial detached boundary does not admit new/retired View slots.
+/// Relocate the existing records and scene-segment coordinates without
+/// cloning the entire Frame or reconstructing its entity lookup table.
+#[allow(dead_code)]
+pub(super) struct BoundaryViewRecords {
+    records: Vec<(usize, RetainedViewRecord)>,
+    segments: Vec<(usize, Range<usize>)>,
+}
+
+#[allow(dead_code)]
+impl BoundaryViewRecords {
+    pub(super) fn prepare(
+        old: &Frame, replacement: &Frame,
+        maps: &super::frame::BoundaryIndexSplices<'_>,
+        engine: &crate::layout::TaffyLayoutEngine,
+        owner: EntityId,
+        damage: Bounds<ScaledPixels>,
+    ) -> Option<Self> {
+        if !replacement.view_retention_records.is_empty()
+            || !replacement.retained_scene_segments.is_empty()
+        {
+            return None;
+        }
+        let ancestors = old.dispatch_tree.view_path(owner);
+        let enclosing = |entity| entity == owner || ancestors.contains(&entity);
+        let mut records = Vec::new();
+        for (index, slot) in old.view_retention_records.iter().enumerate() {
+            let Some(record) = slot.record.as_ref() else { continue; };
+            let is_ancestor = enclosing(slot.owner);
+            let mut next = record.clone();
+            if is_ancestor {
+                next.prepaint_range = maps.enclosing_prepaint(&record.prepaint_range)?;
+                next.paint_range = maps.enclosing_paint(&record.paint_range)?;
+                next.layout_claims = engine.detached_boundary_ancestor_claims(&record.layout_claims)?;
+                // Nested dirty-gap splice proofs still refer to the old
+                // physical record topology.
+                next.splice_safe = false;
+            } else {
+                next.prepaint_range = maps.retained_prepaint(&record.prepaint_range)?;
+                next.paint_range = maps.retained_paint(&record.paint_range)?;
+            }
+            // Independent lazy row materialization does not own any
+            // enclosing View's request-layout state accesses.
+            let mut states = StateAccessBlocks::default();
+            for span in record.layout_state_range.iter() {
+                states.push(maps.states.retained_span(span.clone())?);
+            }
+            next.layout_state_range = states;
+            if is_ancestor || next.prepaint_range != record.prepaint_range
+                || next.paint_range != record.paint_range
+                || next.layout_state_range != record.layout_state_range
+            {
+                records.push((index, next));
+            }
+        }
+        let mut segments = Vec::new();
+        for (index, segment) in old.retained_scene_segments.iter().enumerate() {
+            let range = if enclosing(segment.entity_id) {
+                if segment.bounds.intersect(&damage) != damage { return None; }
+                maps.scene.enclosing_span(segment.scene_range.clone())?
+            } else {
+                maps.scene.retained_span(segment.scene_range.clone())?
+            };
+            if range != segment.scene_range {
+                segments.push((index, range));
+            }
+        }
+        Some(Self { records, segments })
+    }
+
+    /// Swap in the already validated descriptors and retain the old
+    /// ownership in this candidate until post-publication retirement.
+    pub(super) fn adopt(&mut self, frame: &mut Frame) {
+        for (index, record) in &mut self.records {
+            std::mem::swap(frame.view_retention_records[*index].record.as_mut()
+                .expect("validated retained view slot"), record);
+        }
+        for (index, range) in &mut self.segments {
+            std::mem::swap(&mut frame.retained_scene_segments[*index].scene_range, range);
+        }
+    }
+}
+
 /// Where the view's own record is inserted once it has painted.
 pub(crate) struct ViewRetentionSlot(usize);
 
