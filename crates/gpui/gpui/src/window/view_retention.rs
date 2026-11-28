@@ -147,6 +147,116 @@ pub(crate) struct ViewRecordSlot {
     pub(crate) record: Option<RetainedViewRecord>,
 }
 
+/// Register only completed paint records. A duplicate identity remains
+/// ambiguous until the next certified slot publication.
+fn register_slot(lookup: &mut FxHashMap<u64, usize>, key: u64, index: usize) {
+    lookup.entry(key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
+}
+
+/// Structural slot adoption is separate from the view's layout, paint,
+/// dependencies and scene segment coordinates. The outer transaction must
+/// certify those stores before consuming this candidate.
+#[allow(dead_code)]
+pub(super) struct ViewSlotSplice<'a> {
+    owners: super::frame::RecordOwnerSplice<'a, ViewRecordSlot>,
+    nested: Vec<(usize, Range<usize>)>,
+    lookup: FxHashMap<u64, usize>,
+}
+
+#[allow(dead_code)]
+impl<'a> ViewSlotSplice<'a> {
+    /// Each explicit ownership interval belongs to a retained ancestor's
+    /// descendant span. A replacement subtree must be wholly contained in
+    /// one edit, including its own slot and all descendant reservations.
+    pub(super) fn prepare(
+        old: &Frame,
+        replacement: &Frame,
+        plan: &'a RecordSplicePlan,
+        ancestor_edits: &[(usize, Range<usize>)],
+    ) -> Option<Self> {
+        let owners = plan.prepare_owners(
+            &old.view_retention_records,
+            &replacement.view_retention_records,
+        )?;
+        for (index, (slot, _)) in ancestor_edits.iter().enumerate() {
+            if index > 0 && ancestor_edits[index - 1].0 >= *slot {
+                return None;
+            }
+            old.view_retention_records.get(*slot)?.record.as_ref()?;
+            plan.retained_range(*slot..slot.checked_add(1)?)?;
+        }
+
+        let mut nested = Vec::new();
+        nested.try_reserve_exact(plan.len()).ok()?;
+        let mut lookup = FxHashMap::default();
+        lookup.try_reserve(plan.len()).ok()?;
+        let mut position = 0;
+        let mut valid = true;
+        plan.visit_ranges(|source, range| {
+            if !valid {
+                return;
+            }
+            let (slots, retained) = match source {
+                SpliceSource::Retained => (&old.view_retention_records, true),
+                SpliceSource::Replacement => (&replacement.view_retention_records, false),
+            };
+            for source_slot in range {
+                let slot = &slots[source_slot];
+                if let Some(record) = &slot.record {
+                    if record.nested.start != source_slot + 1
+                        || record.nested.end < record.nested.start
+                        || record.nested.end > slots.len()
+                    {
+                        valid = false;
+                        return;
+                    }
+                    let projected = if retained {
+                        match ancestor_edits.binary_search_by_key(&source_slot, |(slot, _)| *slot) {
+                            Ok(index) => plan.enclosing_edit_span(
+                                record.nested.clone(), ancestor_edits[index].1.clone(),
+                            ),
+                            Err(_) => plan.retained_span(record.nested.clone()),
+                        }
+                    } else {
+                        // Include the nonempty own slot so a leaf's empty
+                        // descendant checkpoint cannot match a second edit.
+                        plan.replacement_span(source_slot..record.nested.end)
+                            .map(|subtree| subtree.start + 1..subtree.end)
+                    };
+                    let Some(projected) = projected else {
+                        valid = false;
+                        return;
+                    };
+                    if projected.start != position + 1 || projected.end > plan.len() {
+                        valid = false;
+                        return;
+                    }
+                    if projected != record.nested {
+                        nested.push((position, projected));
+                    }
+                    register_slot(&mut lookup, slot.key, position);
+                }
+                position += 1;
+            }
+        });
+        valid.then_some(Self { owners, nested, lookup })
+    }
+
+    pub(super) fn adopt(self, old: &mut Frame, replacement: &mut Frame) -> Vec<ViewRecordSlot> {
+        let retired = self.owners.adopt(
+            &mut old.view_retention_records,
+            &mut replacement.view_retention_records,
+        );
+        for (slot, nested) in self.nested {
+            old.view_retention_records[slot].record.as_mut()
+                .expect("validated retained view record").nested = nested;
+        }
+        old.view_retentions = self.lookup;
+        replacement.view_retentions.clear();
+        retired
+    }
+}
+
 /// The initial detached boundary does not admit new/retired View slots.
 /// Relocate the existing records and scene-segment coordinates without
 /// cloning the entire Frame or reconstructing its entity lookup table.
@@ -272,8 +382,7 @@ impl BoundaryViewRecords {
 mod boundary_update_tests {
     use super::*;
 
-    #[test]
-    fn coordinate_adoption_keeps_view_identity_and_clean_claims() {
+    fn record(nested: Range<usize>) -> RetainedViewRecord {
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.)));
         let mask = ContentMask::new(bounds);
         let context = Rc::new(RetainedPaintContext {
@@ -288,7 +397,7 @@ mod boundary_update_tests {
             text_style: TextStyle::default(),
             rem_size: px(16.),
         });
-        let mut record = RetainedViewRecord {
+        RetainedViewRecord {
             layout_root: LayoutId::from(taffy::NodeId::from(1_u64)),
             layout_claims: LayoutClaimBlocks::request(1..3),
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
@@ -297,10 +406,58 @@ mod boundary_update_tests {
             context: context.clone(),
             rebuild: None,
             splice_safe: true,
-            nested: 2..4,
+            nested,
             scene_segments: 5..7,
             layout_state_range: StateAccessBlocks::from_range(1..2),
+        }
+    }
+
+    #[test]
+    fn slot_splice_relocates_nested_ranges_and_retires_lookup_keys() {
+        let keymap = Rc::new(RefCell::new(crate::Keymap::default()));
+        let actions = Rc::new(crate::ActionRegistry::default());
+        let mut old = Frame::new(DispatchTree::new(keymap.clone(), actions.clone()));
+        let mut replacement = Frame::new(DispatchTree::new(keymap, actions));
+        let slot = |key, nested| ViewRecordSlot {
+            key,
+            owner: EntityId::from(key),
+            record: Some(record(nested)),
         };
+        old.view_retention_records = vec![
+            slot(1, 1..4), slot(2, 2..2), slot(3, 3..3),
+            slot(4, 4..4), slot(5, 5..5),
+        ];
+        replacement.view_retention_records = vec![slot(5, 1..2), slot(6, 2..2)];
+        for (index, slot) in old.view_retention_records.iter().enumerate() {
+            register_slot(&mut old.view_retentions, slot.key, index);
+        }
+        for (index, slot) in replacement.view_retention_records.iter().enumerate() {
+            register_slot(&mut replacement.view_retentions, slot.key, index);
+        }
+        let context = old.view_retention_records[2].record.as_ref().unwrap().context.clone();
+        let plan = RecordSplicePlan::new(5, 2, &[(1..2, 0..2), (3..4, 0..0)]).unwrap();
+        assert!(ViewSlotSplice::prepare(&old, &replacement, &plan, &[]).is_none());
+        let candidate = ViewSlotSplice::prepare(&old, &replacement, &plan, &[(0, 0..2)]).unwrap();
+        assert_eq!(old.view_retentions[&2], 1);
+        let retired = candidate.adopt(&mut old, &mut replacement);
+        assert_eq!(retired.iter().map(|slot| slot.key).collect::<Vec<_>>(), vec![2, 4]);
+        assert_eq!(old.view_retention_records.iter().map(|slot| slot.key).collect::<Vec<_>>(),
+            vec![1, 5, 6, 3, 5]);
+        assert_eq!(old.view_retention_records[0].record.as_ref().unwrap().nested, 1..4);
+        assert_eq!(old.view_retention_records[1].record.as_ref().unwrap().nested, 2..3);
+        assert_eq!(old.view_retention_records[3].record.as_ref().unwrap().nested, 4..4);
+        assert!(Rc::ptr_eq(&context, &old.view_retention_records[3].record.as_ref().unwrap().context));
+        assert!(!old.view_retentions.contains_key(&2));
+        assert!(!old.view_retentions.contains_key(&4));
+        assert_eq!(old.view_retentions[&3], 3);
+        assert_eq!(old.view_retentions[&5], usize::MAX);
+        assert!(replacement.view_retentions.is_empty());
+    }
+
+    #[test]
+    fn coordinate_adoption_keeps_view_identity_and_clean_claims() {
+        let mut record = record(2..4);
+        let context = record.context.clone();
         let old_claims = record.layout_claims.clone();
         let mut update = BoundaryViewUpdate {
             slot: 1,
@@ -707,7 +864,7 @@ impl Window {
         }
         record.scene_segments.end = self.next_frame.retained_scene_segments.len();
         let entry = &mut self.next_frame.view_retention_records[index];
-        self.next_frame.view_retentions.entry(entry.key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
+        register_slot(&mut self.next_frame.view_retentions, entry.key, index);
         entry.record = Some(record);
     }
 
@@ -770,7 +927,7 @@ impl Window {
             };
             let index = target_nested.start + offset;
             let entry = &mut self.next_frame.view_retention_records[index];
-            self.next_frame.view_retentions.entry(entry.key).and_modify(|slot| *slot = usize::MAX).or_insert(index);
+            register_slot(&mut self.next_frame.view_retentions, entry.key, index);
             entry.record = Some(RetainedViewRecord {
                     prepaint_range: prepaint,
                     paint_range: paint,
