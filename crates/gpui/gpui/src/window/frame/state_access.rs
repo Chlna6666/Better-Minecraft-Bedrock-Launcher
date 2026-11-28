@@ -185,6 +185,32 @@ impl StateAccessLog {
         }
     }
 
+    /// Prepare a variable-length state access stream without cloning keys
+    /// or compacting away tombstones. The bounded page owners are shared
+    /// directly; actual state values remain in the Window state store.
+    #[allow(dead_code)] // Adopted together with the complete Frame transaction.
+    pub(in crate::window) fn with_spliced_records(
+        &self, replacement: &Self, plan: &super::RecordSplicePlan,
+    ) -> Option<Self> {
+        if !self.pending.is_empty() || !replacement.pending.is_empty()
+            || !plan.matches_sources(self.len, replacement.len)
+        {
+            return None;
+        }
+        let mut result = Self::default();
+        plan.visit_ranges(|source, range| {
+            let source = match source {
+                super::SpliceSource::Retained => self,
+                super::SpliceSource::Replacement => replacement,
+            };
+            for block in source.blocks_in(range.clone()) {
+                result.append(block.slice(range.start.max(block.begin())..range.end.min(block.end)));
+            }
+        });
+        debug_assert_eq!(result.len, plan.len());
+        Some(result)
+    }
+
     pub(in crate::window) fn cancel(&mut self, range: Range<usize>) {
         assert!(self.contains(range.clone()));
         if range.is_empty() { return; }
@@ -272,6 +298,45 @@ mod tests {
     use super::*;
     fn key(i: usize) -> Key {
         (GlobalElementId::from_path(&[crate::ElementId::Integer(i as u64)]), TypeId::of::<u64>())
+    }
+
+    #[test]
+    fn variable_state_access_splice_preserves_tombstones_and_page_identity() {
+        let mut old = StateAccessLog::default();
+        for i in 0..130 { old.push(Some(key(i))); }
+        old.freeze();
+        old.cancel(20..40);
+        let mut replacement = StateAccessLog::default();
+        for i in 200..206 { replacement.push(Some(key(i))); }
+        replacement.freeze();
+        replacement.cancel(2..4);
+        let plan = super::super::RecordSplicePlan::new(old.len(), replacement.len(), &[
+            (5..5, 0..2), (22..30, 2..5), (70..75, 5..5),
+        ]).unwrap();
+        let expected = (0..5).map(|i| old.key(i).cloned())
+            .chain((0..2).map(|i| replacement.key(i).cloned()))
+            .chain((5..22).map(|i| old.key(i).cloned()))
+            .chain((2..5).map(|i| replacement.key(i).cloned()))
+            .chain((30..70).map(|i| old.key(i).cloned()))
+            .chain((75..130).map(|i| old.key(i).cloned()))
+            .collect::<Vec<_>>();
+        let mut next = old.with_spliced_records(&replacement, &plan).unwrap();
+        assert_eq!(next.len(), expected.len());
+        assert!(next.pending.is_empty());
+        assert!(next.blocks.iter().all(|block| block.page.as_ref().is_none_or(|page|
+            old.blocks.iter().chain(replacement.blocks.iter())
+                .any(|source| source.page.as_ref().is_some_and(|source| Rc::ptr_eq(page, source))))));
+        for (index, expected) in expected.iter().enumerate() {
+            assert_eq!(next.key(index), expected.as_ref());
+        }
+        next.cancel(0..1);
+        assert_eq!(old.key(0), Some(&key(0)));
+        old.clear();
+        replacement.clear();
+        for (index, expected) in expected.iter().enumerate().skip(1) {
+            assert_eq!(next.key(index), expected.as_ref());
+        }
+        assert!(old.with_spliced_records(&replacement, &plan).is_none());
     }
 
     #[test]
