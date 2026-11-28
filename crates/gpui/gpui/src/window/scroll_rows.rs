@@ -1214,32 +1214,7 @@ impl RowTextDomain {
     }
 }
 
-/// Record the exact edit interval for each independent row domain.
-/// State and text have phase-major source logs; their paint edit offsets
-/// are translated only after all prepaint edits have been collected.
-#[derive(Default)]
-struct RowDomainEdits {
-    scene: Range<usize>,
-    dispatch: Range<usize>,
-    hitboxes: Range<usize>,
-    mouse: Range<usize>,
-    states: [Range<usize>; 2],
-    text: [[Range<usize>; 2]; 2],
-}
-
-impl RowDomainEdits {
-    fn shift_paint(&mut self, state_split: usize, text_splits: [usize; 2]) -> Option<()> {
-        let shift = |range: &mut Range<usize>, offset: usize| -> Option<()> {
-            *range = range.start.checked_add(offset)?..range.end.checked_add(offset)?;
-            Some(())
-        };
-        shift(&mut self.states[1], state_split)?;
-        for (range, offset) in self.text[1].iter_mut().zip(text_splits) {
-            shift(range, offset)?;
-        }
-        Some(())
-    }
-}
+use super::frame::RowDomainEdits;
 
 struct BoundaryRowUpdate {
     key: RowKey,
@@ -1487,6 +1462,7 @@ impl Window {
         let read_start = cx.entities.dependency_read_index();
         let notification_epoch = self.invalidator.row_notification_epoch();
         let mut scratch = Vec::with_capacity(boundaries.len());
+        let mut entered_claim_domains = Vec::with_capacity(boundaries.len());
         self.invalidator.set_phase(super::DrawPhase::Prepaint);
         for boundary in &boundaries {
             let key = boundary.key;
@@ -1505,6 +1481,7 @@ impl Window {
                 previous_context: RefCell::new(None), hover_held: true, prepainted: VecDeque::new(),
             };
             let anchor = self.next_frame.dispatch_tree.push_node();
+            let claim_start = self.claim_log_len();
             let mut items = Vec::new();
             for row in binding.captured.clone().filter(|row| !boundary.binding.captured.contains(row)) {
                 let origin = binding.origin(row, membership.sampled, Point::default());
@@ -1515,6 +1492,7 @@ impl Window {
                 return None;
             }
             self.next_frame.dispatch_tree.pop_node();
+            entered_claim_domains.push(claim_start..self.claim_log_len());
             scratch.push((binding, builder, anchor, plan, items));
         }
         let prepaint_end = self.prepaint_index();
@@ -1852,16 +1830,18 @@ impl Window {
         }
 
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
-        let mut include_damage = |bounds: Bounds<crate::ScaledPixels>| {
-            if !bounds.is_empty() { damage = Some(damage.map_or(bounds, |old| old.union(&bounds))); }
-        };
+        let mut view_domains = Vec::with_capacity(boundaries.len());
         let mut updates = Vec::new();
         let mut placements = Vec::new();
         let mut bindings = Vec::with_capacity(boundaries.len());
         let mut retired_keys = Vec::new();
-        for ((boundary, (mut binding, builder, _, _, _)), domain_edits) in
-            boundaries.iter().zip(scratch).zip(all_domain_edits)
+        for (((boundary, (mut binding, builder, _, _, _)), domain_edits), entered) in
+            boundaries.iter().zip(scratch).zip(all_domain_edits).zip(entered_claim_domains)
         {
+            let mut domain_damage: Option<Bounds<crate::ScaledPixels>> = None;
+            let mut include_damage = |bounds: Bounds<crate::ScaledPixels>| {
+                if !bounds.is_empty() { domain_damage = Some(domain_damage.map_or(bounds, |old| old.union(&bounds))); }
+            };
             let key = boundary.key;
             let membership = &boundary.membership;
             let old_range = boundary.binding.captured.clone();
@@ -2008,13 +1988,20 @@ impl Window {
                 dispatch.retained_range(parent_index..parent_index.checked_add(1)?)?.start);
             retired_keys.extend(old_range.clone().filter(|row| !new_range.contains(row)).map(|row| (key, row)));
             let membership_slot = old.scroll_rows.membership.single_run(key)?.0;
+            let domain_damage = domain_damage?;
+            damage = Some(damage.map_or(domain_damage, |old| old.union(&domain_damage)));
+            view_domains.push(super::view_retention::BoundaryViewDomain {
+                owner: binding.owner, edits: domain_edits, entered,
+                retired: boundary.retired_claims.iter().flat_map(|(_, claims)| claims.prepaint_blocks().iter().cloned()).collect(),
+                damage: domain_damage,
+            });
             bindings.push((key, membership_slot, binding));
         }
         let damage = damage?;
         if !placements.is_empty() {
             candidate.paint = candidate.paint.with_scroll_placements(&placements, opaque)?;
         }
-        candidate.prepare_view_records(old, fresh, &maps, self.layout_engine.as_ref()?, owner, damage)?;
+        candidate.prepare_view_records(old, fresh, &maps, self.layout_engine.as_ref()?, &view_domains)?;
         let retired = Vec::with_capacity(retired_keys.len());
         // Every other captured row retains its content and layout claims.
         // The structural edit may nevertheless relocate its native frame

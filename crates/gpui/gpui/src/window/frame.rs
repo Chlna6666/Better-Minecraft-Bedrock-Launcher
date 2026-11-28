@@ -583,6 +583,50 @@ impl Window {
     }
 }
 
+/// Exact edit ownership for a contiguous run of structural row domains.
+#[derive(Clone, Default)]
+pub(super) struct RowDomainEdits {
+    pub(super) scene: Range<usize>,
+    pub(super) dispatch: Range<usize>,
+    pub(super) hitboxes: Range<usize>,
+    pub(super) mouse: Range<usize>,
+    pub(super) states: [Range<usize>; 2],
+    pub(super) text: [[Range<usize>; 2]; 2],
+}
+
+impl RowDomainEdits {
+    pub(super) fn append(&mut self, next: &Self) -> Option<()> {
+        fn join(a: &mut Range<usize>, b: &Range<usize>) -> Option<()> {
+            if a.end != b.start { return None; }
+            a.end = b.end;
+            Some(())
+        }
+        join(&mut self.scene, &next.scene)?;
+        join(&mut self.dispatch, &next.dispatch)?;
+        join(&mut self.hitboxes, &next.hitboxes)?;
+        join(&mut self.mouse, &next.mouse)?;
+        for phase in 0..2 {
+            join(&mut self.states[phase], &next.states[phase])?;
+            for stream in 0..2 {
+                join(&mut self.text[phase][stream], &next.text[phase][stream])?;
+            }
+        }
+        Some(())
+    }
+
+    pub(super) fn shift_paint(&mut self, state_split: usize, text_splits: [usize; 2]) -> Option<()> {
+        let shift = |range: &mut Range<usize>, offset: usize| -> Option<()> {
+            *range = range.start.checked_add(offset)?..range.end.checked_add(offset)?;
+            Some(())
+        };
+        shift(&mut self.states[1], state_split)?;
+        for (range, offset) in self.text[1].iter_mut().zip(text_splits) {
+            shift(range, offset)?;
+        }
+        Some(())
+    }
+}
+
 /// Index projection for the native boundary streams. Other streams must
 /// separately be certified unchanged before adopting these mapped ranges.
 #[allow(dead_code)]
@@ -600,6 +644,60 @@ pub(super) struct BoundaryIndexSplices<'a> {
 
 #[allow(dead_code)]
 impl BoundaryIndexSplices<'_> {
+    fn scoped_text(
+        &self, range: Range<LineLayoutIndex>, edits: &[Range<usize>; 2],
+    ) -> Option<Range<LineLayoutIndex>> {
+        let Some((generation, lines, wrapped)) = self.text else { return Some(range); };
+        let (a, sl, sw) = range.start.components();
+        let (b, el, ew) = range.end.components();
+        if a != generation || b != generation { return None; }
+        let l = lines.enclosing_edit_span(sl..el, edits[0].clone())?;
+        let w = wrapped.enclosing_edit_span(sw..ew, edits[1].clone())?;
+        Some(LineLayoutIndex::from_components(generation, l.start, w.start)
+            ..LineLayoutIndex::from_components(generation, l.end, w.end))
+    }
+
+    pub(super) fn scoped_prepaint(
+        &self, source: &Range<PrepaintStateIndex>, edits: &RowDomainEdits,
+    ) -> Option<Range<PrepaintStateIndex>> {
+        let mut result = source.clone();
+        let h = self.hitboxes.enclosing_edit_span(source.start.hitboxes_index..source.end.hitboxes_index, edits.hitboxes.clone())?;
+        let d = self.dispatch.enclosing_edit_span(source.start.dispatch_tree_index..source.end.dispatch_tree_index, edits.dispatch.clone())?;
+        let s = self.states.enclosing_edit_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index, edits.states[0].clone())?;
+        let t = self.scoped_text(source.start.line_layout_index.clone()..source.end.line_layout_index.clone(), &edits.text[0])?;
+        result.start.hitboxes_index = h.start;
+        result.end.hitboxes_index = h.end;
+        result.start.dispatch_tree_index = d.start;
+        result.end.dispatch_tree_index = d.end;
+        result.start.accessed_element_states_index = s.start;
+        result.end.accessed_element_states_index = s.end;
+        result.start.line_layout_index = t.start;
+        result.end.line_layout_index = t.end;
+        Some(result)
+    }
+
+    pub(super) fn scoped_paint(
+        &self, source: &Range<PaintIndex>, edits: &RowDomainEdits,
+    ) -> Option<Range<PaintIndex>> {
+        let mut result = source.clone();
+        let p = self.scene.enclosing_edit_span(source.start.scene_index..source.end.scene_index, edits.scene.clone())?;
+        let m = self.mouse.enclosing_edit_span(source.start.mouse_listeners_index..source.end.mouse_listeners_index, edits.mouse.clone())?;
+        let s = self.states.enclosing_edit_span(source.start.accessed_element_states_index..source.end.accessed_element_states_index, edits.states[1].clone())?;
+        let i = self.ime.retained_span(source.start.input_handlers_index..source.end.input_handlers_index)?;
+        let t = self.scoped_text(source.start.line_layout_index.clone()..source.end.line_layout_index.clone(), &edits.text[1])?;
+        result.start.scene_index = p.start;
+        result.end.scene_index = p.end;
+        result.start.mouse_listeners_index = m.start;
+        result.end.mouse_listeners_index = m.end;
+        result.start.accessed_element_states_index = s.start;
+        result.end.accessed_element_states_index = s.end;
+        result.start.input_handlers_index = i.start;
+        result.end.input_handlers_index = i.end;
+        result.start.line_layout_index = t.start;
+        result.end.line_layout_index = t.end;
+        Some(result)
+    }
+
     fn project_text(
         &self, range: Range<LineLayoutIndex>, enclosing: bool, paint: bool,
     ) -> Option<Range<LineLayoutIndex>> {
@@ -724,11 +822,11 @@ impl BoundaryRecordCandidate<'_> {
     #[allow(dead_code)]
     pub(super) fn prepare_view_records(
         &mut self, old: &Frame, replacement: &Frame, maps: &BoundaryIndexSplices<'_>,
-        engine: &crate::layout::TaffyLayoutEngine, owner: EntityId, damage: Bounds<ScaledPixels>,
+        engine: &crate::layout::TaffyLayoutEngine, domains: &[super::view_retention::BoundaryViewDomain],
     ) -> Option<()> {
         if old.scene().revision != self.source_revision { return None; }
         self.views = Some(super::view_retention::BoundaryViewRecords::prepare(
-            old, replacement, maps, engine, owner, damage,
+            old, replacement, maps, engine, domains,
         )?);
         Some(())
     }
@@ -1703,6 +1801,38 @@ mod publication_tests {
         assert_eq!(plan.enclosing_edit_span(2..4, 1..1), None);
         assert_eq!(plan.retained_span(3..3), None);
         assert_eq!(plan.edit_count(), 2);
+    }
+
+    #[test]
+    fn scoped_view_domains_split_shared_phase_checkpoints() {
+        let plan = RecordSplicePlan::new(8, 4, &[(3..3, 0..2), (3..3, 2..4)]).unwrap();
+        let unchanged = RecordSplicePlan::new(8, 0, &[]).unwrap();
+        let maps = BoundaryIndexSplices {
+            scene: &plan, hitboxes: &plan, states: &plan, dispatch: &plan,
+            mouse: &plan, ime: &unchanged, text: None,
+            state_prepaint_edits: None, text_prepaint_edits: None,
+        };
+        let domain = |range: Range<usize>| RowDomainEdits {
+            scene: range.clone(), dispatch: range.clone(), hitboxes: range.clone(),
+            mouse: range.clone(), states: [range.clone(), range],
+            ..Default::default()
+        };
+        let pre = |i| PrepaintStateIndex {
+            hitboxes_index: i, dispatch_tree_index: i, accessed_element_states_index: i,
+            ..Default::default()
+        };
+        let paint = |i| PaintIndex {
+            scene_index: i, mouse_listeners_index: i, accessed_element_states_index: i,
+            ..Default::default()
+        };
+        let a = domain(0..1);
+        let b = domain(1..2);
+        assert_eq!(maps.scoped_prepaint(&(pre(1)..pre(3)), &a).unwrap().end.hitboxes_index, 5);
+        assert_eq!(maps.scoped_paint(&(paint(3)..paint(6)), &b).unwrap().start.scene_index, 5);
+        let mut both = a.clone();
+        both.append(&b).unwrap();
+        assert_eq!(maps.scoped_paint(&(paint(1)..paint(6)), &both).unwrap().end.scene_index, 10);
+        assert!(both.append(&a).is_none());
     }
 
     #[test]

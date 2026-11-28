@@ -325,6 +325,22 @@ impl<'a> ViewSlotSplice<'a> {
 /// Relocate the existing records and scene-segment coordinates without
 /// cloning the entire Frame or reconstructing its entity lookup table.
 #[allow(dead_code)]
+pub(super) struct BoundaryViewDomain {
+    pub(super) owner: EntityId,
+    pub(super) edits: super::frame::RowDomainEdits,
+    pub(super) retired: Vec<Range<usize>>,
+    pub(super) entered: Range<usize>,
+    pub(super) damage: Bounds<ScaledPixels>,
+}
+
+struct AncestorDomain {
+    edits: super::frame::RowDomainEdits,
+    retired: Vec<Range<usize>>,
+    entered: Vec<Range<usize>>,
+    damage: Bounds<ScaledPixels>,
+    last: usize,
+}
+
 pub(super) struct BoundaryViewRecords {
     records: Vec<BoundaryViewUpdate>,
     segments: Vec<(usize, Range<usize>)>,
@@ -360,26 +376,46 @@ impl BoundaryViewRecords {
         old: &Frame, replacement: &Frame,
         maps: &super::frame::BoundaryIndexSplices<'_>,
         engine: &crate::layout::TaffyLayoutEngine,
-        owner: EntityId,
-        damage: Bounds<ScaledPixels>,
+        domains: &[BoundaryViewDomain],
     ) -> Option<Self> {
         if !replacement.view_retention_records.is_empty()
             || !replacement.retained_scene_segments.is_empty()
         {
             return None;
         }
-        let ancestors = old.dispatch_tree.view_path(owner);
-        let enclosing = |entity| entity == owner || ancestors.contains(&entity);
-        let (retired_claims, entered_claims) = engine.detached_boundary_claim_domain()?;
-        let entered_claims = [entered_claims];
+        // Accumulate each actual ancestor's contiguous domain run. A
+        // noncontiguous run would enclose an unowned edit; reject it.
+        let mut ancestors = collections::FxHashMap::<EntityId, AncestorDomain>::default();
+        for (index, domain) in domains.iter().enumerate() {
+            let mut path = old.dispatch_tree.view_path(domain.owner);
+            if !path.contains(&domain.owner) { path.push(domain.owner); }
+            for entity in path {
+                if let Some(ancestor) = ancestors.get_mut(&entity) {
+                    if ancestor.last.checked_add(1)? != index { return None; }
+                    ancestor.edits.append(&domain.edits)?;
+                    ancestor.retired.extend(domain.retired.iter().cloned());
+                    ancestor.entered.push(domain.entered.clone());
+                    ancestor.damage = ancestor.damage.union(&domain.damage);
+                    ancestor.last = index;
+                } else {
+                    ancestors.insert(entity, AncestorDomain {
+                        edits: domain.edits.clone(), retired: domain.retired.clone(),
+                        entered: vec![domain.entered.clone()], damage: domain.damage, last: index,
+                    });
+                }
+            }
+        }
+        for ancestor in ancestors.values_mut() {
+            ancestor.retired.sort_unstable_by_key(|span| span.start);
+        }
         let mut records = Vec::new();
         for (index, slot) in old.view_retention_records.iter().enumerate() {
             let Some(record) = slot.record.as_ref() else { continue; };
-            let is_ancestor = enclosing(slot.owner);
-            let (prepaint_range, paint_range) = if is_ancestor {
+            let ancestor = ancestors.get(&slot.owner);
+            let (prepaint_range, paint_range) = if let Some(ancestor) = ancestor {
                 (
-                    maps.enclosing_prepaint(&record.prepaint_range)?,
-                    maps.enclosing_paint(&record.paint_range)?,
+                    maps.scoped_prepaint(&record.prepaint_range, &ancestor.edits)?,
+                    maps.scoped_paint(&record.paint_range, &ancestor.edits)?,
                 )
             } else {
                 (
@@ -393,16 +429,16 @@ impl BoundaryViewRecords {
             for span in record.layout_state_range.iter() {
                 states.push(maps.states.retained_span(span.clone())?);
             }
-            if !is_ancestor
+            if ancestor.is_none()
                 && prepaint_range == record.prepaint_range
                 && paint_range == record.paint_range
                 && states == record.layout_state_range
             {
                 continue;
             }
-            let claims = if is_ancestor {
+            let claims = if let Some(ancestor) = ancestor {
                 Some(engine.detached_boundary_ancestor_claims(
-                    &record.layout_claims, retired_claims, &entered_claims,
+                    &record.layout_claims, &ancestor.retired, &ancestor.entered,
                 )?)
             } else {
                 None
@@ -417,9 +453,9 @@ impl BoundaryViewRecords {
         }
         let mut segments = Vec::new();
         for (index, segment) in old.retained_scene_segments.iter().enumerate() {
-            let range = if enclosing(segment.entity_id) {
-                if segment.bounds.intersect(&damage) != damage { return None; }
-                maps.scene.enclosing_span(segment.scene_range.clone())?
+            let range = if let Some(ancestor) = ancestors.get(&segment.entity_id) {
+                if segment.bounds.intersect(&ancestor.damage) != ancestor.damage { return None; }
+                maps.scene.enclosing_edit_span(segment.scene_range.clone(), ancestor.edits.scene.clone())?
             } else {
                 maps.scene.retained_span(segment.scene_range.clone())?
             };
