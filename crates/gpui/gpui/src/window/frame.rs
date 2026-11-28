@@ -552,7 +552,7 @@ impl BoundaryIndexSplices<'_> {
 #[allow(dead_code)]
 pub(super) struct BoundaryRecordCandidate<'a> {
     pub(super) callbacks: BoundaryCallbackCandidate<'a>,
-    pub(super) scene: Scene,
+    pub(super) paint: Arc<Paint>,
     pub(super) hitboxes: HitboxStore,
     pub(super) state_access: state_access::StateAccessLog,
     pub(super) dispatch: DispatchTree,
@@ -636,6 +636,7 @@ impl Frame {
         replacement_parent: DispatchNodeId,
         mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan,
+        window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
         let callbacks = BoundaryCallbackCandidate::prepare(self, replacement, mouse, ime)?;
         // Validate the structural and route constraints first. The three
@@ -647,10 +648,10 @@ impl Frame {
         let state_access = self.accessed_element_states.with_spliced_records(
             &replacement.accessed_element_states, states,
         )?;
-        let scene = self.scene().with_spliced_row_markers(
-            &replacement.scene().paint_operations, scene_edits,
+        let paint = self.published_paint_ref()?.with_spliced_row_markers(
+            replacement.scene(), scene_edits, window_opaque,
         )?;
-        Some(BoundaryRecordCandidate { scene, hitboxes, state_access, dispatch, callbacks })
+        Some(BoundaryRecordCandidate { paint, hitboxes, state_access, dispatch, callbacks })
     }
 
     /// Borrows the sole Paint payload for this frame's current lifecycle phase.
@@ -1355,11 +1356,13 @@ mod publication_tests {
             bounds, content_mask: ContentMask::new(bounds), ..Default::default()
         });
         old.painter.finish();
+        Arc::get_mut(&mut old.retained_paint).unwrap().finish(&mut old.painter.scene);
+        let old_paint = old.publish(PaintGeometry::default(), None, true);
         replacement.painter.finish();
         let empty = RecordSplicePlan::new(0, 0, &[]).unwrap();
         let plan = RecordSplicePlan::new(4, 2, &[(1..2, 0..2)]).unwrap();
         let next = old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty,
+            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty, true,
         ).expect("independent child replacement");
         assert_eq!(next.dispatch.len(), 5);
         assert_eq!(next.dispatch.dispatch_path(DispatchNodeId(2)).as_slice(),
@@ -1369,14 +1372,15 @@ mod publication_tests {
         assert!(next.dispatch.has_view_route(owner));
         assert_eq!(next.hitboxes.len(), 0);
         assert_eq!(next.state_access.len(), 0);
-        assert_eq!(next.scene.len(), old.scene().len());
-        assert!(std::ptr::eq(&next.scene.quads[0], &old.scene().quads[0]));
+        assert_eq!(next.paint.scene.len(), old.scene().len());
+        assert!(std::ptr::eq(&next.paint.scene.quads[0], &old_paint.scene.quads[0]));
+        assert_ne!(next.paint.scene.revision, old_paint.scene.revision);
 
         // A retained child cannot refer to a retired parent. The old
         // record stream and routes remain untouched after rejection.
         let orphan = RecordSplicePlan::new(4, 2, &[(2..3, 0..0)]).unwrap();
         assert!(old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &orphan, root, &empty, &empty,
+            &replacement, &[], &empty, &empty, &orphan, root, &empty, &empty, true,
         ).is_none());
         assert_eq!(old.dispatch_tree.len(), 4);
         assert_eq!(old.dispatch_tree.dispatch_path(child).as_slice(), &[root, kept, child]);
@@ -1387,7 +1391,7 @@ mod publication_tests {
         replacement.dispatch_tree.pop_node();
         replacement.dispatch_tree.freeze();
         assert!(old.prepare_boundary_records(
-            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty,
+            &replacement, &[], &empty, &empty, &plan, root, &empty, &empty, true,
         ).is_none());
         assert!(old.dispatch_tree.has_view_route(owner));
     }
