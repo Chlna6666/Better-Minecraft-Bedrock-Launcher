@@ -160,7 +160,7 @@ fn register_slot(lookup: &mut FxHashMap<u64, usize>, key: u64, index: usize) {
 pub(super) struct ViewSlotSplice<'a> {
     owners: super::frame::RecordOwnerSplice<'a, ViewRecordSlot>,
     nested: Vec<(usize, Range<usize>)>,
-    lookup: FxHashMap<u64, usize>,
+    lookup_changes: FxHashMap<u64, Option<usize>>,
 }
 
 #[allow(dead_code)]
@@ -169,7 +169,7 @@ impl<'a> ViewSlotSplice<'a> {
     /// descendant span. A replacement subtree must be wholly contained in
     /// one edit, including its own slot and all descendant reservations.
     pub(super) fn prepare(
-        old: &Frame,
+        old: &mut Frame,
         replacement: &Frame,
         plan: &'a RecordSplicePlan,
         ancestor_edits: &[(usize, Range<usize>)],
@@ -188,8 +188,16 @@ impl<'a> ViewSlotSplice<'a> {
 
         let mut nested = Vec::new();
         nested.try_reserve_exact(plan.len()).ok()?;
-        let mut lookup = FxHashMap::default();
-        lookup.try_reserve(plan.len()).ok()?;
+        let mut lookup_changes = FxHashMap::default();
+        // Membership changes affect a key even if its final index does
+        // not move. Holes never own a lookup entry.
+        for range in plan.edited_ranges(false) {
+            for slot in &old.view_retention_records[range] {
+                if slot.record.is_some() {
+                    lookup_changes.insert(slot.key, None);
+                }
+            }
+        }
         let mut position = 0;
         let mut valid = true;
         plan.visit_ranges(|source, range| {
@@ -234,12 +242,62 @@ impl<'a> ViewSlotSplice<'a> {
                     if projected != record.nested {
                         nested.push((position, projected));
                     }
-                    register_slot(&mut lookup, slot.key, position);
+                    if !retained || (position != source_slot
+                        && old.view_retentions.get(&slot.key).copied() != Some(usize::MAX))
+                    {
+                        lookup_changes.entry(slot.key).or_insert(None);
+                    }
                 }
                 position += 1;
             }
         });
-        valid.then_some(Self { owners, nested, lookup })
+        if !valid {
+            return None;
+        }
+
+        // Unique old keys need only one indexed lookup. Recompute
+        // ambiguous keys from the retained source only when their
+        // membership changes; a mere coordinate shift preserves MAX.
+        let mut ambiguous = false;
+        for (key, target) in &mut lookup_changes {
+            match old.view_retentions.get(key).copied() {
+                Some(usize::MAX) => ambiguous = true,
+                Some(source) => {
+                    let end = source.checked_add(1)?;
+                    if let Some(mapped) = plan.retained_range(source..end) {
+                        *target = Some(mapped.start);
+                    }
+                }
+                None => {}
+            }
+        }
+        let mut position = 0;
+        plan.visit_ranges(|source, range| {
+            let (slots, retained) = match source {
+                SpliceSource::Retained => (&old.view_retention_records, true),
+                SpliceSource::Replacement => (&replacement.view_retention_records, false),
+            };
+            if !retained || ambiguous {
+                for (offset, slot) in slots[range.clone()].iter().enumerate() {
+                    if slot.record.is_none()
+                        || (retained && old.view_retentions.get(&slot.key).copied() != Some(usize::MAX))
+                    {
+                        continue;
+                    }
+                    if let Some(target) = lookup_changes.get_mut(&slot.key) {
+                        *target = Some(if target.is_some() { usize::MAX } else { position + offset });
+                    }
+                }
+            }
+            position += range.len();
+        });
+        // Capacity changes are permitted during admission; no logical
+        // lookup entries change until the publication lease is consumed.
+        let added = lookup_changes.iter().filter(|(key, target)| {
+            target.is_some() && !old.view_retentions.contains_key(*key)
+        }).count();
+        old.view_retentions.try_reserve(added).ok()?;
+        Some(Self { owners, nested, lookup_changes })
     }
 
     pub(super) fn adopt(self, old: &mut Frame, replacement: &mut Frame) -> Vec<ViewRecordSlot> {
@@ -251,7 +309,13 @@ impl<'a> ViewSlotSplice<'a> {
             old.view_retention_records[slot].record.as_mut()
                 .expect("validated retained view record").nested = nested;
         }
-        old.view_retentions = self.lookup;
+        for (key, target) in self.lookup_changes {
+            if let Some(index) = target {
+                old.view_retentions.insert(key, index);
+            } else {
+                old.view_retentions.remove(&key);
+            }
+        }
         replacement.view_retentions.clear();
         retired
     }
@@ -436,8 +500,10 @@ mod boundary_update_tests {
         }
         let context = old.view_retention_records[2].record.as_ref().unwrap().context.clone();
         let plan = RecordSplicePlan::new(5, 2, &[(1..2, 0..2), (3..4, 0..0)]).unwrap();
-        assert!(ViewSlotSplice::prepare(&old, &replacement, &plan, &[]).is_none());
-        let candidate = ViewSlotSplice::prepare(&old, &replacement, &plan, &[(0, 0..2)]).unwrap();
+        assert!(ViewSlotSplice::prepare(&mut old, &replacement, &plan, &[]).is_none());
+        let candidate = ViewSlotSplice::prepare(&mut old, &replacement, &plan, &[(0, 0..2)]).unwrap();
+        assert!(!candidate.lookup_changes.contains_key(&1));
+        assert_eq!(candidate.lookup_changes[&3], Some(3));
         assert_eq!(old.view_retentions[&2], 1);
         let retired = candidate.adopt(&mut old, &mut replacement);
         assert_eq!(retired.iter().map(|slot| slot.key).collect::<Vec<_>>(), vec![2, 4]);
