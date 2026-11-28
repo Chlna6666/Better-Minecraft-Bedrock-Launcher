@@ -106,6 +106,13 @@ impl Window {
 
 /// One owner record, with its last resolved dispatch route. `keep` is
 /// scratch for publication, not an additional owner index.
+/// Additive owner-scoped dependency adoption. Retired row reads remain
+/// conservative until the ordinary traversal reconciles the owner.
+pub(super) struct BoundaryRowReads {
+    owner: EntityId,
+    merged: crate::RenderDependencies,
+}
+
 struct CommittedReads {
     reads: crate::RenderDependencies,
     own_reads: crate::OwnerOwnReads,
@@ -456,6 +463,47 @@ impl WindowInvalidator {
     /// Like Fast's tracked-entity reconciliation, unchanged read edges keep
     /// their committed reverse routes. Apply scoped edge deltas in place;
     /// rebuild only when removing an unresolved masking edge.
+    /// Prepare a union without modifying the committed reverse indexes.
+    /// Native state reads require a separate snapshot transaction.
+    pub(super) fn prepare_boundary_row_reads(
+        &self, owner: EntityId, reads: &crate::RenderDependencies,
+    ) -> Option<BoundaryRowReads> {
+        if !reads.states.is_empty() { return None; }
+        let inner = self.inner.borrow();
+        let mut merged = reads.clone();
+        if let Some(old) = inner.view_reads.get(&Some(owner)) {
+            if old.route != Some(owner) { return None; }
+            merged.merge_replayed(&old.reads);
+            // Bound conservative growth until a full traversal removes
+            // retired edges. Already-known large owner sets stay valid.
+            if merged.entities.len() > old.reads.entities.len().max(4096)
+                || merged.globals.len() > old.reads.globals.len().max(256)
+            { return None; }
+        } else if merged.entities.len() > 4096 || merged.globals.len() > 256 {
+            return None;
+        }
+        Some(BoundaryRowReads { owner, merged })
+    }
+
+    /// No callbacks or fallible admission after the placement epoch is
+    /// consumed. Preserve own_reads: these additions came only from rows.
+    pub(super) fn commit_boundary_row_reads(&self, prepared: BoundaryRowReads) {
+        let mut inner = self.inner.borrow_mut();
+        let inner = &mut *inner;
+        let route = Some(prepared.owner);
+        let entry = inner.view_reads.entry(route).or_insert_with(|| CommittedReads {
+            reads: Default::default(), own_reads: Default::default(),
+            state_validation: Default::default(), route, keep: true,
+        });
+        debug_assert_eq!(entry.route, route);
+        update_dependency_routes(&mut inner.render_dependencies,
+            &entry.reads.entities, route, &prepared.merged.entities, route);
+        update_dependency_routes(&mut inner.global_read_dependencies,
+            &entry.reads.globals, route, &prepared.merged.globals, route);
+        entry.reads = prepared.merged;
+        entry.keep = true;
+    }
+
     pub(in crate::window) fn commit_frame_dependencies(
         &self,
         log: &mut crate::AppDependencies,
