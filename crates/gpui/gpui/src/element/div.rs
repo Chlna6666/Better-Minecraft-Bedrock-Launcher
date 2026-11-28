@@ -21,3 +21,4 @@ pub use scroll::{ScrollAnchor, ScrollHandle};
 pub use state::{ElementClickedState, InteractiveElementState};
 
 pub(crate) use tooltip::{ActiveTooltip, register_tooltip_mouse_handlers, set_tooltip_on_window};
+pub(crate) use component::capture_style;

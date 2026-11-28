@@ -182,12 +182,15 @@ impl Element for List {
         // Capture the exact measurement geometry before Paint can execute
         // user code. Publish the binding only with the completed frame.
         let scroll_top = layout.scroll_top;
-        let visible = scroll_top.item_ix..scroll_top.item_ix + layout.item_layouts.len();
+        let visible = layout.visible_rows.clone()
+            .unwrap_or(scroll_top.item_ix..scroll_top.item_ix + layout.item_layouts.len());
         if let Some(plan) = layout.row_plan.as_mut()
-            && layout.item_layouts.iter().map(|item| item.index).eq(visible.clone())
-            && let Some(proof) = self.state.placement_proof(scroll_top, visible.clone())
+            && let Some(captured) = layout.item_layouts.front().zip(layout.item_layouts.back())
+                .map(|(first, last)| first.index..last.index + 1)
+            && layout.item_layouts.iter().map(|item| item.index).eq(captured.clone())
+            && let Some(proof) = self.state.placement_proof(scroll_top, visible, captured.clone())
         {
-            plan.bind_variable_placement(proof, visible);
+            plan.bind_variable_placement(proof, captured);
         }
         ListPrepaintLayout { hitbox, layout }
     }
@@ -222,7 +225,7 @@ impl Element for List {
 
         let height = bounds.size.height;
         if let Some(plan) = prepaint.layout.row_plan.as_ref() {
-            window.remember_row_placement(plan);
+            window.remember_row_placement(plan, cx);
         }
         let hitbox_id = prepaint.hitbox.id;
         let item_layouts = std::mem::take(&mut prepaint.layout.item_layouts);

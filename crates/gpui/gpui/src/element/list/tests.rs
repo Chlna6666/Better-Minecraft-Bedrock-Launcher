@@ -393,7 +393,7 @@ fn variable_placement_membership_requires_stable_measured_geometry() {
         state.last_padding = Some(Default::default());
     }
     list.scroll_to(crate::ListOffset { item_ix: 0, offset_in_item: px(1.) });
-    let proof = list.placement_proof(list.logical_scroll_top(), 0..3).unwrap();
+    let proof = list.placement_proof(list.logical_scroll_top(), 0..3, 0..3).unwrap();
     list.scroll_by(px(2.));
     assert_eq!(proof.sample().unwrap().0.y, px(-3.));
     list.scroll_by(px(8.));
@@ -404,11 +404,11 @@ fn variable_placement_membership_requires_stable_measured_geometry() {
     assert!(proof.sample().is_none());
     // A fresh capture can certify the same viewport even with an unknown
     // remote row, but must not cross an unknown required row.
-    let proof = list.placement_proof(list.logical_scroll_top(), 0..3).unwrap();
+    let proof = list.placement_proof(list.logical_scroll_top(), 0..3, 0..3).unwrap();
     assert!(proof.sample().is_some());
     list.invalidate_items(&[2..3]);
     assert!(proof.sample().is_none());
-    assert!(list.placement_proof(list.logical_scroll_top(), 0..3).is_none());
+    assert!(list.placement_proof(list.logical_scroll_top(), 0..3, 0..3).is_none());
 }
 
 

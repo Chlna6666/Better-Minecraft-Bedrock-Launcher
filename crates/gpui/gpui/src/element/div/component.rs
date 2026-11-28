@@ -217,7 +217,7 @@ fn clips_content(style: &StyleRefinement) -> bool {
         || style.overflow.y.is_some_and(|overflow| overflow != Overflow::Visible)
 }
 
-fn capture_style(style: &StyleRefinement, capture: ScrollCapture) -> bool {
+pub(crate) fn capture_style(style: &StyleRefinement, capture: ScrollCapture) -> bool {
     style.background_blur.is_none()
         && style.filter_blur.is_none()
         && style.transition.is_none()
@@ -255,6 +255,7 @@ pub struct DivLayout {
 pub struct DivPrepaint {
     hitbox: Option<Hitbox>,
     reconciliation_transparent: bool,
+    scroll_capture: Option<Box<crate::window::scroll_views::ScrollContentCapture>>,
 }
 
 fn style_allows_traversal_only(style: &Style, window: &Window, cx: &App) -> bool {
@@ -453,7 +454,9 @@ impl Element for Div {
         {
             self.scroll_child_view(window, cx)
         } else { None };
-        let tracked_scroll = direct_child.and_then(|_| self.interactivity.tracked_scroll_handle.clone());
+        let tracked_scroll = scroll_source.as_ref()
+            .and_then(|_| self.interactivity.tracked_scroll_handle.clone());
+        let capture_children = self.prepaint_listener.is_none() && self.image_cache.is_none();
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -462,6 +465,7 @@ impl Element for Div {
             window,
             cx,
             |style, scroll_offset, hitbox, window, cx| {
+                let mut scroll_capture = None;
                 let reconciliation_transparent = interactivity_transparent
                     && hitbox.is_none()
                     && style_is_reconciliation_transparent(style, window, cx);
@@ -476,24 +480,27 @@ impl Element for Div {
                         let scrolls = global_id.is_some()
                             && style.overflow.y == Overflow::Scroll
                             && style.overflow.x != Overflow::Scroll;
-                        let direct_child = direct_child.filter(|_| scrolls).and_then(|child| {
-                            let range = if let Some(handle) = &tracked_scroll {
-                                let state = handle.0.borrow();
-                                if state.active_item.is_some() || state.scroll_to_bottom {
-                                    return None;
-                                }
-                                Some(TrackedScrollRange::new(-state.max_offset.height, &state.version))
-                            } else {
-                                None
-                            };
-                            Some((child, range))
+                        let range = tracked_scroll.as_ref().filter(|_| scrolls).and_then(|handle| {
+                            let state = handle.0.borrow();
+                            if state.active_item.is_some() || state.scroll_to_bottom {
+                                return None;
+                            }
+                            Some(TrackedScrollRange::new(-state.max_offset.height, &state.version))
                         });
-                        window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, direct_child, |window| {
+                        let direct_view = direct_child
+                            .filter(|_| scrolls && (tracked_scroll.is_none() || range.is_some()))
+                            .map(|child| (child, range.clone()));
+                        window.with_scroll_viewport(scroll_source.filter(|_| scrolls), scroll_offset, direct_view, |window| {
+                            let capture = range.filter(|_| capture_children && direct_child.is_none())
+                                .and_then(|range| window.begin_scroll_content(range, cx))
+                                .filter(|_| self.children.iter_mut().all(AnyElement::can_capture_scrolling_view));
                             window.with_element_offset(scroll_offset, |window| {
                                 for child in &mut self.children {
                                     child.prepaint(window, cx);
                                 }
                             });
+                            scroll_capture = capture.and_then(|capture| window.finish_scroll_content_prepaint(capture))
+                                .map(Box::new);
                         });
 
                         if let Some(listener) = self.prepaint_listener.as_ref() {
@@ -505,6 +512,7 @@ impl Element for Div {
                 DivPrepaint {
                     hitbox,
                     reconciliation_transparent,
+                    scroll_capture,
                 }
             },
         )
@@ -543,8 +551,15 @@ impl Element for Div {
                 cx,
                 |style, window, cx| {
                     if style.display != Display::None {
-                        for child in &mut self.children {
-                            child.paint(window, cx);
+                        let mut paint = |window: &mut Window, cx: &mut App| {
+                            for child in &mut self.children {
+                                child.paint(window, cx);
+                            }
+                        };
+                        if let Some(capture) = prepaint.scroll_capture.take() {
+                            window.paint_scroll_content(*capture, cx, paint);
+                        } else {
+                            paint(window, cx);
                         }
                     }
                 },

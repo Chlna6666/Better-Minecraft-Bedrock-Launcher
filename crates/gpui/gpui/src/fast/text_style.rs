@@ -17,6 +17,7 @@ use std::{cell::{Cell, RefCell}, rc::Rc};
 /// kept until the stack changes there, and handed out as an `Rc`.
 pub(crate) struct TextStyleStack {
     refinements: Vec<TextStyleRefinement>,
+    inherited: Option<Rc<TextStyle>>,
     // Default style changes invalidate even suspended deferred-draw stacks.
     generation: Cell<u32>,
     /// `resolved[i]`, when known, is the default text style refined by the
@@ -29,6 +30,7 @@ impl Default for TextStyleStack {
     fn default() -> Self {
         Self {
             refinements: Vec::new(),
+            inherited: None,
             generation: Cell::new(0),
             resolved: RefCell::new(vec![None]),
         }
@@ -39,6 +41,7 @@ impl Clone for TextStyleStack {
     fn clone(&self) -> Self {
         Self {
             refinements: self.refinements.clone(),
+            inherited: self.inherited.clone(),
             generation: self.generation.clone(),
             resolved: self.resolved.clone(),
         }
@@ -46,6 +49,7 @@ impl Clone for TextStyleStack {
 
     fn clone_from(&mut self, source: &Self) {
         self.refinements.clone_from(&source.refinements);
+        self.inherited.clone_from(&source.inherited);
         self.generation.set(source.generation.get());
         self.resolved
             .get_mut()
@@ -54,6 +58,10 @@ impl Clone for TextStyleStack {
 }
 
 impl TextStyleStack {
+    pub(crate) fn with_inherited(style: &TextStyle) -> Self {
+        Self { inherited: Some(Rc::new(style.clone())), ..Self::default() }
+    }
+
     pub(crate) fn push(&mut self, refinement: TextStyleRefinement) {
         self.refinements.push(refinement);
         self.resolved.get_mut().push(None);
@@ -96,7 +104,7 @@ impl TextStyleStack {
         }
         self.refinements.iter().rev()
             .find_map(|refinement| refinement.text_align)
-            .unwrap_or(default.text_align)
+            .unwrap_or_else(|| self.inherited.as_deref().unwrap_or(default).text_align)
     }
 
     /// The default text style refined by every refinement on the stack, as
@@ -115,8 +123,12 @@ impl TextStyleStack {
         // copied twice more.
         let (mut style, from) = match resolved[..depth].iter().rposition(|style| style.is_some()) {
             Some(known) => (resolved[known].clone().unwrap(), known),
-            None => (Rc::new(default.clone()), 0),
+            None => (self.inherited.clone().unwrap_or_else(|| Rc::new(default.clone())), 0),
         };
+        if from == depth {
+            resolved[depth] = Some(style.clone());
+            return style;
+        }
         let refined = Rc::make_mut(&mut style);
         for refinement in &self.refinements[from..] {
             refined.refine(refinement);

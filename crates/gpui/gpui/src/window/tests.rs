@@ -307,7 +307,8 @@ struct SpliceTestLeaf {
 }
 
 impl Render for SpliceTestLeaf {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        assert_eq!(window.text_style().font_size, px(19.).into());
         self.renders.set(self.renders.get() + 1);
         crate::div().w(self.width.get()).h(px(20.)).bg(if self.changed.get() {
             crate::blue()
@@ -325,7 +326,7 @@ struct SpliceTestAnchor {
 impl Render for SpliceTestAnchor {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
-        crate::div().size_full().bg(crate::black()).child(self.child.clone())
+        crate::div().size_full().bg(crate::black()).text_size(px(19.)).child(self.child.clone())
     }
 }
 

@@ -1,8 +1,8 @@
 use refineable::Refineable as _;
 
 use crate::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, Pixels,
-    Style, StyleRefinement, Styled, Window,
+    App, Background, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
+    Path, Pixels, ScrollCapture, Style, StyleRefinement, Styled, Window,
 };
 
 /// Construct a canvas element with the given paint callback.
@@ -15,7 +15,21 @@ pub fn canvas<T>(
         prepaint: Some(Box::new(prepaint)),
         paint: Some(Box::new(paint)),
         style: StyleRefinement::default(),
+        paths_only: false,
     }
+}
+
+/// Build paths from the canvas bounds. The emitted paths can be retained
+/// and translated with their enclosing scroll content. Changes to captured
+/// values require the same view notification as other rendered content.
+pub fn path_canvas(
+    draw: impl 'static + FnOnce(Bounds<Pixels>, &mut dyn FnMut(Path<Pixels>, Background)),
+) -> Canvas<()> {
+    let mut element = canvas(|_, _, _| (), move |bounds, (), window, _| {
+        draw(bounds, &mut |path, color| window.paint_path(path, color));
+    });
+    element.paths_only = true;
+    element
 }
 
 /// A canvas element, meant for accessing the low level paint API without defining a whole
@@ -24,6 +38,13 @@ pub struct Canvas<T> {
     prepaint: Option<Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> T>>,
     paint: Option<Box<dyn FnOnce(Bounds<Pixels>, T, &mut Window, &mut App)>>,
     style: StyleRefinement,
+    paths_only: bool,
+}
+
+impl Canvas<()> {
+    pub(crate) fn can_capture_scrolling_subtree(&self, capture: ScrollCapture) -> bool {
+        self.paths_only && super::div::capture_style(&self.style, capture)
+    }
 }
 
 impl<T: 'static> IntoElement for Canvas<T> {

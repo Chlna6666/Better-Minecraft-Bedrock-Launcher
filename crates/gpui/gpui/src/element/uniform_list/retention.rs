@@ -1,5 +1,5 @@
 use super::*;
-use crate::window::scroll_rows::{RowListIdentity, RowPrepaint, RowRevision};
+use crate::window::scroll_rows::{RowListIdentity, RowPrepaint, RowRevision, UniformRowPlacement};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepaint(
@@ -9,6 +9,7 @@ pub(super) fn prepaint(
     frame: &mut UniformListLayout,
     id: Option<&GlobalElementId>,
     range: Range<usize>,
+    placement: Option<UniformRowPlacement<'_>>,
     row_origin: impl Fn(usize) -> crate::Point<Pixels>,
     available_space: Size<AvailableSpace>,
     content_mask: ContentMask<Pixels>,
@@ -29,6 +30,11 @@ pub(super) fn prepaint(
         window.plan_scroll_rows(identity, item_count, available_space, row_revision, cx)
     }) else {
         return;
+    };
+    let visible = range;
+    let range = match placement {
+        Some(geometry) => window.bind_uniform_row_placement(&mut plan, geometry, visible.clone()),
+        None => visible.clone(),
     };
     let reused: SmallVec<[bool; 64]> = range
         .clone()
@@ -63,6 +69,9 @@ pub(super) fn prepaint(
             for (mut item, index) in items.into_iter().zip(row..next) {
                 let origin = row_origin(index);
                 let capture = plan.can_capture(&mut item);
+                if !capture && !visible.contains(&index) {
+                    continue;
+                }
                 let before =
                     capture.then(|| (window.prepaint_index(), cx.entities.dependency_read_index(),
                         window.next_frame.input_clip_epoch));

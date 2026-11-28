@@ -2,7 +2,7 @@
 //! Adapted from GPUI Fast's scroll-layer paint/reuse phases.
 
 use super::{
-    PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord,
+    PaintIndex, PrepaintStateIndex, RetainedPaintContext, RetainedViewRecord,
     scroll_paint::{ScrollPaint, ScrollPaintTarget},
 };
 use crate::{
@@ -130,6 +130,22 @@ struct ScrollView {
     source: Arc<ScrollPaint>,
     reads: Rc<[StateRead]>,
     stale_input: bool,
+    content: Option<ScrollContentRecords>,
+}
+
+#[derive(Clone)]
+struct ScrollContentRecords {
+    prepaint: Range<PrepaintStateIndex>,
+    paint: Range<PaintIndex>,
+}
+
+pub(crate) struct ScrollContentCapture {
+    key: u64,
+    viewport: ContentMask<Pixels>,
+    binding: ScrollBinding,
+    prepaint: Range<PrepaintStateIndex>,
+    read_start: usize,
+    clip_epoch: u64,
 }
 
 fn hitboxes(range: &Range<PrepaintStateIndex>) -> Range<usize> {
@@ -143,7 +159,7 @@ struct PlacementMember {
     marker: usize,
     placement: super::scroll_paint::ScrollPlacement,
     key: u64,
-    slot: usize,
+    slot: Option<usize>,
     mounted_source: usize,
     offset: Rc<ScrollOffset>,
     sampled: Point<Pixels>,
@@ -243,7 +259,7 @@ impl Window {
             let member = self.prepare_placement_member(cx, epoch, owner, old_paint, &changed)?;
             if members.iter().any(|previous| {
                 previous.marker == member.marker
-                    || previous.slot == member.slot
+                    || (previous.slot.is_some() && previous.slot == member.slot)
                     || previous.mounted_source == member.mounted_source
                     || (previous.hitboxes.start < member.hitboxes.end
                         && member.hitboxes.start < previous.hitboxes.end)
@@ -312,18 +328,23 @@ impl Window {
             return Err(Outcome::OffsetRange);
         }
 
-        let slot = *frame.view_retentions.get(&key).ok_or(Outcome::RetentionRecord)?;
-        let entry = frame.view_retention_records.get(slot).ok_or(Outcome::RetentionRecord)?;
-        if entry.key != key || entry.owner != view.owner { return Err(Outcome::RetentionRecord); }
-        let record = entry.record.as_ref().ok_or(Outcome::RetentionRecord)?;
-        let input = hitboxes(&record.prepaint_range);
-        let pre = &record.prepaint_range;
-        let paint = &record.paint_range;
-        if !record.nested.is_empty() || !record.scene_segments.is_empty() {
-            return Err(Outcome::NestedRetention);
-        }
+        let (slot, origin, pre, paint) = if let Some(records) = &view.content {
+            (None, view.binding.sampled, &records.prepaint, &records.paint)
+        } else {
+            let slot = *frame.view_retentions.get(&key).ok_or(Outcome::RetentionRecord)?;
+            let entry = frame.view_retention_records.get(slot).ok_or(Outcome::RetentionRecord)?;
+            if entry.key != key || entry.owner != view.owner { return Err(Outcome::RetentionRecord); }
+            let record = entry.record.as_ref().ok_or(Outcome::RetentionRecord)?;
+            if !record.nested.is_empty() || !record.scene_segments.is_empty() {
+                return Err(Outcome::NestedRetention);
+            }
+            if record.context.visual_content_mask != view.viewport {
+                return Err(Outcome::InputRecords);
+            }
+            (Some(slot), record.context.element_offset, &record.prepaint_range, &record.paint_range)
+        };
+        let input = hitboxes(pre);
         if !frame.hitboxes.contains(&input)
-            || record.context.visual_content_mask != view.viewport
             || pre.start.tooltips_index != pre.end.tooltips_index
             || pre.start.deferred_draws_index != pre.end.deferred_draws_index
             || paint.start.input_handlers_index != paint.end.input_handlers_index
@@ -349,10 +370,10 @@ impl Window {
         let crate::scene::PaintOperationRef::DeferredScroll(old) =
             old_paint.scene.paint_operations.view(marker).ok_or(Outcome::Marker)? else { return Err(Outcome::Marker); };
         let scale = self.scale_factor();
-        let old_delta = view.source.translation(record.context.element_offset, scale).ok_or(Outcome::PreviousTranslation)?;
+        let old_delta = view.source.translation(origin, scale).ok_or(Outcome::PreviousTranslation)?;
         let old_expected = view.source.placement(view.viewport, scale, old_delta).ok_or(Outcome::PreviousPlacement)?;
         if !old.same_paint(&old_expected) { return Err(Outcome::PreviousMarker); }
-        let physical = view.source.translation(record.context.element_offset + delta, scale).ok_or(Outcome::FractionalTranslation)?;
+        let physical = view.source.translation(origin + delta, scale).ok_or(Outcome::FractionalTranslation)?;
         let placement = view.source.placement(view.viewport, scale, physical).ok_or_else(|| {
             if !view.source.covers(view.viewport.bounds.scale(scale), physical) {
                 Outcome::Coverage
@@ -363,10 +384,17 @@ impl Window {
         let damage = placement.visual_bounds();
         // The View and enclosing damage records keep the same fixed
         // viewport. No stale damage bounds may survive the transaction.
-        let segment = frame.retained_scene_segments.get(record.scene_segments.end).ok_or(Outcome::Damage)?;
-        if segment.entity_id != view.owner || segment.scene_range != (marker..marker + 1)
-            || segment.bounds != damage
-        {
+        if let Some(slot) = slot {
+            let record = frame.view_retention_records[slot].record.as_ref().expect("validated view");
+            let segment = frame.retained_scene_segments.get(record.scene_segments.end).ok_or(Outcome::Damage)?;
+            if segment.entity_id != view.owner || segment.scene_range != (marker..marker + 1)
+                || segment.bounds != damage
+            {
+                return Err(Outcome::Damage);
+            }
+        } else if frame.retained_scene_segments.iter().any(|segment| {
+            segment.scene_range.contains(&marker) && segment.bounds.intersect(&damage) != damage
+        }) {
             return Err(Outcome::Damage);
         }
         Ok(PlacementMember {
@@ -404,11 +432,19 @@ impl Window {
         }
         let frame = &mut self.rendered_frame;
         for member in &transaction.members {
-            let record = frame.view_retention_records[member.slot].record.as_mut()
-                .expect("validated retained view");
-            record.bounds.origin += member.delta;
-            Rc::make_mut(&mut record.context).element_offset += member.delta;
-            record.splice_safe = false;
+            if let Some(slot) = member.slot {
+                let record = frame.view_retention_records[slot].record.as_mut()
+                    .expect("validated retained view");
+                record.bounds.origin += member.delta;
+                Rc::make_mut(&mut record.context).element_offset += member.delta;
+                record.splice_safe = false;
+            } else {
+                for record in frame.view_retention_records.iter_mut().filter_map(|entry| entry.record.as_mut()) {
+                    if (record.paint_range.start.scene_index..record.paint_range.end.scene_index).contains(&member.marker) {
+                        record.splice_safe = false;
+                    }
+                }
+            }
             let view = frame.scroll_views.views.get_mut(&member.key).expect("validated scroll view");
             view.binding.sampled = member.sampled;
             view.stale_input = member.stale_input;
@@ -650,6 +686,88 @@ impl Window {
                 slice.iter().all(|hitbox| hitbox.content_mask == viewport))
     }
 
+    pub(crate) fn begin_scroll_content(
+        &self,
+        range: TrackedScrollRange,
+        cx: &App,
+    ) -> Option<ScrollContentCapture> {
+        let scope = self.scroll_viewport(cx)?;
+        let mut binding = scope.binding.clone();
+        if binding.direct.is_some()
+            || scope.clip.corner_radii != Default::default()
+            || !self.platform_window.supports_deferred_scroll()
+            || !self.scroll_hover_is_held(cx)
+        {
+            return None;
+        }
+        let owner = self.current_view();
+        binding.direct = Some(DirectScroll { owner, child: owner, range: Some(range) });
+        let prepaint = self.prepaint_index();
+        Some(ScrollContentCapture {
+            key: crate::fast::layout_key::prepaint_layout_key(self)?,
+            viewport: scope.clip,
+            binding,
+            prepaint: prepaint.clone()..prepaint,
+            read_start: cx.entities.state_read_index(),
+            clip_epoch: self.next_frame.input_clip_epoch,
+        })
+    }
+
+    pub(crate) fn finish_scroll_content_prepaint(
+        &self, mut capture: ScrollContentCapture,
+    ) -> Option<ScrollContentCapture> {
+        capture.prepaint.end = self.prepaint_index();
+        (self.next_frame.input_clip_epoch == capture.clip_epoch
+            && self.can_capture_scroll_view_input(&capture.prepaint, capture.viewport))
+            .then_some(capture)
+    }
+
+    pub(crate) fn paint_scroll_content(
+        &mut self,
+        capture: ScrollContentCapture,
+        cx: &mut App,
+        paint: impl FnOnce(&mut Self, &mut App),
+    ) {
+        if self.visual_content_mask() != capture.viewport
+            || !capture.binding.sample_still_current()
+            || self.scene_animation.is_some()
+            || self.next_frame.painter.is_capturing_blur()
+        {
+            return paint(self, cx);
+        }
+        let owner = self.current_view();
+        let prepaint = capture.prepaint;
+        let start = self.paint_index();
+        let suppress_hover = !hitboxes(&prepaint).is_empty();
+        let previous = self.rendered_frame.scroll_views.views.get(&capture.key)
+            .filter(|view| view.content.is_some() && view.binding.same_source(&capture.binding))
+            .map(|view| Arc::clone(&view.source));
+        let source = self.capture_scroll_paint(
+            capture.binding.sampled, suppress_hover, previous.as_deref(),
+            ScrollPaintTarget::DirectView, cx, paint,
+        );
+        if suppress_hover {
+            self.schedule_scroll_hover_restore(cx);
+        }
+        let paint = start..self.paint_index();
+        if paint.end.scene_index != paint.start.scene_index + 1 {
+            if suppress_hover {
+                self.scroll_hover.row_owners.insert(owner);
+            }
+            return;
+        }
+        self.next_frame.scroll_views.views.insert(capture.key, ScrollView {
+            capture_revision: self.invalidator.scroll_content_revision().0,
+            owner,
+            viewport: capture.viewport,
+            binding: capture.binding,
+            source,
+            reads: cx.entities.state_reads_since(capture.read_start),
+            stale_input: suppress_hover,
+            content: Some(ScrollContentRecords { prepaint, paint }),
+        });
+    }
+
     pub(crate) fn paint_scroll_view(
         &mut self,
         capture: ScrollViewCapture,
@@ -680,8 +798,8 @@ impl Window {
         } else {
             ScrollPaintTarget::View
         };
-        let source = self.capture_scroll_paint(context.element_offset, element, suppress_hover,
-            previous_source.as_deref(), target, cx);
+        let source = self.capture_scroll_paint(context.element_offset, suppress_hover,
+            previous_source.as_deref(), target, cx, |window, cx| element.paint(window, cx));
         if suppress_hover {
             self.schedule_scroll_hover_restore(cx);
         }
@@ -706,6 +824,7 @@ impl Window {
                 source,
                 reads,
                 stale_input: suppress_hover,
+                content: None,
             },
         );
     }
@@ -840,6 +959,63 @@ impl Window {
 mod binding_tests {
     use super::*;
     use crate::{point, px};
+
+    #[gpui::test]
+    fn native_div_scroll_restores_click_after_placement(cx: &mut crate::TestAppContext) {
+        use crate::{
+            Context, InteractiveElement, IntoElement, Modifiers, ParentElement, PlatformInput,
+            Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement,
+            Styled, div,
+        };
+        use std::cell::Cell;
+
+        struct Sidebar {
+            builds: Rc<Cell<usize>>,
+            selected: Rc<Cell<Option<usize>>>,
+            scroll: ScrollHandle,
+        }
+        impl Render for Sidebar {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                div().id("ordinary-scroll").w(px(160.)).h(px(80.)).overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .children((0..20).map(|row| {
+                        let selected = self.selected.clone();
+                        div().id(row).h(px(20.)).flex_shrink_0().bg(crate::blue())
+                            .hover(|style| style.bg(crate::green()))
+                            .on_click(move |_, _, _| selected.set(Some(row)))
+                    }))
+            }
+        }
+        let builds = Rc::new(Cell::new(0));
+        let selected = Rc::new(Cell::new(None));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Sidebar { builds: builds.clone(), selected: selected.clone(), scroll: ScrollHandle::new() }
+        });
+        let pointer = point(px(10.), px(5.));
+        let wheel = || PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: pointer,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-20.))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            let before = builds.get();
+            window.dispatch_event(wheel(), app);
+            match window.prepare_scroll_placement(app) {
+                Ok(candidate) => assert!(candidate.members[0].slot.is_none()),
+                Err(outcome) => panic!("ordinary Div placement rejected: {outcome:?}"),
+            }
+            window.draw(app).clear();
+            assert_eq!(builds.get(), before);
+        });
+        cx.simulate_click(pointer, Modifiers::default());
+        assert_eq!(selected.get(), Some(2));
+    }
 
     #[gpui::test]
     fn logical_placement_skips_root_when_shadow_requires_owner_replay(cx: &mut crate::TestAppContext) {
@@ -992,6 +1168,214 @@ mod binding_tests {
             assert!(window.prepare_scroll_placement(app).is_err());
             window.draw(app).clear();
             assert!(row_builds.get() > before.1);
+        });
+    }
+
+    #[gpui::test]
+    fn versioned_uniform_placement_checks_buffered_row_revisions(cx: &mut crate::TestAppContext) {
+        use crate::{
+            Context, IntoElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
+            UniformListScrollHandle, div, uniform_list_each,
+        };
+        use std::cell::Cell;
+
+        struct Rows {
+            revision: Rc<Cell<u64>>,
+            builds: Rc<Cell<usize>>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let revision = self.revision.clone();
+                let builds = self.builds.clone();
+                uniform_list_each("versioned-rows", 100, move |_, _, _| {
+                    builds.set(builds.get() + 1);
+                    div().h(px(24.)).w_full().bg(crate::blue())
+                })
+                .with_item_height(px(24.))
+                .with_row_revision(move |row| if row == 2 { revision.get() } else { 0 })
+                .track_scroll(self.scroll.clone())
+                .w(px(200.)).h(px(120.))
+            }
+        }
+        let revision = Rc::new(Cell::new(0));
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Rows {
+                revision: revision.clone(),
+                builds: builds.clone(),
+                scroll: UniformListScrollHandle::new(),
+            }
+        });
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(8.), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            for _ in 0..2 {
+                window.dispatch_event(wheel(-1.), app);
+                window.draw(app).clear();
+                assert!(window.test_present().is_accepted());
+            }
+            let before = builds.get();
+            window.dispatch_event(wheel(-24.), app);
+            assert!(window.prepare_scroll_placement(app).is_ok());
+            window.draw(app).clear();
+            assert_eq!(builds.get(), before);
+            assert!(window.test_present().is_accepted());
+
+            revision.set(1);
+            window.dispatch_event(wheel(-1.), app);
+            assert!(matches!(window.prepare_scroll_placement(app), Err(Outcome::CaptureDependencies)));
+            window.draw(app).clear();
+            assert!(builds.get() > before);
+        });
+    }
+
+    #[gpui::test]
+    fn measured_uniform_rows_reuse_overscan_without_rebuilding(cx: &mut crate::TestAppContext) {
+        use crate::{
+            Context, InteractiveElement, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta,
+            ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list,
+        };
+        use std::cell::Cell;
+
+        struct Rows {
+            root_builds: Rc<Cell<usize>>,
+            row_builds: Rc<Cell<usize>>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.root_builds.set(self.root_builds.get() + 1);
+                let builds = self.row_builds.clone();
+                div().w(px(200.)).h(px(120.)).rounded(px(8.)).overflow_hidden().child(
+                    uniform_list("measured-placement", 100, move |range, _, _| {
+                        builds.set(builds.get() + range.len());
+                        range.map(|row| {
+                            div().w_full().h(px(24.))
+                                .bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                                .hover(|style| style.bg(crate::green()))
+                                .child(div().overflow_hidden().child("cell"))
+                        }).collect()
+                    })
+                    .track_scroll(self.scroll.clone())
+                    .size_full(),
+                )
+            }
+        }
+        let root_builds = Rc::new(Cell::new(0));
+        let row_builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Rows {
+                root_builds: root_builds.clone(),
+                row_builds: row_builds.clone(),
+                scroll: UniformListScrollHandle::new(),
+            }
+        });
+        let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(8.), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(-1.), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            window.dispatch_event(wheel(-1.), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            let before = (root_builds.get(), row_builds.get());
+
+            window.dispatch_event(wheel(-24.), app);
+            let candidate = match window.prepare_scroll_placement(app) {
+                Ok(candidate) => candidate,
+                Err(outcome) => panic!("buffered row placement rejected with {outcome:?}"),
+            };
+            assert!(candidate.uniform.is_some());
+            window.draw(app).clear();
+            assert_eq!((root_builds.get(), row_builds.get()), before);
+            let paint = window.rendered_frame.published_paint();
+            let materialized = paint.owner_fallback().unwrap().unwrap();
+            assert!(materialized.scene.quads.iter().any(|quad| {
+                quad.content_mask.corner_radii.top_left == px(8.).scale(window.scale_factor())
+            }));
+            assert!(window.test_present().is_accepted());
+
+            window.dispatch_event(wheel(-72.), app);
+            assert!(window.prepare_scroll_placement(app).is_err());
+            window.draw(app).clear();
+            assert!(row_builds.get() > before.1);
+        });
+    }
+
+    #[gpui::test]
+    fn measured_variable_rows_reuse_overscan_without_rebuilding(cx: &mut crate::TestAppContext) {
+        use crate::{
+            Context, IntoElement, ListAlignment, ListState, PlatformInput, Render, ScrollDelta,
+            ScrollWheelEvent, Styled, div, list,
+        };
+        use std::cell::Cell;
+
+        struct Rows {
+            state: ListState,
+            builds: Rc<Cell<usize>>,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let builds = self.builds.clone();
+                list(self.state.clone(), move |row, _, _| {
+                    builds.set(builds.get() + 1);
+                    div().w_full().h(px(if row % 2 == 0 { 20. } else { 30. }))
+                        .bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                        .into_any_element()
+                })
+                .w(px(200.)).h(px(55.))
+            }
+        }
+        let builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, _| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Rows { state: ListState::new(50, ListAlignment::Top, px(100.)), builds: builds.clone() }
+        });
+        let wheel = |dy| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(4.), px(4.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+            ..Default::default()
+        });
+        let visible_quads = |window: &Window| {
+            let paint = window.rendered_frame.published_paint();
+            let materialized = paint.owner_fallback().unwrap().unwrap_or(paint);
+            materialized.scene.quads.iter()
+                .map(|quad| (quad.bounds, quad.content_mask, quad.background))
+                .collect::<Vec<_>>()
+        };
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            for dy in [-1., -20.] {
+                window.dispatch_event(wheel(dy), app);
+                window.draw(app).clear();
+                assert!(window.test_present().is_accepted());
+            }
+            let before = builds.get();
+            window.dispatch_event(wheel(-30.), app);
+            let candidate = match window.prepare_scroll_placement(app) {
+                Ok(candidate) => candidate,
+                Err(outcome) => panic!("buffered variable row placement rejected with {outcome:?}"),
+            };
+            assert!(candidate.uniform.is_some());
+            window.draw(app).clear();
+            assert_eq!(builds.get(), before);
+            assert_eq!(window.last_generation_stats.prepaint_elapsed, Duration::ZERO);
+            let retained = visible_quads(window);
+            window.refresh();
+            window.draw(app).clear();
+            assert_eq!(visible_quads(window), retained);
         });
     }
 

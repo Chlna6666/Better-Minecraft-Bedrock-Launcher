@@ -356,8 +356,85 @@ impl StateInner {
             max_item_width,
             scroll_top,
             item_layouts,
+            visible_rows: None,
             row_plan: None,
         }
+    }
+
+    fn buffer_measured_items(
+        &self, bounds: Bounds<Pixels>, padding: Edges<Pixels>, layout: &mut LayoutItemsResponse,
+        plan: &mut RowPlan, render_item: &mut RenderItemFn, window: &mut Window, cx: &mut App,
+    ) -> Pixels {
+        let top = layout.scroll_top;
+        let visible = top.item_ix..top.item_ix + layout.item_layouts.len();
+        if plan.has_row_revisions() || self.overdraw <= Pixels::ZERO
+            || !window.can_buffer_scroll_rows(plan, &visible)
+            || self.alignment != ListAlignment::Top || top != self.logical_scroll_top()
+            || self.placement_visible_range(top, bounds, padding, true) != Some(visible.clone())
+            || !layout.item_layouts.iter().map(|item| item.index).eq(visible.clone())
+        {
+            return Pixels::ZERO;
+        }
+        let max_rows = (visible.len() / 4).clamp(2, 8);
+        let max_height = self.overdraw.min(bounds.size.height);
+        let available_space = size(bounds.size.width.into(), AvailableSpace::MinContent);
+        let visible_origin = bounds.origin + Point::new(px(0.), padding.top - top.offset_in_item);
+        let mut leading = Pixels::ZERO;
+
+        // Fast buffers measured records in content space. Bound the
+        // speculative work independently of the list's measurement budget.
+        for before in [true, false] {
+            let mut cursor = self.items.cursor::<Count>(());
+            cursor.seek(&Count(if before { visible.start } else { visible.end }), Bias::Right);
+            if before { cursor.prev(); }
+            let edge = if before { visible_origin } else {
+                visible_origin + Point::new(px(0.), layout.item_layouts.iter()
+                    .fold(-leading, |total, row| total + row.size.height))
+            };
+            let mut added = Pixels::ZERO;
+            for _ in 0..max_rows {
+                let Some(measured) = cursor.item().and_then(ListItem::size) else { break; };
+                let height = measured.height;
+                if !height.0.is_finite() || height <= Pixels::ZERO || height.0.fract() != 0.
+                    || added + height > max_height
+                {
+                    break;
+                }
+                let index = cursor.start().0;
+                let dy = if before { -added - height } else { added };
+                let origin = edge + Point::new(px(0.), dy);
+                let (element, capture_reads) = if window.can_reuse_scroll_row(plan, index, origin) {
+                    (None, None)
+                } else {
+                    let Some((element, reads)) = with_item_retained_key(window, index, |window| {
+                        let start = cx.entities.dependency_read_index();
+                        let mut element = render_item(index, window, cx);
+                        if !plan.can_capture(&mut element)
+                            || element.layout_as_root(available_space, window, cx) != measured
+                        {
+                            return None;
+                        }
+                        Some((element, cx.entities.row_reads_since(start)))
+                    }) else { break; };
+                    (Some(element), Some(reads))
+                };
+                let row = ItemLayout { index, element, size: measured, capture_reads };
+                added += height;
+                if before {
+                    layout.item_layouts.push_front(row);
+                    cursor.prev();
+                } else {
+                    layout.item_layouts.push_back(row);
+                    cursor.next();
+                }
+            }
+            if before { leading = added; }
+        }
+        if layout.item_layouts.len() > visible.len() {
+            plan.buffer_rows(visible.clone());
+            layout.visible_rows = Some(visible);
+        }
+        leading
     }
 
     pub(in crate::element::list) fn prepaint_items(
@@ -401,13 +478,20 @@ impl StateInner {
                 window,
                 cx,
             );
+            let leading = row_plan.as_mut().map_or(Pixels::ZERO, |plan| {
+                window.with_content_mask(Some(mask), |window| {
+                    self.buffer_measured_items(
+                        bounds, padding, &mut layout_response, plan, render_item, window, cx,
+                    )
+                })
+            });
             let mut measured_item_count = 0;
 
             window.take_autoscroll();
 
             if bounds.size.height > padding.top + padding.bottom {
                 let mut item_origin = bounds.origin + Point::new(px(0.), padding.top);
-                item_origin.y -= layout_response.scroll_top.offset_in_item;
+                item_origin.y -= layout_response.scroll_top.offset_in_item + leading;
                 for item in &mut layout_response.item_layouts {
                     window.with_content_mask(
                         Some(mask),

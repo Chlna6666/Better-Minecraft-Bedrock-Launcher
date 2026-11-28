@@ -1,7 +1,7 @@
 //! Content-space paint shared by retained views and list rows.
 
 use crate::{
-    AnyElement, App, Bounds, ContentMask, Pixels, Point, ScaledPixels, Window, point,
+    App, Bounds, ContentMask, Pixels, Point, ScaledPixels, Window, point,
     scene::{Operations, PaintOperationRef, Painter, Primitive, PrimitiveRef},
 };
 use smallvec::SmallVec;
@@ -26,11 +26,14 @@ pub(in crate::window) struct ScrollPaint {
     native_anchor: Point<Pixels>,
     atlas_tiles: Arc<[(crate::AtlasTextureId, u32)]>,
     has_lcd_glyphs: bool,
+    has_paths: bool,
     block_bounds: Box<[Option<PaintBlockBounds>]>,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum ScrollPaintTarget {
     Row,
+    BufferedRow { visible: bool },
     View,
     DirectView,
 }
@@ -44,7 +47,11 @@ impl ScrollPaintTarget {
         delta: Point<ScaledPixels>,
     ) -> Option<ScrollPlacement> {
         match self {
-            Self::Row => source.native_row_placement(viewport, scale, delta),
+            Self::Row => source.native_row_placement(viewport, scale, delta).or_else(|| {
+                source.has_paths.then_some(())?;
+                source.buffered_row_placement(viewport, scale, delta, true)
+            }),
+            Self::BufferedRow { visible } => source.buffered_row_placement(viewport, scale, delta, visible),
             Self::View => source.native_placement(viewport, scale, delta),
             Self::DirectView => source.placement(viewport, scale, delta),
         }
@@ -91,11 +98,11 @@ impl Window {
     pub(super) fn capture_scroll_paint(
         &mut self,
         origin: Point<Pixels>,
-        item: &mut AnyElement,
         suppress_hover: bool,
         previous: Option<&ScrollPaint>,
         target: ScrollPaintTarget,
         cx: &mut App,
+        paint: impl FnOnce(&mut Self, &mut App),
     ) -> Arc<ScrollPaint> {
         let viewport = self.visual_content_mask();
         let height = viewport.bounds.size.height;
@@ -107,7 +114,7 @@ impl Window {
         self.content_mask_stack.push(capture);
         self.visual_content_mask_stack.push(capture);
         self.scroll_hover.painting = suppress_hover;
-        item.paint(self, cx);
+        paint(self, cx);
         self.scroll_hover.painting = false;
         self.visual_content_mask_stack.pop();
         self.content_mask_stack.pop();
@@ -122,7 +129,7 @@ impl Window {
             && self.scene_animation.is_none()
             && target.placement(&content, viewport, scale, Point::default())
                 .is_some_and(|placement| self.next_frame.painter.push_deferred_scroll(placement));
-        if !deferred {
+        if !deferred && !matches!(target, ScrollPaintTarget::BufferedRow { visible: false }) {
             content.replay(&mut self.next_frame.painter, viewport.scale(scale), Point::default());
         }
         content
@@ -135,6 +142,7 @@ impl ScrollPaint {
         // Qualify once, not on each scrolled frame or GPU owner request.
         let mut atlas_tiles = collections::FxHashSet::default();
         let mut has_lcd_glyphs = false;
+        let mut has_paths = false;
         let mut order = super::frame::StaticPaintOrder::default();
         let mut static_order = true;
         let mut scoped = super::frame::StaticPaintOrder::default();
@@ -151,7 +159,7 @@ impl ScrollPaint {
                 PaintOperationRef::StartLayer(_) | PaintOperationRef::EndLayer |
                 PaintOperationRef::Primitive(PrimitiveRef::Quad(_) | PrimitiveRef::Shadow(_)
                     | PrimitiveRef::Underline(_) | PrimitiveRef::MonochromeSprite(_)
-                    | PrimitiveRef::PolychromeSprite(_)));
+                    | PrimitiveRef::PolychromeSprite(_) | PrimitiveRef::Path(_)));
             match operation {
                 PaintOperationRef::Primitive(PrimitiveRef::MonochromeSprite(sprite)) => {
                     has_lcd_glyphs |= sprite.tile.texture_id.kind == crate::AtlasTextureKind::Subpixel;
@@ -160,13 +168,14 @@ impl ScrollPaint {
                 PaintOperationRef::Primitive(PrimitiveRef::PolychromeSprite(sprite)) => {
                     atlas_tiles.insert((sprite.tile.texture_id, sprite.tile.tile_id.0));
                 }
+                PaintOperationRef::Primitive(PrimitiveRef::Path(_)) => has_paths = true,
                 _ => {}
             }
             raster_eligible = raster_eligible
                 && super::frame::static_scroll_raster_operation(operation, coverage);
             static_order = static_order && order.accept(operation);
             scoped_order = scoped_order && scoped.accept(operation);
-            if raster_eligible && static_order
+            if replayable
                 && let PaintOperationRef::Primitive(primitive) = operation
             {
                 let bounds = primitive.visual_bounds();
@@ -183,7 +192,7 @@ impl ScrollPaint {
         };
         let static_order = raster_eligible && static_order && order.complete();
         let scoped_order = static_order && scoped_order && scoped.accept(PaintOperationRef::EndLayer) && scoped.complete();
-        let row_raster_bounds = if static_order {
+        let row_raster_bounds = if replayable {
             visual.and_then(|visual| compact_row_raster(visual, coverage))
         } else { None };
         Self {
@@ -199,6 +208,7 @@ impl ScrollPaint {
             native_anchor: origin,
             atlas_tiles: atlas_tiles.into_iter().collect::<Vec<_>>().into(),
             has_lcd_glyphs,
+            has_paths,
             block_bounds,
         }
     }
@@ -290,13 +300,21 @@ impl ScrollPaint {
     /// source order cannot be flattened into a raster tile.
     pub(super) fn placement(self: &Arc<Self>, viewport: ContentMask<Pixels>,
         scale: f32, delta: Point<ScaledPixels>) -> Option<ScrollPlacement> {
+        if viewport.corner_radii != Default::default() {
+            return None;
+        }
+        self.placement_in_viewport(viewport, scale, delta, true)
+    }
+
+    fn placement_in_viewport(self: &Arc<Self>, viewport: ContentMask<Pixels>,
+        scale: f32, delta: Point<ScaledPixels>, visible: bool) -> Option<ScrollPlacement> {
         if !self.replayable || !scale.is_finite() || scale <= 0.
             || [delta.x.0, delta.y.0].into_iter().any(|v| v.abs() > 1_048_576.)
         {
             return None;
         }
         let viewport = viewport.scale(scale);
-        if !self.covers(viewport.bounds, delta) || viewport.corner_radii != Default::default()
+        if (visible && !self.covers(viewport.bounds, delta))
             || ![delta.x.0, delta.y.0].into_iter().all(|v| v.is_finite() && v.fract() == 0.)
         {
             return None;
@@ -312,6 +330,8 @@ impl ScrollPaint {
             source: Arc::clone(self),
             viewport,
             delta,
+            buffered_row: false,
+            visible,
             native: NativeScrollGeometry {
                 id,
                 generation: self.native_generation,
@@ -345,6 +365,28 @@ impl ScrollPaint {
         let mut placement = self.native_placement(viewport, scale, delta)?;
         placement.native.row_bounds = Some(row_bounds);
         Some(placement)
+    }
+
+    /// Retain an overscan row's marker even while it contributes no visible
+    /// pixels. Owner replay preserves row order as it enters the viewport.
+    pub(super) fn buffered_row_placement(
+        self: &Arc<Self>,
+        viewport: ContentMask<Pixels>,
+        scale: f32,
+        delta: Point<ScaledPixels>,
+        visible: bool,
+    ) -> Option<ScrollPlacement> {
+        let row_bounds = self.row_raster_bounds?;
+        // Rounded list clips are fixed; the owner reapplies the mask to
+        // each primitive when a row's own rectangular clips move.
+        let mut placement = self.placement_in_viewport(viewport, scale, delta, visible)?;
+        placement.native.row_bounds = Some(row_bounds);
+        placement.buffered_row = true;
+        Some(placement)
+    }
+
+    pub(super) fn supports_buffered_row(&self, viewport: ContentMask<Pixels>, scale: f32) -> bool {
+        self.row_raster_bounds.is_some() && self.covers(viewport.scale(scale).bounds, Point::default())
     }
 
     pub(super) fn replay(
@@ -410,6 +452,8 @@ pub(crate) struct ScrollPlacement {
     source: Arc<ScrollPaint>,
     viewport: ContentMask<ScaledPixels>,
     delta: Point<ScaledPixels>,
+    buffered_row: bool,
+    visible: bool,
     native: NativeScrollGeometry,
 }
 
@@ -423,16 +467,20 @@ impl ScrollPlacement {
 
     pub(in crate::window) fn native_geometry(&self) -> NativeScrollGeometry { self.native }
 
-    pub(in crate::window) fn has_static_order(&self) -> bool { self.source.static_order }
+    pub(in crate::window) fn has_static_order(&self) -> bool {
+        self.visible && self.source.static_order && self.viewport.corner_radii == Default::default()
+    }
 
     pub(in crate::window) fn has_lcd_glyphs(&self) -> bool {
         self.source.has_lcd_glyphs
     }
 
-    pub(crate) fn has_scoped_order(&self) -> bool { self.source.scoped_order }
+    pub(crate) fn has_scoped_order(&self) -> bool { self.has_static_order() && self.source.scoped_order }
+
+    pub(crate) fn is_visible(&self) -> bool { self.visible }
 
     pub(crate) fn can_defer_in_scope(&self) -> bool {
-        self.native.row_bounds.is_none() || self.has_scoped_order()
+        self.buffered_row || self.native.row_bounds.is_none() || self.has_scoped_order()
     }
 
     /// A changed translation is a new paint, but does not change the
@@ -441,10 +489,11 @@ impl ScrollPlacement {
         Arc::ptr_eq(&self.source, &other.source)
             && self.viewport == other.viewport
             && self.native == other.native
+            && self.buffered_row == other.buffered_row
     }
 
     pub(crate) fn same_paint(&self, other: &Self) -> bool {
-        self.same_source_placement_domain(other) && self.delta == other.delta
+        self.same_source_placement_domain(other) && self.delta == other.delta && self.visible == other.visible
     }
 
     /// The viewport is a conservative damage bound for every projected
@@ -454,6 +503,9 @@ impl ScrollPlacement {
     }
 
     pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
+        if !self.visible {
+            return Bounds::new(self.viewport.bounds.origin, crate::size(ScaledPixels(0.), ScaledPixels(0.)));
+        }
         self.native.row_bounds
             .map_or(self.viewport.bounds, |row| moved(row, self.delta).intersect(&self.viewport.bounds))
     }
@@ -463,7 +515,9 @@ impl ScrollPlacement {
     }
 
     pub(crate) fn replay(&self, painter: &mut Painter) {
-        self.source.replay(painter, self.viewport, self.delta);
+        if self.visible {
+            self.source.replay(painter, self.viewport, self.delta);
+        }
     }
 }
 
@@ -561,6 +615,11 @@ fn project_primitive(
         PrimitiveRef::MonochromeSprite(sprite) => project!(sprite, MonochromeSprite),
         PrimitiveRef::PolychromeSprite(sprite) => project!(sprite, PolychromeSprite),
         PrimitiveRef::Shadow(shadow) => project!(shadow, Shadow),
+        PrimitiveRef::Path(path) => {
+            let mut projected = path.clone().transform_uniform(1., delta);
+            projected.content_mask = mask(path.content_mask);
+            Primitive::Path(projected)
+        }
         _ => unreachable!("unsupported primitive in built-in scroll capture"),
     }
 }
@@ -570,6 +629,51 @@ mod tests {
     use super::*;
     use crate::scene::PaintOperation;
     use crate::{Quad, px, size};
+
+    #[test]
+    fn retained_path_row_moves_vertices_and_keeps_fixed_viewport() {
+        let viewport = ContentMask::new(Bounds::new(point(px(0.), px(0.)), size(px(40.), px(40.))));
+        let coverage = Bounds::new(point(px(0.), px(-40.)), size(px(40.), px(120.))).scale(1.);
+        let mut path = crate::Path::new(point(px(2.), px(12.)));
+        path.push_triangle(
+            (point(px(2.), px(12.)), point(px(6.), px(12.)), point(px(2.), px(18.))),
+            (point(0., 0.), point(1., 0.), point(0., 1.)),
+        );
+        let mut path = path.scale(1.);
+        path.content_mask = ContentMask::new(coverage);
+        let mut operations = Operations::default();
+        operations.push(PaintOperation::Primitive(Primitive::Path(path.clone())));
+        let source = Arc::new(ScrollPaint::new(Point::default(), coverage, operations));
+        let delta = point(ScaledPixels(0.), ScaledPixels(-8.));
+        let placement = ScrollPaintTarget::Row.placement(&source, viewport, 1., delta).unwrap();
+        assert!(!placement.has_static_order());
+        let mut painter = Painter::default();
+        placement.replay(&mut painter);
+        painter.finish();
+        let scene = painter.into_scene();
+        let projected = scene.paths.iter().next().unwrap();
+        assert_eq!(projected.content_mask, viewport.scale(1.));
+        for (before, after) in path.vertices.iter().zip(projected.vertices.iter()) {
+            assert_eq!(after.xy_position, before.xy_position + delta);
+            assert_eq!(after.st_position, before.st_position);
+        }
+
+        // A fixed path such as a chart can share the root with the moving row.
+        let initial = ScrollPaintTarget::Row.placement(&source, viewport, 1., Point::default()).unwrap();
+        let mut painter = Painter::for_frame();
+        painter.insert_primitive(path);
+        assert!(painter.push_deferred_scroll(initial));
+        painter.finish();
+        let previous = painter.into_scene();
+        let next = previous.with_scroll_placements(&[(1, placement)]).unwrap();
+        assert_eq!(previous.paths, next.paths);
+        assert!(Arc::ptr_eq(&previous.paths[0].vertices, &next.paths[0].vertices));
+
+        let outside_coverage = point(ScaledPixels(0.), ScaledPixels(-48.));
+        let hidden = source.buffered_row_placement(viewport, 1., outside_coverage, false).unwrap();
+        assert!(hidden.visual_bounds().is_empty());
+        assert!(source.buffered_row_placement(viewport, 1., outside_coverage, true).is_none());
+    }
 
     #[test]
     fn block_edges_keep_the_far_corner_without_reconstructing_width() {

@@ -29,10 +29,15 @@ pub(crate) struct ListPlacementProof {
     bounds: Bounds<Pixels>,
     padding: Edges<Pixels>,
     visible: Range<usize>,
+    captured: Range<usize>,
 }
 
 impl ListPlacementProof {
-    pub(crate) fn sample(&self) -> Option<(Point<Pixels>, StateVersion)> {
+    pub(crate) fn buffered(&self) -> bool {
+        self.visible != self.captured
+    }
+
+    pub(crate) fn sample(&self) -> Option<(Point<Pixels>, StateVersion, Range<usize>)> {
         let state = self.state.upgrade()?;
         let state = state.try_borrow().ok()?;
         if state.reset || state.geometry_revision != self.geometry_revision
@@ -46,10 +51,30 @@ impl ListPlacementProof {
             return None;
         }
         let top = state.logical_scroll_top();
-        if state.placement_visible_range(top, self.bounds, self.padding)? != self.visible {
+        let visible = state.placement_visible_range(top, self.bounds, self.padding, !self.buffered())?;
+        let mut offset = top.offset_in_item;
+        if self.buffered() {
+            if visible.start < self.captured.start || visible.end > self.captured.end {
+                return None;
+            }
+            // Use the first buffered row as the coordinate origin. The
+            // distance is local and does not depend on unknown remote rows.
+            let mut cursor = state.items.cursor::<Count>(());
+            cursor.seek(&Count(self.captured.start), Bias::Right);
+            for row in cursor.take(top.item_ix - self.captured.start) {
+                let height = row.size()?.height;
+                if !height.0.is_finite() || height <= Pixels::ZERO || height.0.fract() != 0. {
+                    return None;
+                }
+                offset += height;
+            }
+            if offset > px(1_048_576.) {
+                return None;
+            }
+        } else if visible != self.visible {
             return None;
         }
-        Some((point(px(0.), -top.offset_in_item), state.version.clone()))
+        Some((point(px(0.), -offset), state.version.clone(), visible))
     }
 }
 
@@ -108,13 +133,14 @@ fn replace_item_runs(
 
 impl ListState {
     pub(crate) fn placement_proof(
-        &self, top: ListOffset, visible: Range<usize>,
+        &self, top: ListOffset, visible: Range<usize>, captured: Range<usize>,
     ) -> Option<ListPlacementProof> {
         let state = self.0.borrow();
         let bounds = state.last_layout_bounds?;
         let padding = state.last_padding?;
         if state.alignment != ListAlignment::Top || state.logical_scroll_top() != top
-            || state.placement_visible_range(top, bounds, padding)? != visible
+            || state.placement_visible_range(top, bounds, padding, true)? != visible
+            || captured.start > visible.start || captured.end < visible.end
         {
             return None;
         }
@@ -123,7 +149,7 @@ impl ListState {
             geometry_revision: state.geometry_revision,
             items: crate::StateRead::new(&state.items_version),
             structure: crate::StateRead::new(&state.structure_version),
-            bounds, padding, visible,
+            bounds, padding, visible, captured,
         })
     }
 
@@ -570,7 +596,7 @@ impl StateInner {
     /// subtrees do not affect this proof. Unknown required heights,
     /// focus rows and tail anchoring use the ordinary layout path.
     fn placement_visible_range(
-        &self, top: ListOffset, bounds: Bounds<Pixels>, padding: Edges<Pixels>,
+        &self, top: ListOffset, bounds: Bounds<Pixels>, padding: Edges<Pixels>, measure_overdraw: bool,
     ) -> Option<Range<usize>> {
         let summary = self.items.summary();
         if summary.has_focus_handles || top.item_ix >= summary.count
@@ -594,9 +620,10 @@ impl StateInner {
         cursor.seek(&Count(top.item_ix), Bias::Right);
         let mut rendered = padding.top;
         let mut end = top.item_ix;
+        let overdraw = if measure_overdraw { self.overdraw } else { Pixels::ZERO };
         for (index, item) in cursor.by_ref().enumerate() {
             let visible_height = rendered - top.offset_in_item;
-            if visible_height >= bounds.size.height + self.overdraw { break; }
+            if visible_height >= bounds.size.height + overdraw { break; }
             let height = item.size()?.height;
             if !height.0.is_finite() || height <= px(0.)
                 || height.0.fract() != 0. || height.0 > 1_048_576.
@@ -616,9 +643,9 @@ impl StateInner {
         // The ordinary pass may measure new leading overscan rows. Prove
         // they are already measured rather than skip that work silently.
         let mut leading = top.offset_in_item;
-        if leading < self.overdraw {
+        if leading < overdraw {
             cursor.seek(&Count(top.item_ix), Bias::Right);
-            while leading < self.overdraw {
+            while leading < overdraw {
                 cursor.prev();
                 let Some(item) = cursor.item() else { break; };
                 let height = item.size()?.height;

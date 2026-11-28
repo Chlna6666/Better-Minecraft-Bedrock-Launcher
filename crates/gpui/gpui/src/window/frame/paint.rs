@@ -68,14 +68,20 @@ impl Paint {
         let mut result = Self::new(scene, retention, self.geometry);
         // Compact row bounds move with the row. Flat non-LCD roots can
         // retain their ordering and raster proof; other roots recertify.
-        let bounds_changed = placements.iter().any(|(index, placement)| {
+        let mut bounds_changed = false;
+        let mut visibility_changed = false;
+        for (index, placement) in placements {
             match self.scene.paint_operations.view(*index) {
-                Some(crate::scene::PaintOperationRef::DeferredScroll(old)) =>
-                    old.visual_bounds() != placement.visual_bounds(),
-                _ => true,
+                Some(crate::scene::PaintOperationRef::DeferredScroll(old)) => {
+                    bounds_changed |= old.visual_bounds() != placement.visual_bounds();
+                    visibility_changed |= old.is_visible() != placement.is_visible();
+                }
+                _ => visibility_changed = true,
             }
-        });
-        result.layers = self.layers.with_scroll_placements_checked(placements, window_opaque, bounds_changed)
+        }
+        result.layers = (!visibility_changed)
+            .then(|| self.layers.with_scroll_placements_checked(placements, window_opaque, bounds_changed))
+            .flatten()
             .unwrap_or_else(|| SceneLayers::capture_against(
                 &result.scene, Some((&self.scene, &self.layers)), window_opaque,
             ));

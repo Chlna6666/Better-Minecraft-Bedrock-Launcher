@@ -22,6 +22,8 @@ struct RowPlacementBinding {
     source: RowPlacementSource,
     sampled: Point<Pixels>,
     visible: Range<usize>,
+    captured: Range<usize>,
+    row_revision: Option<RowRevision>,
     proof: Option<Rc<RowPlacementTopology>>,
 }
 
@@ -34,6 +36,7 @@ enum RowPlacementSource {
         padded: Bounds<Pixels>,
         padding_top: Pixels,
         min_y: Pixels,
+        measurement: Option<Rc<RowMeasurement>>,
     },
     Variable(crate::ListPlacementProof),
 }
@@ -57,19 +60,41 @@ pub(crate) fn uniform_visible_range(
 }
 
 impl RowPlacementBinding {
-    fn sample(&self) -> Option<(Point<Pixels>, crate::StateVersion)> {
+    fn measurement(&self) -> Option<&RowMeasurement> {
+        match &self.source {
+            RowPlacementSource::Uniform { measurement, .. } => measurement.as_deref(),
+            RowPlacementSource::Variable(_) => None,
+        }
+    }
+
+    fn buffered(&self) -> bool {
+        self.measurement().is_some()
+            || self.row_revision.is_some()
+            || matches!(&self.source, RowPlacementSource::Variable(proof) if proof.buffered())
+    }
+
+    fn sample(&self) -> Option<(Point<Pixels>, crate::StateVersion, Range<usize>)> {
         match &self.source {
             RowPlacementSource::Variable(proof) => proof.sample(),
-            RowPlacementSource::Uniform { offset, item_count, item_height, padded, padding_top, min_y } => {
+            RowPlacementSource::Uniform { offset, item_count, item_height, padded, padding_top, min_y, .. } => {
                 let offset = offset.upgrade()?;
                 let sampled = *offset.borrow();
                 if sampled.x != Pixels::ZERO || !sampled.y.0.is_finite()
                     || sampled.y < *min_y || sampled.y > Pixels::ZERO
-                    || uniform_visible_range(sampled.y, *item_height, padded.size.height, *padding_top, *item_count) != self.visible
                 {
                     return None;
                 }
-                Some((sampled, offset.version.clone()))
+                let visible = uniform_visible_range(
+                    sampled.y, *item_height, padded.size.height, *padding_top, *item_count,
+                );
+                if if self.buffered() {
+                    visible.is_empty() || visible.start < self.captured.start || visible.end > self.captured.end
+                } else {
+                    visible != self.captured
+                } {
+                    return None;
+                }
+                Some((sampled, offset.version.clone(), visible))
             }
         }
     }
@@ -90,6 +115,7 @@ pub(super) struct RowPlacementCandidate {
     version: crate::StateVersion,
     pub(super) sample_read: StateRead,
     pub(super) sampled: Point<Pixels>,
+    visible: Range<usize>,
     pub(super) owner: crate::EntityId,
     mounted_source: usize,
     pub(super) stale_input: bool,
@@ -112,6 +138,7 @@ impl RowPlacementCandidate {
         let binding = frame.scroll_rows.row_placements.get_mut(&self.key)
             .expect("validated row binding");
         binding.sampled = self.sampled;
+        binding.visible = self.visible;
         if binding.proof.is_none() {
             for &slot in &self.proof.slots {
                 if let Some(record) = frame.view_retention_records[slot].record.as_mut() {
@@ -677,6 +704,7 @@ pub(crate) struct RowPlan {
     placement_only: bool,
     allow_reuse: bool,
     row_placement: Option<RowPlacementBinding>,
+    buffered_visible: Option<Range<usize>>,
     row_revision: Option<RowRevision>,
     context: Rc<ListContext>,
     // Rows captured by one plan share exactly one immutable context.
@@ -688,43 +716,46 @@ pub(crate) struct RowPlan {
     prepainted: VecDeque<(usize, RowPrepaint)>,
 }
 
+pub(crate) struct UniformRowPlacement<'a> {
+    pub offset: &'a Rc<ScrollOffset>,
+    pub sampled: Point<Pixels>,
+    pub item_height: Pixels,
+    pub padded: Bounds<Pixels>,
+    pub padding_top: Pixels,
+    pub min_y: Pixels,
+    pub fixed_height: bool,
+}
+
 impl RowPlan {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn bind_uniform_placement(
-        &mut self, offset: &Rc<ScrollOffset>, sampled: Point<Pixels>,
-        visible: Range<usize>, item_height: Pixels, padded: Bounds<Pixels>,
-        padding_top: Pixels, min_y: Pixels,
-    ) {
-        if self.row_revision.is_none() && sampled.x == Pixels::ZERO
-            && !visible.is_empty() && item_height.0.is_finite() && item_height > Pixels::ZERO
-            && min_y.0.is_finite() && sampled.y.0.is_finite()
-            && sampled.y >= min_y && sampled.y <= Pixels::ZERO
-        {
-            self.row_placement = Some(RowPlacementBinding {
-                owner: self.context.owner, revision: self.revision,
-                source: RowPlacementSource::Uniform {
-                    offset: Rc::downgrade(offset), item_count: self.context.item_count,
-                    item_height, padded, padding_top, min_y,
-                },
-                sampled, visible,
-                proof: None,
-            });
-        }
+    pub(crate) fn buffer_rows(&mut self, visible: Range<usize>) {
+        self.buffered_visible = Some(visible);
+    }
+
+    fn paint_target(&self, row: usize) -> ScrollPaintTarget {
+        self.buffered_visible.as_ref()
+            .map_or(ScrollPaintTarget::Row, |visible| ScrollPaintTarget::BufferedRow {
+                visible: visible.contains(&row),
+            })
     }
 
     pub(crate) fn bind_variable_placement(
-        &mut self, proof: crate::ListPlacementProof, visible: Range<usize>,
+        &mut self, proof: crate::ListPlacementProof, captured: Range<usize>,
     ) {
-        if self.row_revision.is_none() && let Some((sampled, _)) = proof.sample() {
+        if self.row_revision.is_none() && let Some((sampled, _, visible)) = proof.sample() {
             self.row_placement = Some(RowPlacementBinding {
                 owner: self.context.owner, revision: self.revision,
-                source: RowPlacementSource::Variable(proof), sampled, visible, proof: None,
+                source: RowPlacementSource::Variable(proof), sampled, visible, captured,
+                row_revision: None, proof: None,
             });
         }
     }
 
     pub(crate) fn row_revision(&self, row: usize) -> u64 {
         self.row_revision.as_ref().map_or(0, |revision| revision(row))
+    }
+
+    pub(crate) fn has_row_revisions(&self) -> bool {
+        self.row_revision.is_some()
     }
 
     fn matches_context(&self, previous: &Rc<ListContext>) -> bool {
@@ -812,6 +843,86 @@ fn clean_owner_path(
 }
 
 impl Window {
+    pub(crate) fn can_buffer_scroll_rows(&self, plan: &RowPlan, visible: &Range<usize>) -> bool {
+        let viewport = plan.context.inherited.visual_content_mask;
+        if !plan.placement_only || !plan.hover_held
+            || !self.platform_window.supports_deferred_scroll()
+        {
+            return false;
+        }
+        let scale = self.scale_factor();
+        // Begin buffering only after the list has produced reusable paint.
+        visible.clone().any(|row| {
+            self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
+                .filter(|record| plan.matches_context(&record.context))
+                .is_some_and(|record| record.content.supports_buffered_row(viewport, scale))
+        })
+    }
+
+    pub(crate) fn bind_uniform_row_placement(
+        &self,
+        plan: &mut RowPlan,
+        geometry: UniformRowPlacement<'_>,
+        visible: Range<usize>,
+    ) -> Range<usize> {
+        let UniformRowPlacement { offset, sampled, item_height, padded, padding_top, min_y, fixed_height } =
+            geometry;
+        if visible.is_empty() || sampled.x != Pixels::ZERO
+            || !item_height.0.is_finite() || item_height <= Pixels::ZERO
+            || !min_y.0.is_finite() || !sampled.y.0.is_finite()
+            || sampled.y < min_y || sampled.y > Pixels::ZERO
+        {
+            return visible;
+        }
+        let mut captured = visible.clone();
+        let measurement = if fixed_height {
+            None
+        } else {
+            let RowListIdentity::Uniform(id, size) = &plan.context.identity else { return visible; };
+            let Some((_, measure)) = self.next_frame.scroll_rows.measurements.get(id)
+                .filter(|(revision, measure)| *revision == plan.revision && measure.size == *size)
+            else { return visible; };
+            Some(Rc::clone(measure))
+        };
+        if measurement.is_some() || plan.row_revision.is_some() {
+            if !self.can_buffer_scroll_rows(plan, &visible) { return visible; }
+            let overscan = (visible.len() / 4).clamp(2, 8);
+            let (before, after) = if plan.row_revision.is_some() {
+                let forward = (visible.len() / 2).clamp(3, 8);
+                let previous = self.rendered_frame.scroll_rows.row_placements.get(&plan.key);
+                match previous.map(|previous| sampled.y.0.total_cmp(&previous.sampled.y.0)) {
+                    Some(std::cmp::Ordering::Less) => (overscan, forward),
+                    Some(std::cmp::Ordering::Greater) => (forward, overscan),
+                    _ => (forward, forward),
+                }
+            } else {
+                (overscan, overscan)
+            };
+            captured = visible.start.saturating_sub(before)
+                ..visible.end.saturating_add(after).min(plan.context.item_count);
+            plan.buffer_rows(visible.clone());
+        }
+        plan.row_placement = Some(RowPlacementBinding {
+            owner: plan.context.owner,
+            revision: plan.revision,
+            source: RowPlacementSource::Uniform {
+                offset: Rc::downgrade(offset),
+                item_count: plan.context.item_count,
+                item_height,
+                padded,
+                padding_top,
+                min_y,
+                measurement,
+            },
+            sampled,
+            visible,
+            captured: captured.clone(),
+            row_revision: plan.row_revision.clone(),
+            proof: None,
+        });
+        captured
+    }
+
     fn row_replay_admission(&self, versioned: bool) -> Option<(crate::EntityId, u64, bool)> {
         if !self.scroll_row_replay_is_enabled() || self.force_view_cache_refresh {
             return None;
@@ -971,6 +1082,7 @@ impl Window {
             placement_only,
             allow_reuse,
             row_placement: None,
+            buffered_visible: None,
             row_revision,
             hover_held: self.scroll_hover_is_held(cx),
             prepainted: VecDeque::new(),
@@ -986,7 +1098,10 @@ impl Window {
         })
     }
 
-    pub(crate) fn remember_row_placement(&mut self, plan: &RowPlan) {
+    pub(crate) fn remember_row_placement(&mut self, plan: &RowPlan, cx: &App) {
+        if plan.buffered_visible.is_some() {
+            self.restore_scroll_row_after_wheel(cx);
+        }
         if let Some(binding) = &plan.row_placement {
             self.next_frame.scroll_rows.row_placements.insert(plan.key, binding.clone());
         }
@@ -1004,26 +1119,40 @@ impl Window {
         let rows = &frame.scroll_rows;
         let mut bindings = rows.row_placements.iter().filter_map(|(&key, binding)| {
             if binding.owner != owner { return None; }
-            let (sampled, version) = binding.sample()?;
-            (sampled != binding.sampled).then_some((key, binding, version, sampled))
+            let (sampled, version, visible) = binding.sample()?;
+            (sampled != binding.sampled).then_some((key, binding, version, sampled, visible))
         });
-        let (key, binding, version, sampled) = bindings.next().ok_or(Outcome::MissingCapture)?;
+        let (key, binding, version, sampled, visible) = bindings.next().ok_or(Outcome::MissingCapture)?;
         if bindings.next().is_some() { return Err(Outcome::MultipleCaptures); }
         if binding.revision != epoch.content { return Err(Outcome::CaptureDependencies); }
         let [(mounted_source, source)] = changed else { return Err(Outcome::MountedSources); };
         if !source.changed_for(owner, &version) { return Err(Outcome::MountedSources); }
-        let mut placements = Vec::with_capacity(binding.visible.len());
-        let mut origins = Vec::with_capacity(binding.visible.len());
+        let hover_held = self.scroll_hover_deadline_active(cx);
+        let buffered = binding.buffered();
+        if buffered && !hover_held {
+            return Err(Outcome::Hover);
+        }
+        if let Some(measurement) = binding.measurement() {
+            if !self.invalidator.row_dependencies_unchanged(measurement.notification_epoch.get(), &measurement.reads)
+                || !measurement.validation.unchanged(&measurement.reads.states)
+            {
+                return Err(Outcome::CaptureDependencies);
+            }
+        }
+        let mut placements = Vec::with_capacity(binding.captured.len());
+        let mut origins = Vec::with_capacity(binding.captured.len());
         let mut damage: Option<Bounds<crate::ScaledPixels>> = None;
         let mut input_moves = SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
         let mut stale_input = false;
-        let hover_held = self.scroll_hover_deadline_active(cx);
         let scale = self.scale_factor();
         let mut routing = rows.notification_routing.borrow_mut();
-        for row in binding.visible.clone() {
+        for row in binding.captured.clone() {
             let row_key = (key, row);
             let record = rows.rows.get(&row_key).ok_or(Outcome::MissingCapture)?;
             if record.revision != epoch.content || record.context.owner != owner
+                || binding.row_revision.as_ref().is_some_and(|revision| {
+                    revision(row) != record.prepaint.row_revision
+                })
                 || matches!(&record.context.identity, RowListIdentity::Variable(read)
                     if read.status() != crate::StateReadStatus::Unchanged)
                 || record.prepaint.origin != binding.origin(row, binding.sampled, record.prepaint.origin)
@@ -1034,9 +1163,10 @@ impl Window {
             }
             let pre = &record.prepaint.records;
             let span = &record.paint;
+            let has_mouse_listeners = span.start.mouse_listeners_index != span.end.mouse_listeners_index;
             if pre.start.tooltips_index != pre.end.tooltips_index
                 || pre.start.deferred_draws_index != pre.end.deferred_draws_index
-                || span.start.mouse_listeners_index != span.end.mouse_listeners_index
+                || (has_mouse_listeners && !buffered)
                 || span.start.input_handlers_index != span.end.input_handlers_index
                 || span.start.window_control_hitboxes_index != span.end.window_control_hitboxes_index
                 || span.start.cursor_styles_index != span.end.cursor_styles_index
@@ -1055,7 +1185,12 @@ impl Window {
             let viewport = record.context.inherited.visual_content_mask;
             let old_delta = record.content.translation(record.prepaint.origin, scale)
                 .ok_or(Outcome::PreviousTranslation)?;
-            let expected = record.content.native_row_placement(viewport, scale, old_delta)
+            let old_target = if buffered {
+                ScrollPaintTarget::BufferedRow { visible: binding.visible.contains(&row) }
+            } else {
+                ScrollPaintTarget::Row
+            };
+            let expected = old_target.placement(&record.content, viewport, scale, old_delta)
                 .ok_or(Outcome::PreviousPlacement)?;
             if !old.same_paint(&expected) { return Err(Outcome::PreviousMarker); }
             let origin = binding.origin(row, sampled, record.prepaint.origin);
@@ -1079,11 +1214,20 @@ impl Window {
                 append_row_input_move(&mut input_moves, input, logical_delta)?;
             }
             let delta = record.content.translation(origin, scale).ok_or(Outcome::FractionalTranslation)?;
-            let placement = record.content.native_row_placement(viewport, scale, delta)
+            let new_target = if buffered {
+                ScrollPaintTarget::BufferedRow { visible: visible.contains(&row) }
+            } else {
+                ScrollPaintTarget::Row
+            };
+            let placement = new_target.placement(&record.content, viewport, scale, delta)
                 .ok_or(Outcome::PlacementGeometry)?;
             if placement.same_paint(old) { return Err(Outcome::FractionalTranslation); }
-            let bounds = old.visual_bounds().union(&placement.visual_bounds());
-            damage = Some(damage.map_or(bounds, |current| current.union(&bounds)));
+            for bounds in [old.visual_bounds(), placement.visual_bounds()] {
+                if !bounds.is_empty() {
+                    damage = Some(damage.map_or(bounds, |current| current.union(&bounds)));
+                }
+            }
+            stale_input |= has_mouse_listeners;
             placements.push((marker, placement));
             origins.push((row_key, origin));
         }
@@ -1133,7 +1277,7 @@ impl Window {
             return Err(Outcome::Damage);
         }
         Ok(RowPlacementCandidate {
-            key, sample_read: StateRead::new(&version), version, sampled, owner, mounted_source: *mounted_source,
+            key, sample_read: StateRead::new(&version), version, sampled, visible, owner, mounted_source: *mounted_source,
             placements, origins, proof, damage, input_moves, stale_input,
         })
     }
@@ -1251,21 +1395,24 @@ impl Window {
         let viewport = self.visual_content_mask();
         let hitboxes = hitbox_range(&prepaint);
         let suppress_hover = plan.hover_held && !hitboxes.is_empty();
+        let target = plan.paint_target(row);
         if self.next_frame.painter.is_capturing_blur()
             || self.scene_animation.is_some()
             || self.next_frame.hitboxes.slices(hitboxes.clone())
                 .any(|(slice, _)| slice.iter().any(|hitbox| hitbox.content_mask != viewport))
             || (!suppress_hover && self.hits_scroll_row(&self.next_frame.hitboxes, hitboxes, Point::default()))
         {
-            item.paint(self, cx);
+            if !matches!(target, ScrollPaintTarget::BufferedRow { visible: false }) {
+                item.paint(self, cx);
+            }
             return;
         }
         let read_start = cx.entities.dependency_read_index();
         let start = self.paint_index();
         let previous_source = self.rendered_frame.scroll_rows.rows.get(&(plan.key, row))
             .map(|previous| Arc::clone(&previous.content));
-        let content = self.capture_scroll_paint(prepaint.origin, item, suppress_hover,
-            previous_source.as_deref(), ScrollPaintTarget::Row, cx);
+        let content = self.capture_scroll_paint(prepaint.origin, suppress_hover,
+            previous_source.as_deref(), target, cx, |window, cx| item.paint(window, cx));
         if suppress_hover {
             self.restore_scroll_row_after_wheel(cx);
         }
@@ -1295,14 +1442,15 @@ impl Window {
         // Both List and UniformList enter here after validating input and
         // content dependencies. Keep the existing row's source alive and
         // replace only its native placement. New rows still paint normally.
-        let deferred = (!same_placement || was_deferred)
+        let target = plan.paint_target(row);
+        let deferred = (!same_placement || was_deferred || matches!(target, ScrollPaintTarget::BufferedRow { .. }))
             && self.platform_window.supports_deferred_scroll()
             && self.scene_animation.is_none()
-            && content.native_row_placement(viewport, scale, delta)
+            && target.placement(&content, viewport, scale, delta)
                 .is_some_and(|placement| self.next_frame.painter.push_scroll_placement_against(
                     self.rendered_frame.scene(), old_range.clone(), placement,
                 ));
-        if !deferred {
+        if !deferred && !matches!(target, ScrollPaintTarget::BufferedRow { visible: false }) {
             if same_placement && !was_deferred {
                 self.replay_validated_scene(old_range);
             } else {

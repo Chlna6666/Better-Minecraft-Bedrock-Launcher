@@ -402,6 +402,7 @@ impl StaticPaintOrder {
                 } else { true }
             }
             PaintOperationRef::DeferredScroll(placement) => {
+                if !placement.is_visible() { return true; }
                 if !placement.has_static_order() { return false; }
                 if let Some(scope) = self.scopes.last_mut() {
                     // Replaying under an inherited layer can collapse the
@@ -533,7 +534,8 @@ fn root_order_inputs_match(current: &Scene, previous: &Scene, flat_root: bool) -
         previous.paint_operations.all(),
         |current, previous| match (current, previous) {
             (PaintOperationRef::DeferredScroll(a), PaintOperationRef::DeferredScroll(b)) => {
-                a.has_static_order() == b.has_static_order()
+                a.is_visible() == b.is_visible()
+                    && a.has_static_order() == b.has_static_order()
                     && (flat_root || (a.has_scoped_order() == b.has_scoped_order()
                         && a.visual_bounds() == b.visual_bounds()))
             }
@@ -667,6 +669,7 @@ impl SceneLayers {
         // Locate each slot once rather than restart the scan for every row.
         let mut slots = self.frames.iter().enumerate();
         for (index, placement) in placements {
+            if !placement.is_visible() { continue; }
             let span = *index..*index + 1;
             let (slot, _) = slots.find(|(_, layer)| layer.root_static_span() == Some(&span))?;
             let old = &self.frames[slot];

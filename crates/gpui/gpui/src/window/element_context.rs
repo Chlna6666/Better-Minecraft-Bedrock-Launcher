@@ -97,7 +97,7 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
-            self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
+            let hitbox_start = self.next_frame.hitboxes.len();
             let logical_mask = mask.intersect(&self.content_mask());
             let visual_mask = self
                 .element_visual_transform
@@ -106,6 +106,11 @@ impl Window {
             self.content_mask_stack.push(logical_mask);
             self.visual_content_mask_stack.push(visual_mask);
             let result = f(self);
+            // A paint-only clip, such as a clipped table cell, does not
+            // change the coordinate proof for any input records.
+            if self.next_frame.hitboxes.len() != hitbox_start {
+                self.next_frame.input_clip_epoch = self.next_frame.input_clip_epoch.wrapping_add(1);
+            }
             self.content_mask_stack.pop();
             self.visual_content_mask_stack.pop();
             result

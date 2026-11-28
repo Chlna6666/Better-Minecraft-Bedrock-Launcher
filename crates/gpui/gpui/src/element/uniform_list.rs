@@ -27,7 +27,7 @@ use super::ListHorizontalSizingBehavior;
 
 /// uniform_list provides lazy rendering for a set of items that are of uniform height.
 /// When rendered into a container with overflow-y: hidden and a fixed (or max) height,
-/// uniform_list will only render the visible subset of items.
+/// uniform_list renders the visible subset and may prepare nearby rows during scrolling.
 #[track_caller]
 pub fn uniform_list<R>(
     id: impl Into<ElementId>,
@@ -400,6 +400,17 @@ impl Element for UniformList {
                                 frame_state,
                                 global_id,
                                 visible_range.clone(),
+                                shared_scroll_to_item.is_none().then_some(
+                                    crate::window::scroll_rows::UniformRowPlacement {
+                                        offset: &shared_scroll_offset,
+                                        sampled: scroll_offset,
+                                        item_height,
+                                        padded: padded_bounds,
+                                        padding_top: padding.top,
+                                        min_y: min_vertical_scroll_offset.min(Pixels::ZERO),
+                                        fixed_height: self.fixed_item_height == Some(item_height),
+                                    },
+                                ),
                                 row_origin,
                                 available_space,
                                 content_mask,
@@ -407,14 +418,7 @@ impl Element for UniformList {
                                 cx,
                             );
                         }
-                        if let Some(plan) = frame_state.row_plan.as_mut() {
-                            if self.fixed_item_height == Some(item_height) && shared_scroll_to_item.is_none() {
-                                plan.bind_uniform_placement(
-                                    &shared_scroll_offset, scroll_offset, visible_range,
-                                    item_height, padded_bounds, padding.top,
-                                    min_vertical_scroll_offset.min(Pixels::ZERO),
-                                );
-                            }
+                        if frame_state.row_plan.is_some() {
                             return;
                         }
                         let items = if y_flipped {
@@ -507,7 +511,7 @@ impl Element for UniformList {
                     );
                 }
                 if let Some(plan) = request_layout.row_plan.as_ref() {
-                    window.remember_row_placement(plan);
+                    window.remember_row_placement(plan, cx);
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);

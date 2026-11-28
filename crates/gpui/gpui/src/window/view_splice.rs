@@ -71,13 +71,23 @@ impl Window {
     fn with_gap_scope<R>(
         &mut self,
         application_id: &GlobalElementId,
+        inherited: &TextStyle,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let application = mem::replace(
             &mut self.element_id_stack,
             ElementIdStack::from_prefix(application_id.clone()),
         );
+        let text = (!self.with_text_style_ref(|style| style == inherited)).then(|| {
+            mem::replace(
+                &mut self.text_style_stack,
+                crate::fast::text_style::TextStyleStack::with_inherited(inherited),
+            )
+        });
         let result = f(self);
+        if let Some(text) = text {
+            self.text_style_stack = text;
+        }
         self.element_id_stack = application;
         result
     }
@@ -213,7 +223,8 @@ impl Window {
             if !anchor.layout_state_range.covers(&old.layout_state_range)
                 || open.iter().any(|ancestor| !ancestor.layout_state_range.covers(&old.layout_state_range))
                 || (scope.is_some() && !old.splice_safe)
-                || (dirty && (gap_rebuild.layout != rebuild.layout || old.context != anchor.context
+                || (dirty && (!same_splice_geometry(&gap_rebuild.layout, &rebuild.layout)
+                    || !same_splice_geometry(&old.context, &anchor.context)
                     || open.iter().any(|ancestor| !ancestor.layout_claims.covers(&old.layout_claims))))
                 || self.rendered_frame.retained_scene_segments.get(old.scene_segments.clone()).is_none()
                 || !self.splice_fragment_supported(&prepaint, &old.prepaint_range.start, &paint, &old.paint_range.start)
@@ -361,7 +372,7 @@ impl Window {
             let gap_start = self.claim_log_len();
             let state_start = self.begin_view_element_states();
             let rebuild = old.rebuild.as_ref().expect("validated gap");
-            let (layout_id, state) = self.with_gap_scope(&rebuild.application_id, |window| {
+            let (layout_id, state) = self.with_gap_scope(&rebuild.application_id, &rebuild.layout.text_style, |window| {
                 window.with_parent_layout_key(rebuild.parent_layout_key, |window| {
                     let element_id = rebuild.application_id.last().expect("retained view element id");
                     let key = crate::fast::layout_key::push_layout_key(window, Some(element_id));
@@ -483,7 +494,7 @@ impl Window {
                     let node = relocate_dispatch(Some(wrapper), parent, relocated).expect("validated gap wrapper");
                     self.next_frame.dispatch_tree.set_active_node(node);
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(&rebuild.application_id, |window| {
+                    self.with_gap_scope(&rebuild.application_id, &old.context.text_style, |window| {
                         let scope = crate::fast::layout_key::enter_prepaint_scope(window, gap.key);
                         gap.view.prepaint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, window, cx);
                         crate::fast::layout_key::exit_prepaint_scope(window, scope);
@@ -495,10 +506,13 @@ impl Window {
                 SplicePart::Ancestor(ancestor) => {
                     let (children, tail) = parts.split_at_mut(ancestor.descendants);
                     parts = tail;
-                    let slot = self.reserve_view_retention(ancestor.key, ancestor.old.rebuild.as_ref().expect("validated ancestor").view.entity_id());
+                    let owner = ancestor.old.rebuild.as_ref().expect("validated ancestor").view.entity_id();
+                    let slot = self.reserve_view_retention(ancestor.key, owner);
                     let start = self.prepaint_index();
                     let claims_start = self.claim_log_len();
-                    self.prepaint_splice_parts(children, &ancestor.old.prepaint_range, parent, relocated, cx);
+                    self.with_rendered_view(owner, |window| {
+                        window.prepaint_splice_parts(children, &ancestor.old.prepaint_range, parent, relocated, cx);
+                    });
                     ancestor.claims.push_prepaint(claims_start..self.claim_log_len());
                     ancestor.prepaint = Some(start..self.prepaint_index());
                     let nested = self.finish_view_retention_scope(&slot);
@@ -539,7 +553,7 @@ impl Window {
                     let old = &gap.old;
                     self.next_frame.dispatch_tree.set_active_node(gap.node.expect("prepainted gap"));
                     let rebuild = old.rebuild.as_ref().expect("validated gap");
-                    self.with_gap_scope(&rebuild.application_id, |window| {
+                    self.with_gap_scope(&rebuild.application_id, &old.context.text_style, |window| {
                         let previous = window.paint_layout_key.replace(gap.key);
                         window.record_debug_element_paint(old.bounds, cx);
                         gap.view.paint(Some(&rebuild.application_id), None, old.bounds, &mut gap.state, &mut (), window, cx);
@@ -575,6 +589,18 @@ impl Window {
         }
         self.replay_validated_paint(cursor..range.end.clone());
     }
+}
+
+fn same_splice_geometry(a: &RetainedPaintContext, b: &RetainedPaintContext) -> bool {
+    a.device_scale_factor == b.device_scale_factor
+        && a.opacity == b.opacity
+        && a.scale == b.scale
+        && a.translation == b.translation
+        && a.element_offset == b.element_offset
+        && a.text_raster_scale == b.text_raster_scale
+        && a.content_mask == b.content_mask
+        && a.visual_content_mask == b.visual_content_mask
+        && a.rem_size == b.rem_size
 }
 
 fn close_ancestor(parts: &mut [SplicePart], index: usize) {

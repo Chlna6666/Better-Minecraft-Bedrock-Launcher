@@ -193,6 +193,8 @@ impl AnyElement {
             div.can_capture_scrolling_subtree(capture)
         } else if let Some(div) = element.downcast_mut::<crate::Stateful<crate::Div>>() {
             div.element.can_capture_scrolling_subtree(capture)
+        } else if let Some(canvas) = element.downcast_mut::<crate::Canvas<()>>() {
+            canvas.can_capture_scrolling_subtree(capture)
         } else {
             element.is::<crate::SharedString>()
                 || element.is::<&'static str>()
