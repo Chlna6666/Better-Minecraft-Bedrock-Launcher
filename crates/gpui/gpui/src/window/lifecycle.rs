@@ -1426,6 +1426,61 @@ mod view_invalidation_tests {
     }
 
     #[test]
+    fn boundary_row_delta_retires_only_last_certified_readers() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let other = EntityId::from(2);
+        let own = EntityId::from(3);
+        let shared = EntityId::from(4);
+        let retired = EntityId::from(5);
+        let other_reader = EntityId::from(6);
+        let added = EntityId::from(7);
+        let unknown = EntityId::from(8);
+        let global = TypeId::of::<u32>();
+        let mut log = crate::AppDependencies::default();
+        log.entity(Some(owner), own);
+        log.note_global_read((global, Some(true)));
+        let start = log.dependency_read_index();
+        for entity in [own, shared, retired, other_reader, unknown] {
+            log.note_access(entity);
+        }
+        log.note_global_read((global, None));
+        log.note_global_read((global, Some(true)));
+        log.row_reads_since(start);
+        log.entity(Some(other), other_reader);
+        invalidator.commit_frame_dependencies(&mut log, &mut FxHashSet::default(),
+            &FxHashSet::default(), |_| true, |_| true);
+        let mut entities = vec![own, shared, retired, other_reader];
+        entities.sort_unstable();
+        let mut globals = vec![(global, None), (global, Some(true))];
+        globals.sort_unstable();
+        let retired_reads = crate::RenderDependencies {
+            entities: Rc::from(entities), globals: Rc::from(globals),
+            ..Default::default()
+        };
+        let kept = crate::RenderDependencies {
+            entities: Rc::from([shared]), ..Default::default()
+        };
+        let entered = crate::RenderDependencies {
+            entities: Rc::from([added]), ..Default::default()
+        };
+        let prepared = invalidator.prepare_boundary_row_delta(owner, &entered, &retired_reads, &kept).unwrap();
+        assert!(invalidator.inner.borrow().render_dependencies.contains_key(&retired));
+        let removed = invalidator.commit_boundary_row_reads(prepared);
+        assert_eq!(removed, vec![retired]);
+        let inner = invalidator.inner.borrow();
+        let reads = &inner.view_reads[&Some(owner)].reads;
+        for key in [own, shared, added, unknown] {
+            assert!(reads.entities.binary_search(&key).is_ok());
+        }
+        assert!(reads.entities.binary_search(&retired).is_err());
+        assert!(reads.entities.binary_search(&other_reader).is_err());
+        assert_eq!(inner.render_dependencies[&other_reader].as_ref().unwrap().as_slice(), &[other]);
+        assert!(!inner.global_read_dependencies.contains_key(&(global, None)));
+        assert!(inner.global_read_dependencies.contains_key(&(global, Some(true))));
+    }
+
+    #[test]
     fn global_row_only_provenance_preserves_presence_semantics() {
         let invalidator = WindowInvalidator::new();
         let owner = EntityId::from(1);
