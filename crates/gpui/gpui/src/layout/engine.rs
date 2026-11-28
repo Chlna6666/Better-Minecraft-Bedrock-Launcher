@@ -608,6 +608,53 @@ impl TaffyLayoutEngine {
         self.claimed_key_log.len()
     }
 
+    /// A row layout is a detached native subtree. Record its actual claim
+    /// range only if every node belongs to that subtree and every child is
+    /// represented. Transient nodes or external child edges disqualify it.
+    pub(crate) fn capture_detached_row_claims(
+        &self, range: Range<usize>, root: LayoutId,
+    ) -> Option<LayoutClaimBlocks> {
+        if range.is_empty() || self.layout_parent(root).is_some() { return None; }
+        let records = self.claimed_key_log.get(range.clone())?;
+        let mut roots = 0;
+        let mut edges = 0usize;
+        for record in records {
+            let claim = record.as_ref()?;
+            let node = self.persistent_nodes.get(&claim.key)?;
+            if node.id != claim.id || node.claimed_in_frame != self.request_frame
+                || !node.lingers || node.offscreen
+                || self.robbed_parents.contains(&claim.id)
+                || self.stale_style_fingerprints.contains(&claim.id)
+            {
+                return None;
+            }
+            if claim.id == root {
+                roots += 1;
+            } else if !self.layout_reaches(root, claim.id) {
+                return None;
+            }
+            edges = edges.checked_add(self.taffy.child_count(claim.id.into()))?;
+        }
+        if roots != 1 || edges != records.len() - 1 { return None; }
+        // Lazy rows request layout during the enclosing view's prepaint.
+        Some(LayoutClaimBlocks::prepaint(range))
+    }
+
+    /// Use the existing all-or-nothing native claim mechanism. A row may
+    /// already have been claimed by another retained owner; in that case
+    /// do not publish a second claim proof.
+    pub(crate) fn try_keep_detached_row_claims(
+        &mut self, spans: &LayoutClaimBlocks, root: LayoutId,
+    ) -> Option<LayoutClaimBlocks> {
+        if !spans.request_blocks().is_empty()
+            || spans.prepaint_blocks().is_empty()
+            || self.layout_parent(root).is_some()
+        {
+            return None;
+        }
+        self.try_keep_retained(spans, root)
+    }
+
     /// Validate every committed interval before taking any ownership.
     /// Preserve tombstones and order for normal retained-span rebasing.
     pub(crate) fn try_keep_retained(
@@ -1774,6 +1821,29 @@ mod tests {
         assert_eq!(log.entries()[1].1, available);
         log.record(known, available, crate::size(crate::px(20.), crate::px(12.)));
         assert!(matches!(log, MeasureLog::Invalid));
+    }
+
+    #[test]
+    fn detached_row_claims_keep_native_subtree_without_claiming_unrelated_nodes() {
+        let mut engine = TaffyLayoutEngine::new();
+        let child_key = row_id(1);
+        let root_key = row_id(2);
+        let unrelated_key = list_id();
+        let child = engine.request_layout(Some(owner(&child_key)), true, Style::default(), crate::px(16.), 1., &[]);
+        let root = engine.request_layout(Some(owner(&root_key)), true, Style::default(), crate::px(16.), 1., &[child]);
+        let unrelated = engine.request_layout(Some(owner(&unrelated_key)), false, Style::default(), crate::px(16.), 1., &[]);
+        let claims = engine.capture_detached_row_claims(0..2, root).unwrap();
+        assert!(engine.capture_detached_row_claims(1..2, root).is_none());
+        assert!(engine.capture_detached_row_claims(0..3, root).is_none());
+        assert!(engine.capture_detached_row_claims(0..1, child).is_none());
+        assert!(engine.capture_detached_row_claims(2..3, unrelated).is_none());
+        engine.clear();
+        let kept = engine.try_keep_detached_row_claims(&claims, root).unwrap();
+        assert_eq!(engine.claimed_this_frame, 2);
+        assert_eq!(kept.prepaint_blocks(), &[0..2]);
+        assert!(engine.try_keep_detached_row_claims(&claims, root).is_none());
+        engine.release_kept(&kept);
+        assert_eq!(engine.claimed_this_frame, 0);
     }
 
     #[test]
