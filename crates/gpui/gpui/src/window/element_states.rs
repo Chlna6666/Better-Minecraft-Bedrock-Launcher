@@ -80,6 +80,10 @@ impl ElementStates {
         Some(())
     }
 
+    pub(super) fn boundary_is_untouched(&self) -> bool {
+        self.boundary.as_ref().is_some_and(|boundary| !boundary.conflict && boundary.fresh.is_empty())
+    }
+
     #[allow(dead_code)]
     pub(super) fn cancel_boundary(&mut self) {
         self.boundary = None;
