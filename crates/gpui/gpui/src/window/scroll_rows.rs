@@ -1171,6 +1171,74 @@ impl RowRecord {
 }
 
 impl Window {
+    /// Invoked only after the ordinary placement gate rejects a changed
+    /// capture range. A speculative boundary owns the ordinary scratch
+    /// Frame, not a duplicate of the committed Frame or layout tree.
+    pub(super) fn try_commit_uniform_boundary(&mut self, cx: &mut App, started: std::time::Instant) -> bool {
+        let Some((epoch, owners)) = self.invalidator.pending_placement() else { return false; };
+        let [owner] = owners.as_slice() else { return false; };
+        let owner = *owner;
+        if self.next_frame.scene().len() != 0
+            || self.next_frame.dispatch_tree.len() != 0
+            || !self.next_frame.scroll_rows.rows.is_empty()
+            || !self.fast_layout.is_empty()
+            || self.element_id_stack.len() != 0
+            || !self.rendered_entity_stack.is_empty()
+            || !self.view_bounds_stack.is_empty()
+            || cx.entities.tracking_frame_dependencies()
+        {
+            return false;
+        }
+        let Some(boundary) = self.prepare_static_uniform_boundary(cx, epoch, owner) else { return false; };
+        if self.element_states.begin_boundary().is_none() { return false; }
+        if self.layout_engine.as_mut().and_then(|engine| engine.begin_detached_boundary(&boundary.retired_claims)).is_none() {
+            self.element_states.cancel_boundary();
+            return false;
+        }
+        let scratch = std::mem::take(&mut cx.entities.frame_entity_scratch);
+        let input_readers = std::mem::take(self.next_input_readers.get_mut());
+        let input_owner = self.input_dependency_owner.take();
+        let autoscroll = self.requested_autoscroll.take();
+        cx.entities.begin_frame_dependencies();
+        let result = {
+            let _reads = cx.entities.begin_state_reads();
+            self.execute_static_uniform_boundary(boundary, epoch, cx)
+        };
+        cx.entities.discard_frame_dependencies();
+        cx.entities.frame_entity_scratch = scratch;
+        *self.next_input_readers.get_mut() = input_readers;
+        self.input_dependency_owner = input_owner;
+        self.requested_autoscroll = autoscroll;
+        self.invalidator.set_phase(super::DrawPhase::None);
+        self.fast_layout.end_frame();
+        self.text_system.cancel_boundary_layouts();
+        self.element_states.cancel_boundary();
+        if let Some((paint, damage, retired_records, retired_rows)) = result {
+            self.scroll_hover.row_owners.insert(owner);
+            self.finish_scroll_placement_publication(paint, std::iter::once(damage), true, started, cx);
+            // Do not destroy committed callback, row or scene owners until
+            // the replacement CPU records and GPU publication are visible.
+            drop(retired_records);
+            drop(retired_rows);
+            self.next_frame.clear();
+            log::trace!(target: "gpui::diagnostics", "gpui independent uniform boundary committed");
+            true
+        } else {
+            let restored = self.layout_engine.as_mut()
+                .is_some_and(|engine| engine.cancel_detached_boundary());
+            self.global_ids.get_mut().abort_frame();
+            self.next_frame.clear();
+            if !restored {
+                self.force_view_cache_refresh = true;
+                self.invalidator.set_dirty(true);
+            }
+            // An unsuccessful speculative boundary never consumes its
+            // placement invalidation; the original draw proceeds.
+            log::trace!(target: "gpui::diagnostics", "gpui independent uniform boundary rejected");
+            false
+        }
+    }
+
     /// Build and paint exactly the entering rows into the existing scratch
     /// Frame. All unsupported side streams reject the candidate before
     /// any committed CPU/GPU owner can move.
