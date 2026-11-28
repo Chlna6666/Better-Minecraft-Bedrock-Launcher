@@ -135,7 +135,10 @@ impl Scene {
         let row_markers = |operations: &super::Operations, range: Range<usize>| {
             operations.get_range(range).is_some_and(|range| {
                 range.runs().all(|run| {
-                    run.is_scroll_only() && run.iter().all(|operation| {
+                    // Physical pages may also contain root primitives
+                    // outside this selected slice. Only the actual edit
+                    // needs to consist entirely of row markers.
+                    run.iter().all(|operation| {
                         matches!(operation, PaintOperationRef::DeferredScroll(row) if row.is_row_placement())
                     })
                 })
