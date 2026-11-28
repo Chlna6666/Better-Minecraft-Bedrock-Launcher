@@ -325,7 +325,7 @@ pub(super) struct RowPlacementCandidate {
 impl RowPlacementCandidate {
     pub(super) fn commit(self, frame: &mut super::Frame) {
         for (key, origin) in self.origins {
-            frame.scroll_rows.rows.get_mut(&key).expect("validated row").prepaint.origin = origin;
+            frame.scroll_rows.rows.get_mut(&key).expect("validated row").move_origin(origin);
         }
         let binding = frame.scroll_rows.row_placements.get_mut(&self.key)
             .expect("validated row binding");
@@ -1064,6 +1064,7 @@ struct RowRecord {
     prepaint: RowPrepaint,
     paint: Range<PaintIndex>,
     content: Arc<ScrollPaint>,
+    mouse_geometry_stale: bool,
 }
 
 /// First runtime boundary domain: static, fixed-height independent rows.
@@ -1170,7 +1171,7 @@ impl BoundaryRowAdoption {
             } else {
                 old.rows.get_mut(&key).expect("validated kept row")
             };
-            row.prepaint.origin = update.origin;
+            row.move_origin(update.origin);
             row.prepaint.records = update.prepaint;
             row.paint = update.paint;
         }
@@ -1190,6 +1191,13 @@ impl BoundaryRowAdoption {
 }
 
 impl RowRecord {
+    fn move_origin(&mut self, origin: Point<Pixels>) {
+        if self.prepaint.origin != origin && !self.mouse_span().is_empty() {
+            self.mouse_geometry_stale = true;
+        }
+        self.prepaint.origin = origin;
+    }
+
     /// Validate unchanged side streams after removing coordinates whose
     /// actual ownership is independently certified and spliced.
     fn static_boundary_checkpoints(&self) -> Option<(PrepaintStateIndex, PaintIndex)> {
@@ -2495,7 +2503,8 @@ impl Window {
         // wheel hold ends, never replay it even if the row is not under
         // the pointer yet. The synchronous input restoration draw must
         // regenerate all such callbacks before the next positional event.
-        if (!plan.hover_held && !record.mouse_span().is_empty())
+        if (!plan.hover_held && !record.mouse_span().is_empty()
+                && (record.mouse_geometry_stale || origin != record.prepaint.origin))
             || (plan.placement_only && record.revision != plan.revision)
             || (plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some())
                 && record.prepaint.layout_claims.is_none()
@@ -2635,7 +2644,7 @@ impl Window {
             prepaint.validation = StateReadValidation::default();
         }
         prepaint.reads.merge_replayed(&paint_reads);
-        self.remember_scroll_row(plan, row, prepaint, paint, content);
+        self.remember_scroll_row(plan, row, prepaint, paint, content, false);
     }
 
     fn paint_reused_scroll_row(&mut self, plan: &RowPlan, row: usize, prepaint: RowPrepaint, cx: &App) {
@@ -2643,6 +2652,8 @@ impl Window {
         let content = previous.content.clone();
         let old_paint = previous.paint.clone();
         let same_placement = previous.prepaint.origin == prepaint.origin;
+        let mouse_geometry_stale = !previous.mouse_span().is_empty()
+            && (previous.mouse_geometry_stale || !same_placement);
         let start = self.paint_index();
         let scale = self.scale_factor();
         let viewport = self.visual_content_mask();
@@ -2671,14 +2682,11 @@ impl Window {
             }
         }
         self.replay_validated_paint_records(&old_paint);
-        if !hitbox_range(&prepaint).is_empty()
-            && (plan.hover_held || (delta != Point::default()
-                && old_paint.start.mouse_listeners_index != old_paint.end.mouse_listeners_index))
-        {
+        if mouse_geometry_stale || (!hitbox_range(&prepaint).is_empty() && plan.hover_held) {
             self.restore_scroll_row_after_wheel(cx);
         }
         let paint = start..self.paint_index();
-        self.remember_scroll_row(plan, row, prepaint, paint, content);
+        self.remember_scroll_row(plan, row, prepaint, paint, content, mouse_geometry_stale);
     }
 
     fn restore_scroll_row_after_wheel(&mut self, cx: &App) {
@@ -2694,6 +2702,7 @@ impl Window {
         mut prepaint: RowPrepaint,
         paint: Range<PaintIndex>,
         content: Arc<ScrollPaint>,
+        mouse_geometry_stale: bool,
     ) {
         if let Some((_, claims)) = prepaint.layout_claims.as_mut() {
             self.layout_engine.as_ref().expect("native layout engine")
@@ -2753,6 +2762,7 @@ impl Window {
                 prepaint,
                 paint,
                 content,
+                mouse_geometry_stale,
             },
         );
     }
