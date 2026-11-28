@@ -339,6 +339,14 @@ struct LayoutStore<V> {
     current: AccessLog,
     // Unique slots touched this epoch, not the length of the replay log.
     used_count: usize,
+    // Allocated only after the first independent text boundary.
+    boundary_counts: Option<FxHashMap<usize, usize>>,
+    boundary_inactive_limit: usize,
+}
+
+struct PreparedTextAccesses {
+    log: AccessLog,
+    changes: Vec<(usize, usize)>,
 }
 
 struct LayoutEntry<V> {
@@ -355,6 +363,8 @@ impl<V> Default for LayoutStore<V> {
             previous: AccessLog::default(),
             current: AccessLog::default(),
             used_count: 0,
+            boundary_counts: None,
+            boundary_inactive_limit: 0,
         }
     }
 }
@@ -442,7 +452,7 @@ impl<V> LayoutStore<V> {
     /// Prepare the next access log from the committed and independently
     /// materialized streams. The slot table is authoritative for both.
     /// Duplicate IDs are deliberate and no layout Arc is cloned.
-    fn spliced_accesses(&mut self, plan: &crate::window::RecordSplicePlan) -> Option<AccessLog> {
+    fn splice_pages(&mut self, plan: &crate::window::RecordSplicePlan) -> Option<AccessLog> {
         use crate::window::SpliceSource;
         if !plan.matches_sources(self.previous.len(), self.current.len()) { return None; }
         self.previous.freeze();
@@ -465,16 +475,91 @@ impl<V> LayoutStore<V> {
             accesses = AccessLog::Flat(accesses.to_vec());
             accesses.freeze();
         }
-        let mut valid = len == plan.len();
-        accesses.visit(0..len, |ids| {
+        (len == plan.len()).then_some(accesses)
+    }
+
+    #[cfg(test)]
+    fn spliced_accesses(&mut self, plan: &crate::window::RecordSplicePlan) -> Option<AccessLog> {
+        let accesses = self.splice_pages(plan)?;
+        let mut valid = true;
+        accesses.visit(0..accesses.len(), |ids| {
             valid &= ids.iter().all(|&id| self.slots.get(id).is_some_and(Option::is_some));
         });
         valid.then_some(accesses)
     }
 
+    /// Validate retained IDs once per full traversal. Subsequent
+    /// boundaries visit only removed and inserted access ranges.
+    fn prepare_boundary_accesses(
+        &mut self, plan: &crate::window::RecordSplicePlan,
+    ) -> Option<PreparedTextAccesses> {
+        if !plan.matches_sources(self.previous.len(), self.current.len()) { return None; }
+        if self.boundary_counts.is_none() {
+            let mut counts = FxHashMap::<usize, usize>::default();
+            let mut valid = true;
+            self.previous.visit(0..self.previous.len(), |ids| {
+                for &id in ids {
+                    if !self.slots.get(id).is_some_and(Option::is_some) { valid = false; break; }
+                    let count = counts.entry(id).or_default();
+                    if let Some(next) = count.checked_add(1) { *count = next; }
+                    else { valid = false; break; }
+                }
+            });
+            if !valid { return None; }
+            // Unreferenced layouts may still be shared by another cache
+            // or unlogged non-row lookup. Defer their physical retirement
+            // to the ordinary ownership-aware sweep, with bounded growth.
+            self.boundary_inactive_limit = self.keys.len().checked_sub(counts.len())?
+                .saturating_add(256).max(512);
+            self.boundary_counts = Some(counts);
+        }
+        let counts = self.boundary_counts.as_ref()?;
+        let mut changes = FxHashMap::<usize, usize>::default();
+        let mut valid = true;
+        for (replacement, log) in [(false, &self.previous), (true, &self.current)] {
+            for range in plan.edited_ranges(replacement) {
+                log.visit(range, |ids| {
+                    for &id in ids {
+                        if !self.slots.get(id).is_some_and(Option::is_some) { valid = false; break; }
+                        let count = changes.entry(id).or_insert_with(|| counts.get(&id).copied().unwrap_or(0));
+                        let next = if replacement { count.checked_add(1) } else { count.checked_sub(1) };
+                        if let Some(next) = next { *count = next; }
+                        else { valid = false; break; }
+                    }
+                });
+                if !valid { return None; }
+            }
+        }
+        let mut active = counts.len();
+        let mut additions = 0usize;
+        for (&id, &count) in &changes {
+            match (counts.contains_key(&id), count != 0) {
+                (true, false) => active = active.checked_sub(1)?,
+                (false, true) => { active = active.checked_add(1)?; additions += 1; }
+                _ => {}
+            }
+        }
+        if self.keys.len().checked_sub(active)? > self.boundary_inactive_limit { return None; }
+        self.boundary_counts.as_mut()?.try_reserve(additions).ok()?;
+        let log = self.splice_pages(plan)?;
+        Some(PreparedTextAccesses { log, changes: changes.into_iter().collect() })
+    }
+
+    fn commit_boundary_accesses(&mut self, prepared: PreparedTextAccesses) {
+        let counts = self.boundary_counts.as_mut().expect("prepared text counts");
+        for (id, count) in prepared.changes {
+            if count == 0 { counts.remove(&id); }
+            else { counts.insert(id, count); }
+        }
+        self.previous = prepared.log;
+        self.current.clear();
+        self.used_count = 0;
+    }
+
     /// Adopt only after both text streams have been prepared and their
     /// font generation is still current. Retained slots must be marked
     /// live before the ordinary frame finish retires unused entries.
+    #[cfg(test)]
     fn adopt_spliced_accesses(&mut self, accesses: AccessLog, epoch: u64) -> usize {
         let mut reused = 0;
         let slots = &mut self.slots;
@@ -493,6 +578,8 @@ impl<V> LayoutStore<V> {
     }
 
     fn finish(&mut self, epoch: u64, mut retire: impl FnMut(&Arc<CacheKey>, Arc<V>)) {
+        self.boundary_counts = None;
+        self.boundary_inactive_limit = 0;
         debug_assert!(self.used_count <= self.keys.len());
         // Every key was used: no unused slot can be retired. Unlike an
         // access-log length check this also works for duplicate replays
@@ -518,6 +605,8 @@ impl<V> LayoutStore<V> {
     }
 
     fn clear(&mut self) {
+        self.boundary_counts = None;
+        self.boundary_inactive_limit = 0;
         self.keys.clear();
         self.slots.clear();
         self.free.clear();
@@ -531,6 +620,8 @@ impl<V> LayoutStore<V> {
     /// rewriting every live index before exposing the compacted table.
     fn compact_slots(&mut self) {
         if self.free.is_empty() { return; }
+        self.boundary_counts = None;
+        self.boundary_inactive_limit = 0;
         let mut relocated = vec![usize::MAX; self.slots.len()];
         let mut write = 0;
         for read in 0..self.slots.len() {
@@ -586,6 +677,7 @@ struct FrameCache {
     epoch: u64,
     lines: LayoutStore<LineLayout>,
     wrapped_lines: LayoutStore<WrappedLineLayout>,
+    prepared_boundary: Option<(PreparedTextAccesses, PreparedTextAccesses)>,
 }
 
 impl Default for FrameCache {
@@ -594,6 +686,7 @@ impl Default for FrameCache {
             epoch: 1,
             lines: LayoutStore::default(),
             wrapped_lines: LayoutStore::default(),
+            prepared_boundary: None,
         }
     }
 }
@@ -903,7 +996,7 @@ impl LineLayoutCache {
     /// is called at the final boundary-commit stage, immediately before
     /// normal finish_frame; no further fallible Frame adoption may follow.
     /// On rejection neither log is changed (including font invalidation).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn splice_layouts(
         &self,
         generation: u64,
@@ -926,11 +1019,42 @@ impl LineLayoutCache {
         Some(())
     }
 
+    /// Stage both streams without changing their committed access logs or
+    /// active counts. The final placement lease may still reject.
+    pub(crate) fn prepare_boundary_layouts(
+        &self, generation: u64,
+        lines: &crate::window::RecordSplicePlan,
+        wrapped: &crate::window::RecordSplicePlan,
+    ) -> Option<()> {
+        if self.cached_font_generation.load(Ordering::Acquire) != generation
+            || self.font_generation.load(Ordering::Acquire) != generation { return None; }
+        let mut frame = self.frame.borrow_mut();
+        if frame.prepared_boundary.is_some() || frame.epoch == u64::MAX { return None; }
+        let next_lines = frame.lines.prepare_boundary_accesses(lines)?;
+        let next_wrapped = frame.wrapped_lines.prepare_boundary_accesses(wrapped)?;
+        if self.font_generation.load(Ordering::Acquire) != generation { return None; }
+        frame.prepared_boundary = Some((next_lines, next_wrapped));
+        Some(())
+    }
+
+    /// Consume the staged logs after the window placement lease. Epoch
+    /// advancement makes the next ordinary lookup/replay record fresh
+    /// access; no retained slot's last_used stamp needs to be rewritten.
+    pub(crate) fn commit_boundary_layouts(&self) -> LineLayoutFrameMetrics {
+        let mut frame = self.frame.borrow_mut();
+        let (lines, wrapped) = frame.prepared_boundary.take().expect("prepared text boundary");
+        frame.wrapped_lines.commit_boundary_accesses(wrapped);
+        frame.lines.commit_boundary_accesses(lines);
+        frame.epoch = frame.epoch.checked_add(1).expect("validated text epoch");
+        self.frame_metrics.finish_frame()
+    }
+
     /// Only valid for a detached candidate starting with empty current logs.
     /// Do not finish the text frame: committed access offsets must survive.
     #[allow(dead_code)]
     pub(crate) fn cancel_boundary_layouts(&self) {
         let mut frame = self.frame.borrow_mut();
+        frame.prepared_boundary = None;
         let epoch = frame.epoch;
         frame.lines.cancel_current_accesses(epoch);
         frame.wrapped_lines.cancel_current_accesses(epoch);
@@ -1172,6 +1296,7 @@ fn line_layout_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 
 impl FrameCache {
     fn clear(&mut self) {
+        self.prepared_boundary = None;
         self.lines.clear();
         self.wrapped_lines.clear();
         self.epoch = 1;
@@ -1196,6 +1321,8 @@ impl FrameCache {
         generation: u64,
         font_generation: &AtomicU64,
     ) {
+        debug_assert!(self.prepared_boundary.is_none());
+        self.prepared_boundary = None;
         // Drop unused wrappers first, preserving Fast's ownership-based
         // retention of live unwrapped layouts and bounded recent shapes.
         self.wrapped_lines.finish(self.epoch, |_, _| {});
