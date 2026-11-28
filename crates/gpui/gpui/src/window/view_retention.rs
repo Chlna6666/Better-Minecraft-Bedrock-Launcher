@@ -152,8 +152,32 @@ pub(crate) struct ViewRecordSlot {
 /// cloning the entire Frame or reconstructing its entity lookup table.
 #[allow(dead_code)]
 pub(super) struct BoundaryViewRecords {
-    records: Vec<(usize, RetainedViewRecord)>,
+    records: Vec<BoundaryViewUpdate>,
     segments: Vec<(usize, Range<usize>)>,
+}
+
+/// Only native coordinates and enclosing layout claims change on the
+/// current boundary path. Keep view identity, rebuild ownership and
+/// inherited context in the committed slot, even when its ranges move.
+struct BoundaryViewUpdate {
+    slot: usize,
+    prepaint: Range<PrepaintStateIndex>,
+    paint: Range<PaintIndex>,
+    states: StateAccessBlocks,
+    claims: Option<LayoutClaimBlocks>,
+}
+
+impl BoundaryViewUpdate {
+    fn adopt(&mut self, record: &mut RetainedViewRecord) {
+        std::mem::swap(&mut record.prepaint_range, &mut self.prepaint);
+        std::mem::swap(&mut record.paint_range, &mut self.paint);
+        std::mem::swap(&mut record.layout_state_range, &mut self.states);
+        if let Some(claims) = &mut self.claims {
+            std::mem::swap(&mut record.layout_claims, claims);
+            // Nested dirty-gap splice proofs refer to the old topology.
+            record.splice_safe = false;
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -200,19 +224,18 @@ impl BoundaryViewRecords {
             {
                 continue;
             }
-            // Only a relocated record owns a replacement descriptor. Clean
-            // siblings do not clone their layout claim blocks or Rc context.
-            let mut next = record.clone();
-            next.prepaint_range = prepaint_range;
-            next.paint_range = paint_range;
-            next.layout_state_range = states;
-            if is_ancestor {
-                next.layout_claims = engine.detached_boundary_ancestor_claims(&record.layout_claims)?;
-                // Nested dirty-gap splice proofs still refer to the old
-                // physical record topology.
-                next.splice_safe = false;
-            }
-            records.push((index, next));
+            let claims = if is_ancestor {
+                Some(engine.detached_boundary_ancestor_claims(&record.layout_claims)?)
+            } else {
+                None
+            };
+            records.push(BoundaryViewUpdate {
+                slot: index,
+                prepaint: prepaint_range,
+                paint: paint_range,
+                states,
+                claims,
+            });
         }
         let mut segments = Vec::new();
         for (index, segment) in old.retained_scene_segments.iter().enumerate() {
@@ -232,9 +255,12 @@ impl BoundaryViewRecords {
     /// Swap in the already validated descriptors and retain the old
     /// ownership in this candidate until post-publication retirement.
     pub(super) fn adopt(&mut self, frame: &mut Frame) {
-        for (index, record) in &mut self.records {
-            std::mem::swap(frame.view_retention_records[*index].record.as_mut()
-                .expect("validated retained view slot"), record);
+        for update in &mut self.records {
+            let record = frame.view_retention_records[update.slot]
+                .record
+                .as_mut()
+                .expect("validated retained view slot");
+            update.adopt(record);
         }
         for (index, range) in &mut self.segments {
             std::mem::swap(&mut frame.retained_scene_segments[*index].scene_range, range);
