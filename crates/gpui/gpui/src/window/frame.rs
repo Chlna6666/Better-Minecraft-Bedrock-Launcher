@@ -805,19 +805,24 @@ impl Frame {
             &replacement.dispatch_tree, dispatch, replacement_parent, replacement_anchor,
         )?;
         // Replacement rows with their own moving clips are not admitted.
-        // Existing layer ranges may survive outside the edit, or strictly
+        // Existing layer ranges may survive outside the edit, or
         // enclose the complete edited domain. Boundary-touching insertions
         // need an explicit owner proof and therefore reject here.
         if !replacement.layer_inputs.is_empty() { return None; }
         let mut layer_inputs = Vec::with_capacity(self.layer_inputs.len());
         for layer in &self.layer_inputs {
             let range = layer.hitboxes.clone();
+            if hitboxes.edits.iter().any(|edit| edit.old.is_empty()
+                && (edit.old.start == range.start || edit.old.start == range.end))
+            {
+                // Retained-span affinity alone cannot prove whether a
+                // layer owns a new hitbox at either of its endpoints.
+                return None;
+            }
             let relocated = if let Some(mapped) = hitboxes.retained_span(range.clone()) {
                 mapped
             } else {
-                let first = hitboxes.edits.first()?;
-                let last = hitboxes.edits.last()?;
-                if range.start >= first.old.start || range.end <= last.old.end { return None; }
+                // Nonempty retired records prove interval membership.
                 hitboxes.enclosing_span(range)?
             };
             layer_inputs.push(LayerInput {
