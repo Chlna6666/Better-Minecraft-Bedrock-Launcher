@@ -1324,17 +1324,22 @@ mod binding_tests {
 
     #[gpui::test]
     fn independent_fixed_uniform_boundary_builds_only_entering_rows(cx: &mut crate::TestAppContext) {
-        assert_independent_uniform_boundary(cx, false);
+        assert_independent_uniform_boundary(cx, false, false);
     }
 
     #[gpui::test]
     fn independent_uniform_text_boundary_preserves_shared_text_accesses(cx: &mut crate::TestAppContext) {
-        assert_independent_uniform_boundary(cx, true);
+        assert_independent_uniform_boundary(cx, true, false);
     }
 
-    fn assert_independent_uniform_boundary(cx: &mut crate::TestAppContext, with_text: bool) {
+    #[gpui::test]
+    fn independent_uniform_mouse_boundary_restores_positional_callbacks(cx: &mut crate::TestAppContext) {
+        assert_independent_uniform_boundary(cx, false, true);
+    }
+
+    fn assert_independent_uniform_boundary(cx: &mut crate::TestAppContext, with_text: bool, with_mouse: bool) {
         use crate::{
-            Context, IntoElement, ParentElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
+            Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, PlatformInput, Render, ScrollDelta, ScrollWheelEvent, Styled,
             UniformListScrollHandle, div, uniform_list_each,
         };
         use std::cell::Cell;
@@ -1344,16 +1349,24 @@ mod binding_tests {
             builds: Rc<Cell<usize>>,
             scroll: UniformListScrollHandle,
             with_text: bool,
+            with_mouse: bool,
+            clicked: Rc<Cell<Option<usize>>>,
         }
         impl Render for Rows {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 self.roots.set(self.roots.get() + 1);
                 let builds = self.builds.clone();
                 let with_text = self.with_text;
+                let with_mouse = self.with_mouse;
+                let clicked = self.clicked.clone();
                 uniform_list_each("detached-static-rows", 100, move |row, _, _| {
                     builds.set(builds.get() + 1);
                     let element = div().h(px(24.)).w_full()
                         .bg(if row % 2 == 0 { crate::blue() } else { crate::red() });
+                    let element = if with_mouse {
+                        let clicked = clicked.clone();
+                        element.on_mouse_down(MouseButton::Left, move |_, _, _| clicked.set(Some(row)))
+                    } else { element };
                     if with_text { element.child("shared text layout") } else { element }
                 })
                 .with_item_height(px(24.))
@@ -1364,9 +1377,10 @@ mod binding_tests {
         }
         let roots = Rc::new(Cell::new(0));
         let builds = Rc::new(Cell::new(0));
+        let clicked = Rc::new(Cell::new(None));
         let (_, cx) = cx.add_window_view(|window, _| {
             window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
-            Rows { roots: roots.clone(), builds: builds.clone(), scroll: UniformListScrollHandle::new(), with_text }
+            Rows { roots: roots.clone(), builds: builds.clone(), scroll: UniformListScrollHandle::new(), with_text, with_mouse, clicked: clicked.clone() }
         });
         let wheel = |delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: point(px(8.), px(48.)),
@@ -1401,6 +1415,15 @@ mod binding_tests {
             assert_eq!(roots.get(), root_builds);
             assert_eq!(builds.get(), row_builds);
             assert!(window.test_present().is_accepted());
+            if with_mouse {
+                // Offset is now 123 px; y=48 is inside logical row 7.
+                // Non-wheel dispatch must restore its captured geometry.
+                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left, position: point(px(8.), px(48.)),
+                    modifiers: crate::Modifiers::default(), click_count: 1, first_mouse: false,
+                }), app);
+                assert_eq!(clicked.get(), Some(7));
+            }
         });
     }
 
