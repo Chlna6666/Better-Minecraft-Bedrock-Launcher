@@ -1300,6 +1300,8 @@ impl Window {
             || self.rendered_frame.scene().revision != source_revision
             || self.draw_was_degraded
             || self.next_frame.accessed_element_states.len() != 0
+            || !self.element_states.boundary_is_untouched()
+            || self.requested_autoscroll.is_some()
             || !self.next_frame.hitboxes.is_empty()
             || !self.next_frame.mouse_listeners.is_empty()
             || !self.next_frame.mounted_scroll_sources.is_empty()
@@ -2156,6 +2158,9 @@ impl Window {
             return false;
         };
         if (plan.placement_only && record.revision != plan.revision)
+            || (plan.row_placement.as_ref().is_some_and(|binding| binding.builder.is_some())
+                && record.prepaint.layout_claims.is_none()
+                && (cfg!(test) || std::env::var_os("GPUI_EXPERIMENTAL_ROW_BOUNDARY").is_some_and(|value| value == "1")))
             || !plan.matches_context(&record.context)
             || record.prepaint.row_revision != plan.row_revision(row)
         {
