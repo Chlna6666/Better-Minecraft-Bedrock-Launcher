@@ -559,7 +559,6 @@ impl RowReaders {
         }
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         match self {
             Self::Small(rows) => rows.len(),
@@ -650,6 +649,30 @@ impl RowNotificationRouting {
             after.dedup();
             self.update_keys(row, &before, &after, RowDependencyKey::State);
         }
+    }
+
+    /// The boundary admission certifies that the committed row index covers
+    /// the whole single-list domain. Only departing edges need counting.
+    fn boundary_surviving_reads(
+        &self, retired: &FxHashMap<RowDependencyKey, usize>,
+    ) -> Option<RenderDependencies> {
+        let mut entities = Vec::new();
+        let mut globals = Vec::new();
+        for (&key, &count) in retired {
+            let readers = self.edges.get(&key)?.len();
+            if count == 0 || count > readers { return None; }
+            if count == readers { continue; }
+            match key {
+                RowDependencyKey::Entity(entity) => entities.push(entity),
+                RowDependencyKey::Global(global, exists) => globals.push((global, exists)),
+                RowDependencyKey::State(_) => return None,
+            }
+        }
+        entities.sort_unstable();
+        globals.sort_unstable();
+        Some(RenderDependencies {
+            entities: entities.into(), globals: globals.into(), ..Default::default()
+        })
     }
 
     fn mark_state(&mut self, identity: usize) {
@@ -894,7 +917,13 @@ impl ScrollRows {
         // Normalize even when the index is not yet allocated: the committed
         // frame may lazily build it at the next notification.
         self.membership.normalize();
-        if self.rows.len() < RowNotificationRouting::MIN_ROWS {
+        // Small frames may now lazily build an index for boundary
+        // retirement, but ordinary capture only records changed_rows when
+        // the previous frame meets MIN_ROWS. Do not inherit an incomplete
+        // change log across that threshold.
+        if self.rows.len() < RowNotificationRouting::MIN_ROWS
+            || previous.rows.len() < RowNotificationRouting::MIN_ROWS
+        {
             return;
         }
         let mut routing = std::mem::take(previous.notification_routing.get_mut());
@@ -1496,15 +1525,31 @@ impl Window {
             || !self.invalidator.row_dependencies_unchanged(plan.notification_epoch, &reads)
         { return None; }
         let mut retired_reads = RenderDependencies::default();
-        let mut kept_reads = RenderDependencies::default();
-        for row in old_range.clone() {
+        let mut retiring_counts = FxHashMap::default();
+        for row in membership.delta.exited.iter().cloned().flatten() {
             let record = old.scroll_rows.rows.get(&(key, row))?;
-            if new_range.contains(&row) {
-                kept_reads.merge_replayed(&record.prepaint.reads);
-            } else {
-                retired_reads.merge_replayed(&record.prepaint.reads);
+            let reads = &record.prepaint.reads;
+            if !reads.states.is_empty() { return None; }
+            retired_reads.merge_replayed(reads);
+            for &entity in reads.entities.iter() {
+                *retiring_counts.entry(RowDependencyKey::Entity(entity)).or_insert(0) += 1;
+            }
+            for &(global, exists) in reads.globals.iter() {
+                *retiring_counts.entry(RowDependencyKey::Global(global, exists)).or_insert(0) += 1;
             }
         }
+        // Reuse the existing reverse row index as a reference count. The
+        // first retirement may build it; subsequent boundary adoptions
+        // already maintain it in place. No surviving row union is needed.
+        let kept_reads = if retiring_counts.is_empty() {
+            RenderDependencies::default()
+        } else {
+            let mut routing = old.scroll_rows.notification_routing.borrow_mut();
+            if routing.cursor.is_none() {
+                routing.build(&old.scroll_rows.rows, self.invalidator.row_notification_epoch());
+            }
+            routing.boundary_surviving_reads(&retiring_counts)?
+        };
         let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty()
             && retired_reads.entities.is_empty() && retired_reads.globals.is_empty() { None }
             else { Some(self.invalidator.prepare_boundary_row_delta(owner, &reads, &retired_reads, &kept_reads)?) };
@@ -2989,6 +3034,44 @@ mod scoped_row_tests {
         readers.remove((1, 62));
         readers.remove((1, 63));
         assert!(readers.is_empty());
+    }
+
+    #[test]
+    fn boundary_retirement_counts_only_departing_edges() {
+        let model = EntityId::from(1);
+        let other = EntityId::from(2);
+        let global = TypeId::of::<u32>();
+        let a = RenderDependencies {
+            entities: Rc::from([model]),
+            globals: Rc::from([(global, Some(true))]),
+            ..Default::default()
+        };
+        let b = RenderDependencies {
+            entities: Rc::from([model, other]),
+            globals: Rc::from([(global, None)]),
+            ..Default::default()
+        };
+        let mut routing = RowNotificationRouting::default();
+        for row in 0..64 { routing.update((1, row), None, Some(&a)); }
+        routing.update((1, 64), None, Some(&b));
+        let mut counts = FxHashMap::from_iter([
+            (RowDependencyKey::Entity(model), 64),
+            (RowDependencyKey::Global(global, Some(true)), 64),
+        ]);
+        let surviving = routing.boundary_surviving_reads(&counts).unwrap();
+        assert_eq!(surviving.entities.as_ref(), &[model]);
+        assert!(surviving.globals.is_empty());
+        // Preparing retirement never mutates the committed index.
+        assert_eq!(routing.edges[&RowDependencyKey::Entity(model)].len(), 65);
+        for row in 0..64 { routing.update((1, row), Some(&a), None); }
+        counts.clear();
+        counts.insert(RowDependencyKey::Entity(model), 1);
+        counts.insert(RowDependencyKey::Global(global, None), 1);
+        let surviving = routing.boundary_surviving_reads(&counts).unwrap();
+        assert!(surviving.entities.is_empty());
+        assert!(surviving.globals.is_empty());
+        counts.insert(RowDependencyKey::Entity(model), 2);
+        assert!(routing.boundary_surviving_reads(&counts).is_none());
     }
 
     #[test]
