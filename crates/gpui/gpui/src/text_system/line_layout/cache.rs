@@ -456,7 +456,15 @@ impl<V> LayoutStore<V> {
             };
             source.append_shared(range, &mut pages, &mut len);
         });
-        let accesses = AccessLog::Paged { pages, len };
+        let mut accesses = AccessLog::Paged { pages, len };
+        // Successive one-row edits can fragment descriptor storage. Only
+        // repack when the page count is disproportionate to the live log.
+        if let AccessLog::Paged { pages, .. } = &accesses
+            && pages.len() > len.div_ceil(AccessLog::PAGE_SIZE).max(8).saturating_mul(4)
+        {
+            accesses = AccessLog::Flat(accesses.to_vec());
+            accesses.freeze();
+        }
         let mut valid = len == plan.len();
         accesses.visit(0..len, |ids| {
             valid &= ids.iter().all(|&id| self.slots.get(id).is_some_and(Option::is_some));
@@ -1514,6 +1522,34 @@ mod tests {
         assert_eq!(frame.wrapped_lines.previous.len(), 2);
         assert!(Arc::ptr_eq(&old, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[0]].as_ref().unwrap().layout));
         assert!(Arc::ptr_eq(&new, &frame.wrapped_lines.slots[frame.wrapped_lines.previous[1]].as_ref().unwrap().layout));
+    }
+
+    #[test]
+    fn boundary_text_pages_share_physical_slot_ids_across_successive_edits() {
+        use crate::window::RecordSplicePlan;
+        let mut store = LayoutStore::<LineLayout>::default();
+        let key = Arc::new(CacheKey {
+            text: SharedString::from("shared"), font_size: px(14.), runs: SmallVec::new(),
+            wrap_width: None, max_lines: None, force_width: None,
+        });
+        store.insert(key.clone(), Arc::new(LineLayout::default()), 1);
+        for _ in 1..768 {
+            store.lookup_recorded(key.as_ref(), 1, true).unwrap();
+        }
+        store.finish(1, |_, _| {});
+        let plan = RecordSplicePlan::new(768, 0, &[(0..1, 0..0)]).unwrap();
+        let next = store.spliced_accesses(&plan).unwrap();
+        let AccessLog::Paged { pages, .. } = &store.previous else { panic!("frozen log") };
+        let middle = pages[1].ids.clone();
+        let AccessLog::Paged { pages, .. } = &next else { panic!("shared log") };
+        assert!(Arc::ptr_eq(&middle, &pages[1].ids));
+        store.adopt_spliced_accesses(next, 2);
+        store.finish(2, |_, _| {});
+        let plan = RecordSplicePlan::new(767, 0, &[(766..767, 0..0)]).unwrap();
+        let next = store.spliced_accesses(&plan).unwrap();
+        let AccessLog::Paged { pages, len } = &next else { panic!("shared log") };
+        assert_eq!(*len, 766);
+        assert!(Arc::ptr_eq(&middle, &pages[1].ids));
     }
 
     #[test]
