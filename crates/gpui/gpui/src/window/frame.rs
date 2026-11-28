@@ -297,23 +297,26 @@ impl Frame {
     /// listener/state records and the existing layout ordering tree.
     pub(super) fn commit_scroll_placements(
         &mut self, paint: Arc<Paint>,
-        placements: impl IntoIterator<Item = (Range<usize>, Point<Pixels>)>,
+        placements: &[(Range<usize>, Point<Pixels>)],
     ) {
-        let mut input_changed = false;
+        // Admission already normalized nonempty, disjoint input spans.
+        // Invalidate each enclosing proof once, even when it covers many
+        // rows or a batch of independently scrolling views.
+        debug_assert!(placements.iter().all(|(range, _)| !range.is_empty()));
+        debug_assert!(placements.windows(2).all(|pair| pair[0].0.end <= pair[1].0.start));
         for (hitboxes, delta) in placements {
-            self.hitboxes.translate_committed(hitboxes.clone(), delta);
-            if !hitboxes.is_empty() {
-                input_changed = true;
-                for layer in &mut self.layer_inputs {
-                    if layer.hitboxes.start < hitboxes.end && hitboxes.start < layer.hitboxes.end {
-                        // The fixed clip remains valid, but the enclosing
-                        // offset proof no longer describes every child.
-                        layer.geometry = None;
-                    }
+            self.hitboxes.translate_committed(hitboxes.clone(), *delta);
+        }
+        if !placements.is_empty() {
+            for layer in &mut self.layer_inputs {
+                if layer.geometry.is_none() { continue; }
+                let first = placements.partition_point(|(range, _)| range.end <= layer.hitboxes.start);
+                if placements.get(first).is_some_and(|(range, _)| range.start < layer.hitboxes.end) {
+                    // The fixed clip remains valid, but the enclosing
+                    // offset proof no longer describes every child.
+                    layer.geometry = None;
                 }
             }
-        }
-        if input_changed {
             self.input_clip_epoch = self.input_clip_epoch.wrapping_add(1);
         }
         self.retained_paint = Arc::clone(&paint.retained_paint);

@@ -553,9 +553,16 @@ impl Operations {
             return None;
         }
         let mut marker_page = OperationPage::default();
+        // The replacements are already sorted. Seek once, then advance
+        // across immutable segment boundaries rather than binary searching
+        // the complete table for every visible row.
+        let first = self.segments.partition_point(|segment| segment.end <= placements[0].0);
+        let mut segments = self.segments[first..].iter().peekable();
         for (index, placement) in placements {
-            let slot = self.segments.partition_point(|segment| segment.end <= *index);
-            let segment = self.segments.get(slot)?;
+            while segments.peek().is_some_and(|segment| segment.end <= *index) {
+                segments.next();
+            }
+            let segment = *segments.peek()?;
             if !segment.owner.is_scroll_only() {
                 return None;
             }

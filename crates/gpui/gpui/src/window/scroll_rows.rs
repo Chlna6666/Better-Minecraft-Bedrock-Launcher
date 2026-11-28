@@ -117,9 +117,10 @@ pub(super) struct RowPlacementCandidate {
     pub(super) sampled: Point<Pixels>,
     visible: Range<usize>,
     pub(super) owner: crate::EntityId,
-    mounted_source: usize,
+    pub(super) mounted_source: usize,
     pub(super) stale_input: bool,
-    input_moves: SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
+    pub(super) input_moves: SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
+    pub(super) scene_span: Range<usize>,
     pub(super) placements: Vec<(usize, ScrollPlacement)>,
     origins: Vec<(RowKey, Point<Pixels>)>,
     proof: Rc<RowPlacementTopology>,
@@ -127,11 +128,7 @@ pub(super) struct RowPlacementCandidate {
 }
 
 impl RowPlacementCandidate {
-    pub(super) fn commit(
-        self, frame: &mut super::Frame,
-        input_moves: &mut SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
-    ) {
-        input_moves.extend(self.input_moves);
+    pub(super) fn commit(self, frame: &mut super::Frame) {
         for (key, origin) in self.origins {
             frame.scroll_rows.rows.get_mut(&key).expect("validated row").prepaint.origin = origin;
         }
@@ -1161,8 +1158,9 @@ impl Window {
         let (key, binding, version, sampled, visible) = bindings.next().ok_or(Outcome::MissingCapture)?;
         if bindings.next().is_some() { return Err(Outcome::MultipleCaptures); }
         if binding.revision != epoch.content { return Err(Outcome::CaptureDependencies); }
-        let [(mounted_source, source)] = changed else { return Err(Outcome::MountedSources); };
-        if !source.changed_for(owner, &version) { return Err(Outcome::MountedSources); }
+        let mut matching = changed.iter().filter(|(_, source)| source.changed_for(owner, &version));
+        let (mounted_source, _) = matching.next().copied().ok_or(Outcome::MountedSources)?;
+        if matching.next().is_some() { return Err(Outcome::MountedSources); }
         let hover_held = self.scroll_hover_deadline_active(cx);
         let buffered = binding.buffered();
         if buffered && !hover_held {
@@ -1325,8 +1323,8 @@ impl Window {
             return Err(Outcome::Damage);
         }
         Ok(RowPlacementCandidate {
-            key, sample_read: StateRead::new(&version), version, sampled, visible, owner, mounted_source: *mounted_source,
-            placements, origins, proof, damage, input_moves, stale_input,
+            key, sample_read: StateRead::new(&version), version, sampled, visible, owner, mounted_source,
+            placements, origins, proof, damage, input_moves, stale_input, scene_span: first..end,
         })
     }
 

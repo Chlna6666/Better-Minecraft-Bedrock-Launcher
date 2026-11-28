@@ -174,8 +174,43 @@ struct PlacementTransaction {
     owners: smallvec::SmallVec<[EntityId; 4]>,
     source_revision: u64,
     members: smallvec::SmallVec<[PlacementMember; 1]>,
-    uniform: Option<super::scroll_rows::RowPlacementCandidate>,
+    rows: smallvec::SmallVec<[super::scroll_rows::RowPlacementCandidate; 1]>,
+    input_moves: smallvec::SmallVec<[(Range<usize>, Point<Pixels>); 4]>,
     paint: Arc<super::Paint>,
+}
+
+/// All touched logical ranges, including still-hidden row markers, must
+/// remain disjoint. Empty input spans do not own any records.
+fn disjoint_placement_ranges(ranges: &mut [Range<usize>]) -> bool {
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut end = 0;
+    for range in ranges {
+        if range.is_empty() { continue; }
+        if range.start < end { return false; }
+        end = range.end;
+    }
+    true
+}
+
+fn normalize_input_moves(moves: &mut smallvec::SmallVec<[(Range<usize>, Point<Pixels>); 4]>) -> bool {
+    moves.retain(|(range, _)| !range.is_empty());
+    moves.sort_unstable_by_key(|(range, _)| range.start);
+    let mut written = 0;
+    for read in 0..moves.len() {
+        let (range, delta) = moves[read].clone();
+        if written != 0 {
+            let (previous, previous_delta) = &mut moves[written - 1];
+            if range.start < previous.end { return false; }
+            if range.start == previous.end && delta == *previous_delta {
+                previous.end = range.end;
+                continue;
+            }
+        }
+        moves[written] = (range, delta);
+        written += 1;
+    }
+    moves.truncate(written);
+    true
 }
 
 impl Window {
@@ -237,46 +272,75 @@ impl Window {
         if changed.len() != owners.len() {
             return Err(Outcome::MountedSources);
         }
-        // A row-list transaction initially owns a single scroll
-        // source. Mixed list/view transactions keep the regular fallback.
-        if owners.len() == 1 {
-            match self.prepare_placement_member(cx, epoch, owners[0], old_paint, &changed) {
+        let mut rows = smallvec::SmallVec::<[super::scroll_rows::RowPlacementCandidate; 1]>::new();
+        let mut spans = smallvec::SmallVec::<[Range<usize>; 4]>::new();
+        let mut input_moves = smallvec::SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
+        let mut damage = smallvec::SmallVec::<[Bounds<crate::ScaledPixels>; 4]>::new();
+        let mut sources = smallvec::SmallVec::<[usize; 4]>::new();
+
+        for (index, &owner) in owners.iter().enumerate() {
+            // Ancestor/descendant scrollers can share coordinate frames,
+            // even with currently disjoint visible damage. Keep them on
+            // the ordinary traversal path until nested placement is proven.
+            if owners[..index].iter().any(|&previous| {
+                frame.dispatch_tree.view_path_reversed(owner).any(|id| id == previous)
+                    || frame.dispatch_tree.view_path_reversed(previous).any(|id| id == owner)
+            }) {
+                return Err(Outcome::NestedRetention);
+            }
+            match self.prepare_placement_member(cx, epoch, owner, old_paint, &changed) {
+                Ok(member) => {
+                    spans.push(member.marker..member.marker + 1);
+                    input_moves.push((member.hitboxes.clone(), member.delta));
+                    damage.push(member.damage);
+                    sources.push(member.mounted_source);
+                    if member.slot.is_some() && members.iter().any(|old| old.slot == member.slot) {
+                        return Err(Outcome::MultipleCaptures);
+                    }
+                    members.push(member);
+                }
                 Err(Outcome::MissingCapture) => {
-                    let uniform = self.prepare_row_placement(cx, epoch, owners[0], &changed, old_paint)?;
-                    let paint = old_paint.with_scroll_placements(&uniform.placements,
-                        self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
-                        .ok_or(Outcome::ScenePublication)?;
-                    return Ok(PlacementTransaction {
-                        epoch, owners, source_revision: old_paint.scene.revision,
-                        members, uniform: Some(uniform), paint,
-                    });
+                    let row = self.prepare_row_placement(cx, epoch, owner, &changed, old_paint)?;
+                    spans.push(row.scene_span.clone());
+                    input_moves.extend(row.input_moves.iter().cloned());
+                    damage.push(row.damage);
+                    sources.push(row.mounted_source);
+                    rows.push(row);
                 }
                 Err(outcome) => return Err(outcome),
-                Ok(member) => members.push(member),
             }
         }
-        for &owner in owners.iter().skip(members.len()) {
-            let member = self.prepare_placement_member(cx, epoch, owner, old_paint, &changed)?;
-            if members.iter().any(|previous| {
-                previous.marker == member.marker
-                    || (previous.slot.is_some() && previous.slot == member.slot)
-                    || previous.mounted_source == member.mounted_source
-                    || (previous.hitboxes.start < member.hitboxes.end
-                        && member.hitboxes.start < previous.hitboxes.end)
-                    || !previous.damage.intersect(&member.damage).is_empty()
-            }) {
-                return Err(Outcome::MultipleCaptures);
-            }
-            members.push(member);
+        // Every pending source is consumed once; no partial publication
+        // can acknowledge another owner's scroll or move its input twice.
+        sources.sort_unstable();
+        if sources.windows(2).any(|pair| pair[0] == pair[1])
+            || !disjoint_placement_ranges(&mut spans)
+            || !normalize_input_moves(&mut input_moves)
+            || damage.iter().enumerate().any(|(index, current)| {
+                damage[..index].iter().any(|old| !old.intersect(current).is_empty())
+            })
+        {
+            return Err(Outcome::MultipleCaptures);
         }
         members.sort_unstable_by_key(|member| member.marker);
-        let placements: smallvec::SmallVec<[_; 1]> = members.iter()
-            .map(|member| (member.marker, member.placement.clone())).collect();
-        let paint = old_paint.with_scroll_placements(&placements,
-            self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
-            .ok_or(Outcome::ScenePublication)?;
+        // Preserve the one-list fast path's existing allocation. Mixed
+        // transactions gather one sorted replacement stream, not one Paint
+        // publication per owner.
+        let paint = if members.is_empty() && rows.len() == 1 {
+            old_paint.with_scroll_placements(&rows[0].placements,
+                self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
+        } else {
+            let mut placements = smallvec::SmallVec::<[_; 4]>::new();
+            placements.extend(members.iter().map(|member| (member.marker, member.placement.clone())));
+            for row in &mut rows {
+                placements.extend(row.placements.drain(..));
+            }
+            placements.sort_unstable_by_key(|(marker, _)| *marker);
+            old_paint.with_scroll_placements(&placements,
+                self.platform_window.background_appearance() == crate::WindowBackgroundAppearance::Opaque)
+        }.ok_or(Outcome::ScenePublication)?;
         Ok(PlacementTransaction {
-            epoch, owners, source_revision: old_paint.scene.revision, members, uniform: None, paint,
+            epoch, owners, source_revision: old_paint.scene.revision, members, rows, input_moves, paint,
         })
     }
 
@@ -424,7 +488,7 @@ impl Window {
         };
         if self.rendered_frame.scene().revision != transaction.source_revision
             || transaction.members.iter().any(|member| *member.offset.borrow() != member.sampled)
-            || transaction.uniform.as_ref().is_some_and(|list| list.sample_read.status() != crate::StateReadStatus::Unchanged)
+            || transaction.rows.iter().any(|list| list.sample_read.status() != crate::StateReadStatus::Unchanged)
             || !self.invalidator.commit_placement(transaction.epoch, &transaction.owners)
         {
             scroll_placement::record(Outcome::CommitRace);
@@ -450,19 +514,17 @@ impl Window {
             view.stale_input = member.stale_input;
             frame.mounted_scroll_sources[member.mounted_source].acknowledge(&member.offset.version);
         }
-        let mut input_moves = smallvec::SmallVec::<[(Range<usize>, Point<Pixels>); 4]>::new();
-        let mut stale_row_owner = None;
-        let uniform_damage = transaction.uniform.map(|list| {
-            let damage = list.damage;
-            if list.stale_input { stale_row_owner = Some(list.owner); }
-            list.commit(frame, &mut input_moves);
-            damage
-        });
-        input_moves.extend(transaction.members.iter().map(|member| (member.hitboxes.clone(), member.delta)));
-        frame.commit_scroll_placements(Arc::clone(&transaction.paint), input_moves);
-        if let Some(owner) = stale_row_owner {
-            self.scroll_hover.row_owners.insert(owner);
+        let mut stale_rows = false;
+        let mut row_damage = smallvec::SmallVec::<[Bounds<crate::ScaledPixels>; 1]>::new();
+        for list in transaction.rows {
+            row_damage.push(list.damage);
+            if list.stale_input {
+                stale_rows = true;
+                self.scroll_hover.row_owners.insert(list.owner);
+            }
+            list.commit(frame);
         }
+        frame.commit_scroll_placements(Arc::clone(&transaction.paint), &transaction.input_moves);
         self.mouse_hit_test = self.pointer_hit_test(&self.rendered_frame, self.mouse_position);
         if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
             self.active_dirty_to_present_started_at = Some(
@@ -474,7 +536,7 @@ impl Window {
         for member in &transaction.members {
             self.render_dirty_region.push(member.damage);
         }
-        if let Some(damage) = uniform_damage {
+        for damage in row_damage {
             self.render_dirty_region.push(damage);
         }
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
@@ -503,7 +565,7 @@ impl Window {
         super::record_scene_frame_metrics(self.last_generation_stats.scene);
         super::record_frame_retained_capacity(self.last_generation_stats.frame_retained_capacity);
         self.reset_cursor_style(cx);
-        if stale_row_owner.is_some() || transaction.members.iter().any(|member| member.stale_input) {
+        if stale_rows || transaction.members.iter().any(|member| member.stale_input) {
             self.schedule_scroll_hover_restore(cx);
         }
         scroll_placement::record(Outcome::Committed);
@@ -1154,7 +1216,7 @@ mod binding_tests {
             let old = window.rendered_frame.published_paint();
             window.dispatch_event(wheel(-1.), app);
             let candidate = window.prepare_scroll_placement(app).expect("same visible row set");
-            assert!(candidate.uniform.is_some());
+            assert!(candidate.rows.len() == 1);
             window.draw(app).clear();
             assert_eq!((root_builds.get(), row_builds.get()), before);
             let moved = window.rendered_frame.published_paint();
@@ -1297,7 +1359,7 @@ mod binding_tests {
                 Ok(candidate) => candidate,
                 Err(outcome) => panic!("buffered row placement rejected with {outcome:?}"),
             };
-            assert!(candidate.uniform.is_some());
+            assert!(candidate.rows.len() == 1);
             window.draw(app).clear();
             assert_eq!((root_builds.get(), row_builds.get()), before);
             let paint = window.rendered_frame.published_paint();
@@ -1368,7 +1430,7 @@ mod binding_tests {
                 Ok(candidate) => candidate,
                 Err(outcome) => panic!("buffered variable row placement rejected with {outcome:?}"),
             };
-            assert!(candidate.uniform.is_some());
+            assert!(candidate.rows.len() == 1);
             window.draw(app).clear();
             assert_eq!(builds.get(), before);
             assert_eq!(window.last_generation_stats.prepaint_elapsed, Duration::ZERO);
@@ -1377,6 +1439,101 @@ mod binding_tests {
             window.draw(app).clear();
             assert_eq!(visible_quads(window), retained);
         });
+    }
+
+    #[gpui::test]
+    fn independent_uniform_lists_share_one_atomic_placement(cx: &mut crate::TestAppContext) {
+        use crate::{AppContext as _, Context, Entity, IntoElement, ParentElement, PlatformInput,
+            Render, ScrollDelta, ScrollWheelEvent, Styled, UniformListScrollHandle, div, uniform_list_each};
+        use std::cell::Cell;
+
+        struct Rows {
+            builds: Rc<Cell<usize>>,
+            scroll: UniformListScrollHandle,
+        }
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                uniform_list_each("rows", 100, |row, _, _| {
+                    div().w_full().h(px(24.)).bg(if row % 2 == 0 { crate::red() } else { crate::blue() })
+                })
+                .with_item_height(px(24.))
+                .track_scroll(self.scroll.clone())
+                .w(px(200.)).h(px(120.)).flex_shrink_0()
+            }
+        }
+        struct Pair {
+            left: Entity<Rows>,
+            right: Entity<Rows>,
+            builds: Rc<Cell<usize>>,
+        }
+        impl Render for Pair {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.builds.set(self.builds.get() + 1);
+                div().flex().flex_row().child(self.left.clone()).child(self.right.clone())
+            }
+        }
+        let root_builds = Rc::new(Cell::new(0));
+        let left_builds = Rc::new(Cell::new(0));
+        let right_builds = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            window.platform_window.as_test().unwrap().set_deferred_scroll_support(true);
+            Pair {
+                left: cx.new(|_| Rows { builds: left_builds.clone(), scroll: UniformListScrollHandle::new() }),
+                right: cx.new(|_| Rows { builds: right_builds.clone(), scroll: UniformListScrollHandle::new() }),
+                builds: root_builds.clone(),
+            }
+        });
+        let wheel = |x, delta| PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(x), px(48.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.update(|window, app| {
+            window.draw(app).clear();
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -1.), app);
+            window.draw(app).clear();
+            assert!(window.test_present().is_accepted());
+            let before = (root_builds.get(), left_builds.get(), right_builds.get());
+
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -2.), app);
+            let candidate = window.prepare_scroll_placement(app).expect("independent list placement");
+            assert_eq!(candidate.rows.len(), 2);
+            assert!(candidate.members.is_empty());
+            let previous = window.rendered_frame.published_paint();
+            window.draw(app).clear();
+            assert_eq!((root_builds.get(), left_builds.get(), right_builds.get()), before);
+            let published = window.rendered_frame.published_paint();
+            assert_ne!(published.scene.revision, previous.scene.revision);
+            assert!(!window.invalidator.is_dirty());
+            assert!(window.test_present().is_accepted());
+
+            // One list leaves its captured range. Neither list may commit
+            // a partial position variant before the normal draw fallback.
+            window.dispatch_event(wheel(8., -1.), app);
+            window.dispatch_event(wheel(208., -240.), app);
+            assert!(window.prepare_scroll_placement(app).is_err());
+            assert!(Arc::ptr_eq(&published, &window.rendered_frame.published_paint()));
+            assert!(window.invalidator.is_dirty());
+        });
+    }
+
+    #[test]
+    fn placement_batch_rejects_overlapping_scene_and_input_records() {
+        let mut spans = [12..18, 2..8, 8..12];
+        assert!(disjoint_placement_ranges(&mut spans));
+        let mut spans = [2..8, 7..12];
+        assert!(!disjoint_placement_ranges(&mut spans));
+
+        let delta = point(px(0.), px(-2.));
+        let other = point(px(0.), px(-3.));
+        let mut moves = smallvec::smallvec![(3..5, delta), (1..3, delta), (8..9, other), (2..2, other)];
+        assert!(normalize_input_moves(&mut moves));
+        assert_eq!(moves.as_slice(), &[(1..5, delta), (8..9, other)]);
+        moves.push((4..7, other));
+        assert!(!normalize_input_moves(&mut moves));
     }
 
     #[test]
