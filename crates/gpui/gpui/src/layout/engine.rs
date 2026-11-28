@@ -765,7 +765,7 @@ impl TaffyLayoutEngine {
     /// new row claims use begin_detached_boundary's returned offset.
     /// A rejected candidate remains open for cancel_detached_boundary.
     #[allow(dead_code)]
-    pub(crate) fn commit_detached_boundary(&mut self) -> Option<()> {
+    pub(crate) fn prepare_detached_boundary_commit(&mut self) -> Option<()> {
         let boundary = self.detached_boundary.as_ref()?;
         if boundary.rejected || !self.anonymous_nodes.is_empty()
             || !self.pending_replays.is_empty()
@@ -782,6 +782,11 @@ impl TaffyLayoutEngine {
         }
         // Complete the only fallible allocation before updating any epoch.
         self.committed_claim_log.try_reserve(self.claimed_key_log.len()).ok()?;
+        Some(())
+    }
+
+    pub(crate) fn commit_detached_boundary(&mut self) -> Option<()> {
+        self.prepare_detached_boundary_commit()?;
         let boundary = self.detached_boundary.take().expect("validated boundary");
         for range in boundary.retired {
             self.committed_claim_log[range].fill(None);
