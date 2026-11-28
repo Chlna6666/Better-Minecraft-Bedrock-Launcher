@@ -10,6 +10,10 @@ pub(super) struct ElementStates {
     generation: u64,
     accessed: usize,
     boundary: Option<BoundaryStates>,
+    // Built lazily only for a window that actually commits stateful
+    // variable boundaries; discarded on ordinary traversal.
+    boundary_access_counts: Option<FxHashMap<ElementStateKey, usize>>,
+    boundary_slots_validated: bool,
 }
 
 /// Only newly materialized states are held here. Never move a committed
@@ -25,6 +29,7 @@ struct BoundaryStates {
 pub(super) struct PreparedBoundaryStates {
     retired_keys: Vec<ElementStateKey>,
     retired: Vec<Box<dyn Any>>,
+    counts: Option<Vec<(ElementStateKey, usize)>>,
 }
 
 struct Slot {
@@ -35,6 +40,8 @@ struct Slot {
 impl ElementStates {
     pub(super) fn begin_frame(&mut self) {
         debug_assert!(self.boundary.is_none());
+        self.boundary_access_counts = None;
+        self.boundary_slots_validated = false;
         self.generation += 1;
         self.accessed = 0;
     }
@@ -47,6 +54,8 @@ impl ElementStates {
             }
             return boundary.fresh.remove(key);
         }
+        self.boundary_slots_validated = false;
+        self.boundary_access_counts = None;
         self.slots.get_mut(key).and_then(|slot| slot.value.take())
     }
 
@@ -58,6 +67,8 @@ impl ElementStates {
             boundary.fresh.insert(key, value);
             return;
         }
+        self.boundary_slots_validated = false;
+        self.boundary_access_counts = None;
         let slot = self.slots.entry(key).or_insert(Slot {
             value: None,
             generation: 0,
@@ -73,8 +84,10 @@ impl ElementStates {
     /// retained by their access records, not lent to an entering row.
     #[allow(dead_code)]
     pub(super) fn begin_boundary(&mut self) -> Option<()> {
-        if self.boundary.is_some() || self.slots.values().any(|slot| slot.value.is_none()) {
-            return None;
+        if self.boundary.is_some() { return None; }
+        if !self.boundary_slots_validated {
+            if self.slots.values().any(|slot| slot.value.is_none()) { return None; }
+            self.boundary_slots_validated = true;
         }
         self.boundary = Some(BoundaryStates::default());
         Some(())
@@ -115,7 +128,52 @@ impl ElementStates {
         self.slots.try_reserve(fresh_count).ok()?;
         let mut retired = Vec::new();
         retired.try_reserve_exact(retired_keys.len()).ok()?;
-        Some(PreparedBoundaryStates { retired_keys, retired })
+        Some(PreparedBoundaryStates { retired_keys, retired, counts: None })
+    }
+
+    /// After the initial exact count construction, admission visits only
+    /// edited access ranges and the fresh values. Shared keys survive until
+    /// their final reference retires. No second state ownership table.
+    pub(super) fn prepare_boundary_delta<'a>(
+        &mut self,
+        committed: impl Iterator<Item = &'a ElementStateKey>,
+        removed: impl Iterator<Item = &'a ElementStateKey>,
+        inserted: impl Iterator<Item = &'a ElementStateKey>,
+    ) -> Option<PreparedBoundaryStates> {
+        let boundary = self.boundary.as_ref()?;
+        if boundary.conflict { return None; }
+        if self.boundary_access_counts.is_none() {
+            let mut counts = FxHashMap::<ElementStateKey, usize>::default();
+            for key in committed {
+                if !self.slots.contains_key(key) { return None; }
+                let count = counts.entry(key.clone()).or_default();
+                *count = count.checked_add(1)?;
+            }
+            // If a custom element owns an unlogged slot, do not infer
+            // its lifetime from a partial access stream.
+            if counts.len() != self.slots.len() { return None; }
+            self.boundary_access_counts = Some(counts);
+        }
+        let counts = self.boundary_access_counts.as_mut()?;
+        let mut changes = FxHashMap::<ElementStateKey, usize>::default();
+        for key in removed {
+            let current = changes.entry(key.clone()).or_insert_with(|| counts.get(key).copied().unwrap_or(0));
+            *current = current.checked_sub(1)?;
+        }
+        for key in inserted {
+            if !self.slots.contains_key(key) && !boundary.fresh.contains_key(key) { return None; }
+            let current = changes.entry(key.clone()).or_insert_with(|| counts.get(key).copied().unwrap_or(0));
+            *current = current.checked_add(1)?;
+        }
+        if !boundary.fresh.keys().all(|key| changes.get(key).is_some_and(|count| *count != 0)) { return None; }
+        let retired_keys: Vec<_> = changes.iter().filter_map(|(key, &count)|
+            (count == 0 && self.slots.contains_key(key)).then(|| key.clone())).collect();
+        let fresh_count = boundary.fresh.len();
+        self.slots.try_reserve(fresh_count).ok()?;
+        counts.try_reserve(fresh_count).ok()?;
+        let mut retired = Vec::new();
+        retired.try_reserve_exact(retired_keys.len()).ok()?;
+        Some(PreparedBoundaryStates { retired_keys, retired, counts: Some(changes.into_iter().collect()) })
     }
 
     #[allow(dead_code)]
@@ -133,6 +191,16 @@ impl ElementStates {
         // A boundary does not advance the ordinary state generation.
         // All surviving slots are owned by the validated access log.
         self.accessed = self.slots.len();
+        if let Some(updates) = prepared.counts {
+            let counts = self.boundary_access_counts.as_mut().expect("validated access counts");
+            for (key, count) in updates {
+                if count == 0 { counts.remove(&key); }
+                else { counts.insert(key, count); }
+            }
+        } else {
+            self.boundary_access_counts = None;
+        }
+        self.boundary_slots_validated = true;
         prepared.retired
     }
 
