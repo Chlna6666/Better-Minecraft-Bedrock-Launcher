@@ -240,6 +240,98 @@ impl PaintIndex {
     }
 }
 
+/// Transient old-coordinate edit plan for one physical Frame record stream.
+/// All destinations are calculated before any record ownership is changed.
+/// Not stored in Frame: consumers adopt the resulting pages and indices.
+pub(super) struct RecordSplicePlan {
+    old_len: usize,
+    replacement_len: usize,
+    new_len: usize,
+    edits: Vec<RecordSpliceEdit>,
+}
+
+struct RecordSpliceEdit {
+    old: Range<usize>,
+    replacement: Range<usize>,
+    target: Range<usize>,
+}
+
+pub(super) enum SpliceSource {
+    Retained,
+    Replacement,
+}
+
+#[allow(dead_code)] // Frame publication will consume the retained index mapping.
+impl RecordSplicePlan {
+    pub(super) fn new(
+        old_len: usize,
+        replacement_len: usize,
+        edits: &[(Range<usize>, Range<usize>)],
+    ) -> Option<Self> {
+        let mut cursor = 0;
+        let mut target_end = 0usize;
+        let mut validated = Vec::with_capacity(edits.len());
+        for (old, replacement) in edits {
+            if old.start < cursor || old.start > old.end || old.end > old_len
+                || replacement.start > replacement.end || replacement.end > replacement_len
+            {
+                return None;
+            }
+            if old.is_empty() && replacement.is_empty() { continue; }
+            let target_start = target_end.checked_add(old.start - cursor)?;
+            target_end = target_start.checked_add(replacement.len())?;
+            validated.push(RecordSpliceEdit {
+                old: old.clone(),
+                replacement: replacement.clone(),
+                target: target_start..target_end,
+            });
+            cursor = old.end;
+        }
+        let new_len = target_end.checked_add(old_len - cursor)?;
+        Some(Self { old_len, replacement_len, new_len, edits: validated })
+    }
+
+    pub(super) fn matches_sources(&self, old_len: usize, replacement_len: usize) -> bool {
+        self.old_len == old_len && self.replacement_len == replacement_len
+    }
+
+    pub(super) fn len(&self) -> usize { self.new_len }
+
+    /// A nonempty retained interval may touch an edit boundary but must
+    /// not cross an insertion or own any retired records. The start is
+    /// right-affine and the end left-affine. Empty checkpoints require
+    /// explicit ownership and are deliberately not inferred here.
+    pub(super) fn retained_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.start >= range.end || range.end > self.old_len { return None; }
+        let next = self.edits.partition_point(|edit| edit.old.end <= range.start);
+        if self.edits.get(next).is_some_and(|edit| edit.old.start < range.end) {
+            return None;
+        }
+        let (old_base, target_base) = next.checked_sub(1).map_or((0, 0), |index| {
+            let previous = &self.edits[index];
+            (previous.old.end, previous.target.end)
+        });
+        let start = target_base.checked_add(range.start.checked_sub(old_base)?)?;
+        Some(start..start.checked_add(range.len())?)
+    }
+
+    pub(super) fn visit_ranges(&self, mut visit: impl FnMut(SpliceSource, Range<usize>)) {
+        let mut cursor = 0;
+        for edit in &self.edits {
+            if cursor < edit.old.start {
+                visit(SpliceSource::Retained, cursor..edit.old.start);
+            }
+            if !edit.replacement.is_empty() {
+                visit(SpliceSource::Replacement, edit.replacement.clone());
+            }
+            cursor = edit.old.end;
+        }
+        if cursor < self.old_len {
+            visit(SpliceSource::Retained, cursor..self.old_len);
+        }
+    }
+}
+
 fn rebase_index(value: usize, source: usize, target: usize) -> Option<usize> {
     target.checked_add(value.checked_sub(source)?)
 }
@@ -933,6 +1025,58 @@ fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize)
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn record_splice_plan_maps_retained_intervals_without_crossing_edits() {
+        let plan = RecordSplicePlan::new(12, 6, &[
+            (2..2, 0..2), (4..7, 2..3), (9..10, 3..6),
+        ]).unwrap();
+        assert_eq!(plan.len(), 14);
+        assert_eq!(plan.retained_range(0..2), Some(0..2));
+        assert_eq!(plan.retained_range(2..4), Some(4..6));
+        assert_eq!(plan.retained_range(7..9), Some(7..9));
+        assert_eq!(plan.retained_range(10..12), Some(12..14));
+        assert_eq!(plan.retained_range(1..3), None);
+        assert_eq!(plan.retained_range(3..5), None);
+        assert_eq!(plan.retained_range(5..6), None);
+        assert_eq!(plan.retained_range(2..2), None);
+        assert_eq!(plan.retained_range(12..13), None);
+        assert!(RecordSplicePlan::new(5, 3, &[(0..3, 0..1), (2..4, 1..2)]).is_none());
+        assert!(RecordSplicePlan::new(5, 3, &[(0..1, 0..4)]).is_none());
+        assert!(RecordSplicePlan::new(usize::MAX, 1, &[(0..0, 0..1)]).is_none());
+    }
+
+    #[test]
+    fn record_splice_plan_matches_all_small_retained_singletons() {
+        for a in 0..=5 {
+            for b in a..=5 {
+                for c in b..=5 {
+                    for d in c..=5 {
+                        for n in 0..=2 {
+                            for m in 0..=2 {
+                                let plan = RecordSplicePlan::new(5, 2, &[
+                                    (a..b, 0..n), (c..d, 0..m),
+                                ]).unwrap();
+                                let mut result = Vec::new();
+                                plan.visit_ranges(|source, range| {
+                                    result.extend(range.map(|i| match source {
+                                        SpliceSource::Retained => Some(i),
+                                        SpliceSource::Replacement => None,
+                                    }));
+                                });
+                                assert_eq!(result.len(), plan.len());
+                                for i in 0..5 {
+                                    let expected = result.iter().position(|record| *record == Some(i))
+                                        .map(|index| index..index + 1);
+                                    assert_eq!(plan.retained_range(i..i + 1), expected);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn aborted_candidate_restores_noncloneable_input_handler_ownership() {
