@@ -166,6 +166,47 @@ impl RetainedPaint {
         Some(result)
     }
 
+    /// The caller has constructed the new Scene exclusively through
+    /// Scene::with_spliced_row_markers. Ordinary draw indices are fixed,
+    /// but operation coordinates can change. Retain only candidates whose
+    /// entire operation span survives, then qualify the resulting table
+    /// against the new Scene rather than publishing old range metadata.
+    #[allow(dead_code)]
+    pub(in crate::window) fn row_marker_variant(
+        &self, old: &Scene, current: &Scene, plan: &crate::window::RecordSplicePlan,
+    ) -> Option<Self> {
+        if !self.finished || self.revision != old.revision
+            || current.revision == 0 || current.revision == old.revision
+            || plan.len() != current.len()
+        {
+            return None;
+        }
+        let mut result = Self::default();
+        let mut all_unchanged = true;
+        for candidate in self.candidates() {
+            let Some(scene_range) = plan.retained_range(candidate.scene_range.clone()) else {
+                all_unchanged = false;
+                continue;
+            };
+            all_unchanged &= scene_range == candidate.scene_range;
+            result.candidates_mut().push(RetainedChunkCandidate {
+                id: candidate.id, scene_range, replayed: true,
+            });
+        }
+        if all_unchanged {
+            // Even a length change after the last static candidate keeps
+            // the physical exclusive draw domain and its coordinates.
+            return self.placement_variant(old, current);
+        }
+        // An ancestor crossing the changed row domain can no longer
+        // inherit its old operation proof. A surviving candidate may
+        // have shifted; the ordinary planner can prove it again.
+        result.prepare_retained_chunks(current, Some((old, self)));
+        result.finished = true;
+        result.revision = current.revision;
+        Some(result)
+    }
+
     /// Borrows ranges for the paired Paint generation only.
     /// Independently captured or unpaired scenes use ordinary drawing.
     pub(crate) fn chunks_for(&self, scene: &Scene) -> &[PreparedRetainedQuadChunk] {
