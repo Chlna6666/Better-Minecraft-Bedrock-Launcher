@@ -759,7 +759,7 @@ impl Frame {
         scene_edits: &[(Range<usize>, Range<usize>)],
         hitboxes: &RecordSplicePlan,
         states: &RecordSplicePlan,
-        state_prepaint_edits: None, dispatch: &RecordSplicePlan,
+        dispatch: &RecordSplicePlan,
         replacement_parent: DispatchNodeId,
         mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan,
@@ -773,7 +773,7 @@ impl Frame {
         &self, replacement: &Self,
         scene_edits: &[(Range<usize>, Range<usize>)],
         hitboxes: &RecordSplicePlan, states: &RecordSplicePlan,
-        state_prepaint_edits: None, dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
+        dispatch: &RecordSplicePlan, replacement_parent: DispatchNodeId,
         replacement_anchor: Option<DispatchNodeId>, mouse: &RecordSplicePlan,
         ime: &'a RecordSplicePlan, window_opaque: bool,
     ) -> Option<BoundaryRecordCandidate<'a>> {
