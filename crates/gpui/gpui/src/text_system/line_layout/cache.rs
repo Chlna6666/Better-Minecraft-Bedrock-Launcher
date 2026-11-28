@@ -194,12 +194,149 @@ fn platform_text_system_identity(platform: &Arc<dyn PlatformTextSystem>) -> usiz
 
 /// Persistent shaping keys and integer frame access logs. Retained ranges
 /// carry stable slot identities without hashing text or moving map entries.
+/// Flat append storage for normal frames, immutable page slices for
+/// detached boundaries. Freeze only when the first boundary is attempted.
+#[derive(Clone, Debug)]
+enum AccessLog {
+    Flat(Vec<usize>),
+    Paged { pages: Vec<AccessPage>, len: usize },
+}
+
+#[derive(Clone, Debug)]
+struct AccessPage {
+    ids: Arc<[usize]>,
+    range: Range<usize>,
+    end: usize,
+}
+
+impl Default for AccessLog {
+    fn default() -> Self { Self::Flat(Vec::new()) }
+}
+
+impl AccessLog {
+    const PAGE_SIZE: usize = 256;
+
+    fn len(&self) -> usize {
+        match self { Self::Flat(ids) => ids.len(), Self::Paged { len, .. } => *len }
+    }
+
+    fn is_empty(&self) -> bool { self.len() == 0 }
+
+    fn visit(&self, range: Range<usize>, mut f: impl FnMut(&[usize])) {
+        debug_assert!(range.start <= range.end && range.end <= self.len());
+        match self {
+            Self::Flat(ids) => f(&ids[range]),
+            Self::Paged { pages, .. } => {
+                let first = pages.partition_point(|page| page.end <= range.start);
+                for page in &pages[first..] {
+                    let base = page.end - page.range.len();
+                    if base >= range.end { break; }
+                    let start = range.start.saturating_sub(base);
+                    let end = (range.end - base).min(page.range.len());
+                    if start < end {
+                        f(&page.ids[page.range.start + start..page.range.start + end]);
+                    }
+                }
+            }
+        }
+    }
+
+    fn to_vec(&self) -> Vec<usize> {
+        let mut ids = Vec::with_capacity(self.len());
+        self.visit(0..self.len(), |slice| ids.extend_from_slice(slice));
+        ids
+    }
+
+    fn flat_mut(&mut self) -> &mut Vec<usize> {
+        if matches!(self, Self::Paged { .. }) {
+            *self = Self::Flat(self.to_vec());
+        }
+        match self { Self::Flat(ids) => ids, _ => unreachable!() }
+    }
+
+    fn push(&mut self, id: usize) { self.flat_mut().push(id); }
+    fn truncate(&mut self, len: usize) { self.flat_mut().truncate(len); }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Flat(ids) => ids.clear(),
+            Self::Paged { .. } => *self = Self::default(),
+        }
+    }
+
+    fn trim(&mut self, floor: usize, force: bool) {
+        match self {
+            Self::Flat(ids) => {
+                if force { ids.shrink_to(floor); }
+                else { trim_vec_capacity(ids, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER); }
+            }
+            Self::Paged { pages, .. } => {
+                if force { pages.shrink_to_fit(); }
+                else { trim_vec_capacity(pages, floor.div_ceil(Self::PAGE_SIZE), LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER); }
+            }
+        }
+    }
+
+    fn freeze(&mut self) {
+        let Self::Flat(ids) = self else { return; };
+        let len = ids.len();
+        let mut pages = Vec::with_capacity(len.div_ceil(Self::PAGE_SIZE));
+        let mut end = 0;
+        for chunk in ids.chunks(Self::PAGE_SIZE) {
+            end += chunk.len();
+            pages.push(AccessPage { ids: Arc::from(chunk), range: 0..chunk.len(), end });
+        }
+        *self = Self::Paged { pages, len };
+    }
+
+    fn append_shared(&self, range: Range<usize>, target: &mut Vec<AccessPage>, len: &mut usize) {
+        let Self::Paged { pages, .. } = self else { unreachable!("frozen text access log"); };
+        let first = pages.partition_point(|page| page.end <= range.start);
+        for page in &pages[first..] {
+            let base = page.end - page.range.len();
+            if base >= range.end { break; }
+            let start = range.start.saturating_sub(base);
+            let end = (range.end - base).min(page.range.len());
+            if start >= end { continue; }
+            let slice = page.range.start + start..page.range.start + end;
+            *len += slice.len();
+            if let Some(last) = target.last_mut()
+                && Arc::ptr_eq(&last.ids, &page.ids) && last.range.end == slice.start
+            {
+                last.range.end = slice.end;
+                last.end = *len;
+            } else {
+                target.push(AccessPage { ids: page.ids.clone(), range: slice, end: *len });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<Vec<usize>> for AccessLog {
+    fn eq(&self, other: &Vec<usize>) -> bool { self.to_vec().as_slice() == other.as_slice() }
+}
+
+#[cfg(test)]
+impl std::ops::Index<usize> for AccessLog {
+    type Output = usize;
+    fn index(&self, index: usize) -> &usize {
+        match self {
+            Self::Flat(ids) => &ids[index],
+            Self::Paged { pages, .. } => {
+                let page = &pages[pages.partition_point(|page| page.end <= index)];
+                &page.ids[page.range.start + index - (page.end - page.range.len())]
+            }
+        }
+    }
+}
+
 struct LayoutStore<V> {
     keys: FxHashMap<Arc<CacheKey>, usize>,
     slots: Vec<Option<LayoutEntry<V>>>,
     free: Vec<usize>,
-    previous: Vec<usize>,
-    current: Vec<usize>,
+    previous: AccessLog,
+    current: AccessLog,
     // Unique slots touched this epoch, not the length of the replay log.
     used_count: usize,
 }
@@ -215,8 +352,8 @@ impl<V> Default for LayoutStore<V> {
             keys: FxHashMap::default(),
             slots: Vec::new(),
             free: Vec::new(),
-            previous: Vec::new(),
-            current: Vec::new(),
+            previous: AccessLog::default(),
+            current: AccessLog::default(),
             used_count: 0,
         }
     }
@@ -269,17 +406,18 @@ impl<V> LayoutStore<V> {
 
     fn replay(&mut self, range: Range<usize>, epoch: u64) -> usize {
         let mut reused = 0;
-        let ids = &self.previous[range];
-        for &id in ids {
-            // The previous log is replaced before retired slots can be
-            // recycled. Every logged ID therefore names a live layout.
-            let entry = self.slots[id].as_mut().expect("retained text layout slot");
-            if entry.last_used != epoch {
-                entry.last_used = epoch;
-                reused += 1;
+        let slots = &mut self.slots;
+        let current = self.current.flat_mut();
+        self.previous.visit(range, |ids| {
+            for &id in ids {
+                let entry = slots[id].as_mut().expect("retained text layout slot");
+                if entry.last_used != epoch {
+                    entry.last_used = epoch;
+                    reused += 1;
+                }
             }
-        }
-        self.current.extend_from_slice(ids);
+            current.extend_from_slice(ids);
+        });
         self.used_count += reused;
         reused
     }
@@ -304,34 +442,43 @@ impl<V> LayoutStore<V> {
     /// Prepare the next access log from the committed and independently
     /// materialized streams. The slot table is authoritative for both.
     /// Duplicate IDs are deliberate and no layout Arc is cloned.
-    fn spliced_accesses(&self, plan: &crate::window::RecordSplicePlan) -> Option<Vec<usize>> {
+    fn spliced_accesses(&mut self, plan: &crate::window::RecordSplicePlan) -> Option<AccessLog> {
         use crate::window::SpliceSource;
         if !plan.matches_sources(self.previous.len(), self.current.len()) { return None; }
-        let mut accesses = Vec::new();
-        accesses.try_reserve_exact(plan.len()).ok()?;
+        self.previous.freeze();
+        self.current.freeze();
+        let mut pages = Vec::new();
+        let mut len = 0;
         plan.visit_ranges(|source, range| {
             let source = match source {
                 SpliceSource::Retained => &self.previous,
                 SpliceSource::Replacement => &self.current,
             };
-            accesses.extend_from_slice(&source[range]);
+            source.append_shared(range, &mut pages, &mut len);
         });
-        accesses.iter().all(|&id| self.slots.get(id).is_some_and(Option::is_some))
-            .then_some(accesses)
+        let accesses = AccessLog::Paged { pages, len };
+        let mut valid = len == plan.len();
+        accesses.visit(0..len, |ids| {
+            valid &= ids.iter().all(|&id| self.slots.get(id).is_some_and(Option::is_some));
+        });
+        valid.then_some(accesses)
     }
 
     /// Adopt only after both text streams have been prepared and their
     /// font generation is still current. Retained slots must be marked
     /// live before the ordinary frame finish retires unused entries.
-    fn adopt_spliced_accesses(&mut self, accesses: Vec<usize>, epoch: u64) -> usize {
+    fn adopt_spliced_accesses(&mut self, accesses: AccessLog, epoch: u64) -> usize {
         let mut reused = 0;
-        for &id in &accesses {
-            let entry = self.slots[id].as_mut().expect("validated text layout slot");
-            if entry.last_used != epoch {
-                entry.last_used = epoch;
-                reused += 1;
+        let slots = &mut self.slots;
+        accesses.visit(0..accesses.len(), |ids| {
+            for &id in ids {
+                let entry = slots[id].as_mut().expect("validated text layout slot");
+                if entry.last_used != epoch {
+                    entry.last_used = epoch;
+                    reused += 1;
+                }
             }
-        }
+        });
         self.used_count += reused;
         self.current = accesses;
         reused
@@ -388,7 +535,7 @@ impl<V> LayoutStore<V> {
             }
         }
         self.slots.truncate(write);
-        for id in self.keys.values_mut().chain(self.previous.iter_mut()).chain(self.current.iter_mut()) {
+        for id in self.keys.values_mut().chain(self.previous.flat_mut().iter_mut()).chain(self.current.flat_mut().iter_mut()) {
             *id = relocated[*id];
             debug_assert!(*id < write);
         }
@@ -415,14 +562,14 @@ impl<V> LayoutStore<V> {
             self.keys.shrink_to(floor);
             self.slots.shrink_to(floor);
             self.free.shrink_to(floor);
-            self.previous.shrink_to(floor);
-            self.current.shrink_to(floor);
+            self.previous.trim(floor, true);
+            self.current.trim(floor, true);
         } else {
             trim_map_capacity(&mut self.keys, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER);
             trim_vec_capacity(&mut self.slots, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER);
             trim_vec_capacity(&mut self.free, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER);
-            trim_vec_capacity(&mut self.previous, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER);
-            trim_vec_capacity(&mut self.current, floor, LINE_LAYOUT_CACHE_TRIM_WATERMARK_MULTIPLIER);
+            self.previous.trim(floor, false);
+            self.current.trim(floor, false);
         }
     }
 }
@@ -1344,8 +1491,8 @@ mod tests {
         let new = cache.layout_wrapped_line("world", px(14.), &runs, Some(px(80.)), None);
         let (old_lines, old_wrapped, new_lines, new_wrapped) = {
             let frame = cache.frame.borrow();
-            (frame.lines.previous.clone(), frame.wrapped_lines.previous.clone(),
-                frame.lines.current.clone(), frame.wrapped_lines.current.clone())
+            (frame.lines.previous.to_vec(), frame.wrapped_lines.previous.to_vec(),
+                frame.lines.current.to_vec(), frame.wrapped_lines.current.to_vec())
         };
         let lines = RecordSplicePlan::new(old_lines.len(), new_lines.len(),
             &[(old_lines.len()..old_lines.len(), 0..new_lines.len())]).unwrap();
