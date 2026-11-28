@@ -1267,9 +1267,9 @@ impl RowRecord {
         self.prepaint.records.start.dispatch_tree_index..self.prepaint.records.end.dispatch_tree_index
     }
 
-    fn dependency_free(&self) -> bool {
-        let reads = &self.prepaint.reads;
-        reads.entities.is_empty() && reads.globals.is_empty() && reads.states.is_empty()
+    fn boundary_dependencies_unchanged(&self, invalidator: &WindowInvalidator) -> bool {
+        self.prepaint.reads.states.is_empty()
+            && invalidator.row_dependencies_unchanged(self.notification_epoch, &self.prepaint.reads)
     }
 }
 
@@ -1303,6 +1303,7 @@ impl Window {
         let input_owner = self.input_dependency_owner.take();
         let autoscroll = self.requested_autoscroll.take();
         cx.entities.begin_frame_dependencies();
+        cx.entities.set_render_dependency_owner(Some(owner));
         let result = {
             let _reads = cx.entities.begin_state_reads();
             self.execute_static_uniform_boundary(boundary, epoch, cx)
@@ -1399,12 +1400,13 @@ impl Window {
         self.next_frame.dispatch_tree.pop_node();
         self.invalidator.set_phase(super::DrawPhase::None);
 
-        // Do not extend the App's committed owner dependency graph from an
-        // incomplete traversal. The first production experiment admits
-        // only rows without new entity/global/state dependencies.
+        // Only admit reads accounted for by the entering row records.
+        // Preserve other committed owners and conservatively add the new
+        // entity/global reverse routes after the final placement lease.
         let reads = cx.entities.dependency_reads_since(read_start);
-        if !reads.entities.is_empty() || !reads.globals.is_empty() || !reads.states.is_empty()
-            || !cx.entities.frame_entity_scratch.is_empty()
+        if !reads.states.is_empty()
+            || !cx.entities.frame_entity_scratch.iter().all(|entity| reads.entities.binary_search(entity).is_ok())
+            || !reads.entities.iter().all(|&entity| cx.entities.type_name_for_id(entity).is_some())
             || self.rendered_frame.scene().revision != source_revision
             || self.draw_was_degraded
             || self.requested_autoscroll.is_some()
@@ -1441,6 +1443,7 @@ impl Window {
         let mut fresh_dispatch_end = anchor.0.checked_add(1)?;
         let mut fresh_hitbox_end = 0;
         let mut fresh_mouse_end = 0;
+        let mut row_reads = RenderDependencies::default();
         let mut fresh_prepaint_end = 0;
         let mut fresh_paint_start = None;
         let mut fresh_paint_end = 0;
@@ -1450,7 +1453,7 @@ impl Window {
             let record = fresh.scroll_rows.rows.get(&(key, row))?;
             record.static_boundary_checkpoints()?;
             let span = record.dispatch_span();
-            if !record.dependency_free() || record.paint.start.scene_index != marker
+            if !record.boundary_dependencies_unchanged(&self.invalidator) || record.paint.start.scene_index != marker
                 || span.start != fresh_dispatch_end
                 || record.prepaint.origin != binding.origin(row, membership.sampled, Point::default())
                 || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
@@ -1478,6 +1481,7 @@ impl Window {
             fresh_prepaint_end = prepaint.end;
             fresh_paint_end = paint.end;
             fresh_text.append(record)?;
+            row_reads.merge_replayed(&record.prepaint.reads);
             fresh_dispatch_end = span.end;
         }
         if fresh_dispatch_end != fresh.dispatch_tree.len()
@@ -1486,6 +1490,12 @@ impl Window {
             || fresh_paint_start.unwrap_or(0) != fresh_prepaint_end
             || fresh_paint_end != fresh.accessed_element_states.len() { return None; }
 
+        if !row_reads.same_routes(&reads)
+            || !self.rendered_frame.dispatch_tree.has_view_route(owner)
+            || !self.invalidator.row_dependencies_unchanged(plan.notification_epoch, &reads)
+        { return None; }
+        let prepared_reads = if reads.entities.is_empty() && reads.globals.is_empty() { None }
+            else { Some(self.invalidator.prepare_boundary_row_reads(owner, &reads)?) };
         let current_text = self.text_system.layout_index();
         if !fresh_text.within(&current_text, true) { return None; }
 
@@ -1789,6 +1799,10 @@ impl Window {
         self.layout_engine.as_mut().expect("validated layout engine").commit_detached_boundary()
             .expect("reserved detached layout commit");
         let retired_states = prepared_states.map_or_else(Vec::new, |prepared| self.element_states.commit_boundary(prepared));
+        if let Some(prepared) = prepared_reads {
+            self.invalidator.commit_boundary_row_reads(prepared);
+            cx.register_boundary_entities(self.handle, self.invalidator.clone(), &reads.entities);
+        }
         let paint = candidate.paint.clone();
         let retired_records = candidate.adopt(&mut self.rendered_frame, &mut self.next_frame)
             .expect("validated exclusive Frame adoption");
@@ -1861,7 +1875,7 @@ impl Window {
                 || record.revision != epoch.content
                 || binding.row_revision.as_ref()?(row) != record.prepaint.row_revision
                 || record.prepaint.origin != binding.origin(row, binding.sampled, record.prepaint.origin)
-                || !record.dependency_free()
+                || !record.boundary_dependencies_unchanged(&self.invalidator)
                 || record.paint.start.scene_index != marker
                 || span.start != dispatch_end
                 || !frame.dispatch_tree.inert_row_range(span.clone())
